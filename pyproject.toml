@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shared-models"
+version = "1.0.0"
+description = "Shared SQLAlchemy models for RBAC and Ticket Management services"
+authors = [
+    {name = "Your Team"}
+]
+readme = "README.md"
+requires-python = ">=3.11"
+
+dependencies = [
+    "SQLAlchemy>=2.0.0"
+]
+
+[tool.setuptools.packages.find]
+include = ["shared_models*"]
