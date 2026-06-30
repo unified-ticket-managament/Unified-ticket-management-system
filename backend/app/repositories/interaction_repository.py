@@ -126,3 +126,23 @@ class InteractionRepository:
         await self.db.refresh(interaction)
 
         return interaction
+    from sqlalchemy import select
+
+# ...
+
+    async def exists_by_message_id(
+        self,
+        message_id: str,
+    ) -> bool:
+        """
+        Check whether an interaction with the given
+        email message_id already exists.
+        """
+
+        result = await self.db.execute(
+            select(Interaction.interaction_id).where(
+                Interaction.message_id == message_id
+            )
+        )
+
+        return result.scalar_one_or_none() is not None

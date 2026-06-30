@@ -1,122 +1,148 @@
-import uuid
-from datetime import datetime
-from typing import TYPE_CHECKING
+from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
-from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from fastapi import APIRouter, Depends, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.enums import TicketPriority, TicketStatus
-from shared_models.database import Base
-from shared_models.mixins import TimestampMixin
-#ticket.py
-if TYPE_CHECKING:
-    from shared_models.models import User
-    from .interaction import Interaction
+from app.database.session import get_db
 
+from app.repositories.ticket_repository import (
+    TicketRepository,
+)
+from app.repositories.interaction_repository import (
+    InteractionRepository,
+)
 
-class Ticket(TimestampMixin, Base):
-    """
-    Ticket Model
-    """
+from app.schemas.ticket import TicketResponse
+from app.schemas.interaction import InteractionResponse
+from app.schemas.ticket_from_interaction import (
+    TicketFromInteractionCreate,
+    TicketFromInteractionResponse,
+)
+from app.schemas.attach_interaction import (
+    AttachInteractionRequest,
+    AttachInteractionResponse,
+)
 
-    __tablename__ = "tickets"
+from app.services.ticket_service import (
+    TicketService,
+)
+from app.services.interaction_service import (
+    InteractionService,
+)
+from app.services.inbox_ticket_service import (
+    InboxTicketService,
+)
 
-    ticket_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        primary_key=True,
-        default=uuid.uuid4,
+router = APIRouter(
+    prefix="/tickets",
+    tags=["Tickets"],
+)
+
+# =========================================================
+# Workflow 1
+# Create Ticket From Inbox Interaction
+# =========================================================
+
+@router.post(
+    "/from-interaction",
+    response_model=TicketFromInteractionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_ticket_from_interaction(
+    request: TicketFromInteractionCreate,
+    db: AsyncSession = Depends(get_db),
+):
+
+    ticket_repository = TicketRepository(db)
+
+    interaction_repository = InteractionRepository(db)
+
+    service = InboxTicketService(
+        ticket_repository=ticket_repository,
+        interaction_repository=interaction_repository,
     )
 
-    client_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("users.user_id"),
-        nullable=False,
+    return await service.create_ticket_from_interaction(
+        request
     )
 
-    agent_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("users.user_id"),
-        nullable=True,
+
+# =========================================================
+# Workflow 2
+# Attach Interaction To Existing Ticket
+# =========================================================
+
+@router.post(
+    "/{ticket_id}/attach-interaction",
+    response_model=AttachInteractionResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def attach_interaction_to_ticket(
+    ticket_id: UUID,
+    request: AttachInteractionRequest,
+    db: AsyncSession = Depends(get_db),
+):
+
+    ticket_repository = TicketRepository(db)
+
+    interaction_repository = InteractionRepository(db)
+
+    service = InboxTicketService(
+        ticket_repository=ticket_repository,
+        interaction_repository=interaction_repository,
     )
 
-    title: Mapped[str] = mapped_column(
-        String(255),
-        nullable=False,
+    return await service.attach_to_existing_ticket(
+        ticket_id=ticket_id,
+        request=request,
     )
 
-    ticket_type: Mapped[str] = mapped_column(
-        String(50),
-        nullable=False,
+
+# =========================================================
+# Ticket Timeline
+# =========================================================
+
+@router.get(
+    "/{ticket_id}/interactions",
+    response_model=list[InteractionResponse],
+    status_code=status.HTTP_200_OK,
+)
+async def get_ticket_interactions(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+
+    interaction_repository = InteractionRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
     )
 
-    current_status: Mapped[TicketStatus] = mapped_column(
-        SQLEnum(
-            TicketStatus,
-            name="ticket_status_enum",
-        ),
-        default=TicketStatus.OPEN,
-        nullable=False,
+    return await service.get_ticket_interactions(
+        ticket_id
     )
 
-    current_priority: Mapped[TicketPriority] = mapped_column(
-        SQLEnum(
-            TicketPriority,
-            name="ticket_priority_enum",
-        ),
-        default=TicketPriority.MEDIUM,
-        nullable=False,
+
+# =========================================================
+# Get Ticket Details
+# =========================================================
+
+@router.get(
+    "/{ticket_id}",
+    response_model=TicketResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_ticket(
+    ticket_id: UUID,
+    db: AsyncSession = Depends(get_db),
+):
+
+    ticket_repository = TicketRepository(db)
+
+    service = TicketService(
+        ticket_repository=ticket_repository,
     )
 
-    custom_fields: Mapped[dict] = mapped_column(
-        JSONB,
-        default=dict,
-        nullable=False,
+    return await service.get_by_id(
+        ticket_id
     )
-
-    version: Mapped[int] = mapped_column(
-        Integer,
-        default=1,
-        nullable=False,
-    )
-
-    closed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-
-    # -------------------------------------------------
-    # Relationships
-    # -------------------------------------------------
-
-    client: Mapped["User"] = relationship(
-        "User",
-        foreign_keys=[client_id],
-    )
-
-    agent: Mapped["User | None"] = relationship(
-        "User",
-        foreign_keys=[agent_id],
-    )
-
-    interactions: Mapped[list["Interaction"]] = relationship(
-        "Interaction",
-        back_populates="ticket",
-        cascade="all, delete-orphan",
-    )
-
-    # -------------------------------------------------
-    # Optimistic Locking
-    # -------------------------------------------------
-
-    __mapper_args__ = {
-        "version_id_col": version,
-    }
-
-    def __repr__(self) -> str:
-        return (
-            f"<Ticket(ticket_id={self.ticket_id}, "
-            f"title='{self.title}', "
-            f"status='{self.current_status.value}')>"
-        )

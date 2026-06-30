@@ -17,8 +17,7 @@ app = FastAPI(
 # Routers
 # ---------------------------------------------------------
 
-app.include_router(email_router)
-app.include_router(agent_router)
+
 
 app.include_router(email_router)
 

@@ -7,6 +7,10 @@ from app.repositories.interaction_repository import (
 from app.repositories.ticket_repository import (
     TicketRepository,
 )
+from app.schemas.attach_interaction import (
+    AttachInteractionRequest,
+    AttachInteractionResponse,
+)
 from app.schemas.payloads import EmailPayload
 from app.schemas.ticket import TicketCreate
 from app.schemas.ticket_from_interaction import (
@@ -17,8 +21,11 @@ from app.schemas.ticket_from_interaction import (
 
 class InboxTicketService:
     """
-    Workflow service responsible for creating
-    a ticket from an inbox interaction.
+    Business workflows related to inbox interactions.
+
+    Supported workflows:
+    - Create ticket from inbox interaction
+    - Attach inbox interaction to an existing ticket
     """
 
     def __init__(
@@ -29,17 +36,18 @@ class InboxTicketService:
         self.ticket_repository = ticket_repository
         self.interaction_repository = interaction_repository
 
-    async def create_ticket_from_interaction(
-        self,
-        request: TicketFromInteractionCreate,
-    ) -> TicketFromInteractionResponse:
+    # ---------------------------------------------------------
+    # Shared Validation
+    # ---------------------------------------------------------
 
-        # ----------------------------------------
-        # Load interaction
-        # ----------------------------------------
+    async def _get_pending_interaction(self, interaction_id):
+        """
+        Returns a pending interaction that has not yet been
+        attached to any ticket.
+        """
 
         interaction = await self.interaction_repository.get_by_id(
-            request.interaction_id
+            interaction_id
         )
 
         if interaction is None:
@@ -47,10 +55,6 @@ class InboxTicketService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Interaction not found.",
             )
-
-        # ----------------------------------------
-        # Validation
-        # ----------------------------------------
 
         if interaction.ticket_id is not None:
             raise HTTPException(
@@ -64,17 +68,25 @@ class InboxTicketService:
                 detail="Interaction is not pending.",
             )
 
-        # ----------------------------------------
-        # Read Email Payload
-        # ----------------------------------------
+        return interaction
+
+    # ---------------------------------------------------------
+    # Workflow 1
+    # Create Ticket
+    # ---------------------------------------------------------
+
+    async def create_ticket_from_interaction(
+        self,
+        request: TicketFromInteractionCreate,
+    ) -> TicketFromInteractionResponse:
+
+        interaction = await self._get_pending_interaction(
+            request.interaction_id
+        )
 
         payload = EmailPayload.model_validate(
             interaction.payload
         )
-
-        # ----------------------------------------
-        # Create Ticket
-        # ----------------------------------------
 
         ticket = await self.ticket_repository.create(
 
@@ -96,30 +108,54 @@ class InboxTicketService:
 
         )
 
-        # ----------------------------------------
-        # Attach interaction to ticket
-        # ----------------------------------------
-
         await self.interaction_repository.assign_to_ticket(
-
             interaction=interaction,
-
             ticket_id=ticket.ticket_id,
-
         )
 
-        # ----------------------------------------
-        # Return
-        # ----------------------------------------
-
         return TicketFromInteractionResponse(
-
             message="Ticket created successfully.",
-
             ticket_id=ticket.ticket_id,
-
             interaction_id=interaction.interaction_id,
-
             status=InteractionStatus.ASSIGNED.value,
+        )
 
+    # ---------------------------------------------------------
+    # Workflow 2
+    # Attach Interaction to Existing Ticket
+    # ---------------------------------------------------------
+
+    async def attach_to_existing_ticket(
+        self,
+        ticket_id,
+        request: AttachInteractionRequest,
+    ) -> AttachInteractionResponse:
+
+        # Validate interaction
+        interaction = await self._get_pending_interaction(
+            request.interaction_id
+        )
+
+        # Validate ticket
+        ticket = await self.ticket_repository.get_by_id(
+            ticket_id
+        )
+
+        if ticket is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found.",
+            )
+
+        # Attach interaction
+        await self.interaction_repository.assign_to_ticket(
+            interaction=interaction,
+            ticket_id=ticket.ticket_id,
+        )
+
+        return AttachInteractionResponse(
+            message="Interaction attached successfully.",
+            ticket_id=ticket.ticket_id,
+            interaction_id=interaction.interaction_id,
+            status=InteractionStatus.ASSIGNED,
         )
