@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from shared_models.database import Base
 
 from typing import TYPE_CHECKING
-
+#attachment.py
 if TYPE_CHECKING:
     from .interaction import Interaction
 

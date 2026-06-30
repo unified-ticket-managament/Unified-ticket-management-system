@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 from app.schemas.common import ORMBase
 
-
+#schemas/attachement.py
 class AttachmentCreate(BaseModel):
     interaction_id: UUID
     filename: str = Field(..., min_length=1, max_length=255)

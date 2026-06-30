@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from app.enums import TicketPriority, TicketStatus
 from app.schemas.common import ORMBase
 
-
+#ticket.py
 class TicketCreate(BaseModel):
     client_id: UUID
     agent_id: UUID | None = None

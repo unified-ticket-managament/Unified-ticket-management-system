@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.ticket import Ticket
 from app.schemas.ticket import TicketCreate, TicketUpdate
 
-
+#ticket_repository.py
 class TicketRepository:
     def __init__(self, db: AsyncSession):
         self.db = db

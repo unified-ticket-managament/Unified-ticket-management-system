@@ -10,7 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.enums import TicketPriority, TicketStatus
 from shared_models.database import Base
 from shared_models.mixins import TimestampMixin
-
+#ticket.py
 if TYPE_CHECKING:
     from shared_models.models import User
     from .interaction import Interaction

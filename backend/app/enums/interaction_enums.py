@@ -1,6 +1,6 @@
 from enum import Enum
 
-
+#interaction_enums.py
 class InteractionStatus(str, Enum):
     """
     Processing status of an interaction.

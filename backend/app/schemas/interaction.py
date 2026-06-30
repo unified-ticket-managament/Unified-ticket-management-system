@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from app.enums import InteractionDirection, InteractionStatus
 from app.schemas.common import ORMBase
 
-
+#interaction.py
 class InteractionCreate(BaseModel):
     ticket_id: UUID | None = None
     interaction_type: str = Field(..., min_length=1, max_length=50)
