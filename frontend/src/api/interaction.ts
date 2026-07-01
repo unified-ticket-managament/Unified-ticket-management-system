@@ -15,10 +15,12 @@ import type {
 
 // GET /tickets/{ticket_id}/interactions
 export async function getTicketTimeline(
-  ticketId: string
+  ticketId: string,
+  agentName?: string
 ): Promise<InteractionResponse[]> {
   const { data } = await apiClient.get<InteractionResponse[]>(
-    `/tickets/${ticketId}/interactions`
+    `/tickets/${ticketId}/interactions`,
+    { params: agentName ? { agent_name: agentName } : undefined }
   );
   return data;
 }
@@ -91,6 +93,19 @@ export async function hideInteraction(
 ): Promise<HideInteractionResponse> {
   const { data } = await apiClient.post<HideInteractionResponse>(
     `/tickets/${ticketId}/interactions/${interactionId}/hide`,
+    payload
+  );
+  return data;
+}
+
+// POST /interactions/{interaction_id}/hide
+// Ticket-agnostic soft delete — works for pending inbox emails too.
+export async function hideInteractionById(
+  interactionId: string,
+  payload: HideInteractionRequest
+): Promise<HideInteractionResponse> {
+  const { data } = await apiClient.post<HideInteractionResponse>(
+    `/interactions/${interactionId}/hide`,
     payload
   );
   return data;

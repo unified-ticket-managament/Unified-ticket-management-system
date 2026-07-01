@@ -1,4 +1,3 @@
-from app.data.dummy_client_mapping import CLIENT_ASSIGNMENTS
 from app.enums import (
     InteractionDirection,
     InteractionStatus,
@@ -6,6 +5,7 @@ from app.enums import (
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.repositories.user_repository import UserRepository
 from app.schemas.email import (
     EmailRequest,
     EmailResponse,
@@ -13,6 +13,9 @@ from app.schemas.email import (
 from app.schemas.interaction import (
     InteractionCreate,
 )
+from app.services.agent_assignment_service import AgentAssignmentService
+
+VIEWER_ROLE_NAME = "Viewer"
 
 
 class EmailService:
@@ -27,7 +30,10 @@ class EmailService:
     Validate Duplicate
             │
             ▼
-    Lookup Client → Agent
+    Lookup Client (users table, role = Viewer)
+            │
+            ▼
+    Assign Agent (interim rule — see AgentAssignmentService)
             │
             ▼
     Create Pending Interaction
@@ -39,8 +45,12 @@ class EmailService:
     def __init__(
         self,
         interaction_repository: InteractionRepository,
+        user_repository: UserRepository,
+        agent_assignment_service: AgentAssignmentService,
     ):
         self.interaction_repository = interaction_repository
+        self.user_repository = user_repository
+        self.agent_assignment_service = agent_assignment_service
 
     async def receive_email(
         self,
@@ -64,16 +74,27 @@ class EmailService:
             )
 
         # ---------------------------------------
-        # Dummy Client Lookup
+        # Client Lookup (real users table)
         # ---------------------------------------
 
-        mapping = CLIENT_ASSIGNMENTS.get(
-            email.from_email.lower()
+        client = await self.user_repository.get_by_email(
+            email.from_email
         )
 
-        if mapping is None:
+        if client is None or client.role.name != VIEWER_ROLE_NAME:
             raise ValueError(
                 "Unknown client email."
+            )
+
+        # ---------------------------------------
+        # Agent Assignment (interim rule)
+        # ---------------------------------------
+
+        agent = await self.agent_assignment_service.select_agent()
+
+        if agent is None:
+            raise ValueError(
+                "No active agents available."
             )
 
         # ---------------------------------------
@@ -89,20 +110,16 @@ class EmailService:
             "body": email.body,
 
             "client_id": str(
-                mapping["client_id"]
+                client.user_id
             ),
 
-            "client_name": mapping[
-                "client_name"
-            ],
+            "client_name": client.name,
 
             "agent_id": str(
-                mapping["agent_id"]
+                agent.user_id
             ),
 
-            "agent_name": mapping[
-                "agent_name"
-            ],
+            "agent_name": agent.name,
         }
 
         # ---------------------------------------
@@ -148,13 +165,9 @@ class EmailService:
                 created.interaction_id
             ),
 
-            client_name=mapping[
-                "client_name"
-            ],
+            client_name=client.name,
 
-            agent_name=mapping[
-                "agent_name"
-            ],
+            agent_name=agent.name,
 
             status=created.status.value,
         )

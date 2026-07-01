@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { ArrowLeftRight, Paperclip, Flame, MessageSquareText, Send, Settings2 } from "lucide-react";
 import { Card } from "@/components/common/Card";
 import { Button } from "@/components/common/Button";
 import { Modal } from "@/components/common/Modal";
 import { SelectInput, TextArea, TextInput } from "@/components/common/FormField";
-import { EmptyState } from "@/components/common/EmptyState";
 import { useApiAction } from "@/hooks/useApiAction";
 import {
   addInternalNote,
@@ -12,9 +12,10 @@ import {
   replyToClient,
   uploadAttachment,
 } from "@/api/interaction";
-import { updateTicket } from "@/api/ticket";
+import { listAgents } from "@/api/agent";
+import { transferTicketAgent } from "@/api/ticket";
 import { useWorkflowContext } from "@/context/WorkflowContext";
-import type { TicketPriority, TicketStatus } from "@/types";
+import type { AgentSummary, TicketPriority, TicketStatus } from "@/types";
 
 const STATUSES: TicketStatus[] = [
   "OPEN",
@@ -27,12 +28,46 @@ const STATUSES: TicketStatus[] = [
 
 const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
 
+type Tone = "accent" | "warning" | "info" | "danger" | "default";
+
+const tileToneClasses: Record<Tone, string> = {
+  accent: "bg-accent/10 text-accent group-hover:bg-accent/15",
+  warning: "bg-warning/10 text-warning group-hover:bg-warning/15",
+  info: "bg-info/10 text-info group-hover:bg-info/15",
+  danger: "bg-danger/10 text-danger group-hover:bg-danger/15",
+  default: "bg-canvas text-slate-600 group-hover:bg-slate-200/60",
+};
+
+function ActionTile({
+  icon,
+  label,
+  tone,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  tone: Tone;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="group flex flex-col items-center gap-2 rounded-md2 border border-border bg-surface px-3 py-4 text-center transition-all duration-150 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-cardHover"
+    >
+      <span className={`flex h-9 w-9 items-center justify-center rounded-md2 transition-colors ${tileToneClasses[tone]}`}>
+        {icon}
+      </span>
+      <span className="text-[11px] font-semibold leading-tight text-slate-700">{label}</span>
+    </button>
+  );
+}
+
 type ActiveModal =
   | "note"
   | "reply"
   | "status"
   | "priority"
-  | "assign"
+  | "transfer"
   | "attachment"
   | null;
 
@@ -41,14 +76,15 @@ interface TicketActionsProps {
 }
 
 export function TicketActions({ onActionComplete }: TicketActionsProps) {
-  const { activeTicket, completeStep } = useWorkflowContext();
+  const { activeTicket } = useWorkflowContext();
   const [modal, setModal] = useState<ActiveModal>(null);
 
   const [note, setNote] = useState("");
   const [replyMessage, setReplyMessage] = useState("");
   const [newStatus, setNewStatus] = useState<TicketStatus>("IN_PROGRESS");
   const [newPriority, setNewPriority] = useState<TicketPriority>("HIGH");
-  const [agentId, setAgentId] = useState("");
+  const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [newAgentId, setNewAgentId] = useState("");
   const [filename, setFilename] = useState("screenshot.png");
   const [storageKey, setStorageKey] = useState("uploads/demo/screenshot.png");
 
@@ -58,37 +94,38 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   const { run: runReply, isLoading: isReplyLoading } = useApiAction(replyToClient, {
     successMessage: "Reply sent to client.",
   });
-  const { run: runStatus, isLoading: isStatusLoading } = useApiAction(
-    changeTicketStatus,
-    { successMessage: "Ticket status changed." }
-  );
+  const { run: runStatus, isLoading: isStatusLoading } = useApiAction(changeTicketStatus, {
+    successMessage: "Ticket status changed.",
+  });
   const { run: runPriority, isLoading: isPriorityLoading } = useApiAction(
     changeTicketPriority,
     { successMessage: "Ticket priority changed." }
   );
-  const { run: runAssign, isLoading: isAssignLoading } = useApiAction(
-    updateTicket,
-    { successMessage: "Agent assigned to ticket." }
+  const { run: runTransfer, isLoading: isTransferLoading } = useApiAction(
+    transferTicketAgent,
+    { successMessage: (res) => res.message }
   );
-  const { run: runUpload, isLoading: isUploadLoading } = useApiAction(
-    uploadAttachment,
-    { successMessage: "Attachment uploaded." }
-  );
+  const { run: runUpload, isLoading: isUploadLoading } = useApiAction(uploadAttachment, {
+    successMessage: "Attachment uploaded.",
+  });
 
-  if (!activeTicket) {
-    return (
-      <Card eyebrow="Step 5" title="Ticket Actions">
-        <EmptyState
-          icon="⚙️"
-          title="No active ticket"
-          description="Actions become available once a ticket exists."
-        />
-      </Card>
-    );
-  }
+  useEffect(() => {
+    listAgents()
+      .then(setAgents)
+      .catch(() => setAgents([]));
+  }, []);
+
+  if (!activeTicket) return null;
+
+  const transferCandidates = agents.filter((a) => a.user_id !== activeTicket.agent_id);
 
   function closeModal() {
     setModal(null);
+  }
+
+  function openTransferModal() {
+    setNewAgentId(transferCandidates[0]?.user_id ?? "");
+    setModal("transfer");
   }
 
   async function handleAddNote() {
@@ -101,43 +138,34 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   }
 
   async function handleReply() {
-    const result = await runReply(activeTicket!.ticket_id, {
-      message: replyMessage,
-    });
+    const result = await runReply(activeTicket!.ticket_id, { message: replyMessage });
     if (result) {
       setReplyMessage("");
       closeModal();
-      completeStep("reply");
       onActionComplete();
     }
   }
 
   async function handleStatusChange() {
-    const result = await runStatus(activeTicket!.ticket_id, {
-      new_status: newStatus,
-    });
+    const result = await runStatus(activeTicket!.ticket_id, { new_status: newStatus });
     if (result) {
       closeModal();
-      completeStep("status_changed");
       onActionComplete();
     }
   }
 
   async function handlePriorityChange() {
-    const result = await runPriority(activeTicket!.ticket_id, {
-      new_priority: newPriority,
-    });
+    const result = await runPriority(activeTicket!.ticket_id, { new_priority: newPriority });
     if (result) {
       closeModal();
-      completeStep("priority_changed");
       onActionComplete();
     }
   }
 
-  async function handleAssignAgent() {
-    const result = await runAssign(activeTicket!.ticket_id, { agent_id: agentId });
+  async function handleTransferAgent() {
+    if (!newAgentId) return;
+    const result = await runTransfer(activeTicket!.ticket_id, { new_agent_id: newAgentId });
     if (result) {
-      setAgentId("");
       closeModal();
       onActionComplete();
     }
@@ -152,33 +180,45 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
     });
     if (result) {
       closeModal();
-      completeStep("attachment_uploaded");
       onActionComplete();
     }
   }
 
   return (
     <>
-      <Card eyebrow="Step 5" title="Ticket Actions">
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="secondary" onClick={() => setModal("reply")}>
-            📤 Reply
-          </Button>
-          <Button size="sm" variant="secondary" onClick={() => setModal("note")}>
-            📝 Add Internal Note
-          </Button>
-          <Button size="sm" variant="secondary" onClick={() => setModal("status")}>
-            ⚙ Change Status
-          </Button>
-          <Button size="sm" variant="secondary" onClick={() => setModal("priority")}>
-            🔥 Change Priority
-          </Button>
-          <Button size="sm" variant="secondary" onClick={() => setModal("assign")}>
-            👤 Assign Agent
-          </Button>
-          <Button size="sm" variant="secondary" onClick={() => setModal("attachment")}>
-            📎 Upload Attachment
-          </Button>
+      <Card title="Actions" eyebrow="Ticket tools">
+        <div className="grid grid-cols-2 gap-2.5">
+          <ActionTile icon={<Send size={16} />} label="Reply" tone="accent" onClick={() => setModal("reply")} />
+          <ActionTile
+            icon={<MessageSquareText size={16} />}
+            label="Internal Note"
+            tone="warning"
+            onClick={() => setModal("note")}
+          />
+          <ActionTile
+            icon={<Settings2 size={16} />}
+            label="Change Status"
+            tone="info"
+            onClick={() => setModal("status")}
+          />
+          <ActionTile
+            icon={<Flame size={16} />}
+            label="Change Priority"
+            tone="danger"
+            onClick={() => setModal("priority")}
+          />
+          <ActionTile
+            icon={<ArrowLeftRight size={16} />}
+            label="Transfer Agent"
+            tone="accent"
+            onClick={openTransferModal}
+          />
+          <ActionTile
+            icon={<Paperclip size={16} />}
+            label="Upload Attachment"
+            tone="default"
+            onClick={() => setModal("attachment")}
+          />
         </div>
       </Card>
 
@@ -221,12 +261,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
         title="Change Ticket Status"
         onClose={closeModal}
         footer={
-          <Button
-            variant="primary"
-            size="sm"
-            isLoading={isStatusLoading}
-            onClick={handleStatusChange}
-          >
+          <Button variant="primary" size="sm" isLoading={isStatusLoading} onClick={handleStatusChange}>
             Update Status
           </Button>
         }
@@ -273,30 +308,42 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
       </Modal>
 
       <Modal
-        open={modal === "assign"}
-        title="Assign Agent"
+        open={modal === "transfer"}
+        title="Transfer Agent"
         onClose={closeModal}
         footer={
           <Button
             variant="primary"
             size="sm"
-            isLoading={isAssignLoading}
-            onClick={handleAssignAgent}
+            isLoading={isTransferLoading}
+            disabled={!newAgentId}
+            onClick={handleTransferAgent}
           >
-            Assign
+            Transfer
           </Button>
         }
       >
-        <TextInput
-          label="Agent user_id (UUID)"
-          placeholder="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-          value={agentId}
-          onChange={(e) => setAgentId(e.target.value)}
-        />
-        <p className="mt-2 text-[11px] text-muted">
-          There is no real user directory yet, so paste any RBAC user UUID
-          (e.g. one of the dummy agent IDs from the seed data).
-        </p>
+        {transferCandidates.length === 0 ? (
+          <p className="text-sm text-muted">No other active agents to transfer to.</p>
+        ) : (
+          <>
+            <SelectInput
+              label="Transfer to"
+              value={newAgentId}
+              onChange={(e) => setNewAgentId(e.target.value)}
+            >
+              {transferCandidates.map((agent) => (
+                <option key={agent.user_id} value={agent.user_id}>
+                  {agent.name}
+                </option>
+              ))}
+            </SelectInput>
+            <p className="mt-2 text-[11px] text-muted">
+              {activeTicket.agent_name ?? "The current agent"} will lose all access to this
+              ticket the moment it's transferred — ownership moves fully to the new agent.
+            </p>
+          </>
+        )}
       </Modal>
 
       <Modal
@@ -319,7 +366,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
             label="Storage key"
             value={storageKey}
             onChange={(e) => setStorageKey(e.target.value)}
-            hint="Placeholder path — no real file storage is wired up in this demo."
+            hint="Placeholder path — no real file storage is wired up yet."
           />
         </div>
       </Modal>

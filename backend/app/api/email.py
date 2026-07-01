@@ -10,9 +10,14 @@ from app.database.session import get_db
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.repositories.ticket_repository import TicketRepository
+from app.repositories.user_repository import UserRepository
 from app.schemas.email import (
     EmailRequest,
     EmailResponse,
+)
+from app.services.agent_assignment_service import (
+    AgentAssignmentService,
 )
 from app.services.email_service import (
     EmailService,
@@ -34,9 +39,21 @@ async def receive_email(
     db: AsyncSession = Depends(get_db),
 ):
 
-    repository = InteractionRepository(db)
+    interaction_repository = InteractionRepository(db)
+    user_repository = UserRepository(db)
+    ticket_repository = TicketRepository(db)
 
-    service = EmailService(repository)
+    agent_assignment_service = AgentAssignmentService(
+        user_repository=user_repository,
+        ticket_repository=ticket_repository,
+        interaction_repository=interaction_repository,
+    )
+
+    service = EmailService(
+        interaction_repository=interaction_repository,
+        user_repository=user_repository,
+        agent_assignment_service=agent_assignment_service,
+    )
 
     try:
         return await service.receive_email(email)
@@ -56,6 +73,13 @@ async def receive_email(
 
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
+                detail=message,
+            )
+
+        if message == "No active agents available.":
+
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=message,
             )
 

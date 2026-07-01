@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.agent import router as agent_router
 from app.api.email import router as email_router
+from app.api.interaction import router as interaction_router
 from app.core.config import get_settings
 
 from app.api.ticket import router as ticket_router
@@ -29,6 +30,13 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        # Vite auto-increments to 5174+ if 5173 is already taken
+        # by another running dev server — allow a small range so
+        # an accidental second `npm run dev` doesn't look like a
+        # broken backend (CORS-blocked calls surface to the user
+        # as a generic "Network Error").
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -46,6 +54,8 @@ app.include_router(email_router)
 app.include_router(agent_router)
 
 app.include_router(ticket_router)
+
+app.include_router(interaction_router)
 
 # ---------------------------------------------------------
 # Health Check

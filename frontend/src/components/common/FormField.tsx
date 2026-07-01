@@ -14,18 +14,19 @@ interface FieldWrapperProps {
 function FieldWrapper({ label, hint, children }: FieldWrapperProps) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-xs font-medium text-muted">
+      <span className="mb-1.5 block text-xs font-semibold text-slate-600">
         {label}
       </span>
       {children}
-      {hint && <span className="mt-1 block text-[11px] text-muted/70">{hint}</span>}
+      {hint && <span className="mt-1.5 block text-[11px] leading-relaxed text-muted">{hint}</span>}
     </label>
   );
 }
 
 const fieldBase =
-  "w-full rounded-md2 border border-border bg-canvas px-3 py-2 text-sm text-slate-100 " +
-  "placeholder:text-muted/60 focus:border-accent focus:outline-none transition-colors";
+  "w-full rounded-md2 border border-border bg-white px-3.5 py-2.5 text-sm text-slate-900 " +
+  "placeholder:text-muted/60 shadow-xs transition-all duration-150 " +
+  "focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";
 
 export function TextInput({
   label,
@@ -46,7 +47,7 @@ export function TextArea({
 }: FieldWrapperProps & TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return (
     <FieldWrapper label={label} hint={hint}>
-      <textarea className={`${fieldBase} min-h-[88px] resize-y`} {...rest} />
+      <textarea className={`${fieldBase} min-h-[96px] resize-y leading-relaxed`} {...rest} />
     </FieldWrapper>
   );
 }
@@ -59,7 +60,7 @@ export function SelectInput({
 }: FieldWrapperProps & SelectHTMLAttributes<HTMLSelectElement>) {
   return (
     <FieldWrapper label={label} hint={hint}>
-      <select className={fieldBase} {...rest}>
+      <select className={`${fieldBase} cursor-pointer`} {...rest}>
         {children}
       </select>
     </FieldWrapper>

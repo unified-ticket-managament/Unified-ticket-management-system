@@ -66,3 +66,9 @@ class TicketResponse(ORMBase):
     closed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+    # Resolved from the `users` table by TicketService — not
+    # persisted on the ticket row itself. None if the service
+    # didn't attach them (e.g. lookup failed) or agent_id is null.
+    client_name: str | None = None
+    agent_name: str | None = None

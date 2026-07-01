@@ -8,10 +8,9 @@ body {
 }
 
 body {
-  @apply bg-canvas text-slate-100 font-sans antialiased;
-  background-image:
-    radial-gradient(circle at 0% 0%, rgba(91, 141, 239, 0.06), transparent 40%),
-    radial-gradient(circle at 100% 0%, rgba(139, 107, 224, 0.05), transparent 40%);
+  @apply bg-canvas text-slate-800 font-sans antialiased;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 * {
@@ -24,8 +23,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #232834;
+  background: #cbd3e0;
   border-radius: 8px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #aab4c7;
 }
 
 ::-webkit-scrollbar-track {
@@ -37,7 +40,21 @@ body {
 }
 
 :focus-visible {
-  outline: 2px solid #5b8def;
+  outline: 2px solid #4f6bee;
   outline-offset: 2px;
   border-radius: 6px;
+}
+
+/* Loading skeleton shimmer — used by <Skeleton /> and inline
+   loading placeholders across list/table pages. */
+.skeleton {
+  background-color: #edf0f6;
+  background-image: linear-gradient(
+    90deg,
+    #edf0f6 0px,
+    #f7f9fc 40px,
+    #edf0f6 80px
+  );
+  background-size: 600px 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
 }

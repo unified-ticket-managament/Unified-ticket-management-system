@@ -37,6 +37,16 @@ export interface EmailResponse {
 }
 
 // ==========================================================
+// Agents
+// ==========================================================
+
+export interface AgentSummary {
+  user_id: string;
+  name: string;
+  email: string;
+}
+
+// ==========================================================
 // Agent Inbox
 // ==========================================================
 
@@ -84,6 +94,12 @@ export interface TicketResponse {
   closed_at: string | null;
   created_at: string;
   updated_at: string;
+  client_name: string | null;
+  agent_name: string | null;
+}
+
+export interface TransferAgentRequest {
+  new_agent_id: string;
 }
 
 export interface TicketUpdateRequest {
@@ -198,24 +214,4 @@ export interface HideInteractionResponse {
   removed_by: string | null;
   removed_at: string | null;
   message: string;
-}
-
-// ==========================================================
-// Frontend-only: workflow progress tracking
-// ==========================================================
-
-export type WorkflowStepId =
-  | "email_received"
-  | "inbox"
-  | "email_opened"
-  | "ticket_created"
-  | "reply"
-  | "status_changed"
-  | "priority_changed"
-  | "attachment_uploaded";
-
-export interface WorkflowStep {
-  id: WorkflowStepId;
-  label: string;
-  done: boolean;
 }

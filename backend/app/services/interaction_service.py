@@ -12,6 +12,7 @@ from app.repositories.interaction_repository import (
 from app.repositories.ticket_repository import (
     TicketRepository,
 )
+from app.repositories.user_repository import UserRepository
 from app.schemas.interaction import (
     HideInteractionRequest,
     HideInteractionResponse,
@@ -29,7 +30,9 @@ from app.schemas.ticket_action import (
     ReplyCreate,
     StatusChangeRequest,
     TicketActionResponse,
+    TransferAgentRequest,
 )
+from app.services.access_control import ensure_agent_can_view_ticket
 
 from app.enums import (
     InteractionDirection,
@@ -49,9 +52,11 @@ class InteractionService:
         self,
         interaction_repository: InteractionRepository,
         ticket_repository: TicketRepository,
+        user_repository: UserRepository,
     ):
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
+        self.user_repository = user_repository
 
     # ---------------------------------------------------------
     # Create Interaction
@@ -129,13 +134,22 @@ class InteractionService:
     async def get_ticket_interactions(
         self,
         ticket_id: UUID,
+        agent_name: str | None = None,
     ) -> list[InteractionResponse]:
         """
         Returns the complete timeline for a ticket.
 
         Interactions are ordered chronologically
-        by created_at (oldest first).
+        by created_at (oldest first). Only visible to
+        the agent the ticket is assigned to (unassigned
+        tickets remain visible to everyone).
         """
+
+        ticket = await self._get_ticket_or_404(ticket_id)
+
+        await ensure_agent_can_view_ticket(
+            ticket, agent_name, self.user_repository
+        )
 
         interactions = (
             await self.interaction_repository
@@ -360,6 +374,72 @@ class InteractionService:
             interaction_id=interaction.interaction_id,
             ticket_id=ticket_id,
             message="Ticket priority updated successfully.",
+            created_at=interaction.created_at,
+        )
+
+    # ---------------------------------------------------------
+    # Transfer Agent
+    # ---------------------------------------------------------
+
+    async def transfer_agent(
+        self,
+        ticket_id: UUID,
+        request: TransferAgentRequest,
+    ) -> TicketActionResponse:
+        """
+        Transfers full ownership of a ticket to a different
+        active Staff member. The previous agent loses all
+        rights on the ticket the moment this completes — the
+        new agent_id fully replaces the old one, it isn't
+        shared or co-owned.
+        """
+
+        ticket = await self._get_ticket_or_404(ticket_id)
+
+        new_agent = await self.user_repository.get_active_staff_by_id(
+            request.new_agent_id
+        )
+
+        if new_agent is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="New agent must be an active Staff member.",
+            )
+
+        if ticket.agent_id == new_agent.user_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Ticket is already assigned to this agent.",
+            )
+
+        old_agent_id = ticket.agent_id
+        old_agent_name = None
+
+        if old_agent_id is not None:
+            old_agent = await self.user_repository.get_by_id(old_agent_id)
+            old_agent_name = old_agent.name if old_agent else None
+
+        await self.ticket_repository.update(
+            ticket,
+            TicketUpdate(agent_id=new_agent.user_id),
+        )
+
+        interaction = await self._create_ticket_interaction(
+            ticket_id=ticket_id,
+            interaction_type="AGENT_TRANSFER",
+            direction=InteractionDirection.INTERNAL,
+            payload={
+                "from_agent_id": str(old_agent_id) if old_agent_id else None,
+                "from_agent_name": old_agent_name,
+                "to_agent_id": str(new_agent.user_id),
+                "to_agent_name": new_agent.name,
+            },
+        )
+
+        return TicketActionResponse(
+            interaction_id=interaction.interaction_id,
+            ticket_id=ticket_id,
+            message=f"Ticket transferred to {new_agent.name}.",
             created_at=interaction.created_at,
         )
 

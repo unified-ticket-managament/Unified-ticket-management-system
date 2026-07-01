@@ -2,11 +2,21 @@ import { apiClient } from "./client";
 import type {
   AttachInteractionRequest,
   AttachInteractionResponse,
+  TicketActionResponse,
   TicketFromInteractionRequest,
   TicketFromInteractionResponse,
   TicketResponse,
   TicketUpdateRequest,
+  TransferAgentRequest,
 } from "@/types";
+
+// GET /tickets?agent_name=...
+export async function listTickets(agentName?: string): Promise<TicketResponse[]> {
+  const { data } = await apiClient.get<TicketResponse[]>("/tickets", {
+    params: agentName ? { agent_name: agentName } : undefined,
+  });
+  return data;
+}
 
 // POST /tickets/from-interaction
 export async function createTicketFromInteraction(
@@ -31,9 +41,14 @@ export async function attachInteractionToTicket(
   return data;
 }
 
-// GET /tickets/{ticket_id}
-export async function getTicket(ticketId: string): Promise<TicketResponse> {
-  const { data } = await apiClient.get<TicketResponse>(`/tickets/${ticketId}`);
+// GET /tickets/{ticket_id}?agent_name=...
+export async function getTicket(
+  ticketId: string,
+  agentName?: string
+): Promise<TicketResponse> {
+  const { data } = await apiClient.get<TicketResponse>(`/tickets/${ticketId}`, {
+    params: agentName ? { agent_name: agentName } : undefined,
+  });
   return data;
 }
 
@@ -44,6 +59,18 @@ export async function updateTicket(
 ): Promise<TicketResponse> {
   const { data } = await apiClient.patch<TicketResponse>(
     `/tickets/${ticketId}`,
+    payload
+  );
+  return data;
+}
+
+// POST /tickets/{ticket_id}/transfer
+export async function transferTicketAgent(
+  ticketId: string,
+  payload: TransferAgentRequest
+): Promise<TicketActionResponse> {
+  const { data } = await apiClient.post<TicketActionResponse>(
+    `/tickets/${ticketId}/transfer`,
     payload
   );
   return data;

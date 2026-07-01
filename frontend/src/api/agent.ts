@@ -1,5 +1,11 @@
 import { apiClient } from "./client";
-import type { InboxResponse, OpenEmailResponse } from "@/types";
+import type { AgentSummary, InboxResponse, OpenEmailResponse } from "@/types";
+
+// GET /agents
+export async function listAgents(): Promise<AgentSummary[]> {
+  const { data } = await apiClient.get<AgentSummary[]>("/agents");
+  return data;
+}
 
 // GET /agents/{agent_name}/inbox
 export async function getAgentInbox(agentName: string): Promise<InboxResponse> {

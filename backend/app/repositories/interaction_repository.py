@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import InteractionStatus
@@ -78,6 +78,11 @@ class InteractionRepository:
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.PENDING,
                 Interaction.payload["agent_name"].astext == agent_name,
+                # A soft-deleted inbox item should actually leave
+                # the actionable queue, unlike a hidden interaction
+                # on a ticket timeline (which stays visible, dimmed,
+                # for audit purposes).
+                Interaction.is_visible.is_(True),
             )
             .order_by(
                 Interaction.created_at.asc()
@@ -86,6 +91,36 @@ class InteractionRepository:
         )
 
         return list(result.scalars().all())
+
+    async def count_pending_by_agent(
+        self,
+        agent_ids: list[UUID],
+    ) -> dict[UUID, int]:
+        """
+        Number of not-yet-ticketed pending emails currently
+        sitting in each agent's inbox. Combined with open-ticket
+        counts, this is the workload signal for interim agent
+        assignment — without it, a burst of new emails would all
+        land on the same agent until the first ticket is created.
+        """
+
+        if not agent_ids:
+            return {}
+
+        agent_id_strings = [str(agent_id) for agent_id in agent_ids]
+
+        agent_id_column = Interaction.payload["agent_id"].astext
+
+        result = await self.db.execute(
+            select(agent_id_column, func.count(Interaction.interaction_id))
+            .where(
+                Interaction.status == InteractionStatus.PENDING,
+                agent_id_column.in_(agent_id_strings),
+            )
+            .group_by(agent_id_column)
+        )
+
+        return {UUID(agent_id_str): count for agent_id_str, count in result.all()}
 
     async def update(
         self,

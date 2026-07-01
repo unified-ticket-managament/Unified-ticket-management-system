@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
@@ -14,6 +14,7 @@ from app.repositories.interaction_repository import (
 from app.repositories.ticket_repository import (
     TicketRepository,
 )
+from app.repositories.user_repository import UserRepository
 
 from app.schemas.attach_interaction import (
     AttachInteractionRequest,
@@ -38,6 +39,7 @@ from app.schemas.ticket_action import (
     ReplyCreate,
     StatusChangeRequest,
     TicketActionResponse,
+    TransferAgentRequest,
 )
 from app.schemas.ticket_from_interaction import (
     TicketFromInteractionCreate,
@@ -125,18 +127,27 @@ async def attach_interaction_to_ticket(
 )
 async def get_ticket_interactions(
     ticket_id: UUID,
+    agent_name: str | None = Query(
+        default=None,
+        description=(
+            "The agent viewing this timeline. If provided and the "
+            "ticket is assigned to someone else, returns 403."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
 ):
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
+        user_repository=user_repository,
     )
 
-    return await service.get_ticket_interactions(ticket_id)
+    return await service.get_ticket_interactions(ticket_id, agent_name=agent_name)
 
 
 # =========================================================
@@ -156,10 +167,12 @@ async def add_internal_note(
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
+        user_repository=user_repository,
     )
 
     return await service.add_internal_note(
@@ -191,10 +204,12 @@ async def reply_to_client(
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
+        user_repository=user_repository,
     )
 
     return await service.add_reply(
@@ -224,10 +239,12 @@ async def change_ticket_status(
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
+        user_repository=user_repository,
     )
 
     return await service.change_status(
@@ -257,10 +274,12 @@ async def change_ticket_priority(
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
+        user_repository=user_repository,
     )
 
     return await service.change_priority(
@@ -331,15 +350,54 @@ async def hide_ticket_interaction(
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
+        user_repository=user_repository,
     )
 
     return await service.hide_interaction(
         ticket_id=ticket_id,
         interaction_id=interaction_id,
+        request=request,
+    )
+
+
+# =========================================================
+# Transfer Agent
+# =========================================================
+
+@router.post(
+    "/{ticket_id}/transfer",
+    response_model=TicketActionResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def transfer_ticket_agent(
+    ticket_id: UUID,
+    request: TransferAgentRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Transfers full ownership of a ticket to a different
+    active Staff member. The previous agent has no further
+    rights on the ticket once this completes, and the change
+    is recorded as an interaction on the timeline.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+    )
+
+    return await service.transfer_agent(
+        ticket_id=ticket_id,
         request=request,
     )
 
@@ -360,21 +418,60 @@ async def update_ticket(
 ):
     """
     Updates ticket fields directly (title, ticket_type,
-    agent_id, custom_fields, closed_at).
+    custom_fields, closed_at).
 
-    For status and priority, prefer the dedicated
-    /status and /priority endpoints so the change is
-    also recorded on the ticket timeline.
+    For status, priority, and agent, prefer the dedicated
+    /status, /priority, and /transfer endpoints so the
+    change is also recorded on the ticket timeline.
     """
 
     ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
 
-    service = TicketService(ticket_repository=ticket_repository)
+    service = TicketService(
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+    )
 
     return await service.update(
         ticket_id=ticket_id,
         request=request,
     )
+
+
+# =========================================================
+# List Tickets
+# =========================================================
+
+@router.get(
+    "",
+    response_model=list[TicketResponse],
+    status_code=status.HTTP_200_OK,
+)
+async def list_tickets(
+    agent_name: str | None = Query(
+        default=None,
+        description=(
+            "Restrict results to tickets assigned to this agent "
+            "(unassigned tickets are always included). Omit to "
+            "return every ticket."
+        ),
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns tickets, most recently created first.
+    """
+
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+
+    service = TicketService(
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+    )
+
+    return await service.list_all(agent_name=agent_name)
 
 
 # =========================================================
@@ -388,6 +485,13 @@ async def update_ticket(
 )
 async def get_ticket(
     ticket_id: UUID,
+    agent_name: str | None = Query(
+        default=None,
+        description=(
+            "The agent viewing this ticket. If provided and the "
+            "ticket is assigned to someone else, returns 403."
+        ),
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -399,7 +503,11 @@ async def get_ticket(
     """
 
     ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
 
-    service = TicketService(ticket_repository=ticket_repository)
+    service = TicketService(
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+    )
 
-    return await service.get_by_id(ticket_id)
+    return await service.get_by_id(ticket_id, agent_name=agent_name)

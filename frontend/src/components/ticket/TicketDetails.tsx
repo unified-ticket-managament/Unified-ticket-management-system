@@ -1,96 +1,54 @@
 import { Card } from "@/components/common/Card";
 import { Badge } from "@/components/common/Badge";
-import { EmptyState } from "@/components/common/EmptyState";
+import { shortId, formatDateTime } from "@/lib/format";
+import { priorityTone, statusTone } from "@/lib/ticketTone";
 import { useWorkflowContext } from "@/context/WorkflowContext";
-import type { TicketPriority, TicketStatus } from "@/types";
 
-const statusTone: Record<TicketStatus, "default" | "success" | "warning" | "danger" | "info" | "accent"> = {
-  OPEN: "accent",
-  IN_PROGRESS: "info",
-  PENDING: "warning",
-  WAITING_FOR_CLIENT: "warning",
-  RESOLVED: "success",
-  CLOSED: "default",
-};
-
-const priorityTone: Record<TicketPriority, "default" | "success" | "warning" | "danger"> = {
-  LOW: "default",
-  MEDIUM: "warning",
-  HIGH: "danger",
-};
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-2">
+      <dt className="text-xs text-muted">{label}</dt>
+      <dd className="text-xs font-medium text-slate-800">{children}</dd>
+    </div>
+  );
+}
 
 export function TicketDetails() {
   const { activeTicket } = useWorkflowContext();
-
-  if (!activeTicket) {
-    return (
-      <Card eyebrow="Step 4" title="Ticket Details">
-        <EmptyState
-          icon="🎫"
-          title="No active ticket"
-          description="Create a ticket from an inbox email, or open the Ticket page with an existing ticket ID."
-        />
-      </Card>
-    );
-  }
+  if (!activeTicket) return null;
 
   return (
-    <Card eyebrow="Step 4" title="Ticket Details">
-      <div className="flex flex-col gap-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-sm font-semibold text-slate-100">
-              {activeTicket.title}
-            </p>
-            <p className="mt-0.5 font-mono text-[11px] text-muted">
-              {activeTicket.ticket_id}
-            </p>
-          </div>
-          <div className="flex flex-none flex-col items-end gap-1.5">
-            <Badge tone={statusTone[activeTicket.current_status]}>
+    <>
+      <Card title="Ticket Properties" eyebrow="Overview">
+        <dl className="flex flex-col divide-y divide-border">
+          <Row label="Status">
+            <Badge tone={statusTone[activeTicket.current_status]} dot>
               {activeTicket.current_status}
             </Badge>
+          </Row>
+          <Row label="Priority">
             <Badge tone={priorityTone[activeTicket.current_priority]}>
-              {activeTicket.current_priority} priority
+              {activeTicket.current_priority}
             </Badge>
-          </div>
-        </div>
-
-        <dl className="grid grid-cols-2 gap-3 text-xs">
-          <div>
-            <dt className="text-muted">Type</dt>
-            <dd className="text-slate-300 mt-0.5">{activeTicket.ticket_type}</dd>
-          </div>
-          <div>
-            <dt className="text-muted">Version</dt>
-            <dd className="text-slate-300 mt-0.5">{activeTicket.version}</dd>
-          </div>
-          <div>
-            <dt className="text-muted">Client ID</dt>
-            <dd className="truncate font-mono text-slate-300 mt-0.5">
-              {activeTicket.client_id}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-muted">Agent ID</dt>
-            <dd className="truncate font-mono text-slate-300 mt-0.5">
-              {activeTicket.agent_id ?? "Unassigned"}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-muted">Created</dt>
-            <dd className="text-slate-300 mt-0.5">
-              {new Date(activeTicket.created_at).toLocaleString()}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-muted">Updated</dt>
-            <dd className="text-slate-300 mt-0.5">
-              {new Date(activeTicket.updated_at).toLocaleString()}
-            </dd>
-          </div>
+          </Row>
+          <Row label="Category">{activeTicket.ticket_type}</Row>
+          <Row label="Version">{activeTicket.version}</Row>
+          <Row label="Updated">{formatDateTime(activeTicket.updated_at)}</Row>
         </dl>
-      </div>
-    </Card>
+      </Card>
+
+      <Card title="Client Information" eyebrow="Contact">
+        <dl className="flex flex-col divide-y divide-border">
+          <Row label="Client">
+            {activeTicket.client_name ?? shortId(activeTicket.client_id)}
+          </Row>
+          <Row label="Assigned Agent">
+            {activeTicket.agent_id
+              ? activeTicket.agent_name ?? shortId(activeTicket.agent_id)
+              : "Unassigned"}
+          </Row>
+        </dl>
+      </Card>
+    </>
   );
 }

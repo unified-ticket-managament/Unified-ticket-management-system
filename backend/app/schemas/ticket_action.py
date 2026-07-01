@@ -36,6 +36,15 @@ class PriorityChangeRequest(BaseModel):
     new_priority: TicketPriority
 
 
+class TransferAgentRequest(BaseModel):
+    """
+    Request body for transferring full ownership of a ticket
+    from its current agent to a different active Staff member.
+    """
+
+    new_agent_id: UUID
+
+
 class TicketActionResponse(ORMBase):
     """
     Generic response returned after an action
