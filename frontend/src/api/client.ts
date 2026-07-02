@@ -14,6 +14,16 @@ export const apiClient = axios.create({
   },
 });
 
+// Multipart requests (file uploads) must let the browser set its own
+// Content-Type with the multipart boundary — the default JSON header
+// above would otherwise be sent as-is and the backend couldn't parse it.
+apiClient.interceptors.request.use((config) => {
+  if (config.data instanceof FormData) {
+    delete config.headers["Content-Type"];
+  }
+  return config;
+});
+
 // Surface backend error details consistently as a single
 // readable message, so UI components don't each need to
 // know FastAPI's error response shape.

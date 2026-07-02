@@ -1,12 +1,15 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
 
 from app.repositories.attachment_repository import (
     AttachmentRepository,
+)
+from app.repositories.audit_log_repository import (
+    AuditLogRepository,
 )
 from app.repositories.interaction_repository import (
     InteractionRepository,
@@ -21,9 +24,9 @@ from app.schemas.attach_interaction import (
     AttachInteractionResponse,
 )
 from app.schemas.attachment import (
-    AttachmentUploadRequest,
     AttachmentUploadResponse,
 )
+from app.schemas.audit_log import AuditLogResponse
 from app.schemas.interaction import (
     HideInteractionRequest,
     HideInteractionResponse,
@@ -50,6 +53,7 @@ from app.services.attachment_service import AttachmentService
 from app.services.inbox_ticket_service import InboxTicketService
 from app.services.interaction_service import InteractionService
 from app.services.ticket_service import TicketService
+from app.storage import get_storage_service
 
 router = APIRouter(
     prefix="/tickets",
@@ -140,14 +144,62 @@ async def get_ticket_interactions(
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
+    attachment_repository = AttachmentRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        attachment_repository=attachment_repository,
+        storage_service=get_storage_service(),
     )
 
     return await service.get_ticket_interactions(ticket_id, agent_name=agent_name)
+
+
+# =========================================================
+# Ticket Audit Trail
+# =========================================================
+
+@router.get(
+    "/{ticket_id}/audit-logs",
+    response_model=list[AuditLogResponse],
+    status_code=status.HTTP_200_OK,
+)
+async def get_ticket_audit_logs(
+    ticket_id: UUID,
+    agent_name: str | None = Query(
+        default=None,
+        description=(
+            "The agent viewing this audit trail. If provided and the "
+            "ticket is assigned to someone else, returns 403."
+        ),
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns the complete, immutable audit trail for a ticket, newest
+    first.
+
+    Includes both the direct ticket-level events (create, update,
+    status/priority change, transfer) and the events logged against
+    the ticket's interactions and attachments (notes, replies, hides,
+    uploads).
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    audit_log_repository = AuditLogRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        audit_log_repository=audit_log_repository,
+    )
+
+    return await service.get_ticket_audit_logs(ticket_id, agent_name=agent_name)
 
 
 # =========================================================
@@ -162,6 +214,10 @@ async def get_ticket_interactions(
 async def add_internal_note(
     ticket_id: UUID,
     request: InternalNoteCreate,
+    agent_name: str | None = Query(
+        default=None,
+        description="The agent adding this note. Recorded as the audit actor.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
 
@@ -178,6 +234,7 @@ async def add_internal_note(
     return await service.add_internal_note(
         ticket_id=ticket_id,
         request=request,
+        agent_name=agent_name,
     )
 
 
@@ -193,6 +250,10 @@ async def add_internal_note(
 async def reply_to_client(
     ticket_id: UUID,
     request: ReplyCreate,
+    agent_name: str | None = Query(
+        default=None,
+        description="The agent sending this reply. Recorded as the audit actor.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -215,6 +276,7 @@ async def reply_to_client(
     return await service.add_reply(
         ticket_id=ticket_id,
         request=request,
+        agent_name=agent_name,
     )
 
 
@@ -230,6 +292,10 @@ async def reply_to_client(
 async def change_ticket_status(
     ticket_id: UUID,
     request: StatusChangeRequest,
+    agent_name: str | None = Query(
+        default=None,
+        description="The agent making this change. Recorded as the audit actor.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -250,6 +316,7 @@ async def change_ticket_status(
     return await service.change_status(
         ticket_id=ticket_id,
         request=request,
+        agent_name=agent_name,
     )
 
 
@@ -265,6 +332,10 @@ async def change_ticket_status(
 async def change_ticket_priority(
     ticket_id: UUID,
     request: PriorityChangeRequest,
+    agent_name: str | None = Query(
+        default=None,
+        description="The agent making this change. Recorded as the audit actor.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -285,6 +356,7 @@ async def change_ticket_priority(
     return await service.change_priority(
         ticket_id=ticket_id,
         request=request,
+        agent_name=agent_name,
     )
 
 
@@ -299,29 +371,37 @@ async def change_ticket_priority(
 )
 async def upload_ticket_attachment(
     ticket_id: UUID,
-    request: AttachmentUploadRequest,
+    files: list[UploadFile] = File(...),
+    agent_name: str | None = Form(
+        default=None,
+        description="The agent uploading these files. Recorded as the audit actor.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Uploads a file to this ticket.
+    Uploads one or more files to this ticket.
 
-    Recorded as an interaction on the timeline,
-    with the file metadata stored separately.
+    Recorded as a single interaction on the timeline,
+    with each file's metadata stored as its own Attachment row.
     """
 
     attachment_repository = AttachmentRepository(db)
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
 
     service = AttachmentService(
         attachment_repository=attachment_repository,
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
+        storage_service=get_storage_service(),
+        user_repository=user_repository,
     )
 
     return await service.upload_attachment(
         ticket_id=ticket_id,
-        request=request,
+        files=files,
+        agent_name=agent_name,
     )
 
 
@@ -338,6 +418,10 @@ async def hide_ticket_interaction(
     ticket_id: UUID,
     interaction_id: UUID,
     request: HideInteractionRequest,
+    agent_name: str | None = Query(
+        default=None,
+        description="The agent hiding this interaction. Recorded as the audit actor.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -362,6 +446,7 @@ async def hide_ticket_interaction(
         ticket_id=ticket_id,
         interaction_id=interaction_id,
         request=request,
+        agent_name=agent_name,
     )
 
 
@@ -377,6 +462,10 @@ async def hide_ticket_interaction(
 async def transfer_ticket_agent(
     ticket_id: UUID,
     request: TransferAgentRequest,
+    agent_name: str | None = Query(
+        default=None,
+        description="The agent making this transfer. Recorded as the audit actor.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -399,6 +488,7 @@ async def transfer_ticket_agent(
     return await service.transfer_agent(
         ticket_id=ticket_id,
         request=request,
+        agent_name=agent_name,
     )
 
 
@@ -414,6 +504,10 @@ async def transfer_ticket_agent(
 async def update_ticket(
     ticket_id: UUID,
     request: TicketUpdate,
+    agent_name: str | None = Query(
+        default=None,
+        description="The agent making this change. Recorded as the audit actor.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -436,6 +530,7 @@ async def update_ticket(
     return await service.update(
         ticket_id=ticket_id,
         request=request,
+        agent_name=agent_name,
     )
 
 

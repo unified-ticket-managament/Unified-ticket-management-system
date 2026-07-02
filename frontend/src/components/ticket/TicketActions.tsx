@@ -3,19 +3,20 @@ import { ArrowLeftRight, Paperclip, Flame, MessageSquareText, Send, Settings2 } 
 import { Card } from "@/components/common/Card";
 import { Button } from "@/components/common/Button";
 import { Modal } from "@/components/common/Modal";
-import { SelectInput, TextArea, TextInput } from "@/components/common/FormField";
+import { SelectInput } from "@/components/common/FormField";
+import { FileDropzone } from "@/components/common/FileDropzone";
+import { validateFiles } from "@/lib/attachmentMeta";
 import { useApiAction } from "@/hooks/useApiAction";
 import {
-  addInternalNote,
   changeTicketPriority,
   changeTicketStatus,
-  replyToClient,
   uploadAttachment,
 } from "@/api/interaction";
 import { listAgents } from "@/api/agent";
 import { transferTicketAgent } from "@/api/ticket";
 import { useWorkflowContext } from "@/context/WorkflowContext";
 import type { AgentSummary, TicketPriority, TicketStatus } from "@/types";
+import type { ComposerMode } from "@/components/ticket/TicketComposer";
 
 const STATUSES: TicketStatus[] = [
   "OPEN",
@@ -62,38 +63,23 @@ function ActionTile({
   );
 }
 
-type ActiveModal =
-  | "note"
-  | "reply"
-  | "status"
-  | "priority"
-  | "transfer"
-  | "attachment"
-  | null;
+type ActiveModal = "status" | "priority" | "transfer" | "attachment" | null;
 
 interface TicketActionsProps {
   onActionComplete: () => void;
+  onOpenComposer: (mode: ComposerMode) => void;
 }
 
-export function TicketActions({ onActionComplete }: TicketActionsProps) {
-  const { activeTicket } = useWorkflowContext();
+export function TicketActions({ onActionComplete, onOpenComposer }: TicketActionsProps) {
+  const { activeTicket, agentName } = useWorkflowContext();
   const [modal, setModal] = useState<ActiveModal>(null);
 
-  const [note, setNote] = useState("");
-  const [replyMessage, setReplyMessage] = useState("");
   const [newStatus, setNewStatus] = useState<TicketStatus>("IN_PROGRESS");
   const [newPriority, setNewPriority] = useState<TicketPriority>("HIGH");
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [newAgentId, setNewAgentId] = useState("");
-  const [filename, setFilename] = useState("screenshot.png");
-  const [storageKey, setStorageKey] = useState("uploads/demo/screenshot.png");
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
 
-  const { run: runNote, isLoading: isNoteLoading } = useApiAction(addInternalNote, {
-    successMessage: "Internal note added.",
-  });
-  const { run: runReply, isLoading: isReplyLoading } = useApiAction(replyToClient, {
-    successMessage: "Reply sent to client.",
-  });
   const { run: runStatus, isLoading: isStatusLoading } = useApiAction(changeTicketStatus, {
     successMessage: "Ticket status changed.",
   });
@@ -106,7 +92,8 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
     { successMessage: (res) => res.message }
   );
   const { run: runUpload, isLoading: isUploadLoading } = useApiAction(uploadAttachment, {
-    successMessage: "Attachment uploaded.",
+    successMessage: (res) =>
+      `${res.attachments.length} file${res.attachments.length === 1 ? "" : "s"} uploaded.`,
   });
 
   useEffect(() => {
@@ -128,26 +115,8 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
     setModal("transfer");
   }
 
-  async function handleAddNote() {
-    const result = await runNote(activeTicket!.ticket_id, { note });
-    if (result) {
-      setNote("");
-      closeModal();
-      onActionComplete();
-    }
-  }
-
-  async function handleReply() {
-    const result = await runReply(activeTicket!.ticket_id, { message: replyMessage });
-    if (result) {
-      setReplyMessage("");
-      closeModal();
-      onActionComplete();
-    }
-  }
-
   async function handleStatusChange() {
-    const result = await runStatus(activeTicket!.ticket_id, { new_status: newStatus });
+    const result = await runStatus(activeTicket!.ticket_id, { new_status: newStatus }, agentName);
     if (result) {
       closeModal();
       onActionComplete();
@@ -155,7 +124,11 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   }
 
   async function handlePriorityChange() {
-    const result = await runPriority(activeTicket!.ticket_id, { new_priority: newPriority });
+    const result = await runPriority(
+      activeTicket!.ticket_id,
+      { new_priority: newPriority },
+      agentName
+    );
     if (result) {
       closeModal();
       onActionComplete();
@@ -164,7 +137,11 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
 
   async function handleTransferAgent() {
     if (!newAgentId) return;
-    const result = await runTransfer(activeTicket!.ticket_id, { new_agent_id: newAgentId });
+    const result = await runTransfer(
+      activeTicket!.ticket_id,
+      { new_agent_id: newAgentId },
+      agentName
+    );
     if (result) {
       closeModal();
       onActionComplete();
@@ -172,13 +149,9 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   }
 
   async function handleUpload() {
-    const result = await runUpload(activeTicket!.ticket_id, {
-      filename,
-      storage_key: storageKey,
-      mime_type: "image/png",
-      size_bytes: 204800,
-    });
+    const result = await runUpload(activeTicket!.ticket_id, uploadFiles, agentName);
     if (result) {
+      setUploadFiles([]);
       closeModal();
       onActionComplete();
     }
@@ -188,12 +161,17 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
     <>
       <Card title="Actions" eyebrow="Ticket tools">
         <div className="grid grid-cols-2 gap-2.5">
-          <ActionTile icon={<Send size={16} />} label="Reply" tone="accent" onClick={() => setModal("reply")} />
+          <ActionTile
+            icon={<Send size={16} />}
+            label="Reply"
+            tone="accent"
+            onClick={() => onOpenComposer("reply")}
+          />
           <ActionTile
             icon={<MessageSquareText size={16} />}
             label="Internal Note"
             tone="warning"
-            onClick={() => setModal("note")}
+            onClick={() => onOpenComposer("note")}
           />
           <ActionTile
             icon={<Settings2 size={16} />}
@@ -221,40 +199,6 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
           />
         </div>
       </Card>
-
-      <Modal
-        open={modal === "note"}
-        title="Add Internal Note"
-        onClose={closeModal}
-        footer={
-          <Button variant="primary" size="sm" isLoading={isNoteLoading} onClick={handleAddNote}>
-            Add Note
-          </Button>
-        }
-      >
-        <TextArea
-          label="Note (visible to agents only)"
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-        />
-      </Modal>
-
-      <Modal
-        open={modal === "reply"}
-        title="Reply To Client"
-        onClose={closeModal}
-        footer={
-          <Button variant="primary" size="sm" isLoading={isReplyLoading} onClick={handleReply}>
-            Send Reply
-          </Button>
-        }
-      >
-        <TextArea
-          label="Message"
-          value={replyMessage}
-          onChange={(e) => setReplyMessage(e.target.value)}
-        />
-      </Modal>
 
       <Modal
         open={modal === "status"}
@@ -351,24 +295,18 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
         title="Upload Attachment"
         onClose={closeModal}
         footer={
-          <Button variant="primary" size="sm" isLoading={isUploadLoading} onClick={handleUpload}>
+          <Button
+            variant="primary"
+            size="sm"
+            isLoading={isUploadLoading}
+            disabled={uploadFiles.length === 0 || validateFiles(uploadFiles).errors.length > 0}
+            onClick={handleUpload}
+          >
             Upload
           </Button>
         }
       >
-        <div className="flex flex-col gap-3">
-          <TextInput
-            label="Filename"
-            value={filename}
-            onChange={(e) => setFilename(e.target.value)}
-          />
-          <TextInput
-            label="Storage key"
-            value={storageKey}
-            onChange={(e) => setStorageKey(e.target.value)}
-            hint="Placeholder path — no real file storage is wired up yet."
-          />
-        </div>
+        <FileDropzone label="Files" files={uploadFiles} onFilesChange={setUploadFiles} />
       </Modal>
     </>
   );

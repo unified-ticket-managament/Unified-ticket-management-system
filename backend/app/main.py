@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.agent import router as agent_router
+from app.api.attachment import router as attachment_router
 from app.api.email import router as email_router
 from app.api.interaction import router as interaction_router
 from app.core.config import get_settings
@@ -55,6 +56,8 @@ app.include_router(agent_router)
 app.include_router(ticket_router)
 
 app.include_router(interaction_router)
+
+app.include_router(attachment_router)
 
 # ---------------------------------------------------------
 # Health Check

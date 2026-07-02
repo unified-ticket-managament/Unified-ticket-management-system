@@ -52,6 +52,11 @@ class Attachment(Base):
         nullable=False,
     )
 
+    bucket_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
     scan_status: Mapped[str] = mapped_column(
         String(20),
         default="pending",
@@ -62,6 +67,19 @@ class Attachment(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
+    )
+
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=True,
+    )
+
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=True,
     )
 
     interaction: Mapped["Interaction"] = relationship(

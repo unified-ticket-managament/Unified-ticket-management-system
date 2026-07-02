@@ -6,12 +6,13 @@ import {
   LogOut,
   MailPlus,
   MessageSquare,
+  ShieldCheck,
   Ticket,
   X,
 } from "lucide-react";
 import { useWorkflowContext } from "@/context/WorkflowContext";
 import { useToast } from "@/context/ToastContext";
-import { AGENTS, DEFAULT_AGENT } from "@/lib/agents";
+import { DEFAULT_AGENT } from "@/lib/agents";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -19,6 +20,7 @@ const navItems = [
   { to: "/inbox", label: "Inbox", icon: Inbox },
   { to: "/interactions", label: "Interactions", icon: MessageSquare },
   { to: "/tickets", label: "Tickets", icon: Ticket },
+  { to: "/audit-logs", label: "Audit Log", icon: ShieldCheck },
 ];
 
 function initials(name: string) {
@@ -36,16 +38,17 @@ interface SidebarProps {
 }
 
 export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
-  const { agentName, setAgentName, setSelectedEmail, setActiveTicket, setTimeline } =
+  const { agentName, setAgentName, agents, setSelectedEmail, setActiveTicket, setTimeline } =
     useWorkflowContext();
   const { pushToast } = useToast();
 
   function handleLogout() {
+    const resetAgent = agents[0]?.name ?? DEFAULT_AGENT;
     setSelectedEmail(null);
     setActiveTicket(null);
     setTimeline([]);
-    setAgentName(DEFAULT_AGENT);
-    pushToast("Session cleared. Acting as " + DEFAULT_AGENT + ".", "info");
+    setAgentName(resetAgent);
+    pushToast("Session cleared. Acting as " + resetAgent + ".", "info");
     onCloseMobile();
   }
 
@@ -53,7 +56,7 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
     <>
       {mobileOpen && (
         <div
-          className="fixed inset-0 z-40 bg-slate-900/40 lg:hidden"
+          className="fixed inset-0 z-40 bg-black/40 lg:hidden"
           onClick={onCloseMobile}
           aria-hidden="true"
         />
@@ -144,11 +147,15 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
                 className="w-full cursor-pointer truncate bg-transparent text-[13px] font-semibold text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                 aria-label="Acting as agent"
               >
-                {AGENTS.map((agent) => (
-                  <option key={agent} value={agent}>
-                    {agent}
-                  </option>
-                ))}
+                {agents.length > 0 ? (
+                  agents.map((agent) => (
+                    <option key={agent.user_id} value={agent.name}>
+                      {agent.name}
+                    </option>
+                  ))
+                ) : (
+                  <option value={agentName}>{agentName}</option>
+                )}
               </select>
               <p className="text-[11px] leading-none text-muted">Agent · Active</p>
             </div>

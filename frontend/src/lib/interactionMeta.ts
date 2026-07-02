@@ -6,9 +6,6 @@ export interface InteractionTypeMeta {
   tone: "default" | "success" | "warning" | "danger" | "info" | "accent";
 }
 
-export const CONVERSATION_TYPES = ["EMAIL", "INTERNAL_NOTE", "REPLY", "ATTACHMENT"];
-export const ACTIVITY_TYPES = ["STATUS_CHANGE", "PRIORITY_CHANGE", "AGENT_TRANSFER"];
-
 const TYPE_META: Record<string, InteractionTypeMeta> = {
   EMAIL: { icon: "📧", label: "Client Email", tone: "accent" },
   INTERNAL_NOTE: { icon: "📝", label: "Internal Note", tone: "warning" },
@@ -37,8 +34,10 @@ export function summarize(interaction: InteractionResponse): string {
       return `${payload.from ?? "?"} → ${payload.to ?? "?"}`;
     case "PRIORITY_CHANGE":
       return `${payload.from ?? "?"} → ${payload.to ?? "?"}`;
-    case "ATTACHMENT":
-      return (payload.filename as string) ?? "File uploaded";
+    case "ATTACHMENT": {
+      const count = (payload.file_count as number) ?? interaction.attachments?.length ?? 1;
+      return `${count} file${count === 1 ? "" : "s"} uploaded`;
+    }
     case "AGENT_TRANSFER":
       return `${payload.from_agent_name ?? "Unassigned"} → ${payload.to_agent_name ?? "?"}`;
     default:

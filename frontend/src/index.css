@@ -2,13 +2,95 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ===========================================================
+   Theme tokens
+   Light values match the original palette; dark values follow
+   the healthcare support-desk dark theme. The slate ramp is
+   inverted in dark mode (slate-900 is primary text, so it must
+   become light; slate-50 is a subtle bg tint, so it must become
+   dark) so every existing slate-based utility class in the app
+   themes correctly with no component changes.
+   =========================================================== */
+
+:root {
+  --color-canvas: 246 248 251; /* #F6F8FB */
+  --color-surface: 255 255 255; /* #FFFFFF */
+  --color-surface-hover: 241 244 249;
+  --color-border: 229 231 235; /* #E5E7EB */
+  --color-muted: 107 114 128; /* #6B7280 */
+
+  --color-accent: 37 99 235; /* #2563EB */
+  --color-accent-50: 239 246 255;
+  --color-accent-600: 29 78 216;
+  --color-accent-700: 30 64 175;
+  --color-teal: 20 184 166; /* #14B8A6 */
+
+  --color-success: 15 157 98;
+  --color-warning: 214 144 15;
+  --color-danger: 220 61 52;
+  --color-info: 124 92 224;
+
+  --slate-50: 248 250 252;
+  --slate-100: 241 245 249;
+  --slate-200: 226 232 240;
+  --slate-300: 203 213 225;
+  --slate-400: 148 163 184;
+  --slate-500: 100 116 139;
+  --slate-600: 71 85 105;
+  --slate-700: 51 65 85;
+  --slate-800: 30 41 59;
+  --slate-900: 17 24 39; /* #111827 */
+
+  --scrollbar-thumb: 203 211 224;
+  --scrollbar-thumb-hover: 170 180 199;
+  --skeleton-base: 237 240 246;
+  --skeleton-shine: 247 249 252;
+}
+
+.dark {
+  --color-canvas: 15 23 42; /* #0F172A */
+  --color-surface: 17 24 39; /* #111827 */
+  --color-surface-hover: 30 41 59;
+  --color-border: 31 41 55; /* #1F2937 */
+  --color-muted: 156 163 175; /* #9CA3AF */
+
+  --color-accent: 96 165 250; /* #60A5FA */
+  --color-accent-50: 30 58 95;
+  --color-accent-600: 147 197 253;
+  --color-accent-700: 191 219 254;
+  --color-teal: 45 212 191; /* #2DD4BF */
+
+  --color-success: 52 211 153;
+  --color-warning: 251 191 36;
+  --color-danger: 248 113 113;
+  --color-info: 167 139 250;
+
+  /* Inverted: slate-900 (primary text) is now light, slate-50
+     (subtle background tint) is now dark. */
+  --slate-50: 30 41 59;
+  --slate-100: 39 51 74;
+  --slate-200: 51 65 85;
+  --slate-300: 71 85 105;
+  --slate-400: 100 116 139;
+  --slate-500: 148 163 184;
+  --slate-600: 178 190 207;
+  --slate-700: 203 213 225;
+  --slate-800: 226 232 240;
+  --slate-900: 249 250 251; /* #F9FAFB */
+
+  --scrollbar-thumb: 51 65 85;
+  --scrollbar-thumb-hover: 71 85 105;
+  --skeleton-base: 30 41 59;
+  --skeleton-shine: 51 65 85;
+}
+
 html,
 body {
   height: 100%;
 }
 
 body {
-  @apply bg-canvas text-slate-800 font-sans antialiased;
+  @apply bg-canvas text-slate-800 font-sans antialiased transition-colors duration-150;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -23,12 +105,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #cbd3e0;
+  background: rgb(var(--scrollbar-thumb));
   border-radius: 8px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #aab4c7;
+  background: rgb(var(--scrollbar-thumb-hover));
 }
 
 ::-webkit-scrollbar-track {
@@ -40,7 +122,7 @@ body {
 }
 
 :focus-visible {
-  outline: 2px solid #4f6bee;
+  outline: 2px solid rgb(var(--color-accent));
   outline-offset: 2px;
   border-radius: 6px;
 }
@@ -48,12 +130,12 @@ body {
 /* Loading skeleton shimmer — used by <Skeleton /> and inline
    loading placeholders across list/table pages. */
 .skeleton {
-  background-color: #edf0f6;
+  background-color: rgb(var(--skeleton-base));
   background-image: linear-gradient(
     90deg,
-    #edf0f6 0px,
-    #f7f9fc 40px,
-    #edf0f6 80px
+    rgb(var(--skeleton-base)) 0px,
+    rgb(var(--skeleton-shine)) 40px,
+    rgb(var(--skeleton-base)) 80px
   );
   background-size: 600px 100%;
   animation: shimmer 1.6s ease-in-out infinite;

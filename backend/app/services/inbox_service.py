@@ -1,3 +1,4 @@
+from app.repositories.attachment_repository import AttachmentRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
@@ -22,8 +23,10 @@ class InboxService:
     def __init__(
         self,
         interaction_repository: InteractionRepository,
+        attachment_repository: AttachmentRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
+        self.attachment_repository = attachment_repository
 
     async def get_agent_inbox(
         self,
@@ -38,6 +41,16 @@ class InboxService:
             await self.interaction_repository
             .list_pending_inbox(agent_name)
         )
+
+        interactions_with_attachments: set = set()
+
+        if self.attachment_repository is not None:
+            interactions_with_attachments = (
+                await self.attachment_repository
+                .has_attachments_for_interactions(
+                    [i.interaction_id for i in interactions]
+                )
+            )
 
         inbox_items: list[InboxItemResponse] = []
 
@@ -63,8 +76,9 @@ class InboxService:
 
                     status=interaction.status,
 
-                    # MVP
-                    has_attachments=False,
+                    has_attachments=(
+                        interaction.interaction_id in interactions_with_attachments
+                    ),
 
                 )
 

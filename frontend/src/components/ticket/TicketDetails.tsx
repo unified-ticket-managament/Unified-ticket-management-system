@@ -18,37 +18,34 @@ export function TicketDetails() {
   if (!activeTicket) return null;
 
   return (
-    <>
-      <Card title="Ticket Properties" eyebrow="Overview">
-        <dl className="flex flex-col divide-y divide-border">
-          <Row label="Status">
-            <Badge tone={statusTone[activeTicket.current_status]} dot>
-              {activeTicket.current_status}
-            </Badge>
-          </Row>
-          <Row label="Priority">
-            <Badge tone={priorityTone[activeTicket.current_priority]}>
-              {activeTicket.current_priority}
-            </Badge>
-          </Row>
-          <Row label="Category">{activeTicket.ticket_type}</Row>
-          <Row label="Version">{activeTicket.version}</Row>
-          <Row label="Updated">{formatDateTime(activeTicket.updated_at)}</Row>
-        </dl>
-      </Card>
-
-      <Card title="Client Information" eyebrow="Contact">
-        <dl className="flex flex-col divide-y divide-border">
-          <Row label="Client">
-            {activeTicket.client_name ?? shortId(activeTicket.client_id)}
-          </Row>
-          <Row label="Assigned Agent">
-            {activeTicket.agent_id
-              ? activeTicket.agent_name ?? shortId(activeTicket.agent_id)
-              : "Unassigned"}
-          </Row>
-        </dl>
-      </Card>
-    </>
+    // One card instead of two separate ones — cuts a whole extra
+    // header/border/shadow out of the right column so Actions and
+    // the Audit Trail sit closer to the fold instead of needing a
+    // scroll past two thin, mostly-empty-looking boxes.
+    <Card title="Ticket Properties" eyebrow="Overview">
+      <dl className="flex flex-col divide-y divide-border">
+        <Row label="Status">
+          <Badge tone={statusTone[activeTicket.current_status]} dot>
+            {activeTicket.current_status}
+          </Badge>
+        </Row>
+        <Row label="Priority">
+          <Badge tone={priorityTone[activeTicket.current_priority]}>
+            {activeTicket.current_priority}
+          </Badge>
+        </Row>
+        <Row label="Category">{activeTicket.ticket_type}</Row>
+        <Row label="Version">{activeTicket.version}</Row>
+        <Row label="Client">
+          {activeTicket.client_name ?? shortId(activeTicket.client_id)}
+        </Row>
+        <Row label="Assigned Agent">
+          {activeTicket.agent_id
+            ? activeTicket.agent_name ?? shortId(activeTicket.agent_id)
+            : "Unassigned"}
+        </Row>
+        <Row label="Updated">{formatDateTime(activeTicket.updated_at)}</Row>
+      </dl>
+    </Card>
   );
 }

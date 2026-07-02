@@ -11,6 +11,22 @@
     />
   </head>
   <body class="bg-canvas">
+    <script>
+      // Applied before React mounts so there's no flash of the
+      // wrong theme on load.
+      (function () {
+        try {
+          var stored = localStorage.getItem("ticket-app-theme");
+          var theme =
+            stored === "light" || stored === "dark"
+              ? stored
+              : window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light";
+          if (theme === "dark") document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

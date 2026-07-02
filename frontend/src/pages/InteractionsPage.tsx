@@ -1,22 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { EyeOff, Search, SlidersHorizontal, X } from "lucide-react";
+import { AlertTriangle, EyeOff, Search, SlidersHorizontal, X } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Badge } from "@/components/common/Badge";
 import { Button } from "@/components/common/Button";
 import { EmptyState } from "@/components/common/EmptyState";
-import { Modal } from "@/components/common/Modal";
+import { InteractionDetailsDrawer } from "@/components/common/InteractionDetailsDrawer";
 import { SkeletonRows } from "@/components/common/Skeleton";
-import { AGENTS } from "@/lib/agents";
 import { getAgentInbox, openEmail } from "@/api/agent";
 import { listTickets } from "@/api/ticket";
 import { getTicketTimeline, hideInteractionById } from "@/api/interaction";
 import { useApiAction } from "@/hooks/useApiAction";
-import { useToast } from "@/context/ToastContext";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useWorkflowContext } from "@/context/WorkflowContext";
 import { shortId, formatDateTime } from "@/lib/format";
 import { metaFor, summarize } from "@/lib/interactionMeta";
 import type { InteractionDirection, InteractionResponse, InteractionStatus, OpenEmailResponse } from "@/types";
+
+const PAGE_SIZE = 20;
 
 interface InteractionRow {
   id: string;
@@ -30,109 +31,120 @@ interface InteractionRow {
   clientName: string | null;
   summaryText: string;
   sourceAgent?: string;
+  // Full backend record for ticket-linked rows — already returned by
+  // the ticket timeline endpoint, so the drawer can render every
+  // payload field without an extra request.
+  raw?: InteractionResponse;
 }
 
 const DIRECTIONS: InteractionDirection[] = ["INBOUND", "OUTBOUND", "INTERNAL"];
 const STATUSES: InteractionStatus[] = ["PENDING", "ASSIGNED", "IGNORED"];
 
 const selectClass =
-  "rounded-md2 border border-border bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-xs transition-colors focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";
+  "rounded-md2 border border-border bg-surface px-3 py-2 text-xs font-medium text-slate-700 shadow-xs transition-colors focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";
 
 export function InteractionsPage() {
   const navigate = useNavigate();
-  const { pushToast } = useToast();
-  const { agentName } = useWorkflowContext();
+  const { agentName, agents } = useWorkflowContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const ticketIdParam = searchParams.get("ticketId");
 
   const [rows, setRows] = useState<InteractionRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestIdRef = useRef(0);
 
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [typeFilter, setTypeFilter] = useState("ALL");
   const [directionFilter, setDirectionFilter] = useState<InteractionDirection | "ALL">("ALL");
   const [statusFilter, setStatusFilter] = useState<InteractionStatus | "ALL">("ALL");
   const [agentFilter, setAgentFilter] = useState("ALL");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  const [page, setPage] = useState(1);
 
-  const [previewEmail, setPreviewEmail] = useState<OpenEmailResponse | null>(null);
-  const { run: runOpenEmail } = useApiAction(openEmail);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerRow, setDrawerRow] = useState<InteractionRow | null>(null);
+  const [drawerEmail, setDrawerEmail] = useState<OpenEmailResponse | null>(null);
+  const { run: runOpenEmail, isLoading: isLoadingEmail } = useApiAction(openEmail);
   const { run: runHide, isLoading: isHiding } = useApiAction(hideInteractionById, {
     successMessage: "Interaction hidden.",
   });
 
-  useEffect(() => {
-    let cancelled = false;
+  const load = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
+    setIsLoading(true);
+    try {
+      // Scoped to tickets this agent can see (their assignments,
+      // plus anything still unassigned) — matches ticket-level
+      // visibility rules so interactions never leak across agents.
+      const tickets = await listTickets(agentName);
+      const ticketRows = (
+        await Promise.all(
+          tickets.map(async (ticket) => {
+            const timeline = await getTicketTimeline(ticket.ticket_id, agentName);
+            return timeline.map<InteractionRow>((item: InteractionResponse) => ({
+              id: item.interaction_id,
+              createdAt: item.created_at,
+              type: item.interaction_type,
+              direction: item.direction,
+              status: item.status,
+              agent: item.performed_by ? shortId(item.performed_by) : "—",
+              ticketId: ticket.ticket_id,
+              ticketTitle: ticket.title,
+              clientName: ticket.client_name,
+              summaryText: summarize(item),
+              raw: item,
+            }));
+          })
+        )
+      ).flat();
 
-    async function load() {
-      setIsLoading(true);
-      try {
-        // Scoped to tickets this agent can see (their assignments,
-        // plus anything still unassigned) — matches ticket-level
-        // visibility rules so interactions never leak across agents.
-        const tickets = await listTickets(agentName);
-        const ticketRows = (
-          await Promise.all(
-            tickets.map(async (ticket) => {
-              const timeline = await getTicketTimeline(ticket.ticket_id, agentName);
-              return timeline.map<InteractionRow>((item: InteractionResponse) => ({
-                id: item.interaction_id,
-                createdAt: item.created_at,
-                type: item.interaction_type,
-                direction: item.direction,
-                status: item.status,
-                agent: item.performed_by ? shortId(item.performed_by) : "—",
-                ticketId: ticket.ticket_id,
-                ticketTitle: ticket.title,
-                clientName: ticket.client_name,
-                summaryText: summarize(item),
-              }));
-            })
-          )
-        ).flat();
+      const inbox = await getAgentInbox(agentName);
+      const pendingRows: InteractionRow[] = inbox.items.map((item) => ({
+        id: item.interaction_id,
+        createdAt: item.received_at,
+        type: "EMAIL",
+        direction: "INBOUND" as InteractionDirection,
+        status: item.status,
+        agent: agentName,
+        ticketId: null,
+        ticketTitle: null,
+        clientName: item.client_name,
+        summaryText: item.subject,
+        sourceAgent: agentName,
+      }));
 
-        const inbox = await getAgentInbox(agentName);
-        const pendingRows: InteractionRow[] = inbox.items.map((item) => ({
-          id: item.interaction_id,
-          createdAt: item.received_at,
-          type: "EMAIL",
-          direction: "INBOUND" as InteractionDirection,
-          status: item.status,
-          agent: agentName,
-          ticketId: null,
-          ticketTitle: null,
-          clientName: item.client_name,
-          summaryText: item.subject,
-          sourceAgent: agentName,
-        }));
+      // A newer load already started (agent change or a manual
+      // retry) — drop this now-stale response.
+      if (requestId !== requestIdRef.current) return;
 
-        if (cancelled) return;
-        const merged = [...pendingRows, ...ticketRows].sort(
-          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-        );
-        setRows(merged);
-      } catch (error) {
-        pushToast(
-          error instanceof Error ? error.message : "Failed to load interactions.",
-          "error"
-        );
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
+      const merged = [...pendingRows, ...ticketRows].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+      setRows(merged);
+      setLoadError(null);
+    } catch (error) {
+      if (requestId !== requestIdRef.current) return;
+      setLoadError(error instanceof Error ? error.message : "Failed to load interactions.");
+    } finally {
+      if (requestId === requestIdRef.current) setIsLoading(false);
     }
-
-    load();
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentName]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, typeFilter, directionFilter, statusFilter, agentFilter, dateFrom, dateTo, ticketIdParam]);
 
   const types = useMemo(() => Array.from(new Set(rows.map((r) => r.type))).sort(), [rows]);
 
   const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
+    const term = debouncedSearch.trim().toLowerCase();
     return rows.filter((r) => {
       if (ticketIdParam && r.ticketId !== ticketIdParam) return false;
       if (
@@ -151,7 +163,14 @@ export function InteractionsPage() {
       if (dateTo && new Date(r.createdAt) > new Date(`${dateTo}T23:59:59`)) return false;
       return true;
     });
-  }, [rows, ticketIdParam, search, typeFilter, directionFilter, statusFilter, agentFilter, dateFrom, dateTo]);
+  }, [rows, ticketIdParam, debouncedSearch, typeFilter, directionFilter, statusFilter, agentFilter, dateFrom, dateTo]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, totalPages);
+  const pageItems = useMemo(
+    () => filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
+    [filtered, currentPage]
+  );
 
   const filteredTicketTitle = useMemo(() => {
     if (!ticketIdParam) return null;
@@ -159,19 +178,30 @@ export function InteractionsPage() {
   }, [rows, ticketIdParam]);
 
   async function handleRowClick(row: InteractionRow) {
-    if (row.ticketId) {
-      navigate(`/tickets/${row.ticketId}`);
-      return;
-    }
-    if (row.sourceAgent) {
+    setDrawerRow(row);
+    setDrawerEmail(null);
+    setDrawerOpen(true);
+
+    // Pending inbox rows only carry a summary until opened — fetch
+    // the full email (same endpoint the inbox page already uses).
+    if (!row.ticketId && row.sourceAgent) {
       const detail = await runOpenEmail(row.sourceAgent, row.id);
-      if (detail) setPreviewEmail(detail);
+      if (detail) setDrawerEmail(detail);
     }
+  }
+
+  function closeDrawer() {
+    setDrawerOpen(false);
+  }
+
+  function handleViewTicket(ticketId: string) {
+    setDrawerOpen(false);
+    navigate(`/tickets/${ticketId}`);
   }
 
   async function handleHide(row: InteractionRow, e: React.MouseEvent) {
     e.stopPropagation();
-    const result = await runHide(row.id, { removed_by: null });
+    const result = await runHide(row.id, { removed_by: null }, agentName);
     if (result) {
       setRows((prev) => prev.filter((r) => r.id !== row.id));
     }
@@ -212,7 +242,7 @@ export function InteractionsPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search interactions by subject, sender, or client..."
-              className="w-full rounded-md2 border border-border bg-canvas py-2.5 pl-10 pr-3 text-sm text-slate-900 shadow-xs transition-all placeholder:text-muted/70 focus:border-accent focus:bg-white focus:outline-none focus:ring-4 focus:ring-accent/10"
+              className="w-full rounded-md2 border border-border bg-canvas py-2.5 pl-10 pr-3 text-sm text-slate-900 shadow-xs transition-all placeholder:text-muted/70 focus:border-accent focus:bg-surface focus:outline-none focus:ring-4 focus:ring-accent/10"
             />
           </div>
 
@@ -269,9 +299,9 @@ export function InteractionsPage() {
             className={selectClass}
           >
             <option value="ALL">All Agents</option>
-            {AGENTS.map((a) => (
-              <option key={a} value={a}>
-                {a}
+            {agents.map((a) => (
+              <option key={a.user_id} value={a.name}>
+                {a.name}
               </option>
             ))}
           </select>
@@ -295,20 +325,37 @@ export function InteractionsPage() {
           </div>
         </div>
 
+        {loadError && (
+          <div className="flex items-center justify-between gap-3 rounded-md2 border border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={15} className="flex-none" />
+              <span>{loadError}</span>
+            </div>
+            <Button size="sm" variant="secondary" onClick={load}>
+              Retry
+            </Button>
+          </div>
+        )}
+
         <div className="rounded-md2 border border-border bg-surface shadow-xs">
-          {isLoading ? (
+          {isLoading && rows.length === 0 ? (
             <div className="p-5">
               <SkeletonRows rows={6} />
             </div>
           ) : filtered.length === 0 ? (
             <EmptyState
               icon="💬"
-              title="No interactions found"
-              description="Try adjusting your filters."
+              title={rows.length === 0 ? "No interactions yet" : "No interactions found"}
+              description={
+                rows.length === 0
+                  ? "Emails, replies, notes, and status changes will show up here."
+                  : "Try adjusting your filters."
+              }
             />
           ) : (
+            <>
             <ul className="divide-y divide-border">
-              {filtered.map((row) => {
+              {pageItems.map((row) => {
                 const meta = metaFor(row.type);
                 return (
                   <li key={row.id} className="group flex items-center transition-colors hover:bg-surfaceHover">
@@ -357,30 +404,50 @@ export function InteractionsPage() {
                 );
               })}
             </ul>
+
+            <div className="flex items-center justify-between border-t border-border px-5 py-3 text-xs text-muted">
+              <p>
+                Showing{" "}
+                <span className="font-medium text-slate-700">
+                  {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filtered.length)}
+                </span>{" "}
+                of <span className="font-medium text-slate-700">{filtered.length}</span> interactions
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={currentPage <= 1}
+                  onClick={() => setPage((p) => p - 1)}
+                >
+                  Previous
+                </Button>
+                <span className="px-1 font-medium text-slate-700">
+                  Page {currentPage} / {totalPages}
+                </span>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={currentPage >= totalPages}
+                  onClick={() => setPage((p) => p + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+            </>
           )}
         </div>
       </div>
 
-      <Modal
-        open={!!previewEmail}
-        title="Email Preview"
-        onClose={() => setPreviewEmail(null)}
-        footer={
-          <Button variant="secondary" size="sm" onClick={() => setPreviewEmail(null)}>
-            Close
-          </Button>
-        }
-      >
-        {previewEmail && (
-          <div className="flex flex-col gap-2 text-sm">
-            <p className="font-semibold text-slate-900">{previewEmail.subject}</p>
-            <p className="text-xs text-muted">
-              From {previewEmail.from_email} ({previewEmail.client_name})
-            </p>
-            <p className="whitespace-pre-wrap text-slate-700">{previewEmail.body}</p>
-          </div>
-        )}
-      </Modal>
+      <InteractionDetailsDrawer
+        open={drawerOpen}
+        row={drawerRow}
+        email={drawerEmail}
+        isLoadingEmail={isLoadingEmail}
+        onClose={closeDrawer}
+        onViewTicket={handleViewTicket}
+      />
     </AppLayout>
   );
 }

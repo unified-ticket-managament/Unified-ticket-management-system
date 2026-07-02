@@ -5,8 +5,10 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { Card } from "@/components/common/Card";
 import { Button } from "@/components/common/Button";
 import { TextArea, TextInput } from "@/components/common/FormField";
+import { FileDropzone } from "@/components/common/FileDropzone";
 import { useApiAction } from "@/hooks/useApiAction";
 import { receiveIncomingEmail } from "@/api/email";
+import { validateFiles } from "@/lib/attachmentMeta";
 import type { EmailResponse } from "@/types";
 
 // Active Viewer (client) users in the RBAC `users` table — the
@@ -25,11 +27,14 @@ export function CreateMailPage() {
   const [fromEmail, setFromEmail] = useState(DUMMY_SENDERS[0].email);
   const [subject, setSubject] = useState("Unable to Login");
   const [body, setBody] = useState("Doctor cannot login to the patient portal.");
+  const [files, setFiles] = useState<File[]>([]);
   const [lastResult, setLastResult] = useState<EmailResponse | null>(null);
 
   const { run, isLoading } = useApiAction(receiveIncomingEmail, {
     successMessage: (res) => `Email received. Routed to ${res.agent_name}'s inbox.`,
   });
+
+  const canSend = validateFiles(files).errors.length === 0;
 
   async function handleSend() {
     const result = await run({
@@ -37,10 +42,12 @@ export function CreateMailPage() {
       subject,
       body,
       message_id: randomMessageId(),
+      files,
     });
 
     if (result) {
       setLastResult(result);
+      setFiles([]);
     }
   }
 
@@ -67,7 +74,7 @@ export function CreateMailPage() {
               <select
                 value={fromEmail}
                 onChange={(e) => setFromEmail(e.target.value)}
-                className="w-full cursor-pointer rounded-md2 border border-border bg-white px-3.5 py-2.5 text-sm text-slate-900 shadow-xs transition-all focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10"
+                className="w-full cursor-pointer rounded-md2 border border-border bg-surface px-3.5 py-2.5 text-sm text-slate-900 shadow-xs transition-all focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10"
               >
                 {DUMMY_SENDERS.map((sender) => (
                   <option key={sender.email} value={sender.email}>
@@ -89,8 +96,15 @@ export function CreateMailPage() {
               onChange={(e) => setBody(e.target.value)}
             />
 
+            <FileDropzone label="Attachments" files={files} onFilesChange={setFiles} />
+
             <div className="flex items-center justify-end border-t border-border pt-4">
-              <Button variant="primary" isLoading={isLoading} onClick={handleSend}>
+              <Button
+                variant="primary"
+                isLoading={isLoading}
+                disabled={!canSend}
+                onClick={handleSend}
+              >
                 <MailPlus size={15} /> Receive Email
               </Button>
             </div>
@@ -107,6 +121,9 @@ export function CreateMailPage() {
                 </p>
                 <p className="mt-0.5 text-xs text-muted">
                   From {lastResult.client_name} · status {lastResult.status}
+                  {lastResult.attachments && lastResult.attachments.length > 0
+                    ? ` · ${lastResult.attachments.length} file${lastResult.attachments.length === 1 ? "" : "s"} attached`
+                    : ""}
                 </p>
               </div>
             </div>

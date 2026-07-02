@@ -21,6 +21,8 @@ class TicketCreate(BaseModel):
 
     agent_id: UUID | None = None
 
+    created_by: UUID | None = None
+
     title: str = Field(..., min_length=1, max_length=255)
 
     ticket_type: str = Field(..., min_length=1, max_length=50)
@@ -57,6 +59,7 @@ class TicketResponse(ORMBase):
     ticket_id: UUID
     client_id: UUID
     agent_id: UUID | None
+    created_by: UUID | None
     title: str
     ticket_type: str
     current_status: TicketStatus
@@ -72,3 +75,4 @@ class TicketResponse(ORMBase):
     # didn't attach them (e.g. lookup failed) or agent_id is null.
     client_name: str | None = None
     agent_name: str | None = None
+    created_by_name: str | None = None

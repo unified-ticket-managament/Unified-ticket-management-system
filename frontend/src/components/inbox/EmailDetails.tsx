@@ -2,6 +2,7 @@ import { Mail, Ticket as TicketIcon } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/common/Badge";
 import { EmptyState } from "@/components/common/EmptyState";
+import { AttachmentList } from "@/components/common/AttachmentList";
 import { useWorkflowContext } from "@/context/WorkflowContext";
 
 export function EmailDetails() {
@@ -62,6 +63,15 @@ export function EmailDetails() {
         <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
           {selectedEmail.body}
         </p>
+
+        {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
+          <div className="mt-5 border-t border-border pt-4">
+            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted">
+              Attachments
+            </p>
+            <AttachmentList attachments={selectedEmail.attachments} />
+          </div>
+        )}
       </div>
 
       {activeTicket && (

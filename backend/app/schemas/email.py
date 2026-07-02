@@ -1,5 +1,7 @@
 from pydantic import BaseModel, EmailStr, Field
 
+from app.schemas.attachment import AttachmentMetadata
+
 
 class EmailRequest(BaseModel):
     """
@@ -48,3 +50,5 @@ class EmailResponse(BaseModel):
     agent_name: str
 
     status: str
+
+    attachments: list[AttachmentMetadata] = Field(default_factory=list)

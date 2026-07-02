@@ -1,12 +1,13 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { EmptyState } from "@/components/common/EmptyState";
 import { TicketHeader } from "@/components/ticket/TicketHeader";
-import { TicketActivityRail } from "@/components/ticket/TicketActivityRail";
-import { TicketConversation } from "@/components/ticket/TicketConversation";
+import { TicketTimeline } from "@/components/ticket/TicketTimeline";
+import { TicketComposer, type ComposerMode } from "@/components/ticket/TicketComposer";
 import { TicketDetails } from "@/components/ticket/TicketDetails";
 import { TicketActions } from "@/components/ticket/TicketActions";
+import { TicketAuditLog } from "@/components/ticket/TicketAuditLog";
 import { useApiAction } from "@/hooks/useApiAction";
 import { getTicket } from "@/api/ticket";
 import { getTicketTimeline } from "@/api/interaction";
@@ -15,6 +16,10 @@ import { useWorkflowContext } from "@/context/WorkflowContext";
 export function TicketDetailPage() {
   const { ticketId } = useParams<{ ticketId: string }>();
   const { agentName, activeTicket, setActiveTicket, setTimeline } = useWorkflowContext();
+  const [composerMode, setComposerMode] = useState<ComposerMode | null>(null);
+  // Bumped after any refresh so TicketAuditLog refetches immediately
+  // instead of waiting for its own poll interval.
+  const [auditRefreshToken, setAuditRefreshToken] = useState(0);
 
   const { run: runGetTicket, isLoading: isLoadingTicket } = useApiAction(getTicket);
   const { run: runGetTimeline } = useApiAction(getTicketTimeline);
@@ -23,6 +28,7 @@ export function TicketDetailPage() {
     if (!ticketId) return;
     const items = await runGetTimeline(ticketId, agentName);
     if (items) setTimeline(items);
+    setAuditRefreshToken((token) => token + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketId, agentName, runGetTimeline, setTimeline]);
 
@@ -39,6 +45,7 @@ export function TicketDetailPage() {
 
   useEffect(() => {
     refreshAll();
+    setComposerMode(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketId, agentName]);
 
@@ -47,7 +54,7 @@ export function TicketDetailPage() {
   return (
     <AppLayout
       title="Ticket"
-      description="Every action taken here is recorded on the ticket's conversation and activity feed."
+      description="Every action taken here is recorded on the ticket's timeline."
     >
       {showEmptyState ? (
         <div className="rounded-md2 border border-border bg-surface shadow-xs">
@@ -66,12 +73,32 @@ export function TicketDetailPage() {
           <div className="flex flex-col gap-5">
             <TicketHeader ticket={activeTicket} />
 
-            <div className="grid grid-cols-1 gap-5 lg:grid-cols-[280px_1fr_320px]">
-              <TicketActivityRail />
-              <TicketConversation onChanged={refreshTimeline} />
+            <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_320px]">
               <div className="flex flex-col gap-5">
-                <TicketDetails />
-                <TicketActions onActionComplete={refreshAll} />
+                <TicketTimeline onChanged={refreshTimeline} />
+                {composerMode && (
+                  <TicketComposer
+                    mode={composerMode}
+                    onClose={() => setComposerMode(null)}
+                    onSent={() => {
+                      setComposerMode(null);
+                      refreshTimeline();
+                    }}
+                  />
+                )}
+              </div>
+              {/* The outer cell stretches to match the left column's
+                  height (CSS Grid's default align-items: stretch) so
+                  the inner sticky wrapper has room to float within it
+                  instead of being pinned the moment it's scrolled —
+                  sticky needs a taller ancestor to have any range of
+                  motion. */}
+              <div>
+                <div className="flex flex-col gap-5 lg:sticky lg:top-0">
+                  <TicketDetails />
+                  <TicketActions onActionComplete={refreshAll} onOpenComposer={setComposerMode} />
+                  <TicketAuditLog refreshToken={auditRefreshToken} />
+                </div>
               </div>
             </div>
           </div>

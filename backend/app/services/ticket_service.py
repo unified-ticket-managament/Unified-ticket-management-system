@@ -5,6 +5,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, status
 
+from app.enums import AuditEntityType, AuditEventType
 from app.models.ticket import Ticket
 from app.repositories.ticket_repository import (
     TicketRepository,
@@ -16,6 +17,7 @@ from app.schemas.ticket import (
     TicketUpdate,
 )
 from app.services.access_control import ensure_agent_can_view_ticket
+from app.services.audit_log_service import AuditLogService
 
 
 class TicketService:
@@ -46,6 +48,9 @@ class TicketService:
         user_ids.update(
             ticket.agent_id for ticket in tickets if ticket.agent_id is not None
         )
+        user_ids.update(
+            ticket.created_by for ticket in tickets if ticket.created_by is not None
+        )
 
         names = await self.user_repository.get_names_by_ids(list(user_ids))
 
@@ -53,6 +58,9 @@ class TicketService:
             ticket.client_name = names.get(ticket.client_id)
             ticket.agent_name = (
                 names.get(ticket.agent_id) if ticket.agent_id else None
+            )
+            ticket.created_by_name = (
+                names.get(ticket.created_by) if ticket.created_by else None
             )
 
     # ---------------------------------------------------------
@@ -140,6 +148,7 @@ class TicketService:
         self,
         ticket_id: UUID,
         request: TicketUpdate,
+        agent_name: str | None = None,
     ) -> TicketResponse:
 
         ticket = await self.ticket_repository.get_by_id(
@@ -152,10 +161,34 @@ class TicketService:
                 detail="Ticket not found.",
             )
 
+        # Snapshot only the safe, structured fields actually being
+        # changed. custom_fields is caller-defined/arbitrary content
+        # and is deliberately excluded from the audit trail.
+        changed_fields = request.model_dump(exclude_unset=True)
+        changed_fields.pop("custom_fields", None)
+        old_values = {field: getattr(ticket, field) for field in changed_fields}
+
         ticket = await self.ticket_repository.update(
             ticket,
             request,
         )
+
+        if changed_fields:
+            actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
+                self.user_repository, agent_name
+            )
+
+            await AuditLogService.log_event(
+                self.ticket_repository.db,
+                entity_type=AuditEntityType.TICKET,
+                entity_id=ticket.ticket_id,
+                event_type=AuditEventType.TICKET_UPDATED,
+                actor_id=actor_id,
+                actor_name=actor_name,
+                actor_role=actor_role,
+                old_values=old_values,
+                new_values=changed_fields,
+            )
 
         await self._attach_names([ticket])
 

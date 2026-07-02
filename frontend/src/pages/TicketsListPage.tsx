@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowUpDown, MessagesSquare, Search } from "lucide-react";
+import { AlertTriangle, ArrowUpDown, MessagesSquare, Search } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Badge } from "@/components/common/Badge";
 import { Button } from "@/components/common/Button";
 import { EmptyState } from "@/components/common/EmptyState";
 import { SkeletonRows } from "@/components/common/Skeleton";
 import { listTickets } from "@/api/ticket";
-import { useToast } from "@/context/ToastContext";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useWorkflowContext } from "@/context/WorkflowContext";
 import { shortId, formatDateTime } from "@/lib/format";
 import { priorityTone, statusTone } from "@/lib/ticketTone";
@@ -27,17 +27,18 @@ const PAGE_SIZE = 10;
 type SortKey = "created_at" | "updated_at" | "title";
 
 const selectClass =
-  "rounded-md2 border border-border bg-white px-3 py-2 text-xs font-medium text-slate-700 shadow-xs transition-colors focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";
+  "rounded-md2 border border-border bg-surface px-3 py-2 text-xs font-medium text-slate-700 shadow-xs transition-colors focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";
 
 export function TicketsListPage() {
   const navigate = useNavigate();
-  const { pushToast } = useToast();
   const { agentName } = useWorkflowContext();
 
   const [tickets, setTickets] = useState<TicketResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
   const [statusFilter, setStatusFilter] = useState<TicketStatus | "ALL">("ALL");
   const [priorityFilter, setPriorityFilter] = useState<TicketPriority | "ALL">("ALL");
   const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
@@ -47,25 +48,23 @@ export function TicketsListPage() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(1);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setIsLoading(true);
-      try {
-        const result = await listTickets(agentName);
-        if (!cancelled) setTickets(result);
-      } catch (error) {
-        pushToast(error instanceof Error ? error.message : "Failed to load tickets.", "error");
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
+  const load = useCallback(async () => {
+    setIsLoading(true);
+    try {
+      const result = await listTickets(agentName);
+      setTickets(result);
+      setLoadError(null);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Failed to load tickets.");
+    } finally {
+      setIsLoading(false);
     }
-    load();
-    return () => {
-      cancelled = true;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentName]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const categories = useMemo(
     () => Array.from(new Set(tickets.map((t) => t.ticket_type))).sort(),
@@ -73,7 +72,7 @@ export function TicketsListPage() {
   );
 
   const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
+    const term = debouncedSearch.trim().toLowerCase();
     return tickets.filter((t) => {
       if (
         term &&
@@ -90,7 +89,7 @@ export function TicketsListPage() {
       if (dateTo && new Date(t.created_at) > new Date(`${dateTo}T23:59:59`)) return false;
       return true;
     });
-  }, [tickets, search, statusFilter, priorityFilter, categoryFilter, dateFrom, dateTo]);
+  }, [tickets, debouncedSearch, statusFilter, priorityFilter, categoryFilter, dateFrom, dateTo]);
 
   const sorted = useMemo(() => {
     const copy = [...filtered];
@@ -159,7 +158,7 @@ export function TicketsListPage() {
                 setPage(1);
               }}
               placeholder="Search tickets by ID, subject, or client..."
-              className="w-full rounded-md2 border border-border bg-canvas py-2.5 pl-10 pr-3 text-sm text-slate-900 shadow-xs transition-all placeholder:text-muted/70 focus:border-accent focus:bg-white focus:outline-none focus:ring-4 focus:ring-accent/10"
+              className="w-full rounded-md2 border border-border bg-canvas py-2.5 pl-10 pr-3 text-sm text-slate-900 shadow-xs transition-all placeholder:text-muted/70 focus:border-accent focus:bg-surface focus:outline-none focus:ring-4 focus:ring-accent/10"
             />
           </div>
 
@@ -248,16 +247,32 @@ export function TicketsListPage() {
           </Button>
         </div>
 
+        {loadError && (
+          <div className="flex items-center justify-between gap-3 rounded-md2 border border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={15} className="flex-none" />
+              <span>{loadError}</span>
+            </div>
+            <Button size="sm" variant="secondary" onClick={load}>
+              Retry
+            </Button>
+          </div>
+        )}
+
         <div className="overflow-hidden rounded-md2 border border-border bg-surface shadow-xs">
-          {isLoading ? (
+          {isLoading && tickets.length === 0 ? (
             <div className="p-5">
               <SkeletonRows rows={6} />
             </div>
           ) : sorted.length === 0 ? (
             <EmptyState
               icon="🎫"
-              title="No tickets found"
-              description="Try adjusting your filters, or create a ticket from an inbox email."
+              title={tickets.length === 0 ? "No tickets yet" : "No tickets found"}
+              description={
+                tickets.length === 0
+                  ? "Create a ticket from an inbox email to get started."
+                  : "Try adjusting your filters, or create a ticket from an inbox email."
+              }
             />
           ) : (
             <div className="overflow-x-auto">

@@ -1,6 +1,7 @@
 # interaction_service.py
 
 
+import asyncio
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -32,15 +33,56 @@ from app.schemas.ticket_action import (
     TicketActionResponse,
     TransferAgentRequest,
 )
+from app.repositories.audit_log_repository import AuditLogRepository
+from app.schemas.audit_log import AuditLogResponse
 from app.services.access_control import ensure_agent_can_view_ticket
+from app.services.audit_log_service import AuditLogService
 
 from app.enums import (
+    AuditEntityType,
+    AuditEventType,
     InteractionDirection,
     InteractionStatus,
 )
 
 from typing import Any
 from app.models.interaction import Interaction
+from app.repositories.attachment_repository import AttachmentRepository
+from app.schemas.attachment import AttachmentMetadata
+from app.services.attachment_service import attachments_to_metadata
+from app.storage.base import StorageService
+
+
+def _to_response(
+    interaction: Interaction,
+    attachments: list[AttachmentMetadata] | None = None,
+) -> InteractionResponse:
+    """
+    Builds an InteractionResponse without touching
+    `interaction.attachments` — that relationship is lazy and
+    unloaded on every query in this file, so letting pydantic's
+    from_attributes machinery read it directly would trigger an
+    unawaited lazy load. Callers that need real attachments (the
+    ticket timeline) fetch them separately and pass them in.
+    """
+
+    return InteractionResponse(
+        interaction_id=interaction.interaction_id,
+        ticket_id=interaction.ticket_id,
+        interaction_type=interaction.interaction_type,
+        status=interaction.status,
+        direction=interaction.direction,
+        performed_by=interaction.performed_by,
+        payload=interaction.payload,
+        is_visible=interaction.is_visible,
+        removed_by=interaction.removed_by,
+        removed_at=interaction.removed_at,
+        message_id=interaction.message_id,
+        created_at=interaction.created_at,
+        attachments=attachments or [],
+    )
+
+
 
 
 class InteractionService:
@@ -53,10 +95,16 @@ class InteractionService:
         interaction_repository: InteractionRepository,
         ticket_repository: TicketRepository,
         user_repository: UserRepository,
+        attachment_repository: AttachmentRepository | None = None,
+        storage_service: StorageService | None = None,
+        audit_log_repository: AuditLogRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
         self.user_repository = user_repository
+        self.attachment_repository = attachment_repository
+        self.storage_service = storage_service
+        self.audit_log_repository = audit_log_repository
 
     # ---------------------------------------------------------
     # Create Interaction
@@ -71,9 +119,7 @@ class InteractionService:
             request
         )
 
-        return InteractionResponse.model_validate(
-            interaction
-        )
+        return _to_response(interaction)
 
     # ---------------------------------------------------------
     # Get Interaction By ID
@@ -94,9 +140,7 @@ class InteractionService:
                 detail="Interaction not found.",
             )
 
-        return InteractionResponse.model_validate(
-            interaction
-        )
+        return _to_response(interaction)
 
     # ---------------------------------------------------------
     # Update Interaction
@@ -123,9 +167,7 @@ class InteractionService:
             request,
         )
 
-        return InteractionResponse.model_validate(
-            interaction
-        )
+        return _to_response(interaction)
 
     # ---------------------------------------------------------
     # Ticket Timeline
@@ -156,12 +198,65 @@ class InteractionService:
             .list_by_ticket_id(ticket_id)
         )
 
+        attachments_by_interaction: dict[UUID, list[AttachmentMetadata]] = {}
+
+        if self.attachment_repository is not None and self.storage_service is not None:
+            interaction_ids = [i.interaction_id for i in interactions]
+            attachments_map = await self.attachment_repository.list_by_interaction_ids(
+                interaction_ids
+            )
+            interaction_ids_with_files = list(attachments_map.keys())
+            metadata_lists = await asyncio.gather(
+                *(
+                    attachments_to_metadata(attachments_map[iid], self.storage_service)
+                    for iid in interaction_ids_with_files
+                )
+            )
+            attachments_by_interaction = dict(zip(interaction_ids_with_files, metadata_lists))
+
         return [
-            InteractionResponse.model_validate(
-                interaction
+            _to_response(
+                interaction,
+                attachments_by_interaction.get(interaction.interaction_id),
             )
             for interaction in interactions
         ]
+
+    # ---------------------------------------------------------
+    # Ticket Audit Trail
+    # ---------------------------------------------------------
+
+    async def get_ticket_audit_logs(
+        self,
+        ticket_id: UUID,
+        agent_name: str | None = None,
+    ) -> list[AuditLogResponse]:
+        """
+        Returns the full, immutable audit trail for a ticket, newest
+        first — both the direct TICKET rows (create, update, status/
+        priority change, transfer) and the INTERACTION / ATTACHMENT
+        rows (note, reply, hide, upload) tagged with this ticket_id.
+
+        This is deliberately separate from get_ticket_interactions:
+        the timeline above is the business record agents act on;
+        this is the compliance/security record of who changed what.
+        Same access gate as the timeline — visible only to the
+        assigned agent (unassigned tickets stay visible to everyone).
+        """
+
+        ticket = await self._get_ticket_or_404(ticket_id)
+
+        await ensure_agent_can_view_ticket(
+            ticket, agent_name, self.user_repository
+        )
+
+        audit_logs = await self.audit_log_repository.list_by_ticket(ticket_id)
+
+        # actor_name / actor_role are stored directly on the row at
+        # write time (not resolved via a join here) — an audit trail
+        # should keep saying who did something even if that user's
+        # name changes later, so no name-resolution step is needed.
+        return [AuditLogResponse.model_validate(log) for log in audit_logs]
 
     # ---------------------------------------------------------
     # Shared Helpers
@@ -237,12 +332,17 @@ class InteractionService:
         self,
         ticket_id: UUID,
         request: InternalNoteCreate,
+        agent_name: str | None = None,
     ) -> InternalNoteResponse:
         """
         Adds an internal note to a ticket.
 
         Every internal note is stored as an Interaction.
         """
+
+        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
+            self.user_repository, agent_name
+        )
 
         interaction = await self._create_ticket_interaction(
             ticket_id=ticket_id,
@@ -251,6 +351,20 @@ class InteractionService:
             payload={
                 "note": request.note,
             },
+            performed_by=actor_id,
+        )
+
+        # Metadata only — the note text itself is never written to
+        # the audit trail.
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=interaction.interaction_id,
+            event_type=AuditEventType.NOTE_ADDED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            new_values={"ticket_id": ticket_id},
         )
 
         return InternalNoteResponse(
@@ -273,6 +387,7 @@ class InteractionService:
         self,
         ticket_id: UUID,
         request: ReplyCreate,
+        agent_name: str | None = None,
     ) -> TicketActionResponse:
         """
         Adds a reply to the client on a ticket.
@@ -281,6 +396,10 @@ class InteractionService:
         to the client.
         """
 
+        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
+            self.user_repository, agent_name
+        )
+
         interaction = await self._create_ticket_interaction(
             ticket_id=ticket_id,
             interaction_type="REPLY",
@@ -288,6 +407,20 @@ class InteractionService:
             payload={
                 "message": request.message,
             },
+            performed_by=actor_id,
+        )
+
+        # Metadata only — the reply body itself is never written to
+        # the audit trail.
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=interaction.interaction_id,
+            event_type=AuditEventType.REPLY_ADDED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            new_values={"ticket_id": ticket_id},
         )
 
         return TicketActionResponse(
@@ -305,6 +438,7 @@ class InteractionService:
         self,
         ticket_id: UUID,
         request: StatusChangeRequest,
+        agent_name: str | None = None,
     ) -> TicketActionResponse:
         """
         Changes a ticket's status and records the
@@ -314,6 +448,10 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
 
         old_status = ticket.current_status
+
+        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
+            self.user_repository, agent_name
+        )
 
         await self.ticket_repository.update(
             ticket,
@@ -327,6 +465,22 @@ class InteractionService:
             payload={
                 "from": old_status.value,
                 "to": request.new_status.value,
+            },
+            performed_by=actor_id,
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.STATUS_CHANGED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"current_status": old_status},
+            new_values={
+                "current_status": request.new_status,
+                "interaction_id": interaction.interaction_id,
             },
         )
 
@@ -345,6 +499,7 @@ class InteractionService:
         self,
         ticket_id: UUID,
         request: PriorityChangeRequest,
+        agent_name: str | None = None,
     ) -> TicketActionResponse:
         """
         Changes a ticket's priority and records the
@@ -354,6 +509,10 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
 
         old_priority = ticket.current_priority
+
+        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
+            self.user_repository, agent_name
+        )
 
         await self.ticket_repository.update(
             ticket,
@@ -367,6 +526,22 @@ class InteractionService:
             payload={
                 "from": old_priority.value,
                 "to": request.new_priority.value,
+            },
+            performed_by=actor_id,
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.PRIORITY_CHANGED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"current_priority": old_priority},
+            new_values={
+                "current_priority": request.new_priority,
+                "interaction_id": interaction.interaction_id,
             },
         )
 
@@ -385,6 +560,7 @@ class InteractionService:
         self,
         ticket_id: UUID,
         request: TransferAgentRequest,
+        agent_name: str | None = None,
     ) -> TicketActionResponse:
         """
         Transfers full ownership of a ticket to a different
@@ -395,6 +571,10 @@ class InteractionService:
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
+
+        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
+            self.user_repository, agent_name
+        )
 
         new_agent = await self.user_repository.get_active_staff_by_id(
             request.new_agent_id
@@ -434,6 +614,22 @@ class InteractionService:
                 "to_agent_id": str(new_agent.user_id),
                 "to_agent_name": new_agent.name,
             },
+            performed_by=actor_id,
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.AGENT_TRANSFERRED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"agent_id": old_agent_id},
+            new_values={
+                "agent_id": new_agent.user_id,
+                "interaction_id": interaction.interaction_id,
+            },
         )
 
         return TicketActionResponse(
@@ -452,11 +648,16 @@ class InteractionService:
         ticket_id: UUID,
         interaction_id: UUID,
         request: HideInteractionRequest,
+        agent_name: str | None = None,
     ) -> HideInteractionResponse:
         """
         Soft-deletes (hides) an interaction that
         belongs to the given ticket.
         """
+
+        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
+            self.user_repository, agent_name
+        )
 
         interaction = await self.interaction_repository.get_by_id(
             interaction_id
@@ -482,7 +683,23 @@ class InteractionService:
 
         interaction = await self.interaction_repository.hide(
             interaction,
-            removed_by=request.removed_by,
+            removed_by=request.removed_by or actor_id,
+        )
+
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=interaction.interaction_id,
+            event_type=AuditEventType.INTERACTION_HIDDEN,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"is_visible": True},
+            new_values={
+                "is_visible": False,
+                "ticket_id": interaction.ticket_id,
+                "removed_at": interaction.removed_at,
+            },
         )
 
         return HideInteractionResponse(

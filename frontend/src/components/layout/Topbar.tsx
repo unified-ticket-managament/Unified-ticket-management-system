@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bell, Menu, Search } from "lucide-react";
+import { Bell, Menu, Moon, Search, Sun } from "lucide-react";
 import { useApiAction } from "@/hooks/useApiAction";
 import { getTicket } from "@/api/ticket";
 import { useWorkflowContext } from "@/context/WorkflowContext";
+import { useTheme } from "@/context/ThemeContext";
 
 interface TopbarProps {
   title: string;
@@ -23,6 +24,7 @@ function initials(name: string) {
 export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
   const navigate = useNavigate();
   const { agentName } = useWorkflowContext();
+  const { theme, toggleTheme } = useTheme();
   const [ticketId, setTicketId] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
   const { run: runGetTicket, isLoading } = useApiAction(getTicket);
@@ -38,7 +40,7 @@ export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
   }
 
   return (
-    <header className="flex items-center justify-between gap-3 border-b border-border bg-white px-4 py-4 sm:gap-6 sm:px-7">
+    <header className="flex items-center justify-between gap-3 border-b border-border bg-surface px-4 py-4 sm:gap-6 sm:px-7">
       <div className="flex min-w-0 items-center gap-3">
         <button
           onClick={onOpenMenu}
@@ -73,14 +75,23 @@ export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
             placeholder="Search a ticket by ID..."
             disabled={isLoading}
             aria-label="Search a ticket by ID"
-            className="w-full rounded-md2 border border-border bg-canvas py-2.5 pl-10 pr-3 text-[13px] text-slate-900 shadow-xs transition-all placeholder:text-muted/70 focus:border-accent focus:bg-white focus:outline-none focus:ring-4 focus:ring-accent/10"
+            className="w-full rounded-md2 border border-border bg-canvas py-2.5 pl-10 pr-3 text-[13px] text-slate-900 shadow-xs transition-all placeholder:text-muted/70 focus:border-accent focus:bg-surface focus:outline-none focus:ring-4 focus:ring-accent/10"
           />
         </form>
+
+        <button
+          onClick={toggleTheme}
+          aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          title={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          className="flex h-10 w-10 flex-none items-center justify-center rounded-md2 border border-border bg-surface text-muted transition-colors hover:bg-surfaceHover hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+        >
+          {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+        </button>
 
         <div className="relative">
           <button
             onClick={() => setShowNotifications((v) => !v)}
-            className="flex h-10 w-10 items-center justify-center rounded-md2 border border-border bg-white text-muted transition-colors hover:bg-surfaceHover hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+            className="flex h-10 w-10 items-center justify-center rounded-md2 border border-border bg-surface text-muted transition-colors hover:bg-surfaceHover hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
             aria-label="Notifications"
             aria-haspopup="true"
             aria-expanded={showNotifications}
@@ -96,7 +107,7 @@ export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
               <div
                 role="dialog"
                 aria-label="Notifications"
-                className="absolute right-0 z-50 mt-2 w-64 rounded-md2 border border-border bg-white p-4 text-center shadow-popover animate-popIn"
+                className="absolute right-0 z-50 mt-2 w-64 rounded-md2 border border-border bg-surface p-4 text-center shadow-popover animate-popIn"
               >
                 <p className="text-xs font-medium text-slate-700">You're all caught up</p>
                 <p className="mt-1 text-[11px] text-muted">No new notifications right now.</p>
@@ -105,7 +116,7 @@ export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
           )}
         </div>
 
-        <div className="hidden items-center gap-2.5 rounded-md2 border border-border bg-white py-1.5 pl-1.5 pr-3 sm:flex">
+        <div className="hidden items-center gap-2.5 rounded-md2 border border-border bg-surface py-1.5 pl-1.5 pr-3 sm:flex">
           <div className="relative flex-none">
             <div className="flex h-7 w-7 items-center justify-center rounded-full bg-accent/10 text-[11px] font-semibold text-accent">
               {initials(agentName)}

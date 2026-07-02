@@ -55,11 +55,13 @@ export async function getTicket(
 // PATCH /tickets/{ticket_id}
 export async function updateTicket(
   ticketId: string,
-  payload: TicketUpdateRequest
+  payload: TicketUpdateRequest,
+  agentName?: string
 ): Promise<TicketResponse> {
   const { data } = await apiClient.patch<TicketResponse>(
     `/tickets/${ticketId}`,
-    payload
+    payload,
+    { params: agentName ? { agent_name: agentName } : undefined }
   );
   return data;
 }
@@ -67,11 +69,13 @@ export async function updateTicket(
 // POST /tickets/{ticket_id}/transfer
 export async function transferTicketAgent(
   ticketId: string,
-  payload: TransferAgentRequest
+  payload: TransferAgentRequest,
+  agentName?: string
 ): Promise<TicketActionResponse> {
   const { data } = await apiClient.post<TicketActionResponse>(
     `/tickets/${ticketId}/transfer`,
-    payload
+    payload,
+    { params: agentName ? { agent_name: agentName } : undefined }
   );
   return data;
 }

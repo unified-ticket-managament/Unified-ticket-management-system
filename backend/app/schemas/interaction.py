@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 from app.enums import InteractionDirection, InteractionStatus
+from app.schemas.attachment import AttachmentMetadata
 from app.schemas.common import ORMBase
 
 #interaction.py
@@ -41,6 +42,7 @@ class InteractionResponse(ORMBase):
     removed_at: datetime | None
     message_id: str | None
     created_at: datetime
+    attachments: list[AttachmentMetadata] = Field(default_factory=list)
 
 
 class HideInteractionRequest(BaseModel):

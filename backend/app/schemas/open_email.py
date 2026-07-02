@@ -1,9 +1,10 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.enums import InteractionStatus
+from app.schemas.attachment import AttachmentMetadata
 
 
 class OpenEmailResponse(BaseModel):
@@ -29,3 +30,5 @@ class OpenEmailResponse(BaseModel):
     received_at: datetime
 
     status: InteractionStatus
+
+    attachments: list[AttachmentMetadata] = Field(default_factory=list)

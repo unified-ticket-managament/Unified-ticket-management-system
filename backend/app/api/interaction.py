@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
@@ -35,6 +35,10 @@ router = APIRouter(
 async def hide_interaction(
     interaction_id: UUID,
     request: HideInteractionRequest,
+    agent_name: str | None = Query(
+        default=None,
+        description="The agent hiding this interaction. Recorded as the audit actor.",
+    ),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -72,4 +76,5 @@ async def hide_interaction(
         ticket_id=interaction.ticket_id,
         interaction_id=interaction_id,
         request=request,
+        agent_name=agent_name,
     )

@@ -1,6 +1,6 @@
 from fastapi import HTTPException, status
 
-from app.enums import InteractionStatus
+from app.enums import ActorRole, AuditEntityType, AuditEventType, InteractionStatus
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
@@ -17,6 +17,7 @@ from app.schemas.ticket_from_interaction import (
     TicketFromInteractionCreate,
     TicketFromInteractionResponse,
 )
+from app.services.audit_log_service import AuditLogService
 
 
 class InboxTicketService:
@@ -96,6 +97,8 @@ class InboxTicketService:
 
                 agent_id=payload.agent_id,
 
+                created_by=payload.agent_id,
+
                 title=request.title,
 
                 ticket_type=request.ticket_type,
@@ -111,6 +114,24 @@ class InboxTicketService:
         await self.interaction_repository.assign_to_ticket(
             interaction=interaction,
             ticket_id=ticket.ticket_id,
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket.ticket_id,
+            event_type=AuditEventType.TICKET_CREATED,
+            actor_id=payload.agent_id,
+            actor_name=payload.agent_name,
+            actor_role=ActorRole.AGENT,
+            new_values={
+                "title": ticket.title,
+                "ticket_type": ticket.ticket_type,
+                "current_priority": ticket.current_priority,
+                "client_id": ticket.client_id,
+                "agent_id": ticket.agent_id,
+                "interaction_id": interaction.interaction_id,
+            },
         )
 
         return TicketFromInteractionResponse(

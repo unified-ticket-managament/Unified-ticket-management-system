@@ -24,7 +24,7 @@ function FieldWrapper({ label, hint, children }: FieldWrapperProps) {
 }
 
 const fieldBase =
-  "w-full rounded-md2 border border-border bg-white px-3.5 py-2.5 text-sm text-slate-900 " +
+  "w-full rounded-md2 border border-border bg-surface px-3.5 py-2.5 text-sm text-slate-900 " +
   "placeholder:text-muted/60 shadow-xs transition-all duration-150 " +
   "focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";
 

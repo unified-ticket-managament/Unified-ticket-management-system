@@ -34,6 +34,20 @@ export interface EmailResponse {
   client_name: string;
   agent_name: string;
   status: string;
+  attachments?: AttachmentMeta[];
+}
+
+// ==========================================================
+// Attachments
+// ==========================================================
+
+export interface AttachmentMeta {
+  id: string;
+  filename: string;
+  mime_type: string | null;
+  size: number | null;
+  download_url: string;
+  preview_url?: string | null;
 }
 
 // ==========================================================
@@ -75,6 +89,7 @@ export interface OpenEmailResponse {
   message_id: string | null;
   received_at: string;
   status: InteractionStatus;
+  attachments?: AttachmentMeta[];
 }
 
 // ==========================================================
@@ -85,6 +100,7 @@ export interface TicketResponse {
   ticket_id: string;
   client_id: string;
   agent_id: string | null;
+  created_by: string | null;
   title: string;
   ticket_type: string;
   current_status: TicketStatus;
@@ -96,6 +112,7 @@ export interface TicketResponse {
   updated_at: string;
   client_name: string | null;
   agent_name: string | null;
+  created_by_name: string | null;
 }
 
 export interface TransferAgentRequest {
@@ -154,6 +171,7 @@ export interface InteractionResponse {
   removed_at: string | null;
   message_id: string | null;
   created_at: string;
+  attachments?: AttachmentMeta[];
 }
 
 export interface InternalNoteRequest {
@@ -186,20 +204,10 @@ export interface TicketActionResponse {
   created_at: string;
 }
 
-export interface AttachmentUploadRequest {
-  filename: string;
-  mime_type?: string | null;
-  size_bytes?: number | null;
-  storage_key: string;
-  scan_status?: string;
-  performed_by?: string | null;
-}
-
 export interface AttachmentUploadResponse {
   interaction_id: string;
-  attachment_id: string;
   ticket_id: string;
-  filename: string;
+  attachments: AttachmentMeta[];
   message: string;
 }
 
@@ -214,4 +222,41 @@ export interface HideInteractionResponse {
   removed_by: string | null;
   removed_at: string | null;
   message: string;
+}
+
+// ==========================================================
+// Audit Log
+//
+// Immutable, write-once compliance/security record — distinct
+// from Interaction (the visible ticket timeline). Never edited or
+// deleted, so the frontend never renders any mutate action here.
+// ==========================================================
+
+export type AuditEntityType = "TICKET" | "INTERACTION" | "ATTACHMENT" | "CLIENT" | "USER";
+
+export type AuditEventType =
+  | "TICKET_CREATED"
+  | "TICKET_UPDATED"
+  | "STATUS_CHANGED"
+  | "PRIORITY_CHANGED"
+  | "AGENT_TRANSFERRED"
+  | "INTERACTION_HIDDEN"
+  | "ATTACHMENT_UPLOADED"
+  | "NOTE_ADDED"
+  | "REPLY_ADDED"
+  | "EMAIL_RECEIVED";
+
+export type ActorRole = "AGENT" | "CLIENT" | "SYSTEM";
+
+export interface AuditLogResponse {
+  audit_id: string;
+  entity_type: AuditEntityType;
+  entity_id: string;
+  event_type: AuditEventType;
+  actor_id: string | null;
+  actor_name: string;
+  actor_role: ActorRole;
+  old_values: Record<string, unknown> | null;
+  new_values: Record<string, unknown> | null;
+  created_at: string;
 }

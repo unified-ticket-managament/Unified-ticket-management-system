@@ -41,6 +41,12 @@ class Ticket(Base):
         nullable=True,
     )
 
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id"),
+        nullable=True,
+    )
+
     title: Mapped[str] = mapped_column(
         String(255),
         nullable=False,

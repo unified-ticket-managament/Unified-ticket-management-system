@@ -12,6 +12,7 @@ class AttachmentCreate(BaseModel):
     mime_type: str | None = Field(default=None, max_length=100)
     size_bytes: int | None = Field(default=None, ge=0)
     storage_key: str = Field(..., min_length=1)
+    bucket_name: str | None = Field(default=None, max_length=255)
     scan_status: str = Field(default="pending", max_length=20)
 
 
@@ -22,34 +23,35 @@ class AttachmentResponse(ORMBase):
     mime_type: str | None
     size_bytes: int | None
     storage_key: str
+    bucket_name: str | None
     scan_status: str
     uploaded_at: datetime
+    created_at: datetime | None
+    updated_at: datetime | None
 
-class AttachmentUploadRequest(BaseModel):
+
+class AttachmentMetadata(BaseModel):
     """
-    Request body for uploading a file to a ticket.
-
-    The interaction is created internally by the
-    AttachmentService, so interaction_id is not
-    accepted here.
+    API-facing attachment shape embedded in email/interaction
+    responses. Built explicitly by the service (not derived via
+    from_attributes) since it injects presigned URLs.
     """
 
-    filename: str = Field(..., min_length=1, max_length=255)
-    mime_type: str | None = Field(default=None, max_length=100)
-    size_bytes: int | None = Field(default=None, ge=0)
-    storage_key: str = Field(..., min_length=1)
-    scan_status: str = Field(default="pending", max_length=20)
-    performed_by: UUID | None = None
+    id: UUID
+    filename: str
+    mime_type: str | None
+    size: int | None
+    download_url: str
+    preview_url: str | None = None
 
 
 class AttachmentUploadResponse(BaseModel):
     """
-    Response returned after a file has been
+    Response returned after files have been
     uploaded and recorded on the ticket timeline.
     """
 
     interaction_id: UUID
-    attachment_id: UUID
     ticket_id: UUID
-    filename: str
-    message: str    
+    attachments: list[AttachmentMetadata]
+    message: str

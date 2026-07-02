@@ -1,4 +1,5 @@
 # attachment_repository.py
+from collections import defaultdict
 from uuid import UUID
 
 from sqlalchemy import select
@@ -37,6 +38,43 @@ class AttachmentRepository:
             .order_by(Attachment.uploaded_at.asc())
         )
         return list(result.scalars().all())
+
+    async def list_by_interaction_ids(
+        self,
+        interaction_ids: list[UUID],
+    ) -> dict[UUID, list[Attachment]]:
+        """
+        Bulk fetch, grouped by interaction_id — avoids one query
+        per interaction when building a ticket timeline or an
+        inbox listing.
+        """
+        if not interaction_ids:
+            return {}
+
+        result = await self.db.execute(
+            select(Attachment)
+            .where(Attachment.interaction_id.in_(interaction_ids))
+            .order_by(Attachment.uploaded_at.asc())
+        )
+
+        grouped: dict[UUID, list[Attachment]] = defaultdict(list)
+        for attachment in result.scalars().all():
+            grouped[attachment.interaction_id].append(attachment)
+        return grouped
+
+    async def has_attachments_for_interactions(
+        self,
+        interaction_ids: list[UUID],
+    ) -> set[UUID]:
+        if not interaction_ids:
+            return set()
+
+        result = await self.db.execute(
+            select(Attachment.interaction_id)
+            .where(Attachment.interaction_id.in_(interaction_ids))
+            .distinct()
+        )
+        return set(result.scalars().all())
 
     async def delete(self, attachment: Attachment) -> None:
         await self.db.delete(attachment)

@@ -3,9 +3,9 @@ import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
 
 const variantStyles: Record<string, string> = {
-  success: "border-success/20 bg-white text-slate-800",
-  error: "border-danger/20 bg-white text-slate-800",
-  info: "border-accent/20 bg-white text-slate-800",
+  success: "border-success/20 bg-surface text-slate-800",
+  error: "border-danger/20 bg-surface text-slate-800",
+  info: "border-accent/20 bg-surface text-slate-800",
 };
 
 const variantIcon: Record<string, ReactNode> = {

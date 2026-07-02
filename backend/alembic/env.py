@@ -46,6 +46,7 @@ OWNED_TABLES = {
     "tickets",
     "interactions",
     "attachments",
+    "ticket_audit_logs",
 }
 
 

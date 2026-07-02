@@ -1,5 +1,6 @@
 /** @type {import('tailwindcss').Config} */
 export default {
+  darkMode: "class",
   content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
   theme: {
     extend: {
@@ -14,22 +15,46 @@ export default {
         mono: ["JetBrains Mono", "ui-monospace", "SFMono-Regular", "monospace"],
       },
       colors: {
-        canvas: "#F5F7FB",
-        surface: "#FFFFFF",
-        surfaceHover: "#F1F4F9",
-        border: "#E5E9F2",
-        muted: "#69708A",
+        // All backed by CSS variables (see index.css :root / .dark) so
+        // toggling the `dark` class on <html> re-themes the whole app
+        // without touching any component. <alpha-value> keeps every
+        // existing opacity modifier (bg-accent/10, border-danger/15,
+        // ...) working exactly as before.
+        canvas: "rgb(var(--color-canvas) / <alpha-value>)",
+        surface: "rgb(var(--color-surface) / <alpha-value>)",
+        surfaceHover: "rgb(var(--color-surface-hover) / <alpha-value>)",
+        border: "rgb(var(--color-border) / <alpha-value>)",
+        muted: "rgb(var(--color-muted) / <alpha-value>)",
         accent: {
-          DEFAULT: "#4F6BEE",
+          DEFAULT: "rgb(var(--color-accent) / <alpha-value>)",
           dim: "#E7ECFC",
-          50: "#EEF1FE",
-          600: "#3D57D6",
-          700: "#3247B3",
+          50: "rgb(var(--color-accent-50) / <alpha-value>)",
+          600: "rgb(var(--color-accent-600) / <alpha-value>)",
+          700: "rgb(var(--color-accent-700) / <alpha-value>)",
         },
-        success: "#0F9D62",
-        warning: "#D6900F",
-        danger: "#DC3D34",
-        info: "#7C5CE0",
+        // Secondary "healthcare calm" accent — used sparingly for
+        // decorative highlights alongside the primary blue.
+        teal: "rgb(var(--color-teal) / <alpha-value>)",
+        success: "rgb(var(--color-success) / <alpha-value>)",
+        warning: "rgb(var(--color-warning) / <alpha-value>)",
+        danger: "rgb(var(--color-danger) / <alpha-value>)",
+        info: "rgb(var(--color-info) / <alpha-value>)",
+        // Redefines Tailwind's neutral scale itself (rather than
+        // introducing new token names) so every existing
+        // text-slate-*/bg-slate-*/border-slate-* class across the
+        // app inverts correctly in dark mode with no JSX changes.
+        slate: {
+          50: "rgb(var(--slate-50) / <alpha-value>)",
+          100: "rgb(var(--slate-100) / <alpha-value>)",
+          200: "rgb(var(--slate-200) / <alpha-value>)",
+          300: "rgb(var(--slate-300) / <alpha-value>)",
+          400: "rgb(var(--slate-400) / <alpha-value>)",
+          500: "rgb(var(--slate-500) / <alpha-value>)",
+          600: "rgb(var(--slate-600) / <alpha-value>)",
+          700: "rgb(var(--slate-700) / <alpha-value>)",
+          800: "rgb(var(--slate-800) / <alpha-value>)",
+          900: "rgb(var(--slate-900) / <alpha-value>)",
+        },
       },
       boxShadow: {
         xs: "0 1px 2px 0 rgba(16,24,40,0.04)",

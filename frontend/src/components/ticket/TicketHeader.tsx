@@ -23,7 +23,7 @@ export function TicketHeader({ ticket }: { ticket: TicketResponse }) {
         </div>
       </div>
 
-      <div className="mt-5 grid grid-cols-2 gap-5 border-t border-border pt-5 text-xs sm:grid-cols-4">
+      <div className="mt-5 grid grid-cols-2 gap-5 border-t border-border pt-5 text-xs sm:grid-cols-5">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Category</p>
           <p className="mt-1 font-medium text-slate-800">{ticket.ticket_type}</p>
@@ -40,6 +40,14 @@ export function TicketHeader({ ticket }: { ticket: TicketResponse }) {
           <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Client</p>
           <p className="mt-1 font-medium text-slate-800">
             {ticket.client_name ?? shortId(ticket.client_id)}
+          </p>
+        </div>
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Created By</p>
+          <p className="mt-1 font-medium text-slate-800">
+            {ticket.created_by
+              ? ticket.created_by_name ?? shortId(ticket.created_by)
+              : "System"}
           </p>
         </div>
         <div>
