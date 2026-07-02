@@ -1,6 +1,7 @@
 # attachment_service.py
 
 import asyncio
+import logging
 from uuid import UUID
 
 from fastapi import HTTPException, UploadFile, status
@@ -69,18 +70,41 @@ async def _none() -> None:
     return None
 
 
+logger = logging.getLogger(__name__)
+
+
 async def attachments_to_metadata(
     attachments: list[Attachment],
     storage_service: StorageService,
 ) -> list[AttachmentMetadata]:
     """Signs every attachment's URLs concurrently — each is a real
     network call for backends like Supabase, so this avoids paying
-    that latency once per file, serially."""
-    return list(
-        await asyncio.gather(
-            *(attachment_to_metadata(a, storage_service) for a in attachments)
-        )
+    that latency once per file, serially.
+
+    A single attachment whose object is missing/unsignable (e.g. it
+    was deleted from the bucket, or its DB row outlived the upload)
+    must not take down an entire timeline/inbox listing — it's
+    dropped from the result and logged instead of raising.
+    """
+    results = await asyncio.gather(
+        *(attachment_to_metadata(a, storage_service) for a in attachments),
+        return_exceptions=True,
     )
+
+    metadata: list[AttachmentMetadata] = []
+
+    for attachment, result in zip(attachments, results):
+        if isinstance(result, Exception):
+            logger.warning(
+                "Failed to sign URLs for attachment %s (object_key=%s): %s",
+                attachment.attachment_id,
+                attachment.storage_key,
+                result,
+            )
+            continue
+        metadata.append(result)
+
+    return metadata
 
 
 class AttachmentService:
