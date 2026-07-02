@@ -1,0 +1,55 @@
+databases:
+  - name: rbac-db
+    plan: free
+    databaseName: rbac_db
+    user: rbac_user
+
+services:
+  - type: web
+    name: rbac-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.5
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: SECURE_COOKIES
+        value: "true"
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DATABASE_URL
+        fromDatabase:
+          name: rbac-db
+          property: connectionString
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "30"
+      - key: REFRESH_TOKEN_EXPIRE_DAYS
+        value: "7"
+      # Update this to the deployed frontend URL (e.g. https://rbac-frontend.onrender.com)
+      - key: CORS_ORIGINS
+        sync: false
+
+  - type: web
+    name: rbac-frontend
+    runtime: node
+    plan: free
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_VERSION
+        value: 20.18.0
+      # Update this to the deployed backend URL + /api/v1 (e.g. https://rbac-backend.onrender.com/api/v1)
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
