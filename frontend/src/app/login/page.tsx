@@ -1,6 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import { AxiosError } from "axios";
 import { motion } from "framer-motion";
 import { Shield } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -43,8 +44,9 @@ export default function LoginPage() {
       const user = await authService.me();
       setUser(user);
       router.push("/dashboard");
-    } catch {
-      setError("Invalid email or password. Please try again.");
+    } catch (err) {
+      const detail = (err as AxiosError<{ detail?: string }>)?.response?.data?.detail;
+      setError(detail ?? "Unable to reach the server. Please try again.");
     }
   };
 
