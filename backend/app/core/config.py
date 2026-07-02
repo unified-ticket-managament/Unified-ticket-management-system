@@ -47,18 +47,23 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_database_url(cls, value):
         """
-        Managed Postgres providers (e.g. Render) hand out URLs using the
-        `postgres://` or `postgresql://` scheme. SQLAlchemy's async engine
-        needs the `postgresql+asyncpg://` scheme, so normalize it here
-        instead of requiring every environment to hand-craft the URL.
+        Managed Postgres providers (e.g. Render, Neon) hand out URLs using
+        the `postgres://`/`postgresql://` scheme and a libpq-style
+        `sslmode=` query param. SQLAlchemy's asyncpg engine needs the
+        `postgresql+asyncpg://` scheme and an asyncpg-style `ssl=` param
+        (asyncpg's connect() raises TypeError on an unrecognized `sslmode`
+        kwarg), so normalize both here instead of hand-crafting the URL
+        per environment.
         """
 
         if isinstance(value, str):
             if value.startswith("postgres://"):
-                return "postgresql+asyncpg://" + value[len("postgres://"):]
+                value = "postgresql+asyncpg://" + value[len("postgres://"):]
 
-            if value.startswith("postgresql://"):
-                return "postgresql+asyncpg://" + value[len("postgresql://"):]
+            elif value.startswith("postgresql://"):
+                value = "postgresql+asyncpg://" + value[len("postgresql://"):]
+
+            value = value.replace("sslmode=", "ssl=")
 
         return value
 
