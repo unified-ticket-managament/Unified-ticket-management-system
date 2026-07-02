@@ -50,6 +50,15 @@ export const authService = {
 
     return response.data;
   },
+
+  changePassword: async (data: { old_password: string; new_password: string }) => {
+    const response = await api.post<{ message: string }>(
+      "/auth/change-password",
+      data
+    );
+
+    return response.data;
+  },
 };
 
 /* -------------------------------------------------------------------------- */
@@ -100,6 +109,18 @@ export const userService = {
   delete: async (id: string) => {
     await api.delete(`/users/${id}`);
   },
+
+  activate: async (id: string) => {
+    const response = await api.patch<User>(`/users/${id}/activate`);
+
+    return response.data;
+  },
+
+  deactivate: async (id: string) => {
+    const response = await api.patch<User>(`/users/${id}/deactivate`);
+
+    return response.data;
+  },
 };
 
 /* -------------------------------------------------------------------------- */
@@ -121,8 +142,10 @@ export const organizationService = {
 /* -------------------------------------------------------------------------- */
 
 export const roleService = {
-  list: async () => {
-    const response = await api.get("/roles");
+  list: async (
+    params?: Record<string, string | number | undefined>
+  ) => {
+    const response = await api.get("/roles", { params });
 
     return response.data;
   },
@@ -164,10 +187,12 @@ export const roleService = {
 /* -------------------------------------------------------------------------- */
 
 export const permissionService = {
-  list: async () => {
-    const response = await api.get(
-      "/permissions"
-    );
+  list: async (
+    params?: Record<string, string | number | undefined>
+  ) => {
+    const response = await api.get("/permissions", {
+      params,
+    });
 
     return response.data;
   },
@@ -256,6 +281,14 @@ export const auditService = {
   get: async (id: string) => {
     const response = await api.get(
       `/audit-logs/${id}`
+    );
+
+    return response.data;
+  },
+
+  getUserLogs: async (userId: string): Promise<AuditLog[]> => {
+    const response = await api.get<AuditLog[]>(
+      `/audit-logs/user/${userId}`
     );
 
     return response.data;

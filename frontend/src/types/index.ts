@@ -62,6 +62,8 @@ export interface UserForm {
   password?: string;
   role_id: string;
   is_active: boolean;
+  manager_id?: string | null;
+  teamlead_id?: string | null;
 }
 
 export interface RoleForm {

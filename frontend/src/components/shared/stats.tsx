@@ -1,7 +1,10 @@
 "use client";
 
 import { ReactNode } from "react";
+import { motion } from "framer-motion";
+import { LucideIcon, TrendingDown, TrendingUp } from "lucide-react";
 
+import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/store/auth-store";
 
 export function EmptyState({
@@ -34,17 +37,51 @@ export function StatCard({
   title,
   value,
   subtitle,
+  icon: Icon,
+  trend,
 }: {
   title: string;
   value: string | number;
   subtitle?: string;
+  icon?: LucideIcon;
+  trend?: { value: string; direction: "up" | "down" };
 }) {
   return (
-    <div className="rounded-xl border border-border bg-card p-6 shadow-sm">
-      <p className="text-sm text-muted-foreground">{title}</p>
-      <p className="mt-2 text-3xl font-bold">{value}</p>
-      {subtitle && <p className="mt-1 text-xs text-muted-foreground">{subtitle}</p>}
-    </div>
+    <motion.div
+      whileHover={{ y: -4 }}
+      transition={{ type: "spring", stiffness: 300, damping: 22 }}
+      className="rounded-xl border border-border bg-card p-6 shadow-sm transition-shadow hover:shadow-md"
+    >
+      <div className="flex items-start justify-between">
+        <p className="text-sm text-muted-foreground">{title}</p>
+        {Icon && (
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+            <Icon className="h-5 w-5" />
+          </div>
+        )}
+      </div>
+
+      <p className="mt-3 text-3xl font-bold tracking-tight">{value}</p>
+
+      <div className="mt-1 flex items-center gap-2">
+        {subtitle && <p className="text-xs text-muted-foreground">{subtitle}</p>}
+        {trend && (
+          <span
+            className={cn(
+              "flex items-center gap-0.5 text-xs font-medium",
+              trend.direction === "up" ? "text-emerald-500" : "text-red-500"
+            )}
+          >
+            {trend.direction === "up" ? (
+              <TrendingUp className="h-3 w-3" />
+            ) : (
+              <TrendingDown className="h-3 w-3" />
+            )}
+            {trend.value}
+          </span>
+        )}
+      </div>
+    </motion.div>
   );
 }
 

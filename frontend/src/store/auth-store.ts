@@ -42,10 +42,26 @@ export const useAuthStore = create<AuthState>()(
   )
 );
 
+export type Theme = "light" | "dark" | "system";
+
+export function getSystemTheme(): "light" | "dark" {
+  if (typeof window === "undefined") return "dark";
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+export function getResolvedTheme(theme: Theme): "light" | "dark" {
+  return theme === "system" ? getSystemTheme() : theme;
+}
+
+function applyTheme(theme: Theme) {
+  if (typeof document === "undefined") return;
+  document.documentElement.classList.toggle("dark", getResolvedTheme(theme) === "dark");
+}
+
 interface ThemeState {
-  theme: "light" | "dark";
+  theme: Theme;
   toggleTheme: () => void;
-  setTheme: (theme: "light" | "dark") => void;
+  setTheme: (theme: Theme) => void;
 }
 
 export const useThemeStore = create<ThemeState>()(
@@ -53,17 +69,13 @@ export const useThemeStore = create<ThemeState>()(
     (set, get) => ({
       theme: "dark",
       toggleTheme: () => {
-        const next = get().theme === "dark" ? "light" : "dark";
+        const next = getResolvedTheme(get().theme) === "dark" ? "light" : "dark";
         set({ theme: next });
-        if (typeof document !== "undefined") {
-          document.documentElement.classList.toggle("dark", next === "dark");
-        }
+        applyTheme(next);
       },
       setTheme: (theme) => {
         set({ theme });
-        if (typeof document !== "undefined") {
-          document.documentElement.classList.toggle("dark", theme === "dark");
-        }
+        applyTheme(theme);
       },
     }),
     { name: "theme-storage" }

@@ -1,78 +1,90 @@
 "use client";
 
-import { useMutation } from "@tanstack/react-query";
-import { zodResolver } from "@hookform/resolvers/zod";
+import { useQuery } from "@tanstack/react-query";
 import { Network } from "lucide-react";
 import { useState } from "react";
-import { useForm } from "react-hook-form";
-import { z } from "zod";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
 import { OrganizationModal } from "@/components/organization/OrganizationModal";
+import { actionBadgeVariant, ActionIcon } from "@/components/shared/audit";
+import { EmptyState, ErrorState } from "@/components/shared/stats";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { authService } from "@/services";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { formatDate } from "@/lib/utils";
+import { auditService, userService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
-import { ProfileForm } from "@/types";
-
-const profileSchema = z.object({
-  name: z.string().min(1).optional(),
-  email: z.string().email().optional(),
-  current_password: z.string().optional(),
-  password: z.string().min(8).optional(),
-});
+import { useProfileExtrasStore } from "@/store/profile-extras-store";
 
 export default function ProfilePage() {
   const user = useAuthStore((s) => s.user);
-  const setUser = useAuthStore((s) => s.setUser);
-  const [message, setMessage] = useState<string | null>(null);
   const [orgChartOpen, setOrgChartOpen] = useState(false);
+  const { phone, address, avatarUrl } = useProfileExtrasStore();
 
-  const form = useForm<ProfileForm>({
-    resolver: zodResolver(profileSchema),
-    defaultValues: {
-      name: user?.name || "",
-      email: user?.email || "",
-    },
+  const userRecordQuery = useQuery({
+    queryKey: ["profile-full-record", user?.user_id],
+    queryFn: () => userService.get(user!.user_id),
+    enabled: !!user?.user_id,
   });
 
-  const updateMutation = useMutation({
-    mutationFn: authService.updateProfile,
-    onSuccess: async () => {
-      const me = await authService.me();
-      setUser(me);
-      setMessage("Profile updated successfully");
-      form.reset({ name: me.name, email: me.email, password: "", current_password: "" });
-    },
+  const activityQuery = useQuery({
+    queryKey: ["user-activity", user?.user_id],
+    queryFn: () => auditService.getUserLogs(user!.user_id),
+    enabled: !!user?.user_id,
   });
+
+  const activity = activityQuery.data ?? [];
+
+  const fields = [
+    { label: "Email", value: user?.email },
+    { label: "Role", value: user?.role },
+    { label: "Phone", value: phone || "Not set" },
+    { label: "Department", value: "Not set" },
+    {
+      label: "Joined Date",
+      value: userRecordQuery.data?.created_at ? formatDate(userRecordQuery.data.created_at) : "—",
+    },
+  ];
 
   return (
     <div>
-      <PageHeader title="Profile" description="View and update your account information" />
+      <PageHeader title="Profile" description="View your account information" />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>Account Details</CardTitle>
+            <CardDescription>Your profile is read-only. Edit it from Settings.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div>
-              <p className="text-sm text-muted-foreground">Role</p>
-              <Badge className="mt-1">{user?.role}</Badge>
-            </div>
-            <div>
-              <p className="text-sm text-muted-foreground">Permissions</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {user?.permissions.map((p) => (
-                  <Badge key={p} variant="secondary">
-                    {p}
-                  </Badge>
-                ))}
+          <CardContent className="space-y-6">
+            <div className="flex items-center gap-4">
+              <Avatar className="h-16 w-16">
+                {avatarUrl && <AvatarImage src={avatarUrl} alt={user?.name ?? "Avatar"} />}
+                <AvatarFallback className="text-xl">
+                  {user?.name?.charAt(0).toUpperCase() ?? "U"}
+                </AvatarFallback>
+              </Avatar>
+              <div>
+                <p className="font-semibold">{user?.name}</p>
+                <Badge className="mt-1">{user?.role}</Badge>
               </div>
             </div>
+
+            <dl className="grid gap-4 sm:grid-cols-2">
+              {fields.map((field) => (
+                <div key={field.label}>
+                  <dt className="text-sm text-muted-foreground">{field.label}</dt>
+                  <dd className="mt-0.5 text-sm font-medium">{field.value}</dd>
+                </div>
+              ))}
+              <div>
+                <dt className="text-sm text-muted-foreground">Address</dt>
+                <dd className="mt-0.5 text-sm font-medium">{address || "Not set"}</dd>
+              </div>
+            </dl>
+
             <Button
               variant="outline"
               className="gap-2"
@@ -86,39 +98,39 @@ export default function ProfilePage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Update Profile</CardTitle>
+            <CardTitle>Activity Timeline</CardTitle>
+            <CardDescription>A record of actions taken on your account.</CardDescription>
           </CardHeader>
           <CardContent>
-            <form
-              onSubmit={form.handleSubmit((data) => {
-                setMessage(null);
-                updateMutation.mutate(data);
-              })}
-              className="space-y-4"
-            >
-              <div className="space-y-2">
-                <Label>Name</Label>
-                <Input {...form.register("name")} />
+            {activityQuery.isLoading ? (
+              <div className="space-y-4">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={i} className="h-12 w-full" />
+                ))}
               </div>
-              <div className="space-y-2">
-                <Label>Email</Label>
-                <Input type="email" {...form.register("email")} />
-              </div>
-              <div className="space-y-2">
-                <Label>Current Password</Label>
-                <Input type="password" {...form.register("current_password")} />
-              </div>
-              <div className="space-y-2">
-                <Label>New Password</Label>
-                <Input type="password" {...form.register("password")} />
-              </div>
-              {message && (
-                <p className="text-sm text-emerald-500">{message}</p>
-              )}
-              <Button type="submit" disabled={updateMutation.isPending}>
-                {updateMutation.isPending ? "Saving..." : "Save Changes"}
-              </Button>
-            </form>
+            ) : activityQuery.isError ? (
+              <ErrorState message="Failed to load activity history." />
+            ) : activity.length === 0 ? (
+              <EmptyState
+                title="No activity yet"
+                description="Actions taken on your account will appear here."
+              />
+            ) : (
+              <ol className="relative space-y-6 border-l border-border pl-6">
+                {activity.map((log) => (
+                  <li key={log.audit_log_id} className="relative">
+                    <span className="absolute -left-[29px] flex h-6 w-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground">
+                      <ActionIcon action={log.action} />
+                    </span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={actionBadgeVariant(log.action)}>{log.action}</Badge>
+                      <span className="text-sm text-muted-foreground">on {log.entity_type}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">{formatDate(log.timestamp)}</p>
+                  </li>
+                ))}
+              </ol>
+            )}
           </CardContent>
         </Card>
       </div>
