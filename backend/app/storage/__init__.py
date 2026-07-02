@@ -1,7 +1,7 @@
 # storage/__init__.py
 
 from app.core.config import get_settings
-from app.storage.base import StorageService
+from app.storage.base import StorageConfigurationError, StorageService
 from app.storage.s3_storage import S3StorageService
 from app.storage.supabase_storage import SupabaseStorageService
 
@@ -11,7 +11,7 @@ def get_storage_service() -> StorageService:
 
     if settings.storage_backend == "supabase":
         if not settings.supabase_url or not settings.supabase_service_role_key:
-            raise RuntimeError(
+            raise StorageConfigurationError(
                 "STORAGE_BACKEND=supabase requires SUPABASE_URL and "
                 "SUPABASE_SERVICE_ROLE_KEY to be set."
             )
@@ -21,6 +21,13 @@ def get_storage_service() -> StorageService:
             service_role_key=settings.supabase_service_role_key,
             url_expiry_seconds=settings.storage_url_expiry_seconds,
         )
+
+    if settings.storage_backend == "s3":
+        if not settings.storage_access_key or not settings.storage_secret_key:
+            raise StorageConfigurationError(
+                "STORAGE_BACKEND=s3 requires STORAGE_ACCESS_KEY and "
+                "STORAGE_SECRET_KEY to be set."
+            )
 
     return S3StorageService(
         bucket=settings.storage_bucket,

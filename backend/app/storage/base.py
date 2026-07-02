@@ -3,6 +3,18 @@
 from abc import ABC, abstractmethod
 
 
+class StorageConfigurationError(RuntimeError):
+    """
+    Raised when the selected STORAGE_BACKEND is missing required
+    settings (e.g. SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY). A
+    dedicated type so app/main.py can register a handler that
+    returns a proper JSON 503 instead of this crashing as an
+    unhandled exception — which some deployment proxies turn into a
+    bare response with no CORS headers, surfacing to the browser as
+    an opaque "network error" instead of a readable message.
+    """
+
+
 class StorageService(ABC):
     """
     Object storage abstraction. Concrete implementations talk to a
