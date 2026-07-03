@@ -57,3 +57,106 @@
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 }
+
+/* ===========================================================
+   Ticket Workspace scope
+   CSS variables + overrides for the embedded ticket-management
+   workspace (src/ticket-workspace), ported from the standalone
+   Ticketing frontend's dark theme (this app defaults to dark).
+   Scoped under `.tm-scope` rather than `:root`/`.dark` so nothing
+   here can affect RBAC's own pages outside the workspace.
+   =========================================================== */
+
+.tm-scope {
+  --color-canvas: 15 23 42;
+  --color-surface: 17 24 39;
+  --color-surface-hover: 30 41 59;
+  --color-accent: 96 165 250;
+  --color-accent-50: 30 58 95;
+  --color-accent-600: 147 197 253;
+  --color-accent-700: 191 219 254;
+  --color-teal: 45 212 191;
+  --color-success: 52 211 153;
+  --color-warning: 251 191 36;
+  --color-danger: 248 113 113;
+  --color-info: 167 139 250;
+
+  /* Ticketing's own `border`/`muted`/`slate` collide with RBAC's
+     shadcn tokens of the same name — kept under distinct `--tm-*`
+     variables and reapplied below via scoped overrides instead of
+     touching the global Tailwind config. */
+  --tm-border: 31 41 55;
+  --tm-muted: 156 163 175;
+  --tm-slate-50: 30 41 59;
+  --tm-slate-100: 39 51 74;
+  --tm-slate-200: 51 65 85;
+  --tm-slate-300: 71 85 105;
+  --tm-slate-400: 100 116 139;
+  --tm-slate-500: 148 163 184;
+  --tm-slate-600: 178 190 207;
+  --tm-slate-700: 203 213 225;
+  --tm-slate-800: 226 232 240;
+  --tm-slate-900: 249 250 251;
+
+  --scrollbar-thumb: 51 65 85;
+  --scrollbar-thumb-hover: 71 85 105;
+  --skeleton-base: 30 41 59;
+  --skeleton-shine: 51 65 85;
+}
+
+.tm-scope .bg-border { background-color: rgb(var(--tm-border)); }
+.tm-scope .border-border { border-color: rgb(var(--tm-border)); }
+.tm-scope .divide-border > :not([hidden]) ~ :not([hidden]) { border-color: rgb(var(--tm-border)); }
+.tm-scope .text-muted { color: rgb(var(--tm-muted)); }
+.tm-scope .text-muted\/60 { color: rgb(var(--tm-muted) / 0.6); }
+.tm-scope .text-muted\/70 { color: rgb(var(--tm-muted) / 0.7); }
+.tm-scope .bg-slate-50 { background-color: rgb(var(--tm-slate-50)); }
+.tm-scope .bg-slate-100 { background-color: rgb(var(--tm-slate-100)); }
+.tm-scope .bg-slate-200 { background-color: rgb(var(--tm-slate-200)); }
+.tm-scope .bg-slate-200\/60 { background-color: rgb(var(--tm-slate-200) / 0.6); }
+.tm-scope .bg-slate-400 { background-color: rgb(var(--tm-slate-400)); }
+.tm-scope .bg-slate-500 { background-color: rgb(var(--tm-slate-500)); }
+.tm-scope .bg-slate-500\/10 { background-color: rgb(var(--tm-slate-500) / 0.1); }
+.tm-scope .border-slate-200 { border-color: rgb(var(--tm-slate-200)); }
+.tm-scope .border-slate-200\/80 { border-color: rgb(var(--tm-slate-200) / 0.8); }
+.tm-scope .border-slate-300 { border-color: rgb(var(--tm-slate-300)); }
+.tm-scope .text-slate-500 { color: rgb(var(--tm-slate-500)); }
+.tm-scope .text-slate-600 { color: rgb(var(--tm-slate-600)); }
+.tm-scope .text-slate-700 { color: rgb(var(--tm-slate-700)); }
+.tm-scope .text-slate-800 { color: rgb(var(--tm-slate-800)); }
+.tm-scope .text-slate-900 { color: rgb(var(--tm-slate-900)); }
+
+.tm-scope {
+  background-color: rgb(var(--color-canvas));
+}
+
+.tm-scope :focus-visible {
+  outline: 2px solid rgb(var(--color-accent));
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+}
+
+.tm-scope ::-webkit-scrollbar-thumb {
+  background: rgb(var(--scrollbar-thumb));
+  border-radius: 8px;
+}
+
+.tm-scope ::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--scrollbar-thumb-hover));
+}
+
+.tm-scope .skeleton {
+  background-color: rgb(var(--skeleton-base));
+  background-image: linear-gradient(
+    90deg,
+    rgb(var(--skeleton-base)) 0px,
+    rgb(var(--skeleton-shine)) 40px,
+    rgb(var(--skeleton-base)) 80px
+  );
+  background-size: 600px 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}

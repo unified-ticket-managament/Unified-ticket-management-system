@@ -24,6 +24,9 @@
     "paths": {
       "@/*": [
         "./src/*"
+      ],
+      "@tw/*": [
+        "./src/ticket-workspace/*"
       ]
     },
     "target": "ES2017"

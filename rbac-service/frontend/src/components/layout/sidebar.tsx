@@ -7,8 +7,11 @@ import {
   ChevronsLeft,
   ChevronsRight,
   ClipboardList,
+  Inbox,
   LayoutDashboard,
   LogOut,
+  MailPlus,
+  MessageSquare,
   Settings,
   Shield,
   Ticket,
@@ -30,17 +33,14 @@ import { canSeeNavItem, NAV_ITEM_TRANSLATION_KEY, NavItemKey } from "@/lib/role-
 import { authService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 
-// Separate app/origin (Vite, not Next.js) — opened in a new tab rather
-// than routed to internally. Sessions aren't shared across origins, so
-// a user not already logged into that app will land on its own /login.
-const TICKETING_FRONTEND_URL =
-  process.env.NEXT_PUBLIC_TICKETING_FRONTEND_URL || "http://localhost:5173";
-
+// Every role except Viewer lands on the embedded Ticket Management
+// workspace at /dashboard (see role-access.ts) — these items route
+// there via Next's own router (plain internal hrefs), not an external
+// link, since the workspace is now part of this same app.
 const menuItems: {
   title: NavItemKey;
   href: string;
   icon: typeof LayoutDashboard;
-  external?: boolean;
 }[] = [
   {
     title: "Dashboard",
@@ -63,10 +63,24 @@ const menuItems: {
     icon: ClipboardList,
   },
   {
-    title: "Ticket Workspace",
-    href: TICKETING_FRONTEND_URL,
+    title: "Create Dummy Mail",
+    href: "/dashboard/create-mail",
+    icon: MailPlus,
+  },
+  {
+    title: "Inbox",
+    href: "/dashboard/inbox",
+    icon: Inbox,
+  },
+  {
+    title: "Interactions",
+    href: "/dashboard/interactions",
+    icon: MessageSquare,
+  },
+  {
+    title: "Tickets",
+    href: "/dashboard/tickets",
     icon: Ticket,
-    external: true,
   },
   {
     title: "Profile",
@@ -98,8 +112,15 @@ export function SidebarContent({ collapsed = false, onNavigate }: SidebarContent
     router.push("/login");
   };
 
+  // "/dashboard" is a prefix of every ticket-workspace route
+  // ("/dashboard/tickets", "/dashboard/inbox", ...), so it needs an
+  // exact match rather than the usual prefix match — otherwise the
+  // Dashboard item would stay highlighted no matter which workspace
+  // page is actually open.
   const isActive = (href: string) =>
-    pathname === href || pathname.startsWith(`${href}/`);
+    href === "/dashboard"
+      ? pathname === href
+      : pathname === href || pathname.startsWith(`${href}/`);
 
   const visibleItems = menuItems.filter((item) => canSeeNavItem(role, item.title));
 
@@ -148,17 +169,7 @@ export function SidebarContent({ collapsed = false, onNavigate }: SidebarContent
               </Button>
             );
 
-            const link = item.external ? (
-              <a
-                key={item.href}
-                href={item.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={onNavigate}
-              >
-                {buttonContent}
-              </a>
-            ) : (
+            const link = (
               <Link key={item.href} href={item.href} onClick={onNavigate}>
                 {buttonContent}
               </Link>

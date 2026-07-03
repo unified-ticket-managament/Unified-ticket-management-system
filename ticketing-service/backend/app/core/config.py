@@ -29,8 +29,14 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
-    # 👇 Add this
+    # Includes RBAC's frontend origin (localhost:3000) in addition to
+    # Ticketing's own standalone frontend — the embedded ticket
+    # workspace (src/ticket-workspace in the RBAC frontend) calls this
+    # backend directly from RBAC's origin now, not just from Ticketing's
+    # own dev server.
     cors_origins: str = (
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
         "http://localhost:5173,"
         "http://127.0.0.1:5173,"
         "http://localhost:5174,"

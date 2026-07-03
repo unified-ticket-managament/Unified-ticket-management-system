@@ -52,7 +52,11 @@ const WEEKLY_LOGIN_ACTIVITY = [
   { label: "Sun", value: 17 },
 ];
 
-export default function DashboardPage() {
+// The original RBAC dashboard content — still used for the Viewer role
+// (the client-facing role, excluded from the ticket workspace). Moved
+// here, unchanged, so `app/(dashboard)/dashboard/[[...slug]]/page.tsx`
+// can pick between this and the embedded ticket workspace by role.
+export function ViewerDashboard() {
   const currentUser = useAuthStore((state) => state.user);
   const hasAnyPermission = useAuthStore((state) => state.hasAnyPermission);
   const { t } = useTranslation();

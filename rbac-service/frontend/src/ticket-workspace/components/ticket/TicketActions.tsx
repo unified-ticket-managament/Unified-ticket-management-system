@@ -1,0 +1,323 @@
+import { useEffect, useState, type ReactNode } from "react";
+import {
+  ArrowLeftRight,
+  Paperclip,
+  Flame,
+  MessageSquareText,
+  Send,
+  Settings2,
+} from "lucide-react";
+import { Card } from "@tw/components/common/Card";
+import { Button } from "@tw/components/common/Button";
+import { Modal } from "@tw/components/common/Modal";
+import { SelectInput } from "@tw/components/common/FormField";
+import { FileDropzone } from "@tw/components/common/FileDropzone";
+import { validateFiles } from "@tw/lib/attachmentMeta";
+import { useApiAction } from "@tw/hooks/useApiAction";
+import {
+  changeTicketPriority,
+  changeTicketStatus,
+  uploadAttachment,
+} from "@tw/api/interaction";
+import { listAgents } from "@tw/api/agent";
+import { transferTicketAgent } from "@tw/api/ticket";
+import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import type { AgentSummary, TicketPriority, TicketStatus } from "@tw/types";
+import type { ComposerMode } from "@tw/components/ticket/TicketComposer";
+
+const STATUSES: TicketStatus[] = [
+  "OPEN",
+  "IN_PROGRESS",
+  "PENDING",
+  "WAITING_FOR_CLIENT",
+  "RESOLVED",
+  "CLOSED",
+];
+
+const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
+
+type Tone = "accent" | "warning" | "info" | "danger" | "default";
+
+const tileToneClasses: Record<Tone, string> = {
+  accent: "bg-accent/10 text-accent group-hover:bg-accent/15",
+  warning: "bg-warning/10 text-warning group-hover:bg-warning/15",
+  info: "bg-info/10 text-info group-hover:bg-info/15",
+  danger: "bg-danger/10 text-danger group-hover:bg-danger/15",
+  default: "bg-canvas text-slate-600 group-hover:bg-slate-200/60",
+};
+
+function ActionTile({
+  icon,
+  label,
+  tone,
+  disabled,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  tone: Tone;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="group flex flex-col items-center gap-2 rounded-md2 border border-border bg-surface px-3 py-4 text-center transition-all duration-150 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-cardHover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:shadow-none"
+    >
+      <span className={`flex h-9 w-9 items-center justify-center rounded-md2 transition-colors ${tileToneClasses[tone]}`}>
+        {icon}
+      </span>
+      <span className="text-[11px] font-semibold leading-tight text-slate-700">{label}</span>
+    </button>
+  );
+}
+
+type ActiveModal = "status" | "priority" | "transfer" | "attachment" | null;
+
+interface TicketActionsProps {
+  onActionComplete: () => void;
+  onOpenComposer: (mode: ComposerMode) => void;
+}
+
+export function TicketActions({ onActionComplete, onOpenComposer }: TicketActionsProps) {
+  const { activeTicket } = useWorkflowContext();
+  const [modal, setModal] = useState<ActiveModal>(null);
+
+  const [newStatus, setNewStatus] = useState<TicketStatus>("IN_PROGRESS");
+  const [newPriority, setNewPriority] = useState<TicketPriority>("HIGH");
+  const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [newAgentId, setNewAgentId] = useState("");
+  const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+
+  const { run: runStatus, isLoading: isStatusLoading } = useApiAction(changeTicketStatus, {
+    successMessage: "Ticket status changed.",
+  });
+  const { run: runPriority, isLoading: isPriorityLoading } = useApiAction(
+    changeTicketPriority,
+    { successMessage: "Ticket priority changed." }
+  );
+  const { run: runTransfer, isLoading: isTransferLoading } = useApiAction(
+    transferTicketAgent,
+    { successMessage: (res) => res.message }
+  );
+  const { run: runUpload, isLoading: isUploadLoading } = useApiAction(uploadAttachment, {
+    successMessage: (res) =>
+      `${res.attachments.length} file${res.attachments.length === 1 ? "" : "s"} uploaded.`,
+  });
+
+  useEffect(() => {
+    listAgents()
+      .then(setAgents)
+      .catch(() => setAgents([]));
+  }, []);
+
+  if (!activeTicket) return null;
+
+  const transferCandidates = agents.filter((a) => a.user_id !== activeTicket.agent_id);
+  // Closed is terminal for every action except Change Status itself —
+  // that's the only way to reopen a closed ticket, so it stays enabled.
+  const isTicketClosed = activeTicket.current_status === "CLOSED";
+
+  function closeModal() {
+    setModal(null);
+  }
+
+  function openTransferModal() {
+    setNewAgentId(transferCandidates[0]?.user_id ?? "");
+    setModal("transfer");
+  }
+
+  async function handleStatusChange() {
+    const result = await runStatus(activeTicket!.ticket_id, { new_status: newStatus });
+    if (result) {
+      closeModal();
+      onActionComplete();
+    }
+  }
+
+  async function handlePriorityChange() {
+    const result = await runPriority(activeTicket!.ticket_id, { new_priority: newPriority });
+    if (result) {
+      closeModal();
+      onActionComplete();
+    }
+  }
+
+  async function handleTransferAgent() {
+    if (!newAgentId) return;
+    const result = await runTransfer(activeTicket!.ticket_id, { new_agent_id: newAgentId });
+    if (result) {
+      closeModal();
+      onActionComplete();
+    }
+  }
+
+  async function handleUpload() {
+    const result = await runUpload(activeTicket!.ticket_id, uploadFiles);
+    if (result) {
+      setUploadFiles([]);
+      closeModal();
+      onActionComplete();
+    }
+  }
+
+  return (
+    <>
+      <Card title="Actions" eyebrow="Ticket tools">
+        <div className="grid grid-cols-2 gap-2.5">
+          <ActionTile
+            icon={<Send size={16} />}
+            label="Reply"
+            tone="accent"
+            disabled={isTicketClosed}
+            onClick={() => onOpenComposer("reply")}
+          />
+          <ActionTile
+            icon={<MessageSquareText size={16} />}
+            label="Internal Note"
+            tone="warning"
+            disabled={isTicketClosed}
+            onClick={() => onOpenComposer("note")}
+          />
+          <ActionTile
+            icon={<Settings2 size={16} />}
+            label="Change Status"
+            tone="info"
+            onClick={() => setModal("status")}
+          />
+          <ActionTile
+            icon={<Flame size={16} />}
+            label="Change Priority"
+            tone="danger"
+            disabled={isTicketClosed}
+            onClick={() => setModal("priority")}
+          />
+          <ActionTile
+            icon={<ArrowLeftRight size={16} />}
+            label="Transfer Agent"
+            tone="accent"
+            disabled={isTicketClosed}
+            onClick={openTransferModal}
+          />
+          <ActionTile
+            icon={<Paperclip size={16} />}
+            label="Upload Attachment"
+            tone="default"
+            disabled={isTicketClosed}
+            onClick={() => setModal("attachment")}
+          />
+        </div>
+      </Card>
+
+      <Modal
+        open={modal === "status"}
+        title="Change Ticket Status"
+        onClose={closeModal}
+        footer={
+          <Button variant="primary" size="sm" isLoading={isStatusLoading} onClick={handleStatusChange}>
+            Update Status
+          </Button>
+        }
+      >
+        <SelectInput
+          label="New status"
+          value={newStatus}
+          onChange={(e) => setNewStatus(e.target.value as TicketStatus)}
+        >
+          {STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </SelectInput>
+      </Modal>
+
+      <Modal
+        open={modal === "priority"}
+        title="Change Ticket Priority"
+        onClose={closeModal}
+        footer={
+          <Button
+            variant="primary"
+            size="sm"
+            isLoading={isPriorityLoading}
+            onClick={handlePriorityChange}
+          >
+            Update Priority
+          </Button>
+        }
+      >
+        <SelectInput
+          label="New priority"
+          value={newPriority}
+          onChange={(e) => setNewPriority(e.target.value as TicketPriority)}
+        >
+          {PRIORITIES.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </SelectInput>
+      </Modal>
+
+      <Modal
+        open={modal === "transfer"}
+        title="Transfer Agent"
+        onClose={closeModal}
+        footer={
+          <Button
+            variant="primary"
+            size="sm"
+            isLoading={isTransferLoading}
+            disabled={!newAgentId}
+            onClick={handleTransferAgent}
+          >
+            Transfer
+          </Button>
+        }
+      >
+        {transferCandidates.length === 0 ? (
+          <p className="text-sm text-muted">No other active agents to transfer to.</p>
+        ) : (
+          <>
+            <SelectInput
+              label="Transfer to"
+              value={newAgentId}
+              onChange={(e) => setNewAgentId(e.target.value)}
+            >
+              {transferCandidates.map((agent) => (
+                <option key={agent.user_id} value={agent.user_id}>
+                  {agent.name}
+                </option>
+              ))}
+            </SelectInput>
+            <p className="mt-2 text-[11px] text-muted">
+              {activeTicket.agent_name ?? "The current agent"} will lose all access to this
+              ticket the moment it's transferred — ownership moves fully to the new agent.
+            </p>
+          </>
+        )}
+      </Modal>
+
+      <Modal
+        open={modal === "attachment"}
+        title="Upload Attachment"
+        onClose={closeModal}
+        footer={
+          <Button
+            variant="primary"
+            size="sm"
+            isLoading={isUploadLoading}
+            disabled={uploadFiles.length === 0 || validateFiles(uploadFiles).errors.length > 0}
+            onClick={handleUpload}
+          >
+            Upload
+          </Button>
+        }
+      >
+        <FileDropzone label="Files" files={uploadFiles} onFilesChange={setUploadFiles} />
+      </Modal>
+    </>
+  );
+}
