@@ -14,7 +14,6 @@ import {
   Ban,
   CheckCircle2,
   Download,
-  MoreHorizontal,
   Pencil,
   Plus,
   Search,
@@ -35,20 +34,14 @@ import {
 } from "@/components/ui/alert-dialog";
 import { PageHeader } from "@/components/layout/dashboard-shell";
 import { DataTable, DataTablePagination } from "@/components/shared/data-table";
-import { ErrorState } from "@/components/shared/stats";
+import { AccessDenied, ErrorState } from "@/components/shared/stats";
+import { UserDetailDrawer } from "@/components/users/user-detail-drawer";
 import { UserFormDialog } from "@/components/users/user-form-dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -60,16 +53,25 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { formatDate } from "@/lib/utils";
+import { ROLE_NAMES } from "@/lib/role-access";
 import { roleService, userService } from "@/services";
 import { PermissionGuard } from "@/components/auth/PermissionGuard";
+import { useAuthStore } from "@/store/auth-store";
 import { Role, User } from "@/types";
 
 type UserRow = User & { roleName: string };
+
+const USERS_PAGE_ALLOWED_ROLES: string[] = [
+  ROLE_NAMES.SUPER_ADMIN,
+  ROLE_NAMES.MANAGER,
+  ROLE_NAMES.TEAM_LEAD,
+];
 
 export default function UsersPage() {
   const { toast } = useToast();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
+  const currentUser = useAuthStore((s) => s.user);
 
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
@@ -80,6 +82,7 @@ export default function UsersPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [deletingUser, setDeletingUser] = useState<User | null>(null);
+  const [viewingUser, setViewingUser] = useState<User | null>(null);
 
   const usersQuery = useQuery({
     queryKey: ["users-table"],
@@ -102,8 +105,25 @@ export default function UsersPage() {
     return users.map((user) => ({ ...user, roleName: roleMap.get(user.role_id) ?? "Unassigned" }));
   }, [usersQuery.data, roleMap]);
 
+  // Reporting-hierarchy visibility: each role only sees the slice of the
+  // org it's responsible for, derived from the manager_id/teamlead_id each
+  // user already carries — no backend changes needed.
+  const hierarchyRows = useMemo(() => {
+    if (!currentUser) return [];
+    switch (currentUser.role) {
+      case ROLE_NAMES.SUPER_ADMIN:
+        return rows.filter((user) => user.roleName !== ROLE_NAMES.SUPER_ADMIN);
+      case ROLE_NAMES.MANAGER:
+        return rows.filter((user) => user.manager_id === currentUser.user_id);
+      case ROLE_NAMES.TEAM_LEAD:
+        return rows.filter((user) => user.teamlead_id === currentUser.user_id);
+      default:
+        return [];
+    }
+  }, [rows, currentUser]);
+
   const filteredRows = useMemo(() => {
-    return rows.filter((user) => {
+    return hierarchyRows.filter((user) => {
       if (roleFilter !== "all" && user.role_id !== roleFilter) return false;
       if (statusFilter === "active" && !user.is_active) return false;
       if (statusFilter === "inactive" && user.is_active) return false;
@@ -117,7 +137,7 @@ export default function UsersPage() {
 
       return true;
     });
-  }, [rows, search, roleFilter, statusFilter]);
+  }, [hierarchyRows, search, roleFilter, statusFilter]);
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => userService.delete(id),
@@ -188,11 +208,13 @@ export default function UsersPage() {
           />
         ),
         cell: ({ row }) => (
-          <Checkbox
-            checked={row.getIsSelected()}
-            onCheckedChange={(value) => row.toggleSelected(!!value)}
-            aria-label="Select row"
-          />
+          <div onClick={(e) => e.stopPropagation()}>
+            <Checkbox
+              checked={row.getIsSelected()}
+              onCheckedChange={(value) => row.toggleSelected(!!value)}
+              aria-label="Select row"
+            />
+          </div>
         ),
         enableSorting: false,
       },
@@ -204,7 +226,9 @@ export default function UsersPage() {
             <Avatar className="h-9 w-9">
               <AvatarFallback>{row.original.name.charAt(0).toUpperCase()}</AvatarFallback>
             </Avatar>
-            <span className="font-medium">{row.original.name}</span>
+            <span className="font-medium transition-colors hover:text-primary">
+              {row.original.name}
+            </span>
           </div>
         ),
       },
@@ -241,48 +265,48 @@ export default function UsersPage() {
         cell: ({ row }) => {
           const user = row.original;
           return (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8">
-                  <MoreHorizontal className="h-4 w-4" />
+            <div
+              className="flex items-center justify-end gap-1"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <PermissionGuard permission="user:update">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  aria-label="Edit user"
+                  onClick={() => setEditingUser(user)}
+                >
+                  <Pencil className="h-4 w-4" />
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <PermissionGuard permission="user:update">
-                  <DropdownMenuItem onClick={() => setEditingUser(user)}>
-                    <Pencil className="mr-2 h-4 w-4" />
-                    Edit
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() =>
-                      statusMutation.mutate({ id: user.user_id, activate: !user.is_active })
-                    }
-                  >
-                    {user.is_active ? (
-                      <>
-                        <Ban className="mr-2 h-4 w-4" />
-                        Deactivate
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle2 className="mr-2 h-4 w-4" />
-                        Activate
-                      </>
-                    )}
-                  </DropdownMenuItem>
-                </PermissionGuard>
-                <PermissionGuard permission="user:delete">
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    className="text-destructive focus:text-destructive"
-                    onClick={() => setDeletingUser(user)}
-                  >
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    Delete
-                  </DropdownMenuItem>
-                </PermissionGuard>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  aria-label={user.is_active ? "Deactivate user" : "Activate user"}
+                  onClick={() =>
+                    statusMutation.mutate({ id: user.user_id, activate: !user.is_active })
+                  }
+                >
+                  {user.is_active ? (
+                    <Ban className="h-4 w-4" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4" />
+                  )}
+                </Button>
+              </PermissionGuard>
+              <PermissionGuard permission="user:delete">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-destructive hover:text-destructive"
+                  aria-label="Delete user"
+                  onClick={() => setDeletingUser(user)}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </PermissionGuard>
+            </div>
           );
         },
       },
@@ -302,6 +326,10 @@ export default function UsersPage() {
     initialState: { pagination: { pageSize: 10 } },
   });
 
+  if (currentUser && !USERS_PAGE_ALLOWED_ROLES.includes(currentUser.role)) {
+    return <AccessDenied message="You do not have access to the Users page." />;
+  }
+
   if (usersQuery.isError) {
     return <ErrorState message="Failed to load users. Please try again." />;
   }
@@ -310,7 +338,7 @@ export default function UsersPage() {
     <div className="space-y-6">
       <PageHeader
         title={t("users.title")}
-        description={`${t("users.description")}${usersQuery.data ? ` — ${usersQuery.data.total} ${t("common.total")}` : ""}.`}
+        description={`${t("users.description")}${usersQuery.data ? ` — ${hierarchyRows.length} ${t("common.total")}` : ""}.`}
         action={
           <PermissionGuard permission="user:create">
             <Button
@@ -377,6 +405,7 @@ export default function UsersPage() {
         isLoading={usersQuery.isLoading}
         emptyTitle="No users found"
         emptyDescription="Try adjusting your search or filters, or create a new user."
+        onRowClick={(user) => setViewingUser(user)}
       />
 
       <DataTablePagination table={table} showSelectionCount />
@@ -390,6 +419,12 @@ export default function UsersPage() {
           }
         }}
         user={editingUser}
+      />
+
+      <UserDetailDrawer
+        user={viewingUser}
+        open={!!viewingUser}
+        onOpenChange={(open) => !open && setViewingUser(null)}
       />
 
       <AlertDialog open={!!deletingUser} onOpenChange={(open) => !open && setDeletingUser(null)}>

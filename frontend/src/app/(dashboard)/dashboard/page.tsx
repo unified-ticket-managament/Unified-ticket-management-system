@@ -75,13 +75,6 @@ export default function DashboardPage() {
         permission: "role:create",
       },
       {
-        title: t("dashboard.managePermissions"),
-        description: t("dashboard.managePermissionsDesc"),
-        href: "/permissions",
-        icon: KeyRound,
-        permission: "permission:update",
-      },
-      {
         title: t("dashboard.viewAuditLogs"),
         description: t("dashboard.viewAuditLogsDesc"),
         href: "/audit-logs",

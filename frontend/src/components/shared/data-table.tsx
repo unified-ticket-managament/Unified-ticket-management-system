@@ -28,6 +28,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 
 interface DataTableProps<TData> {
   table: TanstackTable<TData>;
@@ -35,6 +36,7 @@ interface DataTableProps<TData> {
   isLoading?: boolean;
   emptyTitle?: string;
   emptyDescription?: string;
+  onRowClick?: (row: TData) => void;
 }
 
 export function DataTable<TData>({
@@ -43,6 +45,7 @@ export function DataTable<TData>({
   isLoading,
   emptyTitle = "No results",
   emptyDescription = "Try adjusting your search or filters.",
+  onRowClick,
 }: DataTableProps<TData>) {
   const rows = table.getRowModel().rows;
 
@@ -100,7 +103,12 @@ export function DataTable<TData>({
             </TableRow>
           ) : (
             rows.map((row) => (
-              <TableRow key={row.id} data-state={row.getIsSelected() ? "selected" : undefined}>
+              <TableRow
+                key={row.id}
+                data-state={row.getIsSelected() ? "selected" : undefined}
+                onClick={onRowClick ? () => onRowClick(row.original) : undefined}
+                className={cn(onRowClick && "cursor-pointer")}
+              >
                 {row.getVisibleCells().map((cell) => (
                   <TableCell key={cell.id}>
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}

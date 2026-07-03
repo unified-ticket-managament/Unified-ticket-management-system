@@ -7,7 +7,6 @@ import {
   ChevronsLeft,
   ChevronsRight,
   ClipboardList,
-  KeyRound,
   LayoutDashboard,
   LogOut,
   Settings,
@@ -45,11 +44,6 @@ const menuItems: { title: NavItemKey; href: string; icon: typeof LayoutDashboard
     title: "Roles",
     href: "/roles",
     icon: Shield,
-  },
-  {
-    title: "Permissions",
-    href: "/permissions",
-    icon: KeyRound,
   },
   {
     title: "Audit Logs",

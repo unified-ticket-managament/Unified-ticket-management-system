@@ -2,10 +2,26 @@
 
 import { ReactNode } from "react";
 import { motion } from "framer-motion";
-import { LucideIcon, TrendingDown, TrendingUp } from "lucide-react";
+import { LucideIcon, ShieldAlert, TrendingDown, TrendingUp } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/store/auth-store";
+
+export function AccessDenied({
+  message = "You don't have permission to view this page.",
+}: {
+  message?: string;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-destructive/40 bg-destructive/5 py-20 text-center">
+      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+        <ShieldAlert className="h-7 w-7" />
+      </div>
+      <h1 className="mt-4 text-2xl font-bold tracking-tight">403 — Access Denied</h1>
+      <p className="mt-2 max-w-sm text-sm text-muted-foreground">{message}</p>
+    </div>
+  );
+}
 
 export function EmptyState({
   title,

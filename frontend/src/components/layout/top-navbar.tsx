@@ -7,7 +7,6 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Bell,
   ClipboardList,
-  KeyRound,
   LayoutDashboard,
   LogOut,
   Moon,
@@ -42,7 +41,6 @@ const SEARCH_INDEX: { title: NavItemKey; href: string; icon: typeof LayoutDashbo
   { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { title: "Users", href: "/users", icon: Users },
   { title: "Roles", href: "/roles", icon: Shield },
-  { title: "Permissions", href: "/permissions", icon: KeyRound },
   { title: "Audit Logs", href: "/audit-logs", icon: ClipboardList },
   { title: "Profile", href: "/profile", icon: UserCircle },
   { title: "Settings", href: "/settings", icon: SettingsIcon },

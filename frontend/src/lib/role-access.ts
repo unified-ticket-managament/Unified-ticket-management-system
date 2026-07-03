@@ -12,7 +12,6 @@ export type NavItemKey =
   | "Dashboard"
   | "Users"
   | "Roles"
-  | "Permissions"
   | "Audit Logs"
   | "Profile"
   | "Settings";
@@ -21,22 +20,17 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   Dashboard: "nav.dashboard",
   Users: "nav.users",
   Roles: "nav.roles",
-  Permissions: "nav.permissions",
   "Audit Logs": "nav.auditLogs",
   Profile: "nav.profile",
   Settings: "nav.settings",
 };
 
+// Permission management now lives inside the User Details drawer (Users
+// page) instead of a standalone page/nav item. Audit Logs is no longer
+// linked from any role's sidebar per the latest spec, but the page itself
+// still exists and is reachable from the Dashboard's quick actions.
 const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
-  [ROLE_NAMES.SUPER_ADMIN]: [
-    "Dashboard",
-    "Users",
-    "Roles",
-    "Permissions",
-    "Audit Logs",
-    "Profile",
-    "Settings",
-  ],
+  [ROLE_NAMES.SUPER_ADMIN]: ["Dashboard", "Users", "Roles", "Profile", "Settings"],
   [ROLE_NAMES.MANAGER]: ["Dashboard", "Users", "Roles", "Profile", "Settings"],
   [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Profile", "Settings"],
   [ROLE_NAMES.STAFF]: ["Dashboard", "Profile", "Settings"],

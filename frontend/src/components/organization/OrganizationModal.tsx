@@ -92,22 +92,28 @@ export function OrganizationModal({
 
         {hierarchy && (
           <div className="flex flex-1 flex-col gap-4 overflow-hidden md:flex-row">
-            <div className="relative flex-1 overflow-auto rounded-lg border border-border bg-muted/20 p-8">
-              <motion.div
-                animate={{ scale: zoom }}
-                transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                style={{ transformOrigin: "top center" }}
-              >
-                <OrganizationChart
-                  node={hierarchy}
-                  selectedNodeId={selectedNode?.user_id ?? null}
-                  onSelectNode={(node) =>
-                    setSelectedNode((prev) =>
-                      prev?.user_id === node.user_id ? null : node
-                    )
-                  }
-                />
-              </motion.div>
+            {/* Outer wrapper never scrolls — it's purely the positioning
+                context for the zoom controls, so they stay fixed in place
+                no matter how the chart underneath is panned, scrolled, or
+                zoomed. Only the inner div scrolls. */}
+            <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-muted/20">
+              <div className="h-full w-full overflow-auto p-8">
+                <motion.div
+                  animate={{ scale: zoom }}
+                  transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                  style={{ transformOrigin: "top center" }}
+                >
+                  <OrganizationChart
+                    node={hierarchy}
+                    selectedNodeId={selectedNode?.user_id ?? null}
+                    onSelectNode={(node) =>
+                      setSelectedNode((prev) =>
+                        prev?.user_id === node.user_id ? null : node
+                      )
+                    }
+                  />
+                </motion.div>
+              </div>
 
               <div className="absolute bottom-4 left-4 flex items-center gap-1 rounded-lg border border-border bg-card/95 p-1 shadow-md backdrop-blur">
                 <Button
