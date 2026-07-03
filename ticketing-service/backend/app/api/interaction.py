@@ -1,0 +1,80 @@
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database.session import get_db
+from app.repositories.interaction_repository import (
+    InteractionRepository,
+)
+from app.repositories.ticket_repository import (
+    TicketRepository,
+)
+from app.repositories.user_repository import UserRepository
+from app.schemas.interaction import (
+    HideInteractionRequest,
+    HideInteractionResponse,
+)
+from app.services.interaction_service import InteractionService
+
+router = APIRouter(
+    prefix="/interactions",
+    tags=["Interactions"],
+)
+
+
+# =========================================================
+# Hide / Soft-Delete Interaction (ticket-agnostic)
+# =========================================================
+
+@router.post(
+    "/{interaction_id}/hide",
+    response_model=HideInteractionResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def hide_interaction(
+    interaction_id: UUID,
+    request: HideInteractionRequest,
+    agent_name: str | None = Query(
+        default=None,
+        description="The agent hiding this interaction. Recorded as the audit actor.",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Soft-deletes any interaction by ID alone — including
+    emails still sitting in an inbox that haven't been turned
+    into a ticket yet. The row is never physically deleted; it
+    is marked not visible so the audit trail stays intact.
+
+    For an interaction already on a ticket, prefer
+    POST /tickets/{ticket_id}/interactions/{interaction_id}/hide
+    if you already have the ticket_id on hand — both call the
+    same underlying logic.
+    """
+
+    interaction_repository = InteractionRepository(db)
+
+    interaction = await interaction_repository.get_by_id(interaction_id)
+
+    if interaction is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Interaction not found.",
+        )
+
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+    )
+
+    return await service.hide_interaction(
+        ticket_id=interaction.ticket_id,
+        interaction_id=interaction_id,
+        request=request,
+        agent_name=agent_name,
+    )
