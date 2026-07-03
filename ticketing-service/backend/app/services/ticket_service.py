@@ -4,6 +4,7 @@
 from uuid import UUID
 
 from fastapi import HTTPException, status
+from shared_models.models import User
 
 from app.enums import AuditEntityType, AuditEventType
 from app.models.ticket import Ticket
@@ -16,7 +17,10 @@ from app.schemas.ticket import (
     TicketResponse,
     TicketUpdate,
 )
-from app.services.access_control import ensure_agent_can_view_ticket
+from app.services.access_control import (
+    SUPERVISOR_ROLE_NAMES,
+    ensure_agent_can_view_ticket,
+)
 from app.services.audit_log_service import AuditLogService
 
 
@@ -89,7 +93,7 @@ class TicketService:
     async def get_by_id(
         self,
         ticket_id: UUID,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> TicketResponse:
 
         ticket = await self.ticket_repository.get_by_id(
@@ -102,7 +106,7 @@ class TicketService:
                 detail="Ticket not found.",
             )
 
-        await ensure_agent_can_view_ticket(ticket, agent_name, self.user_repository)
+        ensure_agent_can_view_ticket(ticket, current_user)
 
         await self._attach_names([ticket])
 
@@ -116,20 +120,17 @@ class TicketService:
 
     async def list_all(
         self,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> list[TicketResponse]:
 
-        agent_id = None
-
-        if agent_name is not None:
-            agent = await self.user_repository.get_active_staff_by_name(agent_name)
-
-            # Unrecognised agent name — nothing to show rather
-            # than leaking every ticket.
-            if agent is None:
-                return []
-
-            agent_id = agent.user_id
+        # Team Lead/Manager/Super Admin see every ticket; Staff is
+        # restricted to tickets assigned to them (or unassigned ones) —
+        # same rule as ensure_agent_can_view_ticket.
+        agent_id = (
+            None
+            if current_user.role.name in SUPERVISOR_ROLE_NAMES
+            else current_user.user_id
+        )
 
         tickets = await self.ticket_repository.list_all(agent_id=agent_id)
 
@@ -148,7 +149,7 @@ class TicketService:
         self,
         ticket_id: UUID,
         request: TicketUpdate,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> TicketResponse:
 
         ticket = await self.ticket_repository.get_by_id(
@@ -174,8 +175,8 @@ class TicketService:
         )
 
         if changed_fields:
-            actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
-                self.user_repository, agent_name
+            actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+                current_user
             )
 
             await AuditLogService.log_event(

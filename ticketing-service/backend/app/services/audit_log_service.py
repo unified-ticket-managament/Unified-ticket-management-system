@@ -18,11 +18,11 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from shared_models.models import User
 
 from app.enums import ActorRole, AuditEntityType, AuditEventType
 from app.models.audit_log import AuditLog
 from app.repositories.audit_log_repository import AuditLogRepository
-from app.repositories.user_repository import UserRepository
 from app.utils.helpers import serialize_audit_values
 
 
@@ -68,26 +68,21 @@ class AuditLogService:
         )
 
     @staticmethod
-    async def resolve_agent_actor(
-        user_repository: UserRepository,
-        agent_name: str | None,
+    def resolve_agent_actor(
+        current_user: User | None,
     ) -> tuple[UUID | None, str, ActorRole]:
         """
-        Resolves the "acting as" agent_name string — the only
-        identity concept in this app, since there is no real
-        authentication — into the (actor_id, actor_name, actor_role)
-        tuple every audit row needs.
-
-        Falls back to (None, "System", SYSTEM) when no agent_name is
-        given, or it doesn't match a real active Staff member (e.g.
-        a stale/typo'd name) — this is what makes SYSTEM mean
-        "nobody identifiable performed this", matching automatic
-        actions like auto-assignment rather than a human mistake.
+        Resolves the authenticated caller into the
+        (actor_id, actor_name, actor_role) tuple every audit row
+        needs. `current_user` is already a verified, active user by
+        the time it reaches here (resolved by the JWT dependency), so
+        there is no more "unresolvable name" case for an authenticated
+        request — SYSTEM is reserved strictly for genuinely-automatic
+        writes with no HTTP caller at all (e.g. auto-assignment inside
+        EmailService.receive_email), not a fallback for a bad name.
         """
 
-        if agent_name:
-            agent = await user_repository.get_active_staff_by_name(agent_name)
-            if agent is not None:
-                return agent.user_id, agent.name, ActorRole.AGENT
+        if current_user is not None:
+            return current_user.user_id, current_user.name, ActorRole.AGENT
 
         return None, "System", ActorRole.SYSTEM

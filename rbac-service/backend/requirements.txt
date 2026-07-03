@@ -16,4 +16,6 @@ pytest==8.3.4
 pytest-asyncio==0.25.0
 
 
-git+https://github.com/unified-ticket-managament/shared_models.git
+# Local editable install — shared_models now lives in this monorepo as the
+# single source of truth (the standalone shared_models GitHub repo is retired).
+-e ../../shared_models

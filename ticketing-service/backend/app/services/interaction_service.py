@@ -8,6 +8,8 @@ from uuid import UUID
 from fastapi import HTTPException
 from fastapi import status as http_status
 
+from shared_models.models import User
+
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
@@ -181,7 +183,7 @@ class InteractionService:
     async def get_ticket_interactions(
         self,
         ticket_id: UUID,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> list[InteractionResponse]:
         """
         Returns the complete timeline for a ticket.
@@ -194,9 +196,7 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
 
-        await ensure_agent_can_view_ticket(
-            ticket, agent_name, self.user_repository
-        )
+        ensure_agent_can_view_ticket(ticket, current_user)
 
         interactions = (
             await self.interaction_repository
@@ -234,7 +234,7 @@ class InteractionService:
     async def get_ticket_audit_logs(
         self,
         ticket_id: UUID,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> list[AuditLogResponse]:
         """
         Returns the full, immutable audit trail for a ticket, newest
@@ -251,9 +251,7 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
 
-        await ensure_agent_can_view_ticket(
-            ticket, agent_name, self.user_repository
-        )
+        ensure_agent_can_view_ticket(ticket, current_user)
 
         audit_logs = await self.audit_log_repository.list_by_ticket(ticket_id)
 
@@ -337,7 +335,7 @@ class InteractionService:
         self,
         ticket_id: UUID,
         request: InternalNoteCreate,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> InternalNoteResponse:
         """
         Adds an internal note to a ticket.
@@ -348,8 +346,8 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
 
-        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
-            self.user_repository, agent_name
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
         )
 
         interaction = await self._create_ticket_interaction(
@@ -395,7 +393,7 @@ class InteractionService:
         self,
         ticket_id: UUID,
         request: ReplyCreate,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> TicketActionResponse:
         """
         Adds a reply to the client on a ticket.
@@ -407,8 +405,8 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
 
-        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
-            self.user_repository, agent_name
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
         )
 
         interaction = await self._create_ticket_interaction(
@@ -449,7 +447,7 @@ class InteractionService:
         self,
         ticket_id: UUID,
         request: StatusChangeRequest,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> TicketActionResponse:
         """
         Changes a ticket's status and records the
@@ -462,8 +460,8 @@ class InteractionService:
         old_closed_at = ticket.closed_at
         new_status = request.new_status
 
-        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
-            self.user_repository, agent_name
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
         )
 
         # Resolving or closing a ticket stamps `closed_at`; reopening
@@ -533,7 +531,7 @@ class InteractionService:
         self,
         ticket_id: UUID,
         request: PriorityChangeRequest,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> TicketActionResponse:
         """
         Changes a ticket's priority and records the
@@ -545,8 +543,8 @@ class InteractionService:
 
         old_priority = ticket.current_priority
 
-        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
-            self.user_repository, agent_name
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
         )
 
         await self.ticket_repository.update(
@@ -595,7 +593,7 @@ class InteractionService:
         self,
         ticket_id: UUID,
         request: TransferAgentRequest,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> TicketActionResponse:
         """
         Transfers full ownership of a ticket to a different
@@ -608,8 +606,8 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
 
-        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
-            self.user_repository, agent_name
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
         )
 
         new_agent = await self.user_repository.get_active_staff_by_id(
@@ -684,15 +682,15 @@ class InteractionService:
         ticket_id: UUID,
         interaction_id: UUID,
         request: HideInteractionRequest,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> HideInteractionResponse:
         """
         Soft-deletes (hides) an interaction that
         belongs to the given ticket.
         """
 
-        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
-            self.user_repository, agent_name
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
         )
 
         interaction = await self.interaction_repository.get_by_id(

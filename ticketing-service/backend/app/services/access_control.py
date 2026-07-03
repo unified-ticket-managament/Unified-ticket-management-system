@@ -2,10 +2,19 @@
 
 
 from fastapi import HTTPException, status
+from shared_models.models import User
 
 from app.enums import TicketStatus
 from app.models.ticket import Ticket
-from app.repositories.user_repository import UserRepository
+
+# Every RBAC role except Viewer (the client-facing role) can log into
+# Ticketing and act as an agent.
+AGENT_ROLE_NAMES = {"Staff", "Team Lead", "Manager", "Super Admin"}
+
+# Team Lead/Manager/Super Admin can see every ticket regardless of
+# assignment; Staff stays restricted to tickets assigned to them (or
+# unassigned ones).
+SUPERVISOR_ROLE_NAMES = {"Team Lead", "Manager", "Super Admin"}
 
 
 def ensure_ticket_not_closed(ticket: Ticket) -> None:
@@ -24,25 +33,25 @@ def ensure_ticket_not_closed(ticket: Ticket) -> None:
         )
 
 
-async def ensure_agent_can_view_ticket(
+def ensure_agent_can_view_ticket(
     ticket: Ticket,
-    agent_name: str | None,
-    user_repository: UserRepository,
+    current_user: User,
 ) -> None:
     """
-    A ticket, and everything scoped to it (its interaction
-    timeline included), is visible only to the agent it's
-    assigned to. An unassigned ticket stays visible to everyone.
-    `agent_name` is the frontend's "acting as" selection; omit
-    it to skip the check entirely.
+    A ticket, and everything scoped to it (its interaction timeline
+    included), is visible only to the agent it's assigned to. An
+    unassigned ticket stays visible to everyone. Team Lead/Manager/
+    Super Admin bypass this check entirely and can see every ticket,
+    regardless of assignment.
     """
 
-    if agent_name is None or ticket.agent_id is None:
+    if current_user.role.name in SUPERVISOR_ROLE_NAMES:
         return
 
-    agent = await user_repository.get_active_staff_by_name(agent_name)
+    if ticket.agent_id is None:
+        return
 
-    if agent is None or ticket.agent_id != agent.user_id:
+    if ticket.agent_id != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have access to this ticket.",

@@ -20,6 +20,13 @@ class Settings(BaseSettings):
 
     database_url: str
 
+    # Shared with the RBAC service, which is the sole token issuer —
+    # this service only ever verifies. No default: fail fast at boot
+    # if the shared secret isn't provisioned, rather than silently
+    # accepting/rejecting every token forever.
+    jwt_secret_key: str
+    jwt_algorithm: str = "HS256"
+
     log_level: str = "INFO"
 
     # 👇 Add this

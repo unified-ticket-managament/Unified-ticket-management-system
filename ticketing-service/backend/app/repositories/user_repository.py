@@ -21,7 +21,9 @@ class UserRepository:
 
     async def get_by_id(self, user_id: UUID) -> User | None:
         result = await self.db.execute(
-            select(User).where(User.user_id == user_id)
+            select(User)
+            .options(selectinload(User.role))
+            .where(User.user_id == user_id)
         )
         return result.scalar_one_or_none()
 

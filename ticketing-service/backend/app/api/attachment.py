@@ -2,15 +2,16 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from shared_models.models import User
 
 from app.database.session import get_db
+from app.dependencies.auth import get_current_agent, get_current_user
 from app.repositories.attachment_repository import AttachmentRepository
 from app.repositories.interaction_repository import InteractionRepository
 from app.repositories.ticket_repository import TicketRepository
-from app.repositories.user_repository import UserRepository
 from app.schemas.attachment import AttachmentMetadata
 from app.services.attachment_service import AttachmentService
 from app.storage import get_storage_service
@@ -27,7 +28,6 @@ def _build_service(db: AsyncSession) -> AttachmentService:
         interaction_repository=InteractionRepository(db),
         ticket_repository=TicketRepository(db),
         storage_service=get_storage_service(),
-        user_repository=UserRepository(db),
     )
 
 
@@ -37,11 +37,11 @@ def _build_service(db: AsyncSession) -> AttachmentService:
 )
 async def get_attachment(
     attachment_id: UUID,
-    agent_name: str | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     service = _build_service(db)
-    return await service.get_attachment(attachment_id, agent_name=agent_name)
+    return await service.get_attachment(attachment_id, current_user=current_user)
 
 
 @router.get(
@@ -50,7 +50,7 @@ async def get_attachment(
 )
 async def download_attachment(
     attachment_id: UUID,
-    agent_name: str | None = Query(default=None),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -58,7 +58,7 @@ async def download_attachment(
     from object storage to the browser, not through this backend.
     """
     service = _build_service(db)
-    url = await service.get_download_url(attachment_id, agent_name=agent_name)
+    url = await service.get_download_url(attachment_id, current_user=current_user)
     return RedirectResponse(url=url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
 
 
@@ -68,8 +68,8 @@ async def download_attachment(
 )
 async def delete_attachment(
     attachment_id: UUID,
-    agent_name: str | None = Query(default=None),
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     service = _build_service(db)
-    await service.delete_attachment(attachment_id, agent_name=agent_name)
+    await service.delete_attachment(attachment_id, current_user=current_user)

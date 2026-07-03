@@ -2,8 +2,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+from shared_models.models import User
 
 from app.database.session import get_db
+from app.dependencies.auth import get_current_agent, get_current_user
 from app.repositories.attachment_repository import AttachmentRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
@@ -31,6 +33,7 @@ router = APIRouter(
     response_model=list[AgentSummaryResponse],
 )
 async def list_agents(
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -57,16 +60,15 @@ async def list_agents(
 # ---------------------------------------------------------
 
 @router.get(
-    "/{agent_name}/inbox",
+    "/me/inbox",
     response_model=InboxResponse,
 )
 async def get_agent_inbox(
-    agent_name: str,
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Returns all pending emails
-    assigned to the specified agent.
+    Returns all pending emails assigned to the authenticated agent.
     """
 
     repository = InteractionRepository(db)
@@ -74,7 +76,7 @@ async def get_agent_inbox(
 
     service = InboxService(repository, attachment_repository=attachment_repository)
 
-    return await service.get_agent_inbox(agent_name)
+    return await service.get_agent_inbox(current_user.name)
 
 
 # ---------------------------------------------------------
@@ -82,12 +84,12 @@ async def get_agent_inbox(
 # ---------------------------------------------------------
 
 @router.get(
-    "/{agent_name}/inbox/{interaction_id}",
+    "/me/inbox/{interaction_id}",
     response_model=OpenEmailResponse,
 )
 async def open_email(
-    agent_name: str,
     interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """

@@ -10,7 +10,7 @@ services:
     name: rbac-backend
     runtime: python
     plan: free
-    rootDir: backend
+    rootDir: rbac-service/backend
     buildCommand: pip install -r requirements.txt
     startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
@@ -32,8 +32,12 @@ services:
       # params included.
       - key: DATABASE_URL
         sync: false
+      # Shared secret with the Ticketing service's backend — RBAC issues
+      # tokens, Ticketing only verifies them, both must use the identical
+      # value. Generate once (e.g. `openssl rand -hex 32`) and paste the
+      # same string here and into the Ticketing backend's env vars.
       - key: JWT_SECRET_KEY
-        generateValue: true
+        sync: false
       - key: JWT_ALGORITHM
         value: HS256
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
@@ -42,6 +46,9 @@ services:
         value: "7"
       # Update this to the deployed frontend URL after first deploy
       # (e.g. https://rbac-frontend.onrender.com) — no trailing slash.
+      # Must ALSO include the Ticketing frontend's origin (comma-separated),
+      # since Ticketing's frontend calls this service's /auth/* endpoints
+      # directly (cross-origin) for the unified login flow.
       - key: CORS_ORIGINS
         sync: false
 
@@ -49,7 +56,7 @@ services:
     name: rbac-frontend
     runtime: node
     plan: free
-    rootDir: frontend
+    rootDir: rbac-service/frontend
     buildCommand: npm ci && npm run build
     startCommand: npm run start
     envVars:

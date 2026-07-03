@@ -30,7 +30,16 @@ class Settings(BaseSettings):
     # Kept as a raw string (not List[str]): pydantic-settings tries to
     # JSON-decode env vars for list-typed fields before any validator runs,
     # which blows up on a plain comma-separated value like "http://a,http://b".
-    cors_origins: str = "http://localhost:3000"
+    # Includes the Ticketing frontend's local dev origins, since Ticketing's
+    # frontend calls this service's /auth/* endpoints directly (cross-origin)
+    # for the unified login flow.
+    cors_origins: str = (
+        "http://localhost:3000,"
+        "http://localhost:5173,"
+        "http://127.0.0.1:5173,"
+        "http://localhost:5174,"
+        "http://127.0.0.1:5174"
+    )
 
     secure_cookies: bool = False
     log_level: str = "INFO"

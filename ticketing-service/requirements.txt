@@ -21,6 +21,7 @@ Mako==1.3.12
 MarkupSafe==3.0.3
 psycopg2-binary==2.9.12
 pydantic==2.13.4
+python-jose[cryptography]==3.3.0
 pydantic-settings==2.14.2
 pydantic_core==2.46.4
 python-dateutil==2.9.0.post0
@@ -35,4 +36,6 @@ typing_extensions==4.15.0
 urllib3==2.7.0
 uvicorn==0.49.0
 
-git+https://github.com/unified-ticket-managament/shared_models.git
+# Local editable install — shared_models now lives in this monorepo as the
+# single source of truth (the standalone shared_models GitHub repo is retired).
+-e ../shared_models

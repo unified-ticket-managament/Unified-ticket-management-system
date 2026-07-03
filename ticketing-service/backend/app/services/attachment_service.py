@@ -5,6 +5,7 @@ import logging
 from uuid import UUID
 
 from fastapi import HTTPException, UploadFile, status
+from shared_models.models import User
 
 from app.enums import (
     ActorRole,
@@ -17,7 +18,6 @@ from app.models.attachment import Attachment
 from app.repositories.attachment_repository import AttachmentRepository
 from app.repositories.interaction_repository import InteractionRepository
 from app.repositories.ticket_repository import TicketRepository
-from app.repositories.user_repository import UserRepository
 from app.schemas.attachment import (
     AttachmentCreate,
     AttachmentMetadata,
@@ -25,6 +25,7 @@ from app.schemas.attachment import (
 )
 from app.schemas.interaction import InteractionCreate
 from app.services.access_control import (
+    SUPERVISOR_ROLE_NAMES,
     ensure_agent_can_view_ticket,
     ensure_ticket_not_closed,
 )
@@ -128,13 +129,11 @@ class AttachmentService:
         interaction_repository: InteractionRepository,
         ticket_repository: TicketRepository,
         storage_service: StorageService,
-        user_repository: UserRepository | None = None,
     ):
         self.attachment_repository = attachment_repository
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
         self.storage_service = storage_service
-        self.user_repository = user_repository
 
     # ---------------------------------------------------------
     # Shared validation + storage choke point
@@ -202,7 +201,7 @@ class AttachmentService:
         self,
         ticket_id: UUID,
         files: list[UploadFile],
-        agent_name: str | None = None,
+        current_user: User,
     ) -> AttachmentUploadResponse:
 
         ticket = await self.ticket_repository.get_by_id(ticket_id)
@@ -221,8 +220,8 @@ class AttachmentService:
 
         ensure_ticket_not_closed(ticket)
 
-        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
-            self.user_repository, agent_name
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
         )
 
         interaction = await self.interaction_repository.create(
@@ -276,7 +275,7 @@ class AttachmentService:
     async def _resolve_and_authorize(
         self,
         attachment_id: UUID,
-        agent_name: str | None,
+        current_user: User,
     ) -> Attachment:
         attachment = await self.attachment_repository.get_by_id(attachment_id)
 
@@ -296,17 +295,15 @@ class AttachmentService:
                 detail="Attachment not found.",
             )
 
-        if interaction.ticket_id is not None and self.user_repository is not None:
+        if interaction.ticket_id is not None:
             ticket = await self.ticket_repository.get_by_id(interaction.ticket_id)
             if ticket is not None:
-                await ensure_agent_can_view_ticket(
-                    ticket, agent_name, self.user_repository
-                )
-        elif interaction.ticket_id is None and agent_name is not None:
+                ensure_agent_can_view_ticket(ticket, current_user)
+        elif current_user.role.name not in SUPERVISOR_ROLE_NAMES:
             # Not yet attached to a ticket — falls back to the
             # inbox's own scoping (the agent it was assigned to).
             payload_agent = interaction.payload.get("agent_name")
-            if payload_agent is not None and payload_agent != agent_name:
+            if payload_agent is not None and payload_agent != current_user.name:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You do not have access to this attachment.",
@@ -317,17 +314,17 @@ class AttachmentService:
     async def get_attachment(
         self,
         attachment_id: UUID,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> AttachmentMetadata:
-        attachment = await self._resolve_and_authorize(attachment_id, agent_name)
+        attachment = await self._resolve_and_authorize(attachment_id, current_user)
         return await attachment_to_metadata(attachment, self.storage_service)
 
     async def get_download_url(
         self,
         attachment_id: UUID,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> str:
-        attachment = await self._resolve_and_authorize(attachment_id, agent_name)
+        attachment = await self._resolve_and_authorize(attachment_id, current_user)
         return await self.storage_service.presigned_get_url(
             object_key=attachment.storage_key,
             filename=attachment.filename,
@@ -337,8 +334,8 @@ class AttachmentService:
     async def delete_attachment(
         self,
         attachment_id: UUID,
-        agent_name: str | None = None,
+        current_user: User,
     ) -> None:
-        attachment = await self._resolve_and_authorize(attachment_id, agent_name)
+        attachment = await self._resolve_and_authorize(attachment_id, current_user)
         await self.storage_service.delete(object_key=attachment.storage_key)
         await self.attachment_repository.delete(attachment)

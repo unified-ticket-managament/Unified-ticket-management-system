@@ -1,9 +1,11 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from shared_models.models import User
 
 from app.database.session import get_db
+from app.dependencies.auth import get_current_agent, get_current_user
 
 from app.repositories.attachment_repository import (
     AttachmentRepository,
@@ -131,13 +133,7 @@ async def attach_interaction_to_ticket(
 )
 async def get_ticket_interactions(
     ticket_id: UUID,
-    agent_name: str | None = Query(
-        default=None,
-        description=(
-            "The agent viewing this timeline. If provided and the "
-            "ticket is assigned to someone else, returns 403."
-        ),
-    ),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
 
@@ -154,7 +150,7 @@ async def get_ticket_interactions(
         storage_service=get_storage_service(),
     )
 
-    return await service.get_ticket_interactions(ticket_id, agent_name=agent_name)
+    return await service.get_ticket_interactions(ticket_id, current_user=current_user)
 
 
 # =========================================================
@@ -168,13 +164,7 @@ async def get_ticket_interactions(
 )
 async def get_ticket_audit_logs(
     ticket_id: UUID,
-    agent_name: str | None = Query(
-        default=None,
-        description=(
-            "The agent viewing this audit trail. If provided and the "
-            "ticket is assigned to someone else, returns 403."
-        ),
-    ),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -199,7 +189,7 @@ async def get_ticket_audit_logs(
         audit_log_repository=audit_log_repository,
     )
 
-    return await service.get_ticket_audit_logs(ticket_id, agent_name=agent_name)
+    return await service.get_ticket_audit_logs(ticket_id, current_user=current_user)
 
 
 # =========================================================
@@ -214,10 +204,7 @@ async def get_ticket_audit_logs(
 async def add_internal_note(
     ticket_id: UUID,
     request: InternalNoteCreate,
-    agent_name: str | None = Query(
-        default=None,
-        description="The agent adding this note. Recorded as the audit actor.",
-    ),
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
 
@@ -234,7 +221,7 @@ async def add_internal_note(
     return await service.add_internal_note(
         ticket_id=ticket_id,
         request=request,
-        agent_name=agent_name,
+        current_user=current_user,
     )
 
 
@@ -250,10 +237,7 @@ async def add_internal_note(
 async def reply_to_client(
     ticket_id: UUID,
     request: ReplyCreate,
-    agent_name: str | None = Query(
-        default=None,
-        description="The agent sending this reply. Recorded as the audit actor.",
-    ),
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -276,7 +260,7 @@ async def reply_to_client(
     return await service.add_reply(
         ticket_id=ticket_id,
         request=request,
-        agent_name=agent_name,
+        current_user=current_user,
     )
 
 
@@ -292,10 +276,7 @@ async def reply_to_client(
 async def change_ticket_status(
     ticket_id: UUID,
     request: StatusChangeRequest,
-    agent_name: str | None = Query(
-        default=None,
-        description="The agent making this change. Recorded as the audit actor.",
-    ),
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -316,7 +297,7 @@ async def change_ticket_status(
     return await service.change_status(
         ticket_id=ticket_id,
         request=request,
-        agent_name=agent_name,
+        current_user=current_user,
     )
 
 
@@ -332,10 +313,7 @@ async def change_ticket_status(
 async def change_ticket_priority(
     ticket_id: UUID,
     request: PriorityChangeRequest,
-    agent_name: str | None = Query(
-        default=None,
-        description="The agent making this change. Recorded as the audit actor.",
-    ),
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -356,7 +334,7 @@ async def change_ticket_priority(
     return await service.change_priority(
         ticket_id=ticket_id,
         request=request,
-        agent_name=agent_name,
+        current_user=current_user,
     )
 
 
@@ -372,10 +350,7 @@ async def change_ticket_priority(
 async def upload_ticket_attachment(
     ticket_id: UUID,
     files: list[UploadFile] = File(...),
-    agent_name: str | None = Form(
-        default=None,
-        description="The agent uploading these files. Recorded as the audit actor.",
-    ),
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -388,20 +363,18 @@ async def upload_ticket_attachment(
     attachment_repository = AttachmentRepository(db)
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
-    user_repository = UserRepository(db)
 
     service = AttachmentService(
         attachment_repository=attachment_repository,
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         storage_service=get_storage_service(),
-        user_repository=user_repository,
     )
 
     return await service.upload_attachment(
         ticket_id=ticket_id,
         files=files,
-        agent_name=agent_name,
+        current_user=current_user,
     )
 
 
@@ -418,10 +391,7 @@ async def hide_ticket_interaction(
     ticket_id: UUID,
     interaction_id: UUID,
     request: HideInteractionRequest,
-    agent_name: str | None = Query(
-        default=None,
-        description="The agent hiding this interaction. Recorded as the audit actor.",
-    ),
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -446,7 +416,7 @@ async def hide_ticket_interaction(
         ticket_id=ticket_id,
         interaction_id=interaction_id,
         request=request,
-        agent_name=agent_name,
+        current_user=current_user,
     )
 
 
@@ -462,10 +432,7 @@ async def hide_ticket_interaction(
 async def transfer_ticket_agent(
     ticket_id: UUID,
     request: TransferAgentRequest,
-    agent_name: str | None = Query(
-        default=None,
-        description="The agent making this transfer. Recorded as the audit actor.",
-    ),
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -488,7 +455,7 @@ async def transfer_ticket_agent(
     return await service.transfer_agent(
         ticket_id=ticket_id,
         request=request,
-        agent_name=agent_name,
+        current_user=current_user,
     )
 
 
@@ -504,10 +471,7 @@ async def transfer_ticket_agent(
 async def update_ticket(
     ticket_id: UUID,
     request: TicketUpdate,
-    agent_name: str | None = Query(
-        default=None,
-        description="The agent making this change. Recorded as the audit actor.",
-    ),
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -530,7 +494,7 @@ async def update_ticket(
     return await service.update(
         ticket_id=ticket_id,
         request=request,
-        agent_name=agent_name,
+        current_user=current_user,
     )
 
 
@@ -544,18 +508,13 @@ async def update_ticket(
     status_code=status.HTTP_200_OK,
 )
 async def list_tickets(
-    agent_name: str | None = Query(
-        default=None,
-        description=(
-            "Restrict results to tickets assigned to this agent "
-            "(unassigned tickets are always included). Omit to "
-            "return every ticket."
-        ),
-    ),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Returns tickets, most recently created first.
+    Returns tickets, most recently created first. Staff sees only
+    tickets assigned to them (plus unassigned ones); Team Lead/
+    Manager/Super Admin see every ticket.
     """
 
     ticket_repository = TicketRepository(db)
@@ -566,7 +525,7 @@ async def list_tickets(
         user_repository=user_repository,
     )
 
-    return await service.list_all(agent_name=agent_name)
+    return await service.list_all(current_user=current_user)
 
 
 # =========================================================
@@ -580,13 +539,7 @@ async def list_tickets(
 )
 async def get_ticket(
     ticket_id: UUID,
-    agent_name: str | None = Query(
-        default=None,
-        description=(
-            "The agent viewing this ticket. If provided and the "
-            "ticket is assigned to someone else, returns 403."
-        ),
-    ),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -605,4 +558,4 @@ async def get_ticket(
         user_repository=user_repository,
     )
 
-    return await service.get_by_id(ticket_id, agent_name=agent_name)
+    return await service.get_by_id(ticket_id, current_user=current_user)

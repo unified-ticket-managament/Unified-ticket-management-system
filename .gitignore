@@ -1,0 +1,26 @@
+# Top-level, cross-cutting ignores for this monorepo. Each service folder
+# (rbac-service/, ticketing-service/, shared_models/) also keeps its own
+# nested .gitignore for service-specific patterns — this file supplements
+# those, it doesn't replace them.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node
+node_modules/
+.next/
+
+# Env files
+.env
+.env.local
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
