@@ -136,7 +136,9 @@ services:
   - type: web
     name: ticketing-frontend
     runtime: static
-    plan: free
+    # No `plan` field here — static sites have no compute dyno/tier (Render
+    # serves them free off a CDN), and Render rejects `plan: free` for
+    # runtime: static specifically (it's valid on the other 3 services above).
     rootDir: ticketing-service/frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: ./dist
