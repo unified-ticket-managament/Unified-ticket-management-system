@@ -29,9 +29,11 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { EmptyState } from "@/components/shared/stats";
 import { useToast } from "@/hooks/use-toast";
 import { cn, formatDate } from "@/lib/utils";
+import { ROLE_NAMES } from "@/lib/role-access";
 import { permissionService, roleService, userService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 import { Permission, Role, User } from "@/types";
@@ -69,7 +71,20 @@ interface UserDetailDrawerProps {
 export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const canEdit = useAuthStore((s) => s.hasPermission("permission:update"));
+  const currentUser = useAuthStore((s) => s.user);
+
+  // Super Admin can assign any permission. A Manager can only assign
+  // permissions they personally hold — they can never grant something they
+  // don't have themselves. Team Lead / Staff / Viewer cannot manage
+  // permissions at all (read-only).
+  const isManagerActor = currentUser?.role === ROLE_NAMES.MANAGER;
+  const canManagePermissions =
+    currentUser?.role === ROLE_NAMES.SUPER_ADMIN || isManagerActor;
+
+  const isPermissionAssignable = (permissionName: string) => {
+    if (!isManagerActor) return true;
+    return currentUser?.permissions.includes(permissionName) ?? false;
+  };
 
   const [selectedPermissionIds, setSelectedPermissionIds] = useState<Set<string>>(new Set());
   const [initialPermissionIds, setInitialPermissionIds] = useState<Set<string>>(new Set());
@@ -125,6 +140,14 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
     [allUsers, user]
   );
 
+  // Reporting Structure visibility depends on the SELECTED user's role, not
+  // the viewer's role: a Manager reports to no one, a Team Lead only
+  // reports to a Manager, Staff report to both, and Super Admin has no
+  // reporting structure at all.
+  const showReportingManager = roleName === ROLE_NAMES.TEAM_LEAD || roleName === ROLE_NAMES.STAFF;
+  const showReportingTeamLead = roleName === ROLE_NAMES.STAFF;
+  const showReportingStructure = showReportingManager || showReportingTeamLead;
+
   const groups = useMemo(() => {
     const map = new Map<string, Permission[]>();
     allPermissions.forEach((permission) => {
@@ -157,6 +180,7 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
     setSelectedPermissionIds((prev) => {
       const next = new Set(prev);
       groupPermissions.forEach((permission) => {
+        if (isManagerActor && !isPermissionAssignable(permission.permission_name)) return;
         if (checked) next.add(permission.permission_id);
         else next.delete(permission.permission_id);
       });
@@ -165,8 +189,20 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
   };
 
   const updateMutation = useMutation({
-    mutationFn: () =>
-      permissionService.updateRolePermissions(user!.role_id, Array.from(selectedPermissionIds)),
+    mutationFn: () => {
+      // Defensive backstop: a Manager's save can never include a permission
+      // they don't personally hold, even if it was somehow present in
+      // selectedPermissionIds. The UI already prevents this via disabled
+      // checkboxes; this just guarantees it at the request boundary.
+      const payload = isManagerActor
+        ? Array.from(selectedPermissionIds).filter((id) => {
+            const permission = allPermissions.find((p) => p.permission_id === id);
+            return !permission || isPermissionAssignable(permission.permission_name);
+          })
+        : Array.from(selectedPermissionIds);
+
+      return permissionService.updateRolePermissions(user!.role_id, payload);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["role-permissions", user?.role_id] });
       toast({
@@ -233,20 +269,6 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
                   </Badge>
                 </dd>
               </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">Manager</dt>
-                <dd className="mt-1 flex items-center gap-1.5 text-sm font-medium">
-                  <UserCog className="h-3.5 w-3.5 text-muted-foreground" />
-                  {managerName}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs text-muted-foreground">Team Lead</dt>
-                <dd className="mt-1 flex items-center gap-1.5 text-sm font-medium">
-                  <UsersIcon className="h-3.5 w-3.5 text-muted-foreground" />
-                  {teamLeadName}
-                </dd>
-              </div>
               <div className="col-span-2">
                 <dt className="text-xs text-muted-foreground">Created Date</dt>
                 <dd className="mt-1 flex items-center gap-1.5 text-sm font-medium">
@@ -256,13 +278,53 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
               </div>
             </dl>
 
+            {/* Reporting Structure — visibility depends on the selected
+                user's role. Hidden entirely for Manager and Super Admin. */}
+            {showReportingStructure && (
+              <div className="mt-4 rounded-xl border border-border p-4">
+                <p className="mb-3 text-xs font-medium text-muted-foreground">Reporting Structure</p>
+                <dl
+                  className={cn(
+                    "grid gap-4",
+                    showReportingManager && showReportingTeamLead ? "grid-cols-2" : "grid-cols-1"
+                  )}
+                >
+                  {showReportingManager && (
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Reporting Manager</dt>
+                      <dd className="mt-1 flex items-center gap-1.5 text-sm font-medium">
+                        <UserCog className="h-3.5 w-3.5 text-muted-foreground" />
+                        {managerName}
+                      </dd>
+                    </div>
+                  )}
+                  {showReportingTeamLead && (
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Reporting Team Lead</dt>
+                      <dd className="mt-1 flex items-center gap-1.5 text-sm font-medium">
+                        <UsersIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                        {teamLeadName}
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+              </div>
+            )}
+
             {/* Permission Section */}
             <div className="mt-6">
               <h3 className="mb-3 text-sm font-semibold">Permissions for the {roleName} role</h3>
 
-              {!canEdit && (
+              {!canManagePermissions && (
                 <div className="mb-3 rounded-lg border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground">
                   You don&apos;t have permission to modify role permissions. Viewing in read-only mode.
+                </div>
+              )}
+
+              {canManagePermissions && isManagerActor && (
+                <div className="mb-3 rounded-lg border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground">
+                  You can only assign permissions that you personally hold. Permissions you don&apos;t
+                  have are shown disabled below.
                 </div>
               )}
 
@@ -275,59 +337,84 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
               ) : groups.length === 0 ? (
                 <EmptyState title="No permissions found" description="No permissions are configured yet." />
               ) : (
-                <div className="space-y-4">
-                  {groups.map(([key, groupPermissions]) => {
-                    const Icon = groupIcon(key);
-                    const selectedCount = groupPermissions.filter((p) =>
-                      selectedPermissionIds.has(p.permission_id)
-                    ).length;
-                    const allSelected = selectedCount === groupPermissions.length;
-                    const someSelected = selectedCount > 0 && !allSelected;
+                <TooltipProvider delayDuration={200}>
+                  <div className="space-y-4">
+                    {groups.map(([key, groupPermissions]) => {
+                      const Icon = groupIcon(key);
+                      const selectedCount = groupPermissions.filter((p) =>
+                        selectedPermissionIds.has(p.permission_id)
+                      ).length;
+                      const allSelected = selectedCount === groupPermissions.length;
+                      const someSelected = selectedCount > 0 && !allSelected;
+                      const groupHasAssignable = groupPermissions.some((p) =>
+                        isPermissionAssignable(p.permission_name)
+                      );
+                      const groupCheckboxDisabled =
+                        !canManagePermissions || (isManagerActor && !groupHasAssignable);
 
-                    return (
-                      <div key={key} className="rounded-xl border border-border">
-                        <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
-                          <p className="flex items-center gap-2 text-sm font-medium">
-                            <Icon className="h-4 w-4 text-primary" />
-                            {groupLabel(key)}
-                            <Badge variant="secondary" className="ml-1">
-                              {selectedCount}/{groupPermissions.length}
-                            </Badge>
-                          </p>
-                          <Checkbox
-                            checked={allSelected || (someSelected && "indeterminate")}
-                            disabled={!canEdit}
-                            onCheckedChange={(checked) => toggleGroup(groupPermissions, !!checked)}
-                            aria-label={`Select all ${groupLabel(key)} permissions`}
-                          />
+                      return (
+                        <div key={key} className="rounded-xl border border-border">
+                          <div className="flex items-center justify-between border-b border-border px-3 py-2.5">
+                            <div className="flex items-center gap-2 text-sm font-medium">
+                              <Icon className="h-4 w-4 text-primary" />
+                              {groupLabel(key)}
+                              <Badge variant="secondary" className="ml-1">
+                                {selectedCount}/{groupPermissions.length}
+                              </Badge>
+                            </div>
+                            <Checkbox
+                              checked={allSelected || (someSelected && "indeterminate")}
+                              disabled={groupCheckboxDisabled}
+                              onCheckedChange={(checked) => toggleGroup(groupPermissions, !!checked)}
+                              aria-label={`Select all ${groupLabel(key)} permissions`}
+                            />
+                          </div>
+                          <div className="space-y-0.5 p-2">
+                            {groupPermissions.map((permission) => {
+                              const lockedByOwnership =
+                                isManagerActor && !isPermissionAssignable(permission.permission_name);
+                              const checkboxDisabled = !canManagePermissions || lockedByOwnership;
+
+                              const row = (
+                                <motion.label
+                                  htmlFor={`drawer-${permission.permission_id}`}
+                                  whileTap={!checkboxDisabled ? { scale: 0.98 } : undefined}
+                                  className={cn(
+                                    "flex cursor-pointer items-center gap-3 rounded-lg p-2 transition-colors hover:bg-muted/50",
+                                    checkboxDisabled && "cursor-not-allowed opacity-70"
+                                  )}
+                                >
+                                  <Checkbox
+                                    id={`drawer-${permission.permission_id}`}
+                                    checked={selectedPermissionIds.has(permission.permission_id)}
+                                    disabled={checkboxDisabled}
+                                    onCheckedChange={(checked) =>
+                                      togglePermission(permission.permission_id, !!checked)
+                                    }
+                                  />
+                                  <span className="font-mono text-sm">{permission.permission_name}</span>
+                                </motion.label>
+                              );
+
+                              if (!lockedByOwnership) {
+                                return <div key={permission.permission_id}>{row}</div>;
+                              }
+
+                              return (
+                                <Tooltip key={permission.permission_id}>
+                                  <TooltipTrigger asChild>
+                                    <div>{row}</div>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Permission not available for your role.</TooltipContent>
+                                </Tooltip>
+                              );
+                            })}
+                          </div>
                         </div>
-                        <div className="space-y-0.5 p-2">
-                          {groupPermissions.map((permission) => (
-                            <motion.label
-                              key={permission.permission_id}
-                              htmlFor={`drawer-${permission.permission_id}`}
-                              whileTap={canEdit ? { scale: 0.98 } : undefined}
-                              className={cn(
-                                "flex cursor-pointer items-center gap-3 rounded-lg p-2 transition-colors hover:bg-muted/50",
-                                !canEdit && "cursor-not-allowed opacity-70"
-                              )}
-                            >
-                              <Checkbox
-                                id={`drawer-${permission.permission_id}`}
-                                checked={selectedPermissionIds.has(permission.permission_id)}
-                                disabled={!canEdit}
-                                onCheckedChange={(checked) =>
-                                  togglePermission(permission.permission_id, !!checked)
-                                }
-                              />
-                              <span className="font-mono text-sm">{permission.permission_name}</span>
-                            </motion.label>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
+                </TooltipProvider>
               )}
             </div>
           </div>
@@ -337,7 +424,7 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
           <Button type="button" variant="outline" onClick={handleCancel}>
             Cancel
           </Button>
-          {canEdit && (
+          {canManagePermissions && (
             <Button
               type="button"
               onClick={() => updateMutation.mutate()}
