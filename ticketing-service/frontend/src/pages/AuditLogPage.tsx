@@ -9,6 +9,7 @@ import { EmptyState } from "@/components/common/EmptyState";
 import { SkeletonRows } from "@/components/common/Skeleton";
 import { listTickets } from "@/api/ticket";
 import { getTicketAuditLogs } from "@/api/auditLog";
+import { useAuthContext } from "@/context/AuthContext";
 import { useWorkflowContext } from "@/context/WorkflowContext";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { formatDateTime } from "@/lib/format";
@@ -56,7 +57,8 @@ const selectClass =
 
 export function AuditLogPage() {
   const navigate = useNavigate();
-  const { agentName, agents } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
+  const { agents } = useWorkflowContext();
 
   const [rows, setRows] = useState<AuditRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -83,10 +85,10 @@ export function AuditLogPage() {
         // Same visibility scoping as every other cross-ticket view in
         // this app (Interactions page, Inbox): this agent's tickets
         // plus anything still unassigned.
-        const tickets = await listTickets(agentName);
+        const tickets = await listTickets();
         const perTicket = await Promise.all(
           tickets.map(async (ticket) => {
-            const logs = await getTicketAuditLogs(ticket.ticket_id, agentName);
+            const logs = await getTicketAuditLogs(ticket.ticket_id);
             return logs.map<AuditRow>((log) => ({
               auditId: log.audit_id,
               createdAt: log.created_at,
@@ -119,7 +121,7 @@ export function AuditLogPage() {
         if (requestId === requestIdRef.current) setIsLoading(false);
       }
     },
-    [agentName]
+    []
   );
 
   useEffect(() => {
@@ -172,7 +174,7 @@ export function AuditLogPage() {
   return (
     <AppLayout
       title="Audit Log"
-      description={`Immutable record of every ticket change across tickets assigned to ${agentName}.`}
+      description={`Immutable record of every ticket change across tickets assigned to ${currentUser?.name}.`}
     >
       <div className="flex flex-col gap-4">
         <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2.5 rounded-md2 border border-border bg-surface p-3.5 shadow-xs">

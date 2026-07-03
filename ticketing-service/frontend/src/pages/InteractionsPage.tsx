@@ -12,6 +12,7 @@ import { listTickets } from "@/api/ticket";
 import { getTicketTimeline, hideInteractionById } from "@/api/interaction";
 import { useApiAction } from "@/hooks/useApiAction";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useAuthContext } from "@/context/AuthContext";
 import { useWorkflowContext } from "@/context/WorkflowContext";
 import { shortId, formatDateTime } from "@/lib/format";
 import { metaFor, summarize } from "@/lib/interactionMeta";
@@ -49,7 +50,8 @@ const selectClass =
 
 export function InteractionsPage() {
   const navigate = useNavigate();
-  const { agentName, agents } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
+  const { agents } = useWorkflowContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const ticketIdParam = searchParams.get("ticketId");
 
@@ -89,11 +91,11 @@ export function InteractionsPage() {
       // Scoped to tickets this agent can see (their assignments,
       // plus anything still unassigned) — matches ticket-level
       // visibility rules so interactions never leak across agents.
-      const tickets = await listTickets(agentName);
+      const tickets = await listTickets();
       const ticketRows = (
         await Promise.all(
           tickets.map(async (ticket) => {
-            const timeline = await getTicketTimeline(ticket.ticket_id, agentName);
+            const timeline = await getTicketTimeline(ticket.ticket_id);
             return timeline
               .filter((item) => !HIDDEN_INTERACTION_TYPES.has(item.interaction_type))
               .map<InteractionRow>((item: InteractionResponse) => ({
@@ -115,23 +117,23 @@ export function InteractionsPage() {
         )
       ).flat();
 
-      const inbox = await getAgentInbox(agentName);
+      const inbox = await getAgentInbox();
       const pendingRows: InteractionRow[] = inbox.items.map((item) => ({
         id: item.interaction_id,
         createdAt: item.received_at,
         type: "EMAIL",
         direction: "INBOUND" as InteractionDirection,
         status: item.status,
-        agent: agentName,
+        agent: currentUser?.name ?? "—",
         ticketId: null,
         ticketTitle: null,
         clientName: item.client_name,
         summaryText: item.subject,
-        sourceAgent: agentName,
+        sourceAgent: currentUser?.name,
       }));
 
-      // A newer load already started (agent change or a manual
-      // retry) — drop this now-stale response.
+      // A newer load already started (a manual retry) — drop this
+      // now-stale response.
       if (requestId !== requestIdRef.current) return;
 
       const merged = [...pendingRows, ...ticketRows].sort(
@@ -145,7 +147,7 @@ export function InteractionsPage() {
     } finally {
       if (requestId === requestIdRef.current) setIsLoading(false);
     }
-  }, [agentName, agents]);
+  }, [agents, currentUser]);
 
   useEffect(() => {
     load();
@@ -198,8 +200,8 @@ export function InteractionsPage() {
 
     // Pending inbox rows only carry a summary until opened — fetch
     // the full email (same endpoint the inbox page already uses).
-    if (!row.ticketId && row.sourceAgent) {
-      const detail = await runOpenEmail(row.sourceAgent, row.id);
+    if (!row.ticketId) {
+      const detail = await runOpenEmail(row.id);
       if (detail) setDrawerEmail(detail);
     }
   }
@@ -215,7 +217,7 @@ export function InteractionsPage() {
 
   async function handleHide(row: InteractionRow, e: React.MouseEvent) {
     e.stopPropagation();
-    const result = await runHide(row.id, { removed_by: null }, agentName);
+    const result = await runHide(row.id, { removed_by: null });
     if (result) {
       setRows((prev) => prev.filter((r) => r.id !== row.id));
     }
@@ -227,7 +229,7 @@ export function InteractionsPage() {
       description={
         ticketIdParam
           ? "Interactions for this ticket."
-          : `Emails and activity across tickets assigned to ${agentName}.`
+          : `Emails and activity across tickets assigned to ${currentUser?.name}.`
       }
     >
       <div className="flex flex-col gap-4">

@@ -1,6 +1,5 @@
 import { NavLink } from "react-router-dom";
 import {
-  ChevronsUpDown,
   Inbox,
   LayoutDashboard,
   LogOut,
@@ -10,9 +9,7 @@ import {
   Ticket,
   X,
 } from "lucide-react";
-import { useWorkflowContext } from "@/context/WorkflowContext";
-import { useToast } from "@/context/ToastContext";
-import { DEFAULT_AGENT } from "@/lib/agents";
+import { useAuthContext } from "@/context/AuthContext";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -38,18 +35,11 @@ interface SidebarProps {
 }
 
 export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
-  const { agentName, setAgentName, agents, setSelectedEmail, setActiveTicket, setTimeline } =
-    useWorkflowContext();
-  const { pushToast } = useToast();
+  const { currentUser, logout } = useAuthContext();
 
   function handleLogout() {
-    const resetAgent = agents[0]?.name ?? DEFAULT_AGENT;
-    setSelectedEmail(null);
-    setActiveTicket(null);
-    setTimeline([]);
-    setAgentName(resetAgent);
-    pushToast("Session cleared. Acting as " + resetAgent + ".", "info");
     onCloseMobile();
+    logout();
   }
 
   return (
@@ -130,10 +120,10 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
         </nav>
 
         <div className="border-t border-border p-3">
-          <div className="group relative flex items-center gap-2.5 rounded-md2 px-2.5 py-2.5 transition-colors hover:bg-surfaceHover">
+          <div className="flex items-center gap-2.5 rounded-md2 px-2.5 py-2.5">
             <div className="relative flex-none">
               <div className="flex h-9 w-9 items-center justify-center rounded-full bg-accent/10 text-xs font-semibold text-accent">
-                {initials(agentName)}
+                {initials(currentUser?.name ?? "")}
               </div>
               <span
                 className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface bg-success"
@@ -141,25 +131,13 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
               />
             </div>
             <div className="min-w-0 flex-1">
-              <select
-                value={agentName}
-                onChange={(e) => setAgentName(e.target.value)}
-                className="w-full cursor-pointer truncate bg-transparent text-[13px] font-semibold text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                aria-label="Acting as agent"
-              >
-                {agents.length > 0 ? (
-                  agents.map((agent) => (
-                    <option key={agent.user_id} value={agent.name}>
-                      {agent.name}
-                    </option>
-                  ))
-                ) : (
-                  <option value={agentName}>{agentName}</option>
-                )}
-              </select>
-              <p className="text-[11px] leading-none text-muted">Agent · Active</p>
+              <p className="truncate text-[13px] font-semibold text-slate-900">
+                {currentUser?.name}
+              </p>
+              <p className="truncate text-[11px] leading-none text-muted">
+                {currentUser?.role} · Active
+              </p>
             </div>
-            <ChevronsUpDown size={13} className="flex-none text-muted" />
           </div>
 
           <button

@@ -14,7 +14,7 @@ import { useWorkflowContext } from "@/context/WorkflowContext";
 
 export function TicketDetailPage() {
   const { ticketId } = useParams<{ ticketId: string }>();
-  const { agentName, activeTicket, setActiveTicket, setTimeline } = useWorkflowContext();
+  const { activeTicket, setActiveTicket, setTimeline } = useWorkflowContext();
   const [composerMode, setComposerMode] = useState<ComposerMode | null>(null);
   const [activityTab, setActivityTab] = useState<ActivityTab>("timeline");
   // Bumped after any refresh so the Audit Log tab refetches
@@ -26,28 +26,28 @@ export function TicketDetailPage() {
 
   const refreshTimeline = useCallback(async () => {
     if (!ticketId) return;
-    const items = await runGetTimeline(ticketId, agentName);
+    const items = await runGetTimeline(ticketId);
     if (items) setTimeline(items);
     setAuditRefreshToken((token) => token + 1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticketId, agentName, runGetTimeline, setTimeline]);
+  }, [ticketId, runGetTimeline, setTimeline]);
 
   const refreshAll = useCallback(async () => {
     if (!ticketId) return;
-    const ticket = await runGetTicket(ticketId, agentName);
+    const ticket = await runGetTicket(ticketId);
     // Explicitly clear on failure (e.g. transferred away from the
     // current agent) so the page drops to the empty state instead
     // of continuing to show stale, no-longer-accessible data.
     setActiveTicket(ticket);
     await refreshTimeline();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticketId, agentName]);
+  }, [ticketId]);
 
   useEffect(() => {
     refreshAll();
     setComposerMode(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticketId, agentName]);
+  }, [ticketId]);
 
   const showEmptyState = !isLoadingTicket && (!activeTicket || activeTicket.ticket_id !== ticketId);
 

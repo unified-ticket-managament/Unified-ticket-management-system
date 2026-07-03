@@ -16,7 +16,7 @@ interface TicketComposerProps {
 }
 
 export function TicketComposer({ mode, onClose, onSent }: TicketComposerProps) {
-  const { activeTicket, agentName } = useWorkflowContext();
+  const { activeTicket } = useWorkflowContext();
   const [message, setMessage] = useState("");
 
   const { run: runReply, isLoading: isReplyLoading } = useApiAction(replyToClient, {
@@ -35,8 +35,8 @@ export function TicketComposer({ mode, onClose, onSent }: TicketComposerProps) {
     if (!activeTicket || !message.trim()) return;
 
     const result = isReply
-      ? await runReply(activeTicket.ticket_id, { message }, agentName)
-      : await runNote(activeTicket.ticket_id, { note: message }, agentName);
+      ? await runReply(activeTicket.ticket_id, { message })
+      : await runNote(activeTicket.ticket_id, { note: message });
 
     if (result) {
       setMessage("");

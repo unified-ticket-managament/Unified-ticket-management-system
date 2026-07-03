@@ -37,7 +37,7 @@ interface TicketTimelineProps {
 
 export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps) {
   const { ticketId } = useParams<{ ticketId: string }>();
-  const { activeTicket, timeline, agentName } = useWorkflowContext();
+  const { activeTicket, timeline } = useWorkflowContext();
 
   // Every interaction is already timestamped by the backend —
   // sort newest first rather than trusting call-site ordering.
@@ -51,12 +51,9 @@ export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps)
 
   async function handleHide(interactionId: string) {
     if (!activeTicket) return;
-    const result = await runHide(
-      activeTicket.ticket_id,
-      interactionId,
-      { removed_by: null },
-      agentName
-    );
+    const result = await runHide(activeTicket.ticket_id, interactionId, {
+      removed_by: null,
+    });
     if (result) onChanged();
   }
 

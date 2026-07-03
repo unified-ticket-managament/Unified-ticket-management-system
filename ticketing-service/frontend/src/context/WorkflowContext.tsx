@@ -11,27 +11,23 @@ import type {
   OpenEmailResponse,
   TicketResponse,
 } from "@/types";
-import { DEFAULT_AGENT } from "@/lib/agents";
 import { listAgents } from "@/api/agent";
 
 // ==========================================================
 // WorkflowContext
 //
-// Frontend-only construct that remembers which agent identity
-// is currently acting, and which email/ticket/timeline the
-// user last touched, so pages can hand off to each other
-// without re-fetching everything on every navigation.
+// Frontend-only construct that remembers which email/ticket/timeline
+// the user last touched, so pages can hand off to each other without
+// re-fetching everything on every navigation. The acting identity
+// itself now lives in AuthContext (the real logged-in RBAC user),
+// not here.
 // ==========================================================
 
 interface WorkflowContextValue {
-  agentName: string;
-  setAgentName: (name: string) => void;
-
   // Real active Staff users from the backend (the same pool the
-  // auto-assignment routing picks from) — the agent switcher must
-  // list every name routing can actually land on, or newly created
-  // emails can end up assigned to an agent the UI has no way to
-  // act as. Empty until the initial fetch resolves.
+  // auto-assignment routing picks from) — used to populate agent
+  // pickers (e.g. Transfer Agent) with real users. Empty until the
+  // initial fetch resolves.
   agents: AgentSummary[];
 
   selectedEmail: OpenEmailResponse | null;
@@ -49,7 +45,6 @@ const WorkflowContext = createContext<WorkflowContextValue | undefined>(
 );
 
 export function WorkflowProvider({ children }: { children: ReactNode }) {
-  const [agentName, setAgentName] = useState<string>(DEFAULT_AGENT);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<OpenEmailResponse | null>(
     null
@@ -64,19 +59,10 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
 
     listAgents()
       .then((fetched) => {
-        if (cancelled || fetched.length === 0) return;
-        setAgents(fetched);
-        // The hardcoded default may not even be a real Staff member
-        // (or may not be the one routing currently favors) — once
-        // the real directory is in, snap to a name that's actually
-        // in it so the UI is never "acting as" someone who can't
-        // receive anything.
-        setAgentName((current) =>
-          fetched.some((a) => a.name === current) ? current : fetched[0].name
-        );
+        if (!cancelled) setAgents(fetched);
       })
       .catch(() => {
-        // Keep the hardcoded fallback — better than a broken switcher.
+        // Keep the empty list — better than a broken picker.
       });
 
     return () => {
@@ -85,8 +71,6 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value: WorkflowContextValue = {
-    agentName,
-    setAgentName,
     agents,
     selectedEmail,
     setSelectedEmail,

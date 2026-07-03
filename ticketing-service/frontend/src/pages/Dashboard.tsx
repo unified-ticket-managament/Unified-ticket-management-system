@@ -20,7 +20,7 @@ import { SkeletonRows } from "@/components/common/Skeleton";
 import { getAgentInbox } from "@/api/agent";
 import { listTickets } from "@/api/ticket";
 import { useToast } from "@/context/ToastContext";
-import { useWorkflowContext } from "@/context/WorkflowContext";
+import { useAuthContext } from "@/context/AuthContext";
 import { formatDateTime } from "@/lib/format";
 import { statusTone } from "@/lib/ticketTone";
 import type { TicketResponse, TicketStatus } from "@/types";
@@ -118,7 +118,7 @@ function QuickAction({
 
 export function Dashboard() {
   const { pushToast } = useToast();
-  const { agentName } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
   const [tickets, setTickets] = useState<TicketResponse[]>([]);
   const [pendingInboxCount, setPendingInboxCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -129,10 +129,7 @@ export function Dashboard() {
     async function load() {
       setIsLoading(true);
       try {
-        const [ticketList, inbox] = await Promise.all([
-          listTickets(agentName),
-          getAgentInbox(agentName),
-        ]);
+        const [ticketList, inbox] = await Promise.all([listTickets(), getAgentInbox()]);
         if (cancelled) return;
         setTickets(ticketList);
         setPendingInboxCount(inbox.total);
@@ -151,7 +148,7 @@ export function Dashboard() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentName]);
+  }, []);
 
   const assignedCount = tickets.filter((t) => t.agent_id).length;
   const openCount = tickets.filter((t) => OPEN_STATUSES.includes(t.current_status)).length;
@@ -189,7 +186,7 @@ export function Dashboard() {
   const funnelMax = Math.max(1, ...funnelStages.map((s) => s.count));
 
   return (
-    <AppLayout title="Dashboard" description={`Your workspace overview, ${agentName}.`}>
+    <AppLayout title="Dashboard" description={`Your workspace overview, ${currentUser?.name}.`}>
       <div className="flex flex-col gap-7">
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
           <StatCard

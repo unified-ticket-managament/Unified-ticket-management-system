@@ -29,7 +29,7 @@ interface TicketAuditLogProps {
 }
 
 export function TicketAuditLog({ refreshToken, flat = false }: TicketAuditLogProps) {
-  const { activeTicket, agentName } = useWorkflowContext();
+  const { activeTicket } = useWorkflowContext();
   const ticketId = activeTicket?.ticket_id;
 
   const [entries, setEntries] = useState<
@@ -47,7 +47,7 @@ export function TicketAuditLog({ refreshToken, flat = false }: TicketAuditLogPro
     async function load(showLoading: boolean) {
       if (showLoading) setIsLoading(true);
       try {
-        const data = await getTicketAuditLogs(ticketId!, agentName);
+        const data = await getTicketAuditLogs(ticketId!);
         if (!cancelled && thisRequestId === requestIdRef.current) {
           setEntries(data);
         }
@@ -68,7 +68,7 @@ export function TicketAuditLog({ refreshToken, flat = false }: TicketAuditLogPro
       window.clearInterval(interval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticketId, agentName, refreshToken]);
+  }, [ticketId, refreshToken]);
 
   return (
     <Card

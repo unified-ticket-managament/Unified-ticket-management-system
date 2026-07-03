@@ -7,21 +7,16 @@ export async function listAgents(): Promise<AgentSummary[]> {
   return data;
 }
 
-// GET /agents/{agent_name}/inbox
-export async function getAgentInbox(agentName: string): Promise<InboxResponse> {
-  const { data } = await apiClient.get<InboxResponse>(
-    `/agents/${encodeURIComponent(agentName)}/inbox`
-  );
+// GET /agents/me/inbox — the authenticated agent's own pending inbox.
+export async function getAgentInbox(): Promise<InboxResponse> {
+  const { data } = await apiClient.get<InboxResponse>("/agents/me/inbox");
   return data;
 }
 
-// GET /agents/{agent_name}/inbox/{interaction_id}
-export async function openEmail(
-  agentName: string,
-  interactionId: string
-): Promise<OpenEmailResponse> {
+// GET /agents/me/inbox/{interaction_id}
+export async function openEmail(interactionId: string): Promise<OpenEmailResponse> {
   const { data } = await apiClient.get<OpenEmailResponse>(
-    `/agents/${encodeURIComponent(agentName)}/inbox/${interactionId}`
+    `/agents/me/inbox/${interactionId}`
   );
   return data;
 }

@@ -4,7 +4,7 @@ import { Bell, Mail, Menu, Moon, Search, Sun } from "lucide-react";
 import { useApiAction } from "@/hooks/useApiAction";
 import { getAgentInbox } from "@/api/agent";
 import { getTicket } from "@/api/ticket";
-import { useWorkflowContext } from "@/context/WorkflowContext";
+import { useAuthContext } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { useToast } from "@/context/ToastContext";
 import { formatDateTime } from "@/lib/format";
@@ -31,7 +31,7 @@ function initials(name: string) {
 
 export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
   const navigate = useNavigate();
-  const { agentName } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
   const { theme, toggleTheme } = useTheme();
   const { pushToast } = useToast();
   const [ticketId, setTicketId] = useState("");
@@ -48,7 +48,7 @@ export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
 
     async function load() {
       try {
-        const data = await getAgentInbox(agentName);
+        const data = await getAgentInbox();
         if (!cancelled) setInbox(data);
       } catch {
         // ignore
@@ -62,7 +62,7 @@ export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [agentName]);
+  }, []);
 
   async function handleJump(e: React.FormEvent) {
     e.preventDefault();
@@ -72,7 +72,7 @@ export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
       pushToast("Please enter a valid ticket ID.", "error");
       return;
     }
-    const ticket = await runGetTicket(trimmed, agentName);
+    const ticket = await runGetTicket(trimmed);
     if (ticket) {
       setTicketId("");
       navigate(`/tickets/${ticket.ticket_id}`);
@@ -200,12 +200,12 @@ export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
         <div className="hidden items-center gap-2.5 rounded-md2 border border-border bg-surface py-1.5 pl-1.5 pr-3 sm:flex">
           <div className="relative flex-none">
             <div className="flex h-7 w-7 items-center justify-center rounded-full bg-accent/10 text-[11px] font-semibold text-accent">
-              {initials(agentName)}
+              {initials(currentUser?.name ?? "")}
             </div>
             <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border-2 border-white bg-success" />
           </div>
           <span className="max-w-[9rem] truncate text-[13px] font-medium text-slate-700">
-            {agentName}
+            {currentUser?.name}
           </span>
         </div>
       </div>

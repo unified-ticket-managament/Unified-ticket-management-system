@@ -61,6 +61,21 @@ export interface AgentSummary {
 }
 
 // ==========================================================
+// Auth — RBAC-issued identity (login/refresh/me all live on
+// the RBAC service, this app only consumes them)
+// ==========================================================
+
+export interface CurrentUser {
+  user_id: string;
+  name: string;
+  email: string;
+  role: string;
+  role_id: string;
+  is_active: boolean;
+  permissions: string[];
+}
+
+// ==========================================================
 // Agent Inbox
 // ==========================================================
 

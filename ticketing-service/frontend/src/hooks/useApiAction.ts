@@ -10,14 +10,11 @@ import { useToast } from "@/context/ToastContext";
 // the result, and let the caller react to success.
 //
 // Guards against stale responses: if `run()` is called again
-// before a previous call resolves (e.g. an effect re-fires when
-// `agentName` changes while the old fetch for the previous agent
-// is still in flight), only the *latest* call is allowed to show
-// a toast or flip `isLoading` back off. Without this, a slow,
-// now-irrelevant response can resolve after a newer one already
-// succeeded and show a confusing/incorrect toast (this was the
-// root cause of the "brief blank flash + wrong error toast" seen
-// when switching agents and navigating in the same tick).
+// before a previous call resolves (e.g. an effect re-fires while
+// the old fetch is still in flight), only the *latest* call is
+// allowed to show a toast or flip `isLoading` back off. Without
+// this, a slow, now-irrelevant response can resolve after a newer
+// one already succeeded and show a confusing/incorrect toast.
 // ==========================================================
 
 export function useApiAction<TArgs extends unknown[], TResult>(

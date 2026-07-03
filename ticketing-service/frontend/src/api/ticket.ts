@@ -10,11 +10,11 @@ import type {
   TransferAgentRequest,
 } from "@/types";
 
-// GET /tickets?agent_name=...
-export async function listTickets(agentName?: string): Promise<TicketResponse[]> {
-  const { data } = await apiClient.get<TicketResponse[]>("/tickets", {
-    params: agentName ? { agent_name: agentName } : undefined,
-  });
+// GET /tickets
+// Identity comes from the Bearer token — Staff sees only their own
+// (plus unassigned) tickets, Team Lead/Manager/Super Admin see all.
+export async function listTickets(): Promise<TicketResponse[]> {
+  const { data } = await apiClient.get<TicketResponse[]>("/tickets");
   return data;
 }
 
@@ -41,27 +41,20 @@ export async function attachInteractionToTicket(
   return data;
 }
 
-// GET /tickets/{ticket_id}?agent_name=...
-export async function getTicket(
-  ticketId: string,
-  agentName?: string
-): Promise<TicketResponse> {
-  const { data } = await apiClient.get<TicketResponse>(`/tickets/${ticketId}`, {
-    params: agentName ? { agent_name: agentName } : undefined,
-  });
+// GET /tickets/{ticket_id}
+export async function getTicket(ticketId: string): Promise<TicketResponse> {
+  const { data } = await apiClient.get<TicketResponse>(`/tickets/${ticketId}`);
   return data;
 }
 
 // PATCH /tickets/{ticket_id}
 export async function updateTicket(
   ticketId: string,
-  payload: TicketUpdateRequest,
-  agentName?: string
+  payload: TicketUpdateRequest
 ): Promise<TicketResponse> {
   const { data } = await apiClient.patch<TicketResponse>(
     `/tickets/${ticketId}`,
-    payload,
-    { params: agentName ? { agent_name: agentName } : undefined }
+    payload
   );
   return data;
 }
@@ -69,13 +62,11 @@ export async function updateTicket(
 // POST /tickets/{ticket_id}/transfer
 export async function transferTicketAgent(
   ticketId: string,
-  payload: TransferAgentRequest,
-  agentName?: string
+  payload: TransferAgentRequest
 ): Promise<TicketActionResponse> {
   const { data } = await apiClient.post<TicketActionResponse>(
     `/tickets/${ticketId}/transfer`,
-    payload,
-    { params: agentName ? { agent_name: agentName } : undefined }
+    payload
   );
   return data;
 }

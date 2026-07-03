@@ -127,7 +127,7 @@ const selectClass =
   "rounded-md2 border border-border bg-surface px-2.5 py-2 text-xs font-medium text-slate-700 shadow-xs transition-colors focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";
 
 export function AgentInbox() {
-  const { agentName, selectedEmail, setSelectedEmail } = useWorkflowContext();
+  const { selectedEmail, setSelectedEmail } = useWorkflowContext();
   const { pushToast } = useToast();
 
   const [pendingItems, setPendingItems] = useState<InboxItem[]>([]);
@@ -147,18 +147,18 @@ export function AgentInbox() {
   const refresh = useCallback(async () => {
     setIsLoading(true);
     try {
-      const inbox = await getAgentInbox(agentName);
+      const inbox = await getAgentInbox();
       setPendingItems(inbox.items);
 
       // Same aggregation the Interactions page already does: this
       // agent's tickets (plus unassigned ones), timeline per ticket,
       // keep only the EMAIL interactions — those are the ones that
       // started life as an inbox item and have since been processed.
-      const tickets = await listTickets(agentName);
+      const tickets = await listTickets();
       const processed = (
         await Promise.all(
           tickets.map(async (ticket) => {
-            const timeline = await getTicketTimeline(ticket.ticket_id, agentName);
+            const timeline = await getTicketTimeline(ticket.ticket_id);
             return timeline
               .filter((interaction) => interaction.interaction_type === "EMAIL")
               .map<InboxRow>((interaction) => ({
@@ -185,16 +185,15 @@ export function AgentInbox() {
     } finally {
       setIsLoading(false);
     }
-  }, [agentName, pushToast]);
+  }, [pushToast]);
 
   useEffect(() => {
     refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentName]);
+  }, [refresh]);
 
   async function handleOpen(interactionId: string) {
     setOpeningId(interactionId);
-    const result = await runOpen(agentName, interactionId);
+    const result = await runOpen(interactionId);
     setOpeningId(null);
 
     if (result) {

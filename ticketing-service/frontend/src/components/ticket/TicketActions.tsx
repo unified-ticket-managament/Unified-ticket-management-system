@@ -81,7 +81,7 @@ interface TicketActionsProps {
 }
 
 export function TicketActions({ onActionComplete, onOpenComposer }: TicketActionsProps) {
-  const { activeTicket, agentName } = useWorkflowContext();
+  const { activeTicket } = useWorkflowContext();
   const [modal, setModal] = useState<ActiveModal>(null);
 
   const [newStatus, setNewStatus] = useState<TicketStatus>("IN_PROGRESS");
@@ -129,7 +129,7 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   }
 
   async function handleStatusChange() {
-    const result = await runStatus(activeTicket!.ticket_id, { new_status: newStatus }, agentName);
+    const result = await runStatus(activeTicket!.ticket_id, { new_status: newStatus });
     if (result) {
       closeModal();
       onActionComplete();
@@ -137,11 +137,7 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   }
 
   async function handlePriorityChange() {
-    const result = await runPriority(
-      activeTicket!.ticket_id,
-      { new_priority: newPriority },
-      agentName
-    );
+    const result = await runPriority(activeTicket!.ticket_id, { new_priority: newPriority });
     if (result) {
       closeModal();
       onActionComplete();
@@ -150,11 +146,7 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
 
   async function handleTransferAgent() {
     if (!newAgentId) return;
-    const result = await runTransfer(
-      activeTicket!.ticket_id,
-      { new_agent_id: newAgentId },
-      agentName
-    );
+    const result = await runTransfer(activeTicket!.ticket_id, { new_agent_id: newAgentId });
     if (result) {
       closeModal();
       onActionComplete();
@@ -162,7 +154,7 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   }
 
   async function handleUpload() {
-    const result = await runUpload(activeTicket!.ticket_id, uploadFiles, agentName);
+    const result = await runUpload(activeTicket!.ticket_id, uploadFiles);
     if (result) {
       setUploadFiles([]);
       closeModal();

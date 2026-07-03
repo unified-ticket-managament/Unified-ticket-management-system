@@ -8,7 +8,7 @@ import { EmptyState } from "@/components/common/EmptyState";
 import { SkeletonRows } from "@/components/common/Skeleton";
 import { listTickets } from "@/api/ticket";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { useWorkflowContext } from "@/context/WorkflowContext";
+import { useAuthContext } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
 import { shortId, formatDateTime } from "@/lib/format";
 import { isValidDateRange } from "@/lib/validation";
@@ -33,7 +33,7 @@ const selectClass =
 
 export function TicketsListPage() {
   const navigate = useNavigate();
-  const { agentName } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
   const { pushToast } = useToast();
 
   const [tickets, setTickets] = useState<TicketResponse[]>([]);
@@ -54,7 +54,7 @@ export function TicketsListPage() {
   const load = useCallback(async () => {
     setIsLoading(true);
     try {
-      const result = await listTickets(agentName);
+      const result = await listTickets();
       setTickets(result);
       setLoadError(null);
     } catch (error) {
@@ -62,8 +62,7 @@ export function TicketsListPage() {
     } finally {
       setIsLoading(false);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentName]);
+  }, []);
 
   useEffect(() => {
     load();
@@ -150,7 +149,7 @@ export function TicketsListPage() {
   return (
     <AppLayout
       title="Tickets"
-      description={`Tickets assigned to ${agentName}, plus anything still unassigned.`}
+      description={`Tickets assigned to ${currentUser?.name}, plus anything still unassigned.`}
     >
       <div className="flex flex-col gap-4">
         <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2.5 rounded-md2 border border-border bg-surface p-3.5 shadow-xs">
