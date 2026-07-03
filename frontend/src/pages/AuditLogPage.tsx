@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AlertTriangle, Lock, RefreshCw, Search, SlidersHorizontal } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { AuditLogDetailsDrawer } from "@/components/common/AuditLogDetailsDrawer";
 import { Badge } from "@/components/common/Badge";
 import { Button } from "@/components/common/Button";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -70,6 +71,9 @@ export function AuditLogPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
+
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerRow, setDrawerRow] = useState<AuditRow | null>(null);
 
   const load = useCallback(
     async (showLoading: boolean) => {
@@ -150,6 +154,20 @@ export function AuditLogPage() {
     () => filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
     [filtered, currentPage]
   );
+
+  function handleRowClick(row: AuditRow) {
+    setDrawerRow(row);
+    setDrawerOpen(true);
+  }
+
+  function closeDrawer() {
+    setDrawerOpen(false);
+  }
+
+  function handleViewTicket(ticketId: string) {
+    setDrawerOpen(false);
+    navigate(`/tickets/${ticketId}`);
+  }
 
   return (
     <AppLayout
@@ -290,7 +308,7 @@ export function AuditLogPage() {
                       className="flex items-center transition-colors hover:bg-surfaceHover"
                     >
                       <button
-                        onClick={() => navigate(`/tickets/${row.ticketId}`)}
+                        onClick={() => handleRowClick(row)}
                         aria-label={`${meta.label} on ${row.ticketTitle}`}
                         className="flex flex-1 items-center gap-3.5 px-5 py-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
                       >
@@ -362,6 +380,13 @@ export function AuditLogPage() {
           )}
         </div>
       </div>
+
+      <AuditLogDetailsDrawer
+        open={drawerOpen}
+        row={drawerRow}
+        onClose={closeDrawer}
+        onViewTicket={handleViewTicket}
+      />
     </AppLayout>
   );
 }

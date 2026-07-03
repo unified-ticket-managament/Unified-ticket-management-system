@@ -19,6 +19,10 @@ import type { InteractionDirection, InteractionResponse, InteractionStatus, Open
 
 const PAGE_SIZE = 20;
 
+// These stay on a ticket's own Timeline and in the Audit Log, but are
+// deliberately left out of this cross-ticket activity explorer.
+const HIDDEN_INTERACTION_TYPES = new Set(["STATUS_CHANGE", "PRIORITY_CHANGE", "AGENT_TRANSFER"]);
+
 interface InteractionRow {
   id: string;
   createdAt: string;
@@ -84,19 +88,21 @@ export function InteractionsPage() {
         await Promise.all(
           tickets.map(async (ticket) => {
             const timeline = await getTicketTimeline(ticket.ticket_id, agentName);
-            return timeline.map<InteractionRow>((item: InteractionResponse) => ({
-              id: item.interaction_id,
-              createdAt: item.created_at,
-              type: item.interaction_type,
-              direction: item.direction,
-              status: item.status,
-              agent: item.performed_by ? shortId(item.performed_by) : "—",
-              ticketId: ticket.ticket_id,
-              ticketTitle: ticket.title,
-              clientName: ticket.client_name,
-              summaryText: summarize(item),
-              raw: item,
-            }));
+            return timeline
+              .filter((item) => !HIDDEN_INTERACTION_TYPES.has(item.interaction_type))
+              .map<InteractionRow>((item: InteractionResponse) => ({
+                id: item.interaction_id,
+                createdAt: item.created_at,
+                type: item.interaction_type,
+                direction: item.direction,
+                status: item.status,
+                agent: item.performed_by ? shortId(item.performed_by) : "—",
+                ticketId: ticket.ticket_id,
+                ticketTitle: ticket.title,
+                clientName: ticket.client_name,
+                summaryText: summarize(item),
+                raw: item,
+              }));
           })
         )
       ).flat();
