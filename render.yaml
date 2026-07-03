@@ -91,13 +91,17 @@ services:
     name: ticketing-backend
     runtime: python
     plan: free
-    rootDir: ticketing-service/backend
-    # requirements.txt lives one level up (ticketing-service/requirements.txt,
-    # not backend/requirements.txt) — its `-e ../shared_models` editable
-    # install line is relative to itself either way, so this resolves
-    # correctly regardless of build cwd.
-    buildCommand: pip install -r ../requirements.txt
-    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # rootDir is ticketing-service, NOT ticketing-service/backend: the
+    # `-e ../shared_models` editable line in requirements.txt is resolved by
+    # pip relative to the BUILD'S CWD (i.e. rootDir), not relative to
+    # requirements.txt's own location. With rootDir=backend, `../shared_models`
+    # would resolve to ticketing-service/shared_models (doesn't exist) and
+    # fail with "not a valid editable requirement". rootDir=ticketing-service
+    # makes both `requirements.txt` and `../shared_models` resolve correctly,
+    # matching how it's installed locally.
+    rootDir: ticketing-service
+    buildCommand: pip install -r requirements.txt
+    startCommand: cd backend && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
