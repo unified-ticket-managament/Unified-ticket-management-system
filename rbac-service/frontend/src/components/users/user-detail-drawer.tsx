@@ -12,6 +12,7 @@ import {
   Loader2,
   Mail,
   Shield,
+  Ticket,
   UserCog,
   Users as UsersIcon,
 } from "lucide-react";
@@ -44,6 +45,7 @@ const GROUP_LABELS: Record<string, string> = {
   permission: "Permissions",
   audit: "Audit Logs",
   dashboard: "Dashboard",
+  ticket: "Ticket Management",
 };
 
 const GROUP_ICONS: Record<string, typeof Shield> = {
@@ -52,6 +54,7 @@ const GROUP_ICONS: Record<string, typeof Shield> = {
   permission: KeyRound,
   audit: ClipboardList,
   dashboard: Briefcase,
+  ticket: Ticket,
 };
 
 function groupLabel(key: string) {

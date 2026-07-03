@@ -18,13 +18,67 @@ DEFAULT_PERMISSIONS = [
     ("permission:view", "View permissions"),
     ("permission:update", "Update role permissions"),
     ("audit:view", "View audit logs"),
+    # Ticket Management capabilities (ticketing-service) — RBAC's own
+    # permission records for the ticket workspace. These aren't
+    # enforced by the Ticketing backend (it authorizes purely by role
+    # name — see AGENT_ROLE_NAMES/SUPERVISOR_ROLE_NAMES in
+    # ticketing-service/backend/app/services/access_control.py) or by
+    # RBAC's own backend (which, like the rest of this system, only
+    # checks authentication server-side); they exist so Super Admin can
+    # see and manage the full ticket-management capability set from
+    # the Users page, and so the ticket workspace frontend has
+    # `hasPermission()` checks available if finer-grained gating is
+    # added there later.
+    ("ticket:create", "Create tickets from inbound emails"),
+    ("ticket:view_own", "View tickets assigned to you"),
+    ("ticket:view_unassigned", "View unassigned tickets"),
+    ("ticket:view_others", "View tickets assigned to other agents"),
+    ("ticket:reply", "Reply to tickets and add internal notes"),
+    ("ticket:update_status", "Change ticket status and priority"),
+    ("ticket:reopen", "Reopen a closed ticket"),
+    ("ticket:transfer", "Transfer a ticket to another agent"),
+    ("ticket:bulk_reassign", "Bulk reassign or rebalance ticket workload"),
+    ("ticket:manage_attachments", "Upload or delete ticket attachments"),
+    ("ticket:hide_interaction", "Hide (soft-delete) a ticket interaction"),
+    ("ticket:view_audit_trail", "View a ticket's own audit trail"),
+    ("ticket:view_global_audit_log", "View the global ticket audit log"),
+    ("ticket:view_dashboard_kpis", "View ticket workspace dashboard KPIs"),
+    ("ticket:configure_routing", "Configure auto-assignment and routing rules"),
+    ("ticket:manage_agents", "Activate or deactivate agent accounts"),
+    ("ticket:manage_roles_permissions", "Manage roles and permissions for the ticket workspace"),
+    ("ticket:system_config", "Configure ticket system and storage settings"),
 ]
 
+# Ticket Management defaults below mirror the capability matrix agreed
+# for Staff / Team Lead / Manager / Super Admin. Super Admin is
+# "all" already, so it isn't repeated per-permission here.
 DEFAULT_ROLES = {
     "Super Admin": "all",
-    "Manager": ["user:view", "user:create", "user:update", "role:view"],
-    "Team Lead": ["user:view", "user:update", "role:view"],
-    "Staff": ["user:view"],
+    "Manager": [
+        "user:view", "user:create", "user:update", "role:view",
+        "ticket:view_own", "ticket:view_unassigned", "ticket:view_others",
+        "ticket:reply", "ticket:update_status", "ticket:reopen",
+        "ticket:transfer", "ticket:bulk_reassign", "ticket:manage_attachments",
+        "ticket:hide_interaction", "ticket:view_audit_trail",
+        "ticket:view_global_audit_log", "ticket:view_dashboard_kpis",
+        "ticket:configure_routing", "ticket:manage_agents",
+    ],
+    "Team Lead": [
+        "user:view", "user:update", "role:view",
+        "ticket:view_own", "ticket:view_unassigned", "ticket:view_others",
+        "ticket:reply", "ticket:update_status", "ticket:reopen",
+        "ticket:transfer", "ticket:bulk_reassign", "ticket:manage_attachments",
+        "ticket:hide_interaction", "ticket:view_audit_trail",
+        "ticket:view_global_audit_log", "ticket:view_dashboard_kpis",
+    ],
+    "Staff": [
+        "user:view",
+        "ticket:create", "ticket:view_own", "ticket:view_unassigned",
+        "ticket:reply", "ticket:update_status", "ticket:reopen",
+        "ticket:transfer", "ticket:manage_attachments",
+        "ticket:hide_interaction", "ticket:view_audit_trail",
+        "ticket:view_dashboard_kpis",
+    ],
     "Viewer": ["user:view", "role:view", "permission:view"],
 }
 
