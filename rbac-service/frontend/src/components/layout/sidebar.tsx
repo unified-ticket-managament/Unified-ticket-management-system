@@ -11,6 +11,7 @@ import {
   LogOut,
   Settings,
   Shield,
+  Ticket,
   UserCircle,
   Users,
 } from "lucide-react";
@@ -29,7 +30,18 @@ import { canSeeNavItem, NAV_ITEM_TRANSLATION_KEY, NavItemKey } from "@/lib/role-
 import { authService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 
-const menuItems: { title: NavItemKey; href: string; icon: typeof LayoutDashboard }[] = [
+// Separate app/origin (Vite, not Next.js) — opened in a new tab rather
+// than routed to internally. Sessions aren't shared across origins, so
+// a user not already logged into that app will land on its own /login.
+const TICKETING_FRONTEND_URL =
+  process.env.NEXT_PUBLIC_TICKETING_FRONTEND_URL || "http://localhost:5173";
+
+const menuItems: {
+  title: NavItemKey;
+  href: string;
+  icon: typeof LayoutDashboard;
+  external?: boolean;
+}[] = [
   {
     title: "Dashboard",
     href: "/dashboard",
@@ -49,6 +61,12 @@ const menuItems: { title: NavItemKey; href: string; icon: typeof LayoutDashboard
     title: "Audit Logs",
     href: "/audit-logs",
     icon: ClipboardList,
+  },
+  {
+    title: "Ticket Workspace",
+    href: TICKETING_FRONTEND_URL,
+    icon: Ticket,
+    external: true,
   },
   {
     title: "Profile",
@@ -109,26 +127,40 @@ export function SidebarContent({ collapsed = false, onNavigate }: SidebarContent
             const active = isActive(item.href);
             const label = t(NAV_ITEM_TRANSLATION_KEY[item.title]);
 
-            const link = (
+            const buttonContent = (
+              <Button
+                variant="ghost"
+                className={cn(
+                  "relative w-full gap-3 font-medium text-muted-foreground hover:text-foreground",
+                  collapsed ? "justify-center px-0" : "justify-start",
+                  active && "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary"
+                )}
+              >
+                {active && (
+                  <motion.span
+                    layoutId="sidebar-active-indicator"
+                    className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-primary"
+                    transition={{ type: "spring", stiffness: 350, damping: 30 }}
+                  />
+                )}
+                <Icon className="h-5 w-5 shrink-0" />
+                {!collapsed && <span className="truncate">{label}</span>}
+              </Button>
+            );
+
+            const link = item.external ? (
+              <a
+                key={item.href}
+                href={item.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={onNavigate}
+              >
+                {buttonContent}
+              </a>
+            ) : (
               <Link key={item.href} href={item.href} onClick={onNavigate}>
-                <Button
-                  variant="ghost"
-                  className={cn(
-                    "relative w-full gap-3 font-medium text-muted-foreground hover:text-foreground",
-                    collapsed ? "justify-center px-0" : "justify-start",
-                    active && "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary"
-                  )}
-                >
-                  {active && (
-                    <motion.span
-                      layoutId="sidebar-active-indicator"
-                      className="absolute left-0 top-1/2 h-5 w-1 -translate-y-1/2 rounded-r-full bg-primary"
-                      transition={{ type: "spring", stiffness: 350, damping: 30 }}
-                    />
-                  )}
-                  <Icon className="h-5 w-5 shrink-0" />
-                  {!collapsed && <span className="truncate">{label}</span>}
-                </Button>
+                {buttonContent}
               </Link>
             );
 

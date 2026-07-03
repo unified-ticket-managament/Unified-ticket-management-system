@@ -5,11 +5,19 @@ import {
   LogOut,
   MailPlus,
   MessageSquare,
+  Shield,
   ShieldCheck,
   Ticket,
   X,
 } from "lucide-react";
 import { useAuthContext } from "@/context/AuthContext";
+
+// Separate app/origin (Next.js, not this Vite app) — opened in a new tab
+// rather than routed to internally. Sessions aren't shared across
+// origins, so a user not already logged into that app lands on its own
+// /login. RBAC's own sidebar enforces which roles can actually use its
+// Users/Roles pages once there — no need to duplicate that gating here.
+const RBAC_FRONTEND_URL = import.meta.env.VITE_RBAC_FRONTEND_URL || "http://localhost:3000";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -18,6 +26,10 @@ const navItems = [
   { to: "/interactions", label: "Interactions", icon: MessageSquare },
   { to: "/tickets", label: "Tickets", icon: Ticket },
   { to: "/audit-logs", label: "Audit Log", icon: ShieldCheck },
+];
+
+const externalNavItems = [
+  { href: RBAC_FRONTEND_URL, label: "RBAC Admin", icon: Shield },
 ];
 
 function initials(name: string) {
@@ -115,6 +127,25 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
                   </>
                 )}
               </NavLink>
+            );
+          })}
+
+          <p className="mb-1.5 mt-4 px-3 text-[10px] font-semibold uppercase tracking-wider text-muted/70">
+            Other Apps
+          </p>
+          {externalNavItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <a
+                key={item.href}
+                href={item.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group relative flex items-center gap-2.5 rounded-md2 px-3 py-2.5 text-[13px] font-medium text-slate-600 transition-colors duration-150 hover:bg-surfaceHover hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+              >
+                <Icon size={17} strokeWidth={2.1} className="flex-none" />
+                <span className="truncate">{item.label}</span>
+              </a>
             );
           })}
         </nav>
