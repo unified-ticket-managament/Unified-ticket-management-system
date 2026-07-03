@@ -7,6 +7,7 @@ import {
   ChevronsLeft,
   ChevronsRight,
   ClipboardList,
+  History,
   Inbox,
   LayoutDashboard,
   LogOut,
@@ -81,6 +82,11 @@ const menuItems: {
     title: "Tickets",
     href: "/dashboard/tickets",
     icon: Ticket,
+  },
+  {
+    title: "Ticket Audit Log",
+    href: "/dashboard/audit-logs",
+    icon: History,
   },
   {
     title: "Profile",

@@ -14,6 +14,7 @@ import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { useDebouncedValue } from "@tw/hooks/useDebouncedValue";
 import { formatDateTime } from "@tw/lib/format";
 import { auditMetaFor, diffFields, formatFieldValue, humanizeFieldKey } from "@tw/lib/auditLogMeta";
+import { isSupervisorRole } from "@/lib/role-access";
 import type { ActorRole, AuditEntityType, AuditEventType } from "@tw/types";
 
 interface AuditRow {
@@ -174,7 +175,11 @@ export function AuditLogPage() {
   return (
     <AppLayout
       title="Audit Log"
-      description={`Immutable record of every ticket change across tickets assigned to ${currentUser?.name}.`}
+      description={
+        isSupervisorRole(currentUser?.role)
+          ? "Immutable record of every ticket change across the team."
+          : `Immutable record of every ticket change across tickets assigned to ${currentUser?.name}.`
+      }
     >
       <div className="flex flex-col gap-4">
         <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2.5 rounded-md2 border border-border bg-surface p-3.5 shadow-xs">

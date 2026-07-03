@@ -52,10 +52,15 @@ const WEEKLY_LOGIN_ACTIVITY = [
   { label: "Sun", value: 17 },
 ];
 
-// The original RBAC dashboard content — still used for the Viewer role
-// (the client-facing role, excluded from the ticket workspace). Moved
+// The original RBAC dashboard content — used for Viewer (the
+// client-facing role, excluded from the ticket workspace) and Super
+// Admin (kept on the RBAC-only interface by explicit choice). Moved
 // here, unchanged, so `app/(dashboard)/dashboard/[[...slug]]/page.tsx`
-// can pick between this and the embedded ticket workspace by role.
+// can pick between this and the embedded ticket workspace by role. Its
+// own internal role checks (canSeeUsers/canSeeRoles/canSeeCharts/etc.)
+// already handle Super Admin correctly — this component was written
+// generically for every role from the start, before the ticket
+// workspace embedding narrowed which roles actually reach it.
 export function ViewerDashboard() {
   const currentUser = useAuthStore((state) => state.user);
   const hasAnyPermission = useAuthStore((state) => state.hasAnyPermission);

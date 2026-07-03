@@ -71,15 +71,27 @@
   --color-canvas: 15 23 42;
   --color-surface: 17 24 39;
   --color-surface-hover: 30 41 59;
-  --color-accent: 96 165 250;
-  --color-accent-50: 30 58 95;
-  --color-accent-600: 147 197 253;
-  --color-accent-700: 191 219 254;
-  --color-teal: 45 212 191;
-  --color-success: 52 211 153;
-  --color-warning: 251 191 36;
-  --color-danger: 248 113 113;
-  --color-info: 167 139 250;
+
+  /* Ticketing's own accent/warning/danger/success/info/teal tokens are
+     Tailwind-compiled as `rgb(var(--x) / <alpha-value>)`, so reassigning
+     the variable here recolors every utility built from it (bg-warning/10,
+     text-warning, border-danger/20, ...) at once, with no need to override
+     each generated class individually. Values below are this app's actual
+     dark-theme --primary/--destructive/--muted-foreground (hsl(0 0% 98%) /
+     hsl(0 62.8% 30.6%) / hsl(240 5% 64.9%)) converted once from HSL, so
+     the workspace matches RBAC's real palette instead of Ticketing's own
+     multi-hue one — applied to every role, not just Staff, so ticket
+     pages and RBAC's own pages (Profile/Settings/Users/Roles) read as
+     one consistent design system. */
+  --color-accent: 250 250 250;
+  --color-accent-50: 39 39 42;
+  --color-accent-600: 212 212 216;
+  --color-accent-700: 161 161 170;
+  --color-teal: 161 161 170;
+  --color-success: 161 161 170;
+  --color-warning: 161 161 170;
+  --color-danger: 127 29 29;
+  --color-info: 161 161 170;
 
   /* Ticketing's own `border`/`muted`/`slate` collide with RBAC's
      shadcn tokens of the same name — kept under distinct `--tm-*`
@@ -104,31 +116,6 @@
   --skeleton-shine: 51 65 85;
 }
 
-/* ===========================================================
-   Unified theme (Staff role only — see TicketWorkspaceApp.tsx)
-   Ticketing's own accent/warning/danger/success/info/teal tokens
-   are Tailwind-compiled as `rgb(var(--x) / <alpha-value>)`, so
-   reassigning the variable here recolors every utility built from
-   it (bg-warning/10, text-warning, border-danger/20, ...) at once,
-   with no need to override each generated class individually. RGB
-   values below are this app's actual dark-theme --primary/
-   --destructive/--muted-foreground (hsl(0 0% 98%) / hsl(0 62.8%
-   30.6%) / hsl(240 5% 64.9%)) converted once from HSL, so the
-   workspace inherits RBAC's real palette instead of an approximation.
-   =========================================================== */
-
-.tm-scope.tm-unified-theme {
-  --color-accent: 250 250 250;       /* RBAC --primary (white, dark mode) */
-  --color-accent-50: 39 39 42;
-  --color-accent-600: 212 212 216;
-  --color-accent-700: 161 161 170;
-  --color-warning: 161 161 170;      /* RBAC --muted-foreground */
-  --color-success: 161 161 170;
-  --color-info: 161 161 170;
-  --color-teal: 161 161 170;
-  --color-danger: 127 29 29;         /* RBAC --destructive (dark mode) */
-}
-
 .tm-scope .bg-border { background-color: rgb(var(--tm-border)); }
 .tm-scope .border-border { border-color: rgb(var(--tm-border)); }
 .tm-scope .divide-border > :not([hidden]) ~ :not([hidden]) { border-color: rgb(var(--tm-border)); }
@@ -150,6 +137,18 @@
 .tm-scope .text-slate-700 { color: rgb(var(--tm-slate-700)); }
 .tm-scope .text-slate-800 { color: rgb(var(--tm-slate-800)); }
 .tm-scope .text-slate-900 { color: rgb(var(--tm-slate-900)); }
+
+/* Hover-state slate variants used across Button/Modal/inbox/ticket
+   components — the base (non-hover) classes above are remapped, but
+   Tailwind emits `:hover` variants as separate rules, so they need
+   their own overrides or elements flash Tailwind's stock light slate
+   on hover against this dark theme. */
+.tm-scope .hover\:bg-slate-100:hover { background-color: rgb(var(--tm-slate-100)); }
+.tm-scope .hover\:bg-slate-200:hover { background-color: rgb(var(--tm-slate-200)); }
+.tm-scope .hover\:bg-slate-200\/60:hover { background-color: rgb(var(--tm-slate-200) / 0.6); }
+.tm-scope .hover\:border-slate-300:hover { border-color: rgb(var(--tm-slate-300)); }
+.tm-scope .hover\:text-slate-700:hover { color: rgb(var(--tm-slate-700)); }
+.tm-scope .hover\:text-slate-900:hover { color: rgb(var(--tm-slate-900)); }
 
 .tm-scope {
   background-color: rgb(var(--color-canvas));

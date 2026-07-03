@@ -17,6 +17,7 @@ export type NavItemKey =
   | "Inbox"
   | "Interactions"
   | "Tickets"
+  | "Ticket Audit Log"
   | "Profile"
   | "Settings";
 
@@ -29,24 +30,31 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   Inbox: "nav.inbox",
   Interactions: "nav.interactions",
   Tickets: "nav.tickets",
+  "Ticket Audit Log": "nav.ticketAuditLog",
   Profile: "nav.profile",
   Settings: "nav.settings",
 };
 
-// Every role except Viewer (the client-facing role, never an agent)
-// now lands on the embedded Ticket Management workspace at /dashboard
-// instead of RBAC's own admin dashboard — see
-// app/(dashboard)/dashboard/[[...slug]]/page.tsx and
-// src/ticket-workspace/. Their sidebar shows only the ticket workspace
-// modules (matching Ticketing's own nav) plus Profile/Settings; Users/
-// Roles/Audit Logs stay fully functional at their existing routes, just
-// no longer linked from the primary sidebar for these roles. Viewer
-// keeps the original RBAC dashboard and nav, unchanged.
+// Staff/Team Lead/Manager — the actual agent roles — land on the
+// embedded Ticket Management workspace at /dashboard instead of RBAC's
+// own admin dashboard — see app/(dashboard)/dashboard/[[...slug]]/
+// page.tsx and src/ticket-workspace/. Their sidebar shows the ticket
+// workspace modules (matching Ticketing's own nav) alongside RBAC's
+// own Users/Roles admin pages (same visibility as before the workspace
+// was embedded — Users: Manager/Team Lead, Roles: Manager) plus
+// Profile/Settings. "Ticket Audit Log" is the populated audit trail
+// for ticket activity, linked for every agent role.
+//
+// Super Admin and Viewer both keep the original, unmodified RBAC
+// dashboard/nav instead — Viewer as the client-facing role that was
+// never an agent, Super Admin per an explicit later decision to keep
+// that role's whole interface RBAC-only (Users/Roles/Dashboard/Profile/
+// Settings), with no ticket-workspace nav items at all.
 const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
-  [ROLE_NAMES.SUPER_ADMIN]: ["Dashboard", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Profile", "Settings"],
-  [ROLE_NAMES.MANAGER]: ["Dashboard", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Profile", "Settings"],
-  [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Profile", "Settings"],
-  [ROLE_NAMES.STAFF]: ["Dashboard", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Profile", "Settings"],
+  [ROLE_NAMES.SUPER_ADMIN]: ["Dashboard", "Users", "Roles", "Profile", "Settings"],
+  [ROLE_NAMES.MANAGER]: ["Dashboard", "Users", "Roles", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
+  [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
+  [ROLE_NAMES.STAFF]: ["Dashboard", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
   [ROLE_NAMES.VIEWER]: ["Dashboard", "Profile", "Settings"],
 };
 
@@ -59,6 +67,23 @@ export function getVisibleNavItems(role: string | undefined): NavItemKey[] {
 
 export function canSeeNavItem(role: string | undefined, item: NavItemKey): boolean {
   return getVisibleNavItems(role).includes(item);
+}
+
+// Mirrors ticketing-service/backend/app/services/access_control.py's
+// SUPERVISOR_ROLE_NAMES exactly — Team Lead/Manager/Super Admin see
+// every ticket regardless of assignment, Staff sees only tickets
+// assigned to them (or unassigned). The backend is what actually
+// enforces this (GET /tickets scopes its own query by the caller's
+// JWT), but the ticket workspace pages read this to describe the
+// scope accurately rather than always claiming "assigned to you."
+export const SUPERVISOR_ROLE_NAMES: readonly string[] = [
+  ROLE_NAMES.TEAM_LEAD,
+  ROLE_NAMES.MANAGER,
+  ROLE_NAMES.SUPER_ADMIN,
+];
+
+export function isSupervisorRole(role: string | undefined): boolean {
+  return !!role && SUPERVISOR_ROLE_NAMES.includes(role);
 }
 
 // Roles that a given logged-in role is permitted to assign when creating a

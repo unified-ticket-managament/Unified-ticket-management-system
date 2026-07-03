@@ -16,6 +16,7 @@ import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { shortId, formatDateTime } from "@tw/lib/format";
 import { metaFor, summarize } from "@tw/lib/interactionMeta";
+import { isSupervisorRole } from "@/lib/role-access";
 import type { InteractionDirection, InteractionResponse, InteractionStatus, OpenEmailResponse } from "@tw/types";
 
 const PAGE_SIZE = 20;
@@ -229,7 +230,9 @@ export function InteractionsPage() {
       description={
         ticketIdParam
           ? "Interactions for this ticket."
-          : `Emails and activity across tickets assigned to ${currentUser?.name}.`
+          : isSupervisorRole(currentUser?.role)
+            ? "Emails and activity across every ticket on the team."
+            : `Emails and activity across tickets assigned to ${currentUser?.name}.`
       }
     >
       <div className="flex flex-col gap-4">

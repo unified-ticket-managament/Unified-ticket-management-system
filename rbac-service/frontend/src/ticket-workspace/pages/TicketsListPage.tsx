@@ -13,6 +13,7 @@ import { useToast } from "@tw/context/ToastContext";
 import { shortId, formatDateTime } from "@tw/lib/format";
 import { isValidDateRange } from "@tw/lib/validation";
 import { priorityTone, statusTone } from "@tw/lib/ticketTone";
+import { isSupervisorRole } from "@/lib/role-access";
 import type { TicketPriority, TicketResponse, TicketStatus } from "@tw/types";
 
 const STATUSES: TicketStatus[] = [
@@ -149,7 +150,11 @@ export function TicketsListPage() {
   return (
     <AppLayout
       title="Tickets"
-      description={`Tickets assigned to ${currentUser?.name}, plus anything still unassigned.`}
+      description={
+        isSupervisorRole(currentUser?.role)
+          ? "All tickets across the team, regardless of assignment."
+          : `Tickets assigned to ${currentUser?.name}, plus anything still unassigned.`
+      }
     >
       <div className="flex flex-col gap-4">
         <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2.5 rounded-md2 border border-border bg-surface p-3.5 shadow-xs">
