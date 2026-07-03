@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
+  Archive,
   CheckCircle2,
   ChevronRight,
   Inbox as InboxIcon,
@@ -226,6 +227,13 @@ export function Dashboard() {
             label="Resolved Today"
             value={resolvedTodayCount}
             tone="bg-success/10"
+          />
+          <StatCard
+            icon={<Archive size={19} className="text-success" />}
+            label="Tickets Resolved"
+            value={resolvedCount}
+            tone="bg-success/10"
+            hint="All-time resolved or closed tickets"
           />
         </div>
 

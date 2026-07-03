@@ -40,6 +40,7 @@ from app.schemas.ticket import TicketResponse, TicketUpdate
 from app.schemas.ticket_action import (
     PriorityChangeRequest,
     ReplyCreate,
+    ResolveTicketRequest,
     StatusChangeRequest,
     TicketActionResponse,
     TransferAgentRequest,
@@ -314,6 +315,47 @@ async def change_ticket_status(
     )
 
     return await service.change_status(
+        ticket_id=ticket_id,
+        request=request,
+        agent_name=agent_name,
+    )
+
+
+# =========================================================
+# Resolve Ticket
+# =========================================================
+
+@router.post(
+    "/{ticket_id}/resolve",
+    response_model=TicketActionResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def resolve_ticket(
+    ticket_id: UUID,
+    request: ResolveTicketRequest,
+    agent_name: str | None = Query(
+        default=None,
+        description="The agent resolving this ticket. Recorded as the audit actor.",
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Marks the ticket resolved and closed, recording the
+    change as an interaction on the timeline and on the
+    audit trail.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+    )
+
+    return await service.resolve_ticket(
         ticket_id=ticket_id,
         request=request,
         agent_name=agent_name,

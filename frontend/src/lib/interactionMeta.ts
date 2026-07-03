@@ -11,6 +11,7 @@ const TYPE_META: Record<string, InteractionTypeMeta> = {
   INTERNAL_NOTE: { icon: "📝", label: "Internal Note", tone: "warning" },
   REPLY: { icon: "📤", label: "Reply", tone: "success" },
   STATUS_CHANGE: { icon: "⚙", label: "Status Change", tone: "info" },
+  RESOLVED: { icon: "✅", label: "Ticket Resolved", tone: "success" },
   PRIORITY_CHANGE: { icon: "🔥", label: "Priority Change", tone: "danger" },
   ATTACHMENT: { icon: "📎", label: "Attachment", tone: "default" },
   AGENT_TRANSFER: { icon: "🔁", label: "Agent Transfer", tone: "info" },
@@ -32,6 +33,8 @@ export function summarize(interaction: InteractionResponse): string {
       return (payload.message as string) ?? "";
     case "STATUS_CHANGE":
       return `${payload.from ?? "?"} → ${payload.to ?? "?"}`;
+    case "RESOLVED":
+      return (payload.resolution_note as string) || "Ticket marked resolved";
     case "PRIORITY_CHANGE":
       return `${payload.from ?? "?"} → ${payload.to ?? "?"}`;
     case "ATTACHMENT": {

@@ -1,15 +1,24 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ArrowLeftRight, Paperclip, Flame, MessageSquareText, Send, Settings2 } from "lucide-react";
+import {
+  ArrowLeftRight,
+  CheckCircle2,
+  Paperclip,
+  Flame,
+  MessageSquareText,
+  Send,
+  Settings2,
+} from "lucide-react";
 import { Card } from "@/components/common/Card";
 import { Button } from "@/components/common/Button";
 import { Modal } from "@/components/common/Modal";
-import { SelectInput } from "@/components/common/FormField";
+import { SelectInput, TextArea } from "@/components/common/FormField";
 import { FileDropzone } from "@/components/common/FileDropzone";
 import { validateFiles } from "@/lib/attachmentMeta";
 import { useApiAction } from "@/hooks/useApiAction";
 import {
   changeTicketPriority,
   changeTicketStatus,
+  resolveTicket,
   uploadAttachment,
 } from "@/api/interaction";
 import { listAgents } from "@/api/agent";
@@ -29,13 +38,14 @@ const STATUSES: TicketStatus[] = [
 
 const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
 
-type Tone = "accent" | "warning" | "info" | "danger" | "default";
+type Tone = "accent" | "warning" | "info" | "danger" | "success" | "default";
 
 const tileToneClasses: Record<Tone, string> = {
   accent: "bg-accent/10 text-accent group-hover:bg-accent/15",
   warning: "bg-warning/10 text-warning group-hover:bg-warning/15",
   info: "bg-info/10 text-info group-hover:bg-info/15",
   danger: "bg-danger/10 text-danger group-hover:bg-danger/15",
+  success: "bg-success/10 text-success group-hover:bg-success/15",
   default: "bg-canvas text-slate-600 group-hover:bg-slate-200/60",
 };
 
@@ -43,17 +53,20 @@ function ActionTile({
   icon,
   label,
   tone,
+  disabled,
   onClick,
 }: {
   icon: ReactNode;
   label: string;
   tone: Tone;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
-      className="group flex flex-col items-center gap-2 rounded-md2 border border-border bg-surface px-3 py-4 text-center transition-all duration-150 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-cardHover"
+      disabled={disabled}
+      className="group flex flex-col items-center gap-2 rounded-md2 border border-border bg-surface px-3 py-4 text-center transition-all duration-150 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-cardHover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:shadow-none"
     >
       <span className={`flex h-9 w-9 items-center justify-center rounded-md2 transition-colors ${tileToneClasses[tone]}`}>
         {icon}
@@ -63,7 +76,7 @@ function ActionTile({
   );
 }
 
-type ActiveModal = "status" | "priority" | "transfer" | "attachment" | null;
+type ActiveModal = "status" | "priority" | "transfer" | "attachment" | "resolve" | null;
 
 interface TicketActionsProps {
   onActionComplete: () => void;
@@ -79,7 +92,11 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [newAgentId, setNewAgentId] = useState("");
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [resolutionNote, setResolutionNote] = useState("");
 
+  const { run: runResolve, isLoading: isResolveLoading } = useApiAction(resolveTicket, {
+    successMessage: "Ticket resolved.",
+  });
   const { run: runStatus, isLoading: isStatusLoading } = useApiAction(changeTicketStatus, {
     successMessage: "Ticket status changed.",
   });
@@ -105,6 +122,8 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   if (!activeTicket) return null;
 
   const transferCandidates = agents.filter((a) => a.user_id !== activeTicket.agent_id);
+  const isAlreadyResolved =
+    activeTicket.current_status === "RESOLVED" || activeTicket.current_status === "CLOSED";
 
   function closeModal() {
     setModal(null);
@@ -113,6 +132,23 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   function openTransferModal() {
     setNewAgentId(transferCandidates[0]?.user_id ?? "");
     setModal("transfer");
+  }
+
+  function openResolveModal() {
+    setResolutionNote("");
+    setModal("resolve");
+  }
+
+  async function handleResolve() {
+    const result = await runResolve(
+      activeTicket!.ticket_id,
+      { resolution_note: resolutionNote.trim() || null },
+      agentName
+    );
+    if (result) {
+      closeModal();
+      onActionComplete();
+    }
   }
 
   async function handleStatusChange() {
@@ -196,6 +232,13 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
             label="Upload Attachment"
             tone="default"
             onClick={() => setModal("attachment")}
+          />
+          <ActionTile
+            icon={<CheckCircle2 size={16} />}
+            label="Resolve Ticket"
+            tone="success"
+            disabled={isAlreadyResolved}
+            onClick={openResolveModal}
           />
         </div>
       </Card>
@@ -307,6 +350,28 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
         }
       >
         <FileDropzone label="Files" files={uploadFiles} onFilesChange={setUploadFiles} />
+      </Modal>
+
+      <Modal
+        open={modal === "resolve"}
+        title="Resolve Ticket"
+        onClose={closeModal}
+        footer={
+          <Button variant="primary" size="sm" isLoading={isResolveLoading} onClick={handleResolve}>
+            Resolve Ticket
+          </Button>
+        }
+      >
+        <p className="mb-3 text-xs text-muted">
+          This marks the ticket resolved and closed. The change is recorded on the timeline and
+          audit trail.
+        </p>
+        <TextArea
+          label="Resolution note (optional)"
+          placeholder="Summarize how this was resolved..."
+          value={resolutionNote}
+          onChange={(e) => setResolutionNote(e.target.value)}
+        />
       </Modal>
     </>
   );

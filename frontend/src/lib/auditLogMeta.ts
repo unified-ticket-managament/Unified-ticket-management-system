@@ -9,6 +9,7 @@ export interface AuditEventMeta {
 const EVENT_META: Record<AuditEventType, AuditEventMeta> = {
   TICKET_CREATED: { icon: "🎫", label: "Ticket Created", tone: "success" },
   TICKET_UPDATED: { icon: "✏️", label: "Ticket Updated", tone: "info" },
+  TICKET_RESOLVED: { icon: "✅", label: "Ticket Resolved", tone: "success" },
   STATUS_CHANGED: { icon: "⚙", label: "Status Changed", tone: "info" },
   PRIORITY_CHANGED: { icon: "🔥", label: "Priority Changed", tone: "danger" },
   AGENT_TRANSFERRED: { icon: "🔁", label: "Agent Transferred", tone: "accent" },

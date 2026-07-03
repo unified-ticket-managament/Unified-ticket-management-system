@@ -9,7 +9,9 @@ import { SkeletonRows } from "@/components/common/Skeleton";
 import { listTickets } from "@/api/ticket";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useWorkflowContext } from "@/context/WorkflowContext";
+import { useToast } from "@/context/ToastContext";
 import { shortId, formatDateTime } from "@/lib/format";
+import { isValidDateRange } from "@/lib/validation";
 import { priorityTone, statusTone } from "@/lib/ticketTone";
 import type { TicketPriority, TicketResponse, TicketStatus } from "@/types";
 
@@ -32,6 +34,7 @@ const selectClass =
 export function TicketsListPage() {
   const navigate = useNavigate();
   const { agentName } = useWorkflowContext();
+  const { pushToast } = useToast();
 
   const [tickets, setTickets] = useState<TicketResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -85,8 +88,10 @@ export function TicketsListPage() {
       if (statusFilter !== "ALL" && t.current_status !== statusFilter) return false;
       if (priorityFilter !== "ALL" && t.current_priority !== priorityFilter) return false;
       if (categoryFilter !== "ALL" && t.ticket_type !== categoryFilter) return false;
-      if (dateFrom && new Date(t.created_at) < new Date(dateFrom)) return false;
-      if (dateTo && new Date(t.created_at) > new Date(`${dateTo}T23:59:59`)) return false;
+      if (isValidDateRange(dateFrom, dateTo)) {
+        if (dateFrom && new Date(t.created_at) < new Date(dateFrom)) return false;
+        if (dateTo && new Date(t.created_at) > new Date(`${dateTo}T23:59:59`)) return false;
+      }
       return true;
     });
   }, [tickets, debouncedSearch, statusFilter, priorityFilter, categoryFilter, dateFrom, dateTo]);
@@ -218,8 +223,12 @@ export function TicketsListPage() {
               type="date"
               value={dateFrom}
               onChange={(e) => {
-                setDateFrom(e.target.value);
+                const value = e.target.value;
+                setDateFrom(value);
                 setPage(1);
+                if (!isValidDateRange(value, dateTo)) {
+                  pushToast("'From' date must be before or equal to the 'To' date.", "error");
+                }
               }}
               aria-label="Created after date"
               className={selectClass}
@@ -229,8 +238,12 @@ export function TicketsListPage() {
               type="date"
               value={dateTo}
               onChange={(e) => {
-                setDateTo(e.target.value);
+                const value = e.target.value;
+                setDateTo(value);
                 setPage(1);
+                if (!isValidDateRange(dateFrom, value)) {
+                  pushToast("'From' date must be before or equal to the 'To' date.", "error");
+                }
               }}
               aria-label="Created before date"
               className={selectClass}

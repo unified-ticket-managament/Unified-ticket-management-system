@@ -193,6 +193,10 @@ export interface StatusChangeRequest {
   new_status: TicketStatus;
 }
 
+export interface ResolveTicketRequest {
+  resolution_note?: string | null;
+}
+
 export interface PriorityChangeRequest {
   new_priority: TicketPriority;
 }
@@ -237,6 +241,7 @@ export type AuditEntityType = "TICKET" | "INTERACTION" | "ATTACHMENT" | "CLIENT"
 export type AuditEventType =
   | "TICKET_CREATED"
   | "TICKET_UPDATED"
+  | "TICKET_RESOLVED"
   | "STATUS_CHANGED"
   | "PRIORITY_CHANGED"
   | "AGENT_TRANSFERRED"

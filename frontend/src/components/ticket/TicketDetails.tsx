@@ -45,6 +45,9 @@ export function TicketDetails() {
             : "Unassigned"}
         </Row>
         <Row label="Updated">{formatDateTime(activeTicket.updated_at)}</Row>
+        {activeTicket.closed_at && (
+          <Row label="Resolved At">{formatDateTime(activeTicket.closed_at)}</Row>
+        )}
       </dl>
     </Card>
   );
