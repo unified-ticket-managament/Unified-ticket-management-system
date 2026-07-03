@@ -13,9 +13,16 @@ interface AppLayoutProps {
 // already provides the Sidebar/Topbar chrome; this only renders the
 // per-page title bar, reusing RBAC's own PageHeader component instead
 // of duplicating one.
+//
+// Deliberately does NOT re-apply the `tm-scope` class — that's already
+// set once at the TicketWorkspaceApp root. Re-declaring it here would
+// re-trigger `.tm-scope`'s base CSS-variable declarations on this
+// inner element, which (per normal CSS cascade) always wins over an
+// inherited value from an ancestor — silently overriding the
+// `.tm-unified-theme` remap on every single page.
 export function AppLayout({ title, description, children }: AppLayoutProps) {
   return (
-    <div className="tm-scope">
+    <div>
       <PageHeader title={title} description={description} />
       {children}
     </div>

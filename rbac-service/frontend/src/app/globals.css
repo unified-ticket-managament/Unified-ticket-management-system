@@ -104,6 +104,31 @@
   --skeleton-shine: 51 65 85;
 }
 
+/* ===========================================================
+   Unified theme (Staff role only — see TicketWorkspaceApp.tsx)
+   Ticketing's own accent/warning/danger/success/info/teal tokens
+   are Tailwind-compiled as `rgb(var(--x) / <alpha-value>)`, so
+   reassigning the variable here recolors every utility built from
+   it (bg-warning/10, text-warning, border-danger/20, ...) at once,
+   with no need to override each generated class individually. RGB
+   values below are this app's actual dark-theme --primary/
+   --destructive/--muted-foreground (hsl(0 0% 98%) / hsl(0 62.8%
+   30.6%) / hsl(240 5% 64.9%)) converted once from HSL, so the
+   workspace inherits RBAC's real palette instead of an approximation.
+   =========================================================== */
+
+.tm-scope.tm-unified-theme {
+  --color-accent: 250 250 250;       /* RBAC --primary (white, dark mode) */
+  --color-accent-50: 39 39 42;
+  --color-accent-600: 212 212 216;
+  --color-accent-700: 161 161 170;
+  --color-warning: 161 161 170;      /* RBAC --muted-foreground */
+  --color-success: 161 161 170;
+  --color-info: 161 161 170;
+  --color-teal: 161 161 170;
+  --color-danger: 127 29 29;         /* RBAC --destructive (dark mode) */
+}
+
 .tm-scope .bg-border { background-color: rgb(var(--tm-border)); }
 .tm-scope .border-border { border-color: rgb(var(--tm-border)); }
 .tm-scope .divide-border > :not([hidden]) ~ :not([hidden]) { border-color: rgb(var(--tm-border)); }
