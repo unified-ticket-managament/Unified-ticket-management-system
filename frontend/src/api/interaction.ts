@@ -8,7 +8,6 @@ import type {
   InternalNoteResponse,
   PriorityChangeRequest,
   ReplyRequest,
-  ResolveTicketRequest,
   StatusChangeRequest,
   TicketActionResponse,
 } from "@/types";
@@ -61,20 +60,6 @@ export async function changeTicketStatus(
 ): Promise<TicketActionResponse> {
   const { data } = await apiClient.post<TicketActionResponse>(
     `/tickets/${ticketId}/status`,
-    payload,
-    { params: agentName ? { agent_name: agentName } : undefined }
-  );
-  return data;
-}
-
-// POST /tickets/{ticket_id}/resolve
-export async function resolveTicket(
-  ticketId: string,
-  payload: ResolveTicketRequest,
-  agentName?: string
-): Promise<TicketActionResponse> {
-  const { data } = await apiClient.post<TicketActionResponse>(
-    `/tickets/${ticketId}/resolve`,
     payload,
     { params: agentName ? { agent_name: agentName } : undefined }
   );

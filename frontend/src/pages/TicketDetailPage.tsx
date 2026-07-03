@@ -3,11 +3,10 @@ import { useParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { EmptyState } from "@/components/common/EmptyState";
 import { TicketHeader } from "@/components/ticket/TicketHeader";
-import { TicketTimeline } from "@/components/ticket/TicketTimeline";
+import { TicketActivityPanel, type ActivityTab } from "@/components/ticket/TicketActivityPanel";
 import { TicketComposer, type ComposerMode } from "@/components/ticket/TicketComposer";
 import { TicketDetails } from "@/components/ticket/TicketDetails";
 import { TicketActions } from "@/components/ticket/TicketActions";
-import { TicketAuditLog } from "@/components/ticket/TicketAuditLog";
 import { useApiAction } from "@/hooks/useApiAction";
 import { getTicket } from "@/api/ticket";
 import { getTicketTimeline } from "@/api/interaction";
@@ -17,8 +16,9 @@ export function TicketDetailPage() {
   const { ticketId } = useParams<{ ticketId: string }>();
   const { agentName, activeTicket, setActiveTicket, setTimeline } = useWorkflowContext();
   const [composerMode, setComposerMode] = useState<ComposerMode | null>(null);
-  // Bumped after any refresh so TicketAuditLog refetches immediately
-  // instead of waiting for its own poll interval.
+  const [activityTab, setActivityTab] = useState<ActivityTab>("timeline");
+  // Bumped after any refresh so the Audit Log tab refetches
+  // immediately instead of waiting for its own poll interval.
   const [auditRefreshToken, setAuditRefreshToken] = useState(0);
 
   const { run: runGetTicket, isLoading: isLoadingTicket } = useApiAction(getTicket);
@@ -75,7 +75,12 @@ export function TicketDetailPage() {
 
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_320px]">
               <div className="flex flex-col gap-5">
-                <TicketTimeline onChanged={refreshTimeline} />
+                <TicketActivityPanel
+                  activeTab={activityTab}
+                  onTabChange={setActivityTab}
+                  onTimelineChanged={refreshTimeline}
+                  auditRefreshToken={auditRefreshToken}
+                />
                 {composerMode && (
                   <TicketComposer
                     mode={composerMode}
@@ -97,7 +102,6 @@ export function TicketDetailPage() {
                 <div className="flex flex-col gap-5 lg:sticky lg:top-0">
                   <TicketDetails />
                   <TicketActions onActionComplete={refreshAll} onOpenComposer={setComposerMode} />
-                  <TicketAuditLog refreshToken={auditRefreshToken} />
                 </div>
               </div>
             </div>

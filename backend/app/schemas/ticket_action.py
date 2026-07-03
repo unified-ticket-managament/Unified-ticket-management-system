@@ -36,18 +36,6 @@ class PriorityChangeRequest(BaseModel):
     new_priority: TicketPriority
 
 
-class ResolveTicketRequest(BaseModel):
-    """
-    Request body for resolving (and thereby closing) a ticket.
-    """
-
-    resolution_note: str | None = Field(
-        default=None,
-        max_length=2000,
-        description="Optional summary of how the ticket was resolved.",
-    )
-
-
 class TransferAgentRequest(BaseModel):
     """
     Request body for transferring full ownership of a ticket

@@ -30,9 +30,12 @@ const toneCard: Record<string, string> = {
 
 interface TicketTimelineProps {
   onChanged: () => void;
+  // Rendered inside TicketActivityPanel's tabbed box, which already
+  // provides the outer border/shadow — see Card's `flat` prop.
+  flat?: boolean;
 }
 
-export function TicketTimeline({ onChanged }: TicketTimelineProps) {
+export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps) {
   const { ticketId } = useParams<{ ticketId: string }>();
   const { activeTicket, timeline, agentName } = useWorkflowContext();
 
@@ -59,6 +62,7 @@ export function TicketTimeline({ onChanged }: TicketTimelineProps) {
 
   return (
     <Card
+      flat={flat}
       title="Timeline"
       eyebrow={`${events.length} event${events.length === 1 ? "" : "s"}`}
       actions={

@@ -24,7 +24,10 @@ from app.schemas.attachment import (
     AttachmentUploadResponse,
 )
 from app.schemas.interaction import InteractionCreate
-from app.services.access_control import ensure_agent_can_view_ticket
+from app.services.access_control import (
+    ensure_agent_can_view_ticket,
+    ensure_ticket_not_closed,
+)
 from app.services.audit_log_service import AuditLogService
 from app.storage.base import StorageService
 from app.utils.constants import MAX_ATTACHMENT_FILES, MAX_ATTACHMENT_SIZE_BYTES
@@ -215,6 +218,8 @@ class AttachmentService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="At least one file is required.",
             )
+
+        ensure_ticket_not_closed(ticket)
 
         actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
             self.user_repository, agent_name

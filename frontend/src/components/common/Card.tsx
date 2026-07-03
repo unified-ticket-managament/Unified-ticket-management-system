@@ -5,6 +5,10 @@ interface CardProps extends Omit<HTMLAttributes<HTMLDivElement>, "title"> {
   eyebrow?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
+  // Skips the outer border/rounding/shadow — for embedding this
+  // card's header+content structure inside another container that
+  // already provides its own box (e.g. a tabbed panel).
+  flat?: boolean;
 }
 
 export function Card({
@@ -13,11 +17,12 @@ export function Card({
   actions,
   children,
   className = "",
+  flat = false,
   ...rest
 }: CardProps) {
   return (
     <div
-      className={`rounded-md2 border border-border bg-surface shadow-xs transition-shadow duration-200 ${className}`}
+      className={`${flat ? "bg-surface" : "rounded-md2 border border-border bg-surface shadow-xs transition-shadow duration-200"} ${className}`}
       {...rest}
     >
       {(title || actions || eyebrow) && (

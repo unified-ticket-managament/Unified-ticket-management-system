@@ -80,6 +80,12 @@ export function InteractionsPage() {
     const requestId = ++requestIdRef.current;
     setIsLoading(true);
     try {
+      // Resolves `performed_by` (a raw user id) to a display name so
+      // "Performed By" / "From" read as a person, not a truncated
+      // UUID — falls back to the shortened id for anyone not in this
+      // active-Staff list (e.g. a removed agent).
+      const agentNameById = new Map(agents.map((a) => [a.user_id, a.name]));
+
       // Scoped to tickets this agent can see (their assignments,
       // plus anything still unassigned) — matches ticket-level
       // visibility rules so interactions never leak across agents.
@@ -96,7 +102,9 @@ export function InteractionsPage() {
                 type: item.interaction_type,
                 direction: item.direction,
                 status: item.status,
-                agent: item.performed_by ? shortId(item.performed_by) : "—",
+                agent: item.performed_by
+                  ? agentNameById.get(item.performed_by) ?? shortId(item.performed_by)
+                  : "—",
                 ticketId: ticket.ticket_id,
                 ticketTitle: ticket.title,
                 clientName: ticket.client_name,
@@ -137,7 +145,7 @@ export function InteractionsPage() {
     } finally {
       if (requestId === requestIdRef.current) setIsLoading(false);
     }
-  }, [agentName]);
+  }, [agentName, agents]);
 
   useEffect(() => {
     load();

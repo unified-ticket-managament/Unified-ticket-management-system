@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Inbox as InboxIcon,
+  Lock,
   MailPlus,
   ShieldAlert,
   Ticket as TicketIcon,
@@ -163,6 +164,7 @@ export function Dashboard() {
       (t.current_status === "RESOLVED" || t.current_status === "CLOSED") &&
       isToday(t.updated_at)
   ).length;
+  const closedCount = tickets.filter((t) => t.current_status === "CLOSED").length;
   const criticalCount = tickets.filter(
     (t) => t.current_priority === "HIGH" && OPEN_STATUSES.includes(t.current_status)
   ).length;
@@ -234,6 +236,13 @@ export function Dashboard() {
             value={resolvedCount}
             tone="bg-success/10"
             hint="All-time resolved or closed tickets"
+          />
+          <StatCard
+            icon={<Lock size={19} className="text-slate-600" />}
+            label="Closed Tickets"
+            value={closedCount}
+            tone="bg-slate-500/10"
+            hint="All-time tickets marked closed"
           />
         </div>
 

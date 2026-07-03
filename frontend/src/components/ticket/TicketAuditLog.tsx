@@ -23,9 +23,12 @@ interface TicketAuditLogProps {
   // completes, so the trail updates immediately instead of waiting
   // for the next poll tick.
   refreshToken?: number;
+  // Rendered inside TicketActivityPanel's tabbed box, which already
+  // provides the outer border/shadow — see Card's `flat` prop.
+  flat?: boolean;
 }
 
-export function TicketAuditLog({ refreshToken }: TicketAuditLogProps) {
+export function TicketAuditLog({ refreshToken, flat = false }: TicketAuditLogProps) {
   const { activeTicket, agentName } = useWorkflowContext();
   const ticketId = activeTicket?.ticket_id;
 
@@ -69,6 +72,7 @@ export function TicketAuditLog({ refreshToken }: TicketAuditLogProps) {
 
   return (
     <Card
+      flat={flat}
       title="Audit Trail"
       eyebrow="Compliance record"
       actions={

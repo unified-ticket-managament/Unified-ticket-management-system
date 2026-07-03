@@ -30,14 +30,16 @@ from app.schemas.ticket import TicketUpdate
 from app.schemas.ticket_action import (
     PriorityChangeRequest,
     ReplyCreate,
-    ResolveTicketRequest,
     StatusChangeRequest,
     TicketActionResponse,
     TransferAgentRequest,
 )
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.schemas.audit_log import AuditLogResponse
-from app.services.access_control import ensure_agent_can_view_ticket
+from app.services.access_control import (
+    ensure_agent_can_view_ticket,
+    ensure_ticket_not_closed,
+)
 from app.services.audit_log_service import AuditLogService
 
 from app.enums import (
@@ -343,6 +345,9 @@ class InteractionService:
         Every internal note is stored as an Interaction.
         """
 
+        ticket = await self._get_ticket_or_404(ticket_id)
+        ensure_ticket_not_closed(ticket)
+
         actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
             self.user_repository, agent_name
         )
@@ -399,6 +404,9 @@ class InteractionService:
         to the client.
         """
 
+        ticket = await self._get_ticket_or_404(ticket_id)
+        ensure_ticket_not_closed(ticket)
+
         actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
             self.user_repository, agent_name
         )
@@ -451,14 +459,31 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
 
         old_status = ticket.current_status
+        old_closed_at = ticket.closed_at
+        new_status = request.new_status
 
         actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
             self.user_repository, agent_name
         )
 
+        # Resolving or closing a ticket stamps `closed_at`; reopening
+        # one (moving off RESOLVED/CLOSED) clears it back to None.
+        # Moving between RESOLVED and CLOSED leaves the original stamp
+        # alone — this is the single place that ever sets or clears
+        # it, since the dedicated "Resolve" action was folded in here
+        # to avoid two ways of doing the same thing.
+        was_closed = old_status in (TicketStatus.RESOLVED, TicketStatus.CLOSED)
+        will_be_closed = new_status in (TicketStatus.RESOLVED, TicketStatus.CLOSED)
+
+        update_fields: dict[str, Any] = {"current_status": new_status}
+        if not was_closed and will_be_closed:
+            update_fields["closed_at"] = datetime.now(timezone.utc)
+        elif was_closed and not will_be_closed:
+            update_fields["closed_at"] = None
+
         await self.ticket_repository.update(
             ticket,
-            TicketUpdate(current_status=request.new_status),
+            TicketUpdate(**update_fields),
         )
 
         interaction = await self._create_ticket_interaction(
@@ -467,10 +492,19 @@ class InteractionService:
             direction=InteractionDirection.INTERNAL,
             payload={
                 "from": old_status.value,
-                "to": request.new_status.value,
+                "to": new_status.value,
             },
             performed_by=actor_id,
         )
+
+        old_values: dict[str, Any] = {"current_status": old_status}
+        new_values: dict[str, Any] = {
+            "current_status": new_status,
+            "interaction_id": interaction.interaction_id,
+        }
+        if "closed_at" in update_fields:
+            old_values["closed_at"] = old_closed_at
+            new_values["closed_at"] = update_fields["closed_at"]
 
         await AuditLogService.log_event(
             self.ticket_repository.db,
@@ -480,88 +514,14 @@ class InteractionService:
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            old_values={"current_status": old_status},
-            new_values={
-                "current_status": request.new_status,
-                "interaction_id": interaction.interaction_id,
-            },
+            old_values=old_values,
+            new_values=new_values,
         )
 
         return TicketActionResponse(
             interaction_id=interaction.interaction_id,
             ticket_id=ticket_id,
             message="Ticket status updated successfully.",
-            created_at=interaction.created_at,
-        )
-
-    # ---------------------------------------------------------
-    # Resolve Ticket
-    # ---------------------------------------------------------
-
-    async def resolve_ticket(
-        self,
-        ticket_id: UUID,
-        request: ResolveTicketRequest,
-        agent_name: str | None = None,
-    ) -> TicketActionResponse:
-        """
-        Marks a ticket resolved (and closed), stamping `closed_at`
-        and recording the change on the timeline and audit trail.
-        """
-
-        ticket = await self._get_ticket_or_404(ticket_id)
-
-        old_status = ticket.current_status
-
-        if old_status in (TicketStatus.RESOLVED, TicketStatus.CLOSED):
-            raise HTTPException(
-                status_code=http_status.HTTP_400_BAD_REQUEST,
-                detail="Ticket is already resolved.",
-            )
-
-        actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
-            self.user_repository, agent_name
-        )
-
-        resolved_at = datetime.now(timezone.utc)
-
-        await self.ticket_repository.update(
-            ticket,
-            TicketUpdate(current_status=TicketStatus.RESOLVED, closed_at=resolved_at),
-        )
-
-        interaction = await self._create_ticket_interaction(
-            ticket_id=ticket_id,
-            interaction_type="RESOLVED",
-            direction=InteractionDirection.INTERNAL,
-            payload={
-                "from": old_status.value,
-                "to": TicketStatus.RESOLVED.value,
-                "resolution_note": request.resolution_note,
-            },
-            performed_by=actor_id,
-        )
-
-        await AuditLogService.log_event(
-            self.ticket_repository.db,
-            entity_type=AuditEntityType.TICKET,
-            entity_id=ticket_id,
-            event_type=AuditEventType.TICKET_RESOLVED,
-            actor_id=actor_id,
-            actor_name=actor_name,
-            actor_role=actor_role,
-            old_values={"current_status": old_status, "closed_at": None},
-            new_values={
-                "current_status": TicketStatus.RESOLVED,
-                "closed_at": resolved_at,
-                "interaction_id": interaction.interaction_id,
-            },
-        )
-
-        return TicketActionResponse(
-            interaction_id=interaction.interaction_id,
-            ticket_id=ticket_id,
-            message="Ticket resolved successfully.",
             created_at=interaction.created_at,
         )
 
@@ -581,6 +541,7 @@ class InteractionService:
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
+        ensure_ticket_not_closed(ticket)
 
         old_priority = ticket.current_priority
 
@@ -645,6 +606,7 @@ class InteractionService:
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
+        ensure_ticket_not_closed(ticket)
 
         actor_id, actor_name, actor_role = await AuditLogService.resolve_agent_actor(
             self.user_repository, agent_name

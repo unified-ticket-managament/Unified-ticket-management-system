@@ -3,8 +3,25 @@
 
 from fastapi import HTTPException, status
 
+from app.enums import TicketStatus
 from app.models.ticket import Ticket
 from app.repositories.user_repository import UserRepository
+
+
+def ensure_ticket_not_closed(ticket: Ticket) -> None:
+    """
+    A closed ticket is terminal for every action except reopening it
+    (changing its status back off CLOSED) — replies, internal notes,
+    priority changes, agent transfers, and attachment uploads are all
+    blocked. Status change itself is deliberately exempt, since it's
+    the only way to reopen a closed ticket.
+    """
+
+    if ticket.current_status == TicketStatus.CLOSED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This ticket is closed. Reopen it before performing further actions.",
+        )
 
 
 async def ensure_agent_can_view_ticket(

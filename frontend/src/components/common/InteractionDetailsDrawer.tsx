@@ -97,6 +97,44 @@ interface ResolvedFields {
   extra: Array<[string, unknown]>;
 }
 
+// From/To/Subject only mean something for a subset of interaction
+// types — email-like ones with a real sender/recipient/subject.
+// Everything else (notes, attachments, status/priority/transfer,
+// resolve) has no subject and no "sent to" concept, so those fields
+// are left `null` here and simply not rendered, instead of always
+// showing a blank "—".
+function resolveFromToSubject(
+  row: InteractionDrawerRow,
+  payload: Record<string, unknown>
+): { from: string | null; to: string | null; subject: string | null } {
+  switch (row.type) {
+    case "EMAIL":
+      return {
+        from: (payload.client_name as string) ?? (payload.from_email as string) ?? null,
+        to: (payload.agent_name as string) ?? null,
+        subject: (payload.subject as string) ?? null,
+      };
+    case "REPLY":
+      // Agent replying to the client — reversed from an inbound EMAIL.
+      return { from: row.agent || null, to: row.clientName, subject: null };
+    case "INTERNAL_NOTE":
+    case "ATTACHMENT":
+      // Authored/uploaded by the agent, not sent to anyone.
+      return { from: row.agent || null, to: null, subject: null };
+    case "AGENT_TRANSFER":
+      return {
+        from: (payload.from_agent_name as string) ?? "Unassigned",
+        to: (payload.to_agent_name as string) ?? null,
+        subject: null,
+      };
+    default:
+      // STATUS_CHANGE, PRIORITY_CHANGE, RESOLVED, etc. — their
+      // from/to payload fields are status/priority values, not
+      // people, and the summary line already covers the transition.
+      return { from: null, to: null, subject: null };
+  }
+}
+
 function resolveFields(
   row: InteractionDrawerRow,
   email?: InteractionDrawerEmail | null
@@ -118,9 +156,6 @@ function resolveFields(
   }
 
   const payload = row.raw?.payload ?? {};
-  const from = (payload.client_name ?? payload.from_agent_name ?? payload.from_email) as string | undefined;
-  const to = (payload.agent_name ?? payload.to_agent_name) as string | undefined;
-  const subject = payload.subject as string | undefined;
   const message =
     (payload.body ?? payload.message ?? payload.note) as string | undefined ??
     (row.raw ? summarize(row.raw) : row.summaryText);
@@ -130,9 +165,7 @@ function resolveFields(
   );
 
   return {
-    from: from ?? null,
-    to: to ?? null,
-    subject: subject ?? null,
+    ...resolveFromToSubject(row, payload),
     message: message ?? null,
     attachments,
     extra,
@@ -237,22 +270,30 @@ export function InteractionDetailsDrawer({
                 </div>
               </dl>
 
-              <div className="mt-5 border-t border-border pt-4">
-                <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
-                  <div>
-                    <dt className="text-muted">From</dt>
-                    <dd className="mt-0.5 font-medium text-slate-800">{fields.from ?? "—"}</dd>
-                  </div>
-                  <div>
-                    <dt className="text-muted">To</dt>
-                    <dd className="mt-0.5 font-medium text-slate-800">{fields.to ?? "—"}</dd>
-                  </div>
-                  <div className="col-span-2">
-                    <dt className="text-muted">Subject</dt>
-                    <dd className="mt-0.5 font-medium text-slate-800">{fields.subject ?? "—"}</dd>
-                  </div>
-                </dl>
-              </div>
+              {(fields.from || fields.to || fields.subject) && (
+                <div className="mt-5 border-t border-border pt-4">
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
+                    {fields.from && (
+                      <div>
+                        <dt className="text-muted">From</dt>
+                        <dd className="mt-0.5 font-medium text-slate-800">{fields.from}</dd>
+                      </div>
+                    )}
+                    {fields.to && (
+                      <div>
+                        <dt className="text-muted">To</dt>
+                        <dd className="mt-0.5 font-medium text-slate-800">{fields.to}</dd>
+                      </div>
+                    )}
+                    {fields.subject && (
+                      <div className="col-span-2">
+                        <dt className="text-muted">Subject</dt>
+                        <dd className="mt-0.5 font-medium text-slate-800">{fields.subject}</dd>
+                      </div>
+                    )}
+                  </dl>
+                </div>
+              )}
 
               <div className="mt-5 border-t border-border pt-4">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">

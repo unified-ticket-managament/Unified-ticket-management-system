@@ -193,10 +193,6 @@ export interface StatusChangeRequest {
   new_status: TicketStatus;
 }
 
-export interface ResolveTicketRequest {
-  resolution_note?: string | null;
-}
-
 export interface PriorityChangeRequest {
   new_priority: TicketPriority;
 }
