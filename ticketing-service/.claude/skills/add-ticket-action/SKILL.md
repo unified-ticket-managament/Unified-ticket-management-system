@@ -5,11 +5,24 @@ description: Scaffold a new ticket-mutating action (like status change, resolve,
 
 # Add a ticket-mutating action
 
-This repo has one repeated recipe for any action that changes a ticket and must be
+This repo has one repeated recipe for any action that changes a **ticket** and must be
 traceable (timeline + audit trail + UI). Follow it exactly rather than inventing a new
-shape — copy the closest existing action (`change_status` / `transfer_agent` /
-`claim_ticket` in `backend/app/services/interaction_service.py` are the best templates)
-and adapt.
+shape — copy the closest existing action (`change_status` / `change_priority` /
+`transfer_agent` / `claim_ticket` in `backend/app/services/interaction_service.py` are the
+best templates) and adapt.
+
+**If the action instead applies to a pending, pre-ticket `Interaction`** (the shared inbox
+pool — e.g. "Assign to me"/claim, "Informational/Archive") — this is a related but distinct
+pattern: there's no `Ticket` row yet, so it doesn't go through `TicketRepository`/
+`_create_ticket_interaction` at all. Copy `InteractionService.claim_interaction` /
+`archive_interaction` instead, which mutate the `Interaction` row directly via a matching
+atomic-guard method on `InteractionRepository` (`claim`/`archive`, guarding on
+`ticket_id IS NULL AND status == PENDING` plus whatever else the guard needs — `claim` also
+checks `claimed_by IS NULL`), mirroring `TicketRepository.claim`'s race-guard shape but keyed
+on the Interaction's own columns instead of `Ticket.agent_id`. Access is checked via
+`InteractionService._ensure_can_act_on_pending_interaction` (own-client-scope-or-supervisor),
+not `ensure_agent_can_view_ticket`. The rest of this skill (below) is written for the
+ticket-level case; adapt step 3 accordingly for a pending-interaction action.
 
 Read `CLAUDE.md` first for the two-log distinction (Interaction = business timeline,
 AuditLog = immutable compliance trail), the real-JWT auth model (no more `agent_name`
@@ -22,30 +35,33 @@ member.
 1. **Audit event type** — if this action needs a new `AuditEventType` value, add it to
    `backend/app/enums/audit_enums.py`, then run the **add-postgres-enum-value** skill to
    generate the matching Alembic migration (`ALTER TYPE audit_event_type_enum ADD VALUE`).
-   Skip this if an existing event type fits.
+   Skip this if an existing event type fits. `INTERACTION_CLAIMED`/`INTERACTION_ARCHIVED`
+   are recent examples of adding two new values in one migration file — see
+   `backend/alembic/versions/9b2c4d6e8f0a_add_interaction_claimed_and_archived_audit_event_types.py`.
 2. **Request schema** — add a `<Verb>Request` Pydantic model to
-   `backend/app/schemas/ticket_action.py` (see `ResolveTicketRequest`, `StatusChangeRequest`).
+   `backend/app/schemas/ticket_action.py` (see `TransferAgentRequest`, `StatusChangeRequest`).
    Keep it minimal — most actions need zero or one field.
 3. **Service method** — add a method to `InteractionService` in
    `backend/app/services/interaction_service.py`, right next to the most similar existing
    method (`change_status`/`change_priority`/`transfer_agent`/`claim_ticket` are the best
    templates), following this exact shape:
    - `ticket = await self._get_ticket_or_404(ticket_id)`
+   - `ensure_agent_can_view_ticket(ticket, current_user)` (from `access_control.py`) if the
+     action should be visibility-restricted — this is the category/ownership gate.
    - capture any "before" state you'll need for the interaction/audit payload
-   - guard against invalid transitions with `HTTPException(400, "...")` if applicable
-<<<<<<< Updated upstream
-     (see `ensure_ticket_not_closed` / claim's already-claimed guard)
+   - guard against invalid transitions with `HTTPException(400, "...")` if applicable (see
+     `ensure_ticket_not_closed`, or `claim_ticket`'s already-claimed guard)
+   - if the action should be restricted to *specific roles* rather than just visibility
+     (a real authorization rule, not a scoping rule) — see `ensure_can_reassign_ticket`
+     for the pattern: a small helper in `access_control.py` that 403s unless
+     `current_user.role.name in SUPERVISOR_ROLE_NAMES` (or whatever role set applies), called
+     right after the closed/view checks. `transfer_agent` uses this to block Staff from
+     reassigning a ticket to a *different* named agent, while deliberately **not** applying
+     it to `claim_ticket` (self-pickup from the shared pool stays open to every agent role) —
+     know which of these two your new action actually is before copying either.
    - `actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(current_user)`
-     — synchronous, takes the authenticated `current_user` directly (there is no
-     `agent_name` string to resolve; auth is real JWT, not a query param — see CLAUDE.md)
-=======
-     (see `resolve_ticket`'s already-resolved guard)
-   - if the action should be visibility-restricted, call
-     `ensure_agent_can_view_ticket(ticket, current_user)` (from `app/services/access_control.py`)
-   - `actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(current_user)` —
-     synchronous, no DB lookup; `current_user` is the already-verified `User` passed in from
-     the route's `Depends(get_current_agent)`, not a name string
->>>>>>> Stashed changes
+     — synchronous, no DB lookup; `current_user` is the already-verified `User` passed in
+     from the route's `Depends(get_current_agent)`, not a name string
    - mutate the ticket via `self.ticket_repository.update(ticket, TicketUpdate(...))`
    - `interaction = await self._create_ticket_interaction(ticket_id=..., interaction_type="<NEW_TYPE>", direction=InteractionDirection.INTERNAL, payload={...}, performed_by=actor_id)`
      — `interaction_type` is a free string, no migration needed for a new one; only pass
@@ -54,17 +70,11 @@ member.
    - `await AuditLogService.log_event(self.ticket_repository.db, entity_type=AuditEntityType.TICKET, entity_id=ticket_id, event_type=..., actor_id=actor_id, actor_name=actor_name, actor_role=actor_role, old_values={...}, new_values={...})`
    - `return TicketActionResponse(interaction_id=interaction.interaction_id, ticket_id=ticket_id, message="...", created_at=interaction.created_at)`
 4. **Route** — add `POST /tickets/{ticket_id}/<verb>` to `backend/app/api/ticket.py`,
-<<<<<<< Updated upstream
    wired identically to the `/status` or `/transfer` route: same three repositories, same
    `InteractionService` construction, `current_user: User = Depends(get_current_agent)` —
-   not a query param.
-=======
-   wired identically to the `/status` or `/resolve` route: `current_user: User = Depends(get_current_agent)`
-   (from `app/dependencies/auth.py`), passed into the service method — **not** an `agent_name`
-   query/form param; that mechanism was removed when RBAC-issued JWTs became the identity source.
-   Use `Depends(get_current_user)` instead of `get_current_agent` if the route should also be
-   reachable by Viewer (read-only routes only — see CLAUDE.md's access-control section).
->>>>>>> Stashed changes
+   not a query param. Use `Depends(get_current_user)` instead of `get_current_agent` only if
+   the route should also be reachable by Viewer (read-only routes only — see CLAUDE.md's
+   access-control section).
 
 ## Frontend steps
 
@@ -76,24 +86,27 @@ same change needs porting into the embedded copy (same relative paths, but under
 `ticket-workspace/` and importing via the `@tw/*` alias instead of `@/*`).
 
 1. **Types** (`frontend/src/types/index.ts`) — add the request interface, and if you
-   added an `AuditEventType` value, add it to that union too.
-2. **API wrapper** (`frontend/src/api/interaction.ts`) — thin POST wrapper matching
-<<<<<<< Updated upstream
-   `changeTicketStatus`/`changeTicketPriority`. Mirror it into the RBAC-embedded copy's
-   `api/interaction.ts` too (see CLAUDE.md's dual-frontend rule).
-=======
-   `resolveTicket`/`changeTicketStatus`. Identity comes from the bearer token attached by
-   `api/client.ts`'s request interceptor — never add an `agentName`/`agent_name` param.
->>>>>>> Stashed changes
+   added an `AuditEventType` value, add it to that union too (and mirror both into the
+   embedded copy's `types/index.ts`).
+2. **API wrapper** (`frontend/src/api/interaction.ts` or `api/ticket.ts`, matching whichever
+   resource the route lives under) — thin POST wrapper matching
+   `changeTicketStatus`/`transferTicketAgent`. Identity comes from the bearer token attached
+   by `api/client.ts`'s request interceptor — never add an `agentName`/`agent_name` param.
+   Mirror it into the RBAC-embedded copy's equivalent `api/*.ts` too (see CLAUDE.md's
+   dual-frontend rule).
 3. **UI** (`frontend/src/components/ticket/TicketActions.tsx`) — add an `ActionTile`
    (pick a `Tone`/icon that isn't already overloaded) wired through `useApiAction` with a
    `successMessage`, opening a `Modal` if the action needs input, then calling
-   `onActionComplete()` on success so the timeline/audit panel refetch.
+   `onActionComplete()` on success so the timeline/audit panel refetch. If the tile should
+   be hidden for certain roles (e.g. Staff can't see "Transfer Agent"), gate the `ActionTile`
+   render with `useAuthContext().currentUser?.role`, matching how `isStaff` is used there
+   today — don't rely on the backend 403 alone to hide UI a user shouldn't see at all.
 4. **Timeline rendering** (`frontend/src/lib/interactionMeta.ts`) — add the new
    `interaction_type` to `TYPE_META` (icon/label/tone) and a `summarize()` case, or it
    falls back to a raw JSON dump on the timeline.
 5. **Audit rendering** (`frontend/src/lib/auditLogMeta.ts`) — add the new
-   `AuditEventType` to `EVENT_META`, or it falls back to a generic bullet.
+   `AuditEventType` to `EVENT_META`, or it falls back to a generic bullet. Mirror into the
+   embedded copy's `lib/auditLogMeta.ts` too.
 6. If the action changes a field worth surfacing on the ticket ("related fields"),
    add a row to `frontend/src/components/ticket/TicketDetails.tsx`.
 
@@ -107,3 +120,6 @@ same change needs porting into the embedded copy (same relative paths, but under
   otherwise it 500s with `InvalidTextRepresentationError`.
 - Exercise the action from the UI (or Swagger `/docs`) and confirm it shows up in both
   the ticket Timeline and the Audit Trail panel, not just one.
+- If the action is role-restricted, exercise it as both an allowed role and a blocked role
+  (e.g. Team Lead succeeds, Staff gets 403) — a permission gate with only the happy path
+  tested is indistinguishable from no gate at all.

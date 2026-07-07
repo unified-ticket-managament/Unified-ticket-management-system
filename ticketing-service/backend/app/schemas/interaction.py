@@ -71,3 +71,27 @@ class HideInteractionResponse(ORMBase):
     removed_by: UUID | None
     removed_at: datetime | None
     message: str
+
+
+class InteractionClaimResponse(ORMBase):
+    """
+    Response returned after a pending inbox item is claimed
+    ("Assign to me").
+    """
+
+    interaction_id: UUID
+    claimed_by: UUID | None
+    claimed_by_name: str | None
+    claimed_at: datetime | None
+    message: str
+
+
+class InteractionArchiveResponse(ORMBase):
+    """
+    Response returned after a pending inbox item is archived
+    (the "Informational / Archive" reviewer decision).
+    """
+
+    interaction_id: UUID
+    status: InteractionStatus
+    message: str

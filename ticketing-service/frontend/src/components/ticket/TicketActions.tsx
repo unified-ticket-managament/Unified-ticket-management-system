@@ -21,6 +21,7 @@ import {
 } from "@/api/interaction";
 import { listAgents } from "@/api/agent";
 import { transferTicketAgent } from "@/api/ticket";
+import { useAuthContext } from "@/context/AuthContext";
 import { useWorkflowContext } from "@/context/WorkflowContext";
 import type { AgentSummary, TicketPriority, TicketStatus } from "@/types";
 import type { ComposerMode } from "@/components/ticket/TicketComposer";
@@ -82,6 +83,7 @@ interface TicketActionsProps {
 
 export function TicketActions({ onActionComplete, onOpenComposer }: TicketActionsProps) {
   const { activeTicket } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
   const [modal, setModal] = useState<ActiveModal>(null);
 
   const [newStatus, setNewStatus] = useState<TicketStatus>("IN_PROGRESS");
@@ -107,13 +109,19 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   });
 
   useEffect(() => {
-    listAgents()
+    if (!activeTicket) return;
+    // Scoped to the ticket's own work-specialization category — a
+    // Team Lead assigning/transferring should only see their own
+    // team's Staff, not every Staff member company-wide.
+    listAgents(activeTicket.ticket_type)
       .then(setAgents)
       .catch(() => setAgents([]));
-  }, []);
+  }, [activeTicket?.ticket_id, activeTicket?.ticket_type]);
 
   if (!activeTicket) return null;
 
+  const isStaff = currentUser?.role === "Staff";
+  const isUnclaimed = activeTicket.agent_id == null;
   const transferCandidates = agents.filter((a) => a.user_id !== activeTicket.agent_id);
   // Closed is terminal for every action except Change Status itself —
   // that's the only way to reopen a closed ticket, so it stays enabled.
@@ -193,13 +201,15 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
             disabled={isTicketClosed}
             onClick={() => setModal("priority")}
           />
-          <ActionTile
-            icon={<ArrowLeftRight size={16} />}
-            label="Transfer Agent"
-            tone="accent"
-            disabled={isTicketClosed}
-            onClick={openTransferModal}
-          />
+          {!isStaff && (
+            <ActionTile
+              icon={<ArrowLeftRight size={16} />}
+              label={isUnclaimed ? "Assign to Staff" : "Transfer Agent"}
+              tone="accent"
+              disabled={isTicketClosed}
+              onClick={openTransferModal}
+            />
+          )}
           <ActionTile
             icon={<Paperclip size={16} />}
             label="Upload Attachment"
@@ -263,7 +273,7 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
 
       <Modal
         open={modal === "transfer"}
-        title="Transfer Agent"
+        title={isUnclaimed ? "Assign to Staff" : "Transfer Agent"}
         onClose={closeModal}
         footer={
           <Button
@@ -273,16 +283,19 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
             disabled={!newAgentId}
             onClick={handleTransferAgent}
           >
-            Transfer
+            {isUnclaimed ? "Assign" : "Transfer"}
           </Button>
         }
       >
         {transferCandidates.length === 0 ? (
-          <p className="text-sm text-muted">No other active agents to transfer to.</p>
+          <p className="text-sm text-muted">
+            No active Staff in the "{activeTicket.ticket_type}" category to
+            {isUnclaimed ? " assign this to" : " transfer to"}.
+          </p>
         ) : (
           <>
             <SelectInput
-              label="Transfer to"
+              label={isUnclaimed ? "Assign to" : "Transfer to"}
               value={newAgentId}
               onChange={(e) => setNewAgentId(e.target.value)}
             >
@@ -293,8 +306,9 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
               ))}
             </SelectInput>
             <p className="mt-2 text-[11px] text-muted">
-              {activeTicket.agent_name ?? "The current agent"} will lose all access to this
-              ticket the moment it's transferred — ownership moves fully to the new agent.
+              {isUnclaimed
+                ? `Only Staff in the "${activeTicket.ticket_type}" category are listed.`
+                : `${activeTicket.agent_name ?? "The current agent"} will lose all access to this ticket the moment it's transferred — ownership moves fully to the new agent.`}
             </p>
           </>
         )}

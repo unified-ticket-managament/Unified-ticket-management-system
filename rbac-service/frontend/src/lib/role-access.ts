@@ -77,7 +77,7 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
   [ROLE_NAMES.SUPER_ADMIN]: ["Dashboard", "Users", "Roles", "Audit Logs", "Profile", "Settings"],
   [ROLE_NAMES.SITE_LEAD]: ["Dashboard", "Users", "Roles", "Audit Logs", "Profile", "Settings"],
   [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Roles", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
-  [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
+  [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
   [ROLE_NAMES.STAFF]: ["Dashboard", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
   [ROLE_NAMES.VIEWER]: ["Dashboard", "Profile", "Settings"],
 };

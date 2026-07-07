@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, CheckCircle2, MailPlus } from "lucide-react";
+import { ArrowRight, CheckCircle2, MailPlus, ShieldAlert } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
+import { EmptyState } from "@tw/components/common/EmptyState";
 import { TextArea, TextInput, SelectInput } from "@tw/components/common/FormField";
 import { FileDropzone } from "@tw/components/common/FileDropzone";
 import { useApiAction } from "@tw/hooks/useApiAction";
+import { useAuthContext } from "@tw/context/AuthContext";
 import { receiveIncomingEmail } from "@tw/api/email";
 import { listClients } from "@tw/api/clients";
 import { validateFiles } from "@tw/lib/attachmentMeta";
@@ -16,7 +18,13 @@ function randomMessageId() {
   return `<msg-${Date.now()}-${Math.floor(Math.random() * 10000)}@dummy.local>`;
 }
 
+// Nav-hidden for Team Lead (see rbac-service/frontend/src/lib/role-access.ts's
+// NAV_ITEMS_BY_ROLE) — this is the defense-in-depth check for anyone
+// who navigates here directly by URL anyway.
+const RESTRICTED_ROLES = ["Team Lead"];
+
 export function CreateMailPage() {
+  const { currentUser } = useAuthContext();
   const [clients, setClients] = useState<ClientResponse[]>([]);
   const [toEmail, setToEmail] = useState("");
   const [fromEmail, setFromEmail] = useState("mary.j@abcclinic.com");
@@ -69,6 +77,18 @@ export function CreateMailPage() {
     }
   }
 
+  if (RESTRICTED_ROLES.includes(currentUser?.role ?? "")) {
+    return (
+      <AppLayout title="Create Dummy Mail">
+        <EmptyState
+          icon={<ShieldAlert size={22} />}
+          title="Not available for your role"
+          description="This simulator isn't part of the Team Lead workflow."
+        />
+      </AppLayout>
+    );
+  }
+
   return (
     <AppLayout
       title="Create Dummy Mail"
@@ -100,6 +120,7 @@ export function CreateMailPage() {
                 {clients.map((client) => (
                   <option key={client.client_id} value={client.inbox_email}>
                     {client.name} ({client.inbox_email})
+                    {client.account_manager_active ? "" : " — ⚠ AM inactive"}
                   </option>
                 ))}
               </SelectInput>

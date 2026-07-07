@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 from fastapi import UploadFile
@@ -13,6 +14,7 @@ from app.repositories.client_repository import ClientRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.repositories.user_repository import UserRepository
 from app.schemas.attachment import AttachmentMetadata
 from app.schemas.email import (
     EmailRequest,
@@ -21,11 +23,14 @@ from app.schemas.email import (
 from app.schemas.interaction import (
     InteractionCreate,
 )
+from app.services.access_control import ACCOUNT_MANAGER_ROLE_NAME
 from app.services.attachment_service import (
     AttachmentService,
     attachments_to_metadata,
 )
 from app.services.audit_log_service import AuditLogService
+
+logger = logging.getLogger(__name__)
 
 
 class EmailService:
@@ -58,6 +63,11 @@ class EmailService:
     the client's Account Manager (via ClientRepository), who triages
     it from their inbox; staff pick up resulting tickets from the
     shared pool instead of being auto-assigned at intake.
+
+    Routing is always 1:1 via `client.account_manager_id` — there is
+    no round-robin anywhere in this runtime path (round-robin only
+    ever existed in `scripts/seed_clients.py`'s demo-data assignment,
+    which has since been replaced with an explicit mapping too).
     """
 
     def __init__(
@@ -65,10 +75,12 @@ class EmailService:
         interaction_repository: InteractionRepository,
         client_repository: ClientRepository,
         attachment_service: AttachmentService,
+        user_repository: UserRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.client_repository = client_repository
         self.attachment_service = attachment_service
+        self.user_repository = user_repository
 
     async def receive_email(
         self,
@@ -103,6 +115,30 @@ class EmailService:
             raise ValueError(
                 "Unknown inbox address."
             )
+
+        # Defense in depth: the mapped Account Manager was valid when
+        # this client was onboarded (ClientService.create validates
+        # it), but nothing revalidates that later — a role change or
+        # deactivation leaves account_manager_id pointing at a real
+        # user who no longer qualifies. Never drop/bounce real
+        # customer email over this; just make it loud in the logs so
+        # it gets fixed. Supervisors' existing scope=all inbox view
+        # already covers visibility in the meantime.
+        if self.user_repository is not None:
+            manager = await self.user_repository.get_by_id(client.account_manager_id)
+            if (
+                manager is None
+                or not manager.is_active
+                or manager.role.name != ACCOUNT_MANAGER_ROLE_NAME
+            ):
+                logger.warning(
+                    "Client %s (%s) has a stale account_manager_id %s — that user is "
+                    "no longer an active Account Manager. Mail will only be visible "
+                    "via the 'all inboxes' supervisor view until this is fixed.",
+                    client.client_id,
+                    client.inbox_email,
+                    client.account_manager_id,
+                )
 
         received_at = email.received_at or datetime.now(timezone.utc)
 

@@ -90,6 +90,22 @@ class Interaction(Base):
         nullable=True,
     )
 
+    # Who has claimed this pending (pre-ticket) interaction from the
+    # shared inbox pool — "Assign to me". NULL means unclaimed. Only
+    # meaningful while ticket_id IS NULL and status == PENDING; once
+    # converted to a ticket, ownership moves to Ticket.agent_id
+    # instead (a completely separate concept — see TicketRepository.claim).
+    claimed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id"),
+        nullable=True,
+    )
+
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     message_id: Mapped[str | None] = mapped_column(
         String(255),
         unique=True,

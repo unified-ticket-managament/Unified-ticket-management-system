@@ -3,6 +3,8 @@ import type {
   InboxResponse,
   InboxScope,
   InboxView,
+  InteractionArchiveResponse,
+  InteractionClaimResponse,
   InteractionReplyRequest,
   InteractionReplyResponse,
   OpenEmailResponse,
@@ -45,6 +47,28 @@ export async function replyToInteraction(
   const { data } = await apiClient.post<InteractionReplyResponse>(
     `/inbox/${interactionId}/reply`,
     payload
+  );
+  return data;
+}
+
+// POST /inbox/{interaction_id}/claim — "Assign to me". 409 if
+// someone already claimed it first.
+export async function claimInteraction(
+  interactionId: string
+): Promise<InteractionClaimResponse> {
+  const { data } = await apiClient.post<InteractionClaimResponse>(
+    `/inbox/${interactionId}/claim`
+  );
+  return data;
+}
+
+// POST /inbox/{interaction_id}/archive — "Informational / Archive":
+// store it, no ticket, no work assignment.
+export async function archiveInteraction(
+  interactionId: string
+): Promise<InteractionArchiveResponse> {
+  const { data } = await apiClient.post<InteractionArchiveResponse>(
+    `/inbox/${interactionId}/archive`
   );
   return data;
 }

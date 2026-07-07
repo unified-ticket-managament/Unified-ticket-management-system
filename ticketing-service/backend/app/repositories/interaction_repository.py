@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import InteractionStatus
@@ -89,6 +89,8 @@ class InteractionRepository:
           - "pending": not yet replied to or ticketed — the triage queue.
           - "replied": answered directly, never became a ticket.
           - "ticketed": promoted to (or attached onto) a ticket.
+          - "archived": marked Informational/Archive — stored, no
+            ticket, no work assignment, still searchable here.
           - "all": every root email regardless of state — the "All
             Inboxes" overview, normally paired with no account_manager
             scoping.
@@ -123,6 +125,11 @@ class InteractionRepository:
             )
         elif view == "ticketed":
             query = query.where(Interaction.ticket_id.isnot(None))
+        elif view == "archived":
+            query = query.where(
+                Interaction.ticket_id.is_(None),
+                Interaction.status == InteractionStatus.IGNORED,
+            )
         # view == "all": no further filter — every root email.
 
         query = query.order_by(Interaction.received_at.desc())
@@ -277,6 +284,71 @@ class InteractionRepository:
         )
 
         return result.scalar_one_or_none() is not None
+
+    async def claim(
+        self,
+        interaction: Interaction,
+        user_id: UUID,
+    ) -> Interaction | None:
+        """
+        Atomically assigns an unclaimed, unticketed PENDING interaction
+        to `user_id` — "Assign to me". Guarded by a conditional UPDATE
+        (mirroring TicketRepository.claim's ticket-level race guard)
+        rather than a plain ORM attribute set, so two agents clicking
+        "Assign to me" on the same item at the same moment can't both
+        win. Returns None when the guard fails (already claimed,
+        already ticketed, or no longer pending).
+        """
+
+        result = await self.db.execute(
+            update(Interaction)
+            .where(
+                Interaction.interaction_id == interaction.interaction_id,
+                Interaction.ticket_id.is_(None),
+                Interaction.status == InteractionStatus.PENDING,
+                Interaction.claimed_by.is_(None),
+            )
+            .values(claimed_by=user_id, claimed_at=datetime.now(timezone.utc))
+        )
+
+        if result.rowcount == 0:
+            return None
+
+        await self.db.flush()
+        await self.db.refresh(interaction)
+
+        return interaction
+
+    async def archive(
+        self,
+        interaction: Interaction,
+    ) -> Interaction | None:
+        """
+        Atomically marks a pending, unticketed interaction IGNORED —
+        the "Informational / Archive" reviewer decision: store it, no
+        ticket, no work assignment, still searchable later via the
+        "archived" inbox view. Same conditional-UPDATE race guard as
+        claim, so an archive and a concurrent claim/convert-to-ticket
+        can't both silently win.
+        """
+
+        result = await self.db.execute(
+            update(Interaction)
+            .where(
+                Interaction.interaction_id == interaction.interaction_id,
+                Interaction.ticket_id.is_(None),
+                Interaction.status == InteractionStatus.PENDING,
+            )
+            .values(status=InteractionStatus.IGNORED)
+        )
+
+        if result.rowcount == 0:
+            return None
+
+        await self.db.flush()
+        await self.db.refresh(interaction)
+
+        return interaction
 
     async def hide(
         self,

@@ -13,7 +13,7 @@ import { useAuthContext } from "@/context/AuthContext";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/create-mail", label: "Create Dummy Mail", icon: MailPlus, hideForStaff: true },
+  { to: "/create-mail", label: "Create Dummy Mail", icon: MailPlus, hideForRoles: ["Staff", "Team Lead"] },
   { to: "/inbox", label: "Inbox", icon: Inbox },
   { to: "/interactions", label: "Interactions", icon: MessageSquare },
   { to: "/tickets", label: "Tickets", icon: Ticket },
@@ -88,7 +88,7 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
             Workspace
           </p>
           {navItems
-            .filter((item) => !(item.hideForStaff && currentUser?.role === "Staff"))
+            .filter((item) => !item.hideForRoles?.includes(currentUser?.role ?? ""))
             .map((item) => {
             const Icon = item.icon;
             return (

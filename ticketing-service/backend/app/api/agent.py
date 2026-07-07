@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import User
 
@@ -22,17 +22,29 @@ router = APIRouter(
     response_model=list[AgentSummaryResponse],
 )
 async def list_agents(
+    category: str | None = Query(
+        default=None,
+        description="Work-specialization category (e.g. 'AR') to scope results to — "
+        "used by the ticket Assign-to-Staff picker so a Team Lead only sees their "
+        "own category's Staff, not every Staff member company-wide.",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Returns every active Staff user — used to populate agent
-    pickers (e.g. Transfer Agent) with real users, not dummy names.
+    Returns active Staff users — used to populate agent pickers (e.g.
+    Transfer/Assign-to-Staff) with real users, not dummy names.
+    `category` set narrows to Staff in that one category; omitted
+    returns every active Staff member (unfiltered).
     """
 
     repository = UserRepository(db)
 
-    agents = await repository.list_active_by_role_name("Staff")
+    agents = (
+        await repository.list_active_staff_by_category(category)
+        if category is not None
+        else await repository.list_active_by_role_name("Staff")
+    )
 
     return [
         AgentSummaryResponse(

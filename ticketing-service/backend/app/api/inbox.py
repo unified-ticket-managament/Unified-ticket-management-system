@@ -14,6 +14,10 @@ from app.repositories.interaction_repository import (
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.inbox import InboxResponse
+from app.schemas.interaction import (
+    InteractionArchiveResponse,
+    InteractionClaimResponse,
+)
 from app.schemas.open_email import OpenEmailResponse
 from app.schemas.ticket_action import (
     InteractionReplyRequest,
@@ -40,7 +44,7 @@ router = APIRouter(
 )
 async def get_inbox(
     client_id: UUID | None = Query(default=None),
-    view: str = Query(default="pending", pattern="^(pending|replied|ticketed|all)$"),
+    view: str = Query(default="pending", pattern="^(pending|replied|ticketed|archived|all)$"),
     scope: str = Query(default="mine", pattern="^(mine|all)$"),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
@@ -51,23 +55,105 @@ async def get_inbox(
 
     `view` selects which root emails: not-yet-actioned ("pending"),
     replied-but-never-ticketed ("replied"), promoted-to-a-ticket
-    ("ticketed"), or every one of them ("all").
+    ("ticketed"), marked Informational/Archive ("archived"), or every
+    one of them ("all").
 
     `scope="all"` is the "All Inboxes" escape hatch — every client's
-    mail, not just this user's own. Only takes effect for Manager /
-    Super Admin; ignored for anyone else.
+    mail, not just this user's own. Only takes effect for Team Lead /
+    Account Manager / Site Lead / Super Admin; ignored for anyone else.
     """
 
     repository = InteractionRepository(db)
     attachment_repository = AttachmentRepository(db)
+    user_repository = UserRepository(db)
 
-    service = InboxService(repository, attachment_repository=attachment_repository)
+    service = InboxService(
+        repository,
+        attachment_repository=attachment_repository,
+        user_repository=user_repository,
+    )
 
     return await service.get_inbox(
         current_user,
         client_id=client_id,
         view=view,
         scope=scope,
+    )
+
+
+# ---------------------------------------------------------
+# Claim ("Assign to me")
+# ---------------------------------------------------------
+
+@router.post(
+    "/{interaction_id}/claim",
+    response_model=InteractionClaimResponse,
+    status_code=201,
+)
+async def claim_interaction(
+    interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Claims a pending, unticketed inbox item for the authenticated
+    user — "Assign to me". Race-guarded: if two agents claim the same
+    item at once, exactly one succeeds and the other gets a 409.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    return await service.claim_interaction(
+        interaction_id=interaction_id,
+        current_user=current_user,
+    )
+
+
+# ---------------------------------------------------------
+# Archive ("Informational / Archive")
+# ---------------------------------------------------------
+
+@router.post(
+    "/{interaction_id}/archive",
+    response_model=InteractionArchiveResponse,
+    status_code=200,
+)
+async def archive_interaction(
+    interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Marks a pending, unticketed inbox item Informational/Archive —
+    stored, no ticket, no work assignment, still searchable under the
+    "archived" inbox view.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    return await service.archive_interaction(
+        interaction_id=interaction_id,
+        current_user=current_user,
     )
 
 
@@ -91,11 +177,13 @@ async def open_email(
 
     repository = InteractionRepository(db)
     attachment_repository = AttachmentRepository(db)
+    user_repository = UserRepository(db)
 
     service = OpenEmailService(
         repository,
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
+        user_repository=user_repository,
     )
 
     return await service.get_email_details(

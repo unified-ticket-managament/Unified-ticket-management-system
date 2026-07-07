@@ -32,6 +32,7 @@ class TicketRepository:
         self,
         agent_id: UUID | None = None,
         client_company_ids: list[UUID] | None = None,
+        ticket_types: list[str] | None = None,
     ) -> list[Ticket]:
         query = select(Ticket).order_by(Ticket.created_at.desc())
 
@@ -47,6 +48,13 @@ class TicketRepository:
             # to clients they own. An empty list is a deliberate "owns
             # no clients, sees nothing" rather than "unrestricted".
             query = query.where(Ticket.client_company_id.in_(client_company_ids))
+
+        if ticket_types is not None:
+            # Team Lead/Staff category scoping — restrict to tickets
+            # filed under their own work-specialization category. An
+            # empty list is a deliberate "no category, sees nothing"
+            # rather than "unrestricted", same convention as above.
+            query = query.where(Ticket.ticket_type.in_(ticket_types))
 
         result = await self.db.execute(query)
         return list(result.scalars().all())

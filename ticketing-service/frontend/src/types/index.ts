@@ -76,6 +76,7 @@ export interface ClientResponse {
   is_active: boolean;
   created_at: string;
   account_manager_name: string | null;
+  account_manager_active: boolean;
 }
 
 // ==========================================================
@@ -120,7 +121,7 @@ export interface CurrentUser {
 // Account Manager Inbox
 // ==========================================================
 
-export type InboxView = "pending" | "replied" | "ticketed" | "all";
+export type InboxView = "pending" | "replied" | "ticketed" | "archived" | "all";
 export type InboxScope = "mine" | "all";
 
 export interface InboxItem {
@@ -136,11 +137,27 @@ export interface InboxItem {
   direction: InteractionDirection;
   ticket_id: string | null;
   has_attachments: boolean;
+  claimed_by: string | null;
+  claimed_by_name: string | null;
 }
 
 export interface InboxResponse {
   total: number;
   items: InboxItem[];
+}
+
+export interface InteractionClaimResponse {
+  interaction_id: string;
+  claimed_by: string | null;
+  claimed_by_name: string | null;
+  claimed_at: string | null;
+  message: string;
+}
+
+export interface InteractionArchiveResponse {
+  interaction_id: string;
+  status: InteractionStatus;
+  message: string;
 }
 
 export interface OpenEmailResponse {
@@ -156,6 +173,8 @@ export interface OpenEmailResponse {
   message_id: string | null;
   received_at: string;
   status: InteractionStatus;
+  claimed_by: string | null;
+  claimed_by_name: string | null;
   attachments?: AttachmentMeta[];
   replies: InteractionResponse[];
 }
@@ -330,7 +349,9 @@ export type AuditEventType =
   | "NOTE_ADDED"
   | "REPLY_ADDED"
   | "EMAIL_RECEIVED"
-  | "CLIENT_CREATED";
+  | "CLIENT_CREATED"
+  | "INTERACTION_CLAIMED"
+  | "INTERACTION_ARCHIVED";
 
 export type ActorRole = "AGENT" | "CLIENT" | "SYSTEM";
 

@@ -21,6 +21,8 @@ from app.repositories.user_repository import UserRepository
 from app.schemas.interaction import (
     HideInteractionRequest,
     HideInteractionResponse,
+    InteractionArchiveResponse,
+    InteractionClaimResponse,
     InteractionCreate,
     InteractionResponse,
     InteractionUpdate,
@@ -42,7 +44,9 @@ from app.schemas.ticket_action import (
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.schemas.audit_log import AuditLogResponse
 from app.services.access_control import (
+    SUPERVISOR_ROLE_NAMES,
     ensure_agent_can_view_ticket,
+    ensure_can_reassign_ticket,
     ensure_ticket_not_closed,
 )
 from app.services.audit_log_service import AuditLogService
@@ -201,10 +205,10 @@ class InteractionService:
         """
         Returns the complete timeline for a ticket.
 
-        Interactions are ordered chronologically
-        by created_at (oldest first). Only visible to
-        the agent the ticket is assigned to (unassigned
-        tickets remain visible to everyone).
+        Interactions are ordered chronologically by created_at
+        (oldest first). Gated by ensure_agent_can_view_ticket — a
+        Team Lead/Staff only sees this if the ticket is in their own
+        category; every other agent role is unrestricted.
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
@@ -258,8 +262,8 @@ class InteractionService:
         This is deliberately separate from get_ticket_interactions:
         the timeline above is the business record agents act on;
         this is the compliance/security record of who changed what.
-        Same access gate as the timeline — visible only to the
-        assigned agent (unassigned tickets stay visible to everyone).
+        Same access gate as the timeline — see
+        ensure_agent_can_view_ticket's category scoping.
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
@@ -809,6 +813,7 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
+        ensure_can_reassign_ticket(current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -950,6 +955,160 @@ class InteractionService:
             ticket_id=ticket_id,
             message=f"Ticket claimed by {current_user.name}.",
             created_at=interaction.created_at,
+        )
+
+    # ---------------------------------------------------------
+    # Pending Inbox Item Actions (claim / archive)
+    # ---------------------------------------------------------
+
+    async def _ensure_can_act_on_pending_interaction(
+        self,
+        interaction: Interaction,
+        current_user: User,
+    ) -> None:
+        """
+        Restricts claim/archive on a pending inbox item to whoever
+        can already see it in GET /inbox: the Account Manager who
+        owns the item's client, or a supervisor (Team Lead/Site
+        Lead/Super Admin) using the "all inboxes" escape hatch — the
+        same scoping InboxService.get_inbox already applies to the
+        list view, now also enforced on the action itself.
+        """
+
+        if current_user.role.name in SUPERVISOR_ROLE_NAMES:
+            return
+
+        client = (
+            await self.client_repository.get_by_id(interaction.client_id)
+            if self.client_repository is not None and interaction.client_id is not None
+            else None
+        )
+
+        if client is None or client.account_manager_id != current_user.user_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this item.",
+            )
+
+    async def claim_interaction(
+        self,
+        interaction_id: UUID,
+        current_user: User,
+    ) -> InteractionClaimResponse:
+        """
+        Lets an agent pick up an unclaimed, unticketed pending inbox
+        item — "Assign to me". Distinct from claim_ticket: this acts
+        on a pre-ticket Interaction (the shared inbox pool), which has
+        no agent_id-equivalent column — InteractionRepository.claim
+        guards on the new claimed_by column instead, with the same
+        atomic race-guard shape as the ticket-level version.
+        """
+
+        interaction = await self.interaction_repository.get_by_id(interaction_id)
+
+        if interaction is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        if interaction.ticket_id is not None:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="This item has already become a ticket.",
+            )
+
+        await self._ensure_can_act_on_pending_interaction(interaction, current_user)
+
+        claimed = await self.interaction_repository.claim(
+            interaction, current_user.user_id
+        )
+
+        if claimed is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail="This item has already been claimed by someone else.",
+            )
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=claimed.interaction_id,
+            event_type=AuditEventType.INTERACTION_CLAIMED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"claimed_by": None},
+            new_values={"claimed_by": current_user.user_id},
+        )
+
+        return InteractionClaimResponse(
+            interaction_id=claimed.interaction_id,
+            claimed_by=claimed.claimed_by,
+            claimed_by_name=current_user.name,
+            claimed_at=claimed.claimed_at,
+            message=f"Assigned to {current_user.name}.",
+        )
+
+    async def archive_interaction(
+        self,
+        interaction_id: UUID,
+        current_user: User,
+    ) -> InteractionArchiveResponse:
+        """
+        The "Informational / Archive" reviewer decision: store the
+        communication, no ticket, no work assignment — still
+        searchable later under the inbox's "archived" view.
+        """
+
+        interaction = await self.interaction_repository.get_by_id(interaction_id)
+
+        if interaction is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        if interaction.ticket_id is not None:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="This item has already become a ticket.",
+            )
+
+        await self._ensure_can_act_on_pending_interaction(interaction, current_user)
+
+        archived = await self.interaction_repository.archive(interaction)
+
+        if archived is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail="This item is no longer pending.",
+            )
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=archived.interaction_id,
+            event_type=AuditEventType.INTERACTION_ARCHIVED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"status": InteractionStatus.PENDING},
+            new_values={"status": InteractionStatus.IGNORED},
+        )
+
+        return InteractionArchiveResponse(
+            interaction_id=archived.interaction_id,
+            status=archived.status,
+            message="Archived.",
         )
 
     # ---------------------------------------------------------

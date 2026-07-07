@@ -5,9 +5,10 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from shared_models.models import Role, User
+from shared_models.models import Category, Role, User
 
 STAFF_ROLE_NAME = "Staff"
+ACCOUNT_MANAGER_ROLE_NAME = "Account Manager"
 
 
 class UserRepository:
@@ -22,7 +23,7 @@ class UserRepository:
     async def get_by_id(self, user_id: UUID) -> User | None:
         result = await self.db.execute(
             select(User)
-            .options(selectinload(User.role))
+            .options(selectinload(User.role), selectinload(User.category))
             .where(User.user_id == user_id)
         )
         return result.scalar_one_or_none()
@@ -50,6 +51,30 @@ class UserRepository:
         )
         return dict(result.all())
 
+    async def get_active_account_manager_ids(self, user_ids: list[UUID]) -> set[UUID]:
+        """
+        Batch-checks which of the given user_ids are CURRENTLY active
+        Account Manager-role users. Used to flag a client whose mapped
+        account_manager_id has "soft-orphaned" — the FK still points
+        at a real user, but that user's role changed (or they were
+        deactivated) after the client was created, and nothing
+        revalidates that later.
+        """
+
+        if not user_ids:
+            return set()
+
+        result = await self.db.execute(
+            select(User.user_id)
+            .join(Role, Role.role_id == User.role_id)
+            .where(
+                User.user_id.in_(user_ids),
+                Role.name == ACCOUNT_MANAGER_ROLE_NAME,
+                User.is_active.is_(True),
+            )
+        )
+        return set(result.scalars().all())
+
     async def list_active_by_role_name(self, role_name: str) -> list[User]:
         result = await self.db.execute(
             select(User)
@@ -57,6 +82,27 @@ class UserRepository:
             .where(
                 func.lower(Role.name) == role_name.lower(),
                 User.is_active.is_(True),
+            )
+            .order_by(User.user_id)
+        )
+        return list(result.scalars().all())
+
+    async def list_active_staff_by_category(self, category_name: str) -> list[User]:
+        """
+        Active Staff belonging to one work-specialization category
+        (Eligibility, AR, Claims, ...) — used to scope the "assign to
+        staff" ticket picker to the ticket's own category/team,
+        instead of listing every Staff member company-wide.
+        """
+
+        result = await self.db.execute(
+            select(User)
+            .join(Role, Role.role_id == User.role_id)
+            .join(Category, Category.category_id == User.category_id)
+            .where(
+                func.lower(Role.name) == STAFF_ROLE_NAME.lower(),
+                User.is_active.is_(True),
+                Category.category_name == category_name,
             )
             .order_by(User.user_id)
         )

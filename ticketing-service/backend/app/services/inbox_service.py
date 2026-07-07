@@ -8,6 +8,7 @@ from app.repositories.attachment_repository import AttachmentRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.repositories.user_repository import UserRepository
 
 from app.schemas.inbox import (
     InboxItemResponse,
@@ -36,9 +37,11 @@ class InboxService:
         self,
         interaction_repository: InteractionRepository,
         attachment_repository: AttachmentRepository | None = None,
+        user_repository: UserRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
+        self.user_repository = user_repository
 
     async def get_inbox(
         self,
@@ -81,6 +84,14 @@ class InboxService:
                     [i.interaction_id for i in interactions]
                 )
             )
+
+        claimer_names: dict[UUID, str] = {}
+
+        if self.user_repository is not None:
+            claimer_ids = [
+                i.claimed_by for i in interactions if i.claimed_by is not None
+            ]
+            claimer_names = await self.user_repository.get_names_by_ids(claimer_ids)
 
         inbox_items: list[InboxItemResponse] = []
 
@@ -130,6 +141,14 @@ class InboxService:
 
                     has_attachments=(
                         interaction.interaction_id in interactions_with_attachments
+                    ),
+
+                    claimed_by=interaction.claimed_by,
+
+                    claimed_by_name=(
+                        claimer_names.get(interaction.claimed_by)
+                        if interaction.claimed_by is not None
+                        else None
                     ),
 
                 )

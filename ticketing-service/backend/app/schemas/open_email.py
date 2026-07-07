@@ -39,6 +39,10 @@ class OpenEmailResponse(BaseModel):
 
     status: InteractionStatus
 
+    claimed_by: UUID | None = None
+
+    claimed_by_name: str | None = None
+
     attachments: list[AttachmentMetadata] = Field(default_factory=list)
 
     replies: list[InteractionResponse] = Field(default_factory=list)

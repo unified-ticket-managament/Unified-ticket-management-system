@@ -559,9 +559,10 @@ async def list_tickets(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Returns tickets, most recently created first. Staff sees only
-    tickets assigned to them (plus unassigned ones); Team Lead/
-    Manager/Super Admin see every ticket.
+    Returns tickets, most recently created first. Account Manager is
+    scoped to their own clients' tickets; Team Lead/Staff are scoped
+    to their own work-specialization category's shared pool; Site
+    Lead/Super Admin see every ticket. See TicketService.list_all.
     """
 
     ticket_repository = TicketRepository(db)

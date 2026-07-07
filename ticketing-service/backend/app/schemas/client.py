@@ -37,3 +37,10 @@ class ClientResponse(BaseModel):
     # Resolved from the `users` table by ClientService — not
     # persisted on the client row itself.
     account_manager_name: str | None = None
+
+    # False when account_manager_id points at a user who is no longer
+    # an active Account Manager (their role changed, or they were
+    # deactivated, after this client was onboarded — nothing
+    # revalidates that automatically). Always True right after
+    # creation, since ClientService.create validates it up front.
+    account_manager_active: bool = True

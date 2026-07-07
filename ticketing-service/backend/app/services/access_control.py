@@ -22,6 +22,18 @@ SUPERVISOR_ROLE_NAMES = {"Team Lead", "Account Manager", "Site Lead", "Super Adm
 # ticket scoping).
 ACCOUNT_MANAGER_ROLE_NAME = "Account Manager"
 
+# Roles whose ticket visibility is scoped to their own work-
+# specialization category (Eligibility, AR, Claims, ... — see
+# shared_models.models.Category). Each category is its own shared
+# pool: a Team Lead/Staff only sees/claims tickets filed under the
+# category they were created with (RBAC enforces this as required
+# for these two roles — see CATEGORY_REQUIRED_ROLE_NAMES in
+# rbac-service's user_service.py). Account Manager/Site Lead/Super
+# Admin are deliberately excluded — Account Manager is scoped by
+# client ownership instead (see ticket_service._resolve_owned_client_ids),
+# and Site Lead/Super Admin retain full oversight by design.
+CATEGORY_SCOPED_ROLE_NAMES = {"Team Lead", "Staff"}
+
 
 def ensure_ticket_not_closed(ticket: Ticket) -> None:
     """
@@ -44,13 +56,56 @@ def ensure_agent_can_view_ticket(
     current_user: User,
 ) -> None:
     """
-    Deliberately a no-op now. Under the shared-pool + claim workflow,
-    every agent role must be able to browse every ticket (claimed or
-    not) to decide what to pick up, so per-assignment view gating no
-    longer applies. Kept as a named call site — not deleted — so a
-    future task (teams/skill-based routing) has one place to
-    reintroduce narrower visibility instead of scattering checks
-    across every route again.
+    Category-scoped visibility for Team Lead/Staff (see
+    CATEGORY_SCOPED_ROLE_NAMES): each work-specialization category
+    has its own shared pool, and a Team Lead/Staff may only view (or
+    act on, via the other services that call this same gate) tickets
+    filed under their own category — not just any unassigned ticket.
+    Account Manager, Site Lead, and Super Admin are unrestricted here
+    (Account Manager is separately scoped by client ownership in
+    ticket_service.py; Site Lead/Super Admin keep full oversight).
+
+    A Team Lead/Staff with no category assigned sees nothing rather
+    than everything — category is required at user-creation time for
+    these two roles, so this should only ever bite a pre-existing
+    user created before that constraint existed, and "sees nothing"
+    is the safe failure mode, matching the Account Manager's
+    owns-no-clients-sees-nothing convention below.
     """
 
-    return
+    if current_user.role.name not in CATEGORY_SCOPED_ROLE_NAMES:
+        return
+
+    user_category_name = (
+        current_user.category.category_name.value
+        if current_user.category is not None
+        else None
+    )
+
+    if user_category_name is None or ticket.ticket_type != user_category_name:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this ticket.",
+        )
+
+
+def ensure_can_reassign_ticket(current_user: User) -> None:
+    """
+    Only Team Lead/Account Manager/Site Lead/Super Admin may move a
+    ticket to a specific *other* named agent (InteractionService.
+    transfer_agent) — matches the already-designed permission matrix
+    (`ticket:transfer` is Full for these roles, Override-only for
+    Staff), which nothing enforced server-side until now.
+
+    Deliberately NOT applied to claim_ticket: picking up an unclaimed
+    ticket from the shared pool for *yourself* is Staff's normal
+    daily workflow (see EmailService's own docstring: "staff pick up
+    resulting tickets from the shared pool instead of being auto-
+    assigned at intake") and must stay open to every agent role.
+    """
+
+    if current_user.role.name not in SUPERVISOR_ROLE_NAMES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only a Team Lead, Account Manager, Site Lead, or Super Admin can reassign a ticket to another agent.",
+        )

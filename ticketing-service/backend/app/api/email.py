@@ -18,6 +18,7 @@ from app.repositories.interaction_repository import (
     InteractionRepository,
 )
 from app.repositories.ticket_repository import TicketRepository
+from app.repositories.user_repository import UserRepository
 from app.schemas.email import (
     EmailRequest,
     EmailResponse,
@@ -72,6 +73,7 @@ async def receive_email(
     interaction_repository = InteractionRepository(db)
     client_repository = ClientRepository(db)
     attachment_repository = AttachmentRepository(db)
+    user_repository = UserRepository(db)
 
     attachment_service = AttachmentService(
         attachment_repository=attachment_repository,
@@ -87,6 +89,7 @@ async def receive_email(
         interaction_repository=interaction_repository,
         client_repository=client_repository,
         attachment_service=attachment_service,
+        user_repository=user_repository,
     )
 
     try:

@@ -20,6 +20,7 @@ from app.schemas.ticket import (
 )
 from app.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
+    CATEGORY_SCOPED_ROLE_NAMES,
     ensure_agent_can_view_ticket,
 )
 from app.services.audit_log_service import AuditLogService
@@ -136,6 +137,30 @@ class TicketService:
         )
 
     # ---------------------------------------------------------
+    # Team Lead / Staff Category Scoping
+    # ---------------------------------------------------------
+
+    def _resolve_category_ticket_types(
+        self, current_user: User
+    ) -> list[str] | None:
+        """
+        None = unrestricted (Account Manager, Site Lead, Super Admin —
+        Account Manager is scoped separately, above). A list (possibly
+        empty) restricts to tickets whose ticket_type is in it — each
+        Team Lead/Staff sees only their own work-specialization
+        category's shared pool. No DB lookup needed: current_user.category
+        is already eager-loaded by UserRepository.get_by_id.
+        """
+
+        if current_user.role.name not in CATEGORY_SCOPED_ROLE_NAMES:
+            return None
+
+        if current_user.category is None:
+            return []
+
+        return [current_user.category.category_name.value]
+
+    # ---------------------------------------------------------
     # Get Ticket By ID
     # ---------------------------------------------------------
 
@@ -179,16 +204,18 @@ class TicketService:
         current_user: User,
     ) -> list[TicketResponse]:
 
-        # Every agent role sees every ticket except Account Manager,
-        # who is scoped to only their own clients' tickets (see
-        # _resolve_owned_client_ids). The shared pool + claim workflow
-        # for everyone else needs unclaimed and other-agents' claimed
-        # tickets to be browsable, not just "mine or unassigned".
-        # (Superseded the old Staff-only-sees-own-or-unassigned rule;
-        # see ensure_agent_can_view_ticket.)
+        # Account Manager is scoped to only their own clients' tickets
+        # (see _resolve_owned_client_ids); Team Lead/Staff are scoped
+        # to their own work-specialization category's shared pool
+        # (see _resolve_category_ticket_types) — each category's
+        # unclaimed and other-agents'-claimed tickets are browsable
+        # within that category, not just "mine or unassigned". Site
+        # Lead/Super Admin remain fully unrestricted.
         owned_client_ids = await self._resolve_owned_client_ids(current_user)
+        ticket_types = self._resolve_category_ticket_types(current_user)
         tickets = await self.ticket_repository.list_all(
-            client_company_ids=owned_client_ids
+            client_company_ids=owned_client_ids,
+            ticket_types=ticket_types,
         )
 
         await self._attach_names(tickets)

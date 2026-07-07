@@ -35,6 +35,7 @@ const OWN_TABS: Array<{ key: TabKey; label: string }> = [
   { key: "pending", label: "Pending" },
   { key: "replied", label: "Replied" },
   { key: "ticketed", label: "Ticketed" },
+  { key: "archived", label: "Archived" },
 ];
 
 // ==========================================================
@@ -103,6 +104,7 @@ export function AgentInbox() {
     pending: [],
     replied: [],
     ticketed: [],
+    archived: [],
     all: [],
   });
   const [clients, setClients] = useState<ClientResponse[]>([]);
@@ -121,10 +123,11 @@ export function AgentInbox() {
     try {
       const clientId = clientFilter === "ALL" ? undefined : clientFilter;
 
-      const [pending, replied, ticketed, clientList] = await Promise.all([
+      const [pending, replied, ticketed, archived, clientList] = await Promise.all([
         getInbox("pending", { clientId }),
         getInbox("replied", { clientId }),
         getInbox("ticketed", { clientId }),
+        getInbox("archived", { clientId }),
         listClients(),
       ]);
 
@@ -132,6 +135,7 @@ export function AgentInbox() {
         pending: pending.items,
         replied: replied.items,
         ticketed: ticketed.items,
+        archived: archived.items,
         all: [],
       };
 
@@ -200,6 +204,7 @@ export function AgentInbox() {
     pending: applyFilters(rowsByTab.pending),
     replied: applyFilters(rowsByTab.replied),
     ticketed: applyFilters(rowsByTab.ticketed),
+    archived: applyFilters(rowsByTab.archived),
     all: applyFilters(rowsByTab.all),
   };
 
@@ -231,33 +236,31 @@ export function AgentInbox() {
         </Button>
       </div>
 
-      <div className="flex items-center justify-between gap-1 border-b border-border px-3 py-2">
-        <div className="flex items-center gap-1">
-          {OWN_TABS.map((tab) => {
-            const isActive = activeTab === tab.key;
-            return (
-              <button
-                key={tab.key}
-                onClick={() => setActiveTab(tab.key)}
-                aria-pressed={isActive}
-                className={`flex items-center gap-1.5 rounded-md2 px-2.5 py-1.5 text-[11.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
-                  isActive
-                    ? "bg-accent/10 text-accent"
-                    : "text-muted hover:bg-surfaceHover hover:text-slate-700"
+      <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-2">
+        {OWN_TABS.map((tab) => {
+          const isActive = activeTab === tab.key;
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key)}
+              aria-pressed={isActive}
+              className={`flex items-center gap-1.5 rounded-md2 px-2.5 py-1.5 text-[11.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+                isActive
+                  ? "bg-accent/10 text-accent"
+                  : "text-muted hover:bg-surfaceHover hover:text-slate-700"
+              }`}
+            >
+              {tab.label}
+              <span
+                className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                  isActive ? "bg-accent/20 text-accent" : "bg-slate-100 text-slate-500"
                 }`}
               >
-                {tab.label}
-                <span
-                  className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                    isActive ? "bg-accent/20 text-accent" : "bg-slate-100 text-slate-500"
-                  }`}
-                >
-                  {tabRows[tab.key].length}
-                </span>
-              </button>
-            );
-          })}
-        </div>
+                {tabRows[tab.key].length}
+              </span>
+            </button>
+          );
+        })}
         {isSupervisor && (
           <button
             onClick={() => setActiveTab("all")}
@@ -336,6 +339,8 @@ export function AgentInbox() {
                 ? "Nothing replied yet"
                 : activeTab === "ticketed"
                 ? "Nothing ticketed yet"
+                : activeTab === "archived"
+                ? "Nothing archived"
                 : "No mail yet"
             }
             description={
@@ -416,6 +421,11 @@ export function AgentInbox() {
                         {item.has_attachments && (
                           <span className="flex items-center gap-0.5 text-[10px] text-muted">
                             <Paperclip size={11} />
+                          </span>
+                        )}
+                        {item.claimed_by_name && !item.ticket_id && (
+                          <span className="text-[10px] font-medium text-muted">
+                            · {item.claimed_by_name}
                           </span>
                         )}
                       </div>

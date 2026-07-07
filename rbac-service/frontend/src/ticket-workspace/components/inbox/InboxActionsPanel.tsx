@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  Archive,
   CheckCheck,
   FilePlus,
   Link2,
@@ -13,6 +14,7 @@ import { Modal } from "@tw/components/common/Modal";
 import { SelectInput, TextInput } from "@tw/components/common/FormField";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { listCategories } from "@tw/api/categories";
+import { archiveInteraction, claimInteraction } from "@tw/api/inbox";
 import {
   attachInteractionToTicket,
   createTicketFromInteraction,
@@ -24,7 +26,7 @@ const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
 
 export function InboxActionsPanel() {
   const navigate = useNavigate();
-  const { selectedEmail } = useWorkflowContext();
+  const { selectedEmail, setSelectedEmail } = useWorkflowContext();
 
   const [createOpen, setCreateOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
@@ -56,6 +58,12 @@ export function InboxActionsPanel() {
     attachInteractionToTicket,
     { successMessage: "Email attached to existing ticket." }
   );
+  const { run: runClaim, isLoading: isClaiming } = useApiAction(claimInteraction, {
+    successMessage: (res) => res.message,
+  });
+  const { run: runArchive, isLoading: isArchiving } = useApiAction(archiveInteraction, {
+    successMessage: "Archived — no ticket needed.",
+  });
 
   if (!selectedEmail) {
     return (
@@ -98,6 +106,36 @@ export function InboxActionsPanel() {
     }
   }
 
+  async function handleClaim() {
+    if (!selectedEmail) return;
+
+    const result = await runClaim(selectedEmail.interaction_id);
+
+    if (result) {
+      // Same convention as EmailDetails.tsx's reply handler — update
+      // in place, the shared inbox list picks it up on its next
+      // refresh rather than triggering a cross-component refetch.
+      setSelectedEmail({
+        ...selectedEmail,
+        claimed_by: result.claimed_by,
+        claimed_by_name: result.claimed_by_name,
+      });
+    }
+  }
+
+  async function handleArchive() {
+    if (!selectedEmail) return;
+
+    const result = await runArchive(selectedEmail.interaction_id);
+
+    if (result) {
+      setSelectedEmail({
+        ...selectedEmail,
+        status: result.status,
+      });
+    }
+  }
+
   return (
     <>
       <div className="flex h-full flex-col gap-3 rounded-md2 border border-border bg-surface p-4 shadow-xs">
@@ -134,18 +172,86 @@ export function InboxActionsPanel() {
           </div>
         </button>
 
-        <div
-          title="Not available yet — no assign-to-agent endpoint exists for a pending (pre-ticket) interaction."
-          className="flex cursor-not-allowed items-center gap-3 rounded-md2 border border-border px-4 py-3.5 text-left opacity-50"
-        >
-          <div className="flex h-9 w-9 flex-none items-center justify-center rounded-md2 bg-canvas text-muted">
-            <UserPlus size={16} />
-          </div>
-          <div>
-            <p className="text-[13px] font-medium text-slate-700">Assign to Me</p>
-            <p className="text-[11px] text-muted">Not available yet</p>
-          </div>
-        </div>
+        {(() => {
+          const alreadyTicketed = Boolean(selectedEmail.ticket_id);
+          const alreadyClaimed = Boolean(selectedEmail.claimed_by);
+          const notPending = selectedEmail.status !== "PENDING";
+          const claimDisabled = alreadyTicketed || alreadyClaimed || notPending || isClaiming;
+
+          return (
+            <button
+              onClick={handleClaim}
+              disabled={claimDisabled}
+              title={
+                alreadyTicketed
+                  ? "Already converted to a ticket."
+                  : alreadyClaimed
+                  ? `Already assigned to ${selectedEmail.claimed_by_name ?? "someone"}.`
+                  : notPending
+                  ? "This item is no longer pending."
+                  : undefined
+              }
+              className={`group flex items-center gap-3 rounded-md2 border px-4 py-3.5 text-left transition-all duration-150 ${
+                claimDisabled
+                  ? "cursor-not-allowed border-border opacity-50"
+                  : "border-warning/20 bg-warning/5 hover:-translate-y-0.5 hover:border-warning/30 hover:bg-warning/10 hover:shadow-xs"
+              }`}
+            >
+              <div
+                className={`flex h-9 w-9 flex-none items-center justify-center rounded-md2 ${
+                  claimDisabled ? "bg-canvas text-muted" : "bg-warning/15 text-warning"
+                }`}
+              >
+                <UserPlus size={16} />
+              </div>
+              <div>
+                <p className="text-[13px] font-medium text-slate-700">
+                  {alreadyClaimed ? `Assigned to ${selectedEmail.claimed_by_name ?? "someone"}` : "Assign to Me"}
+                </p>
+                <p className="text-[11px] text-muted">
+                  {alreadyClaimed ? "" : "Pick this up from the shared pool"}
+                </p>
+              </div>
+            </button>
+          );
+        })()}
+
+        {(() => {
+          const alreadyTicketed = Boolean(selectedEmail.ticket_id);
+          const notPending = selectedEmail.status !== "PENDING";
+          const archiveDisabled = alreadyTicketed || notPending || isArchiving;
+
+          return (
+            <button
+              onClick={handleArchive}
+              disabled={archiveDisabled}
+              title={
+                alreadyTicketed
+                  ? "Already converted to a ticket."
+                  : notPending
+                  ? "This item is no longer pending."
+                  : undefined
+              }
+              className={`group flex items-center gap-3 rounded-md2 border px-4 py-3.5 text-left transition-all duration-150 ${
+                archiveDisabled
+                  ? "cursor-not-allowed border-border opacity-50"
+                  : "border-border hover:-translate-y-0.5 hover:border-slate-300 hover:bg-surfaceHover hover:shadow-xs"
+              }`}
+            >
+              <div
+                className={`flex h-9 w-9 flex-none items-center justify-center rounded-md2 ${
+                  archiveDisabled ? "bg-canvas text-muted" : "bg-slate-100 text-slate-600"
+                }`}
+              >
+                <Archive size={16} />
+              </div>
+              <div>
+                <p className="text-[13px] font-medium text-slate-700">Informational / Archive</p>
+                <p className="text-[11px] text-muted">Store it — no ticket, no assignment</p>
+              </div>
+            </button>
+          );
+        })()}
 
         <div
           title="Not available yet — no update endpoint exists for a pending (pre-ticket) interaction."

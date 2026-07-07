@@ -41,6 +41,12 @@ class InboxItemResponse(BaseModel):
 
     has_attachments: bool = False
 
+    # Set once someone claims this item via "Assign to me" — None
+    # means unclaimed. Useful in the "all inboxes" supervisor view to
+    # see who on the team has already picked something up.
+    claimed_by: UUID | None = None
+    claimed_by_name: str | None = None
+
 
 class InboxResponse(BaseModel):
     """

@@ -80,6 +80,7 @@ class ClientService:
             is_active=client.is_active,
             created_at=client.created_at,
             account_manager_name=manager.name,
+            account_manager_active=True,
         )
 
     async def list_all(self) -> list[ClientResponse]:
@@ -87,6 +88,9 @@ class ClientService:
 
         manager_ids = [client.account_manager_id for client in clients]
         names = await self.user_repository.get_names_by_ids(manager_ids)
+        active_manager_ids = await self.user_repository.get_active_account_manager_ids(
+            manager_ids
+        )
 
         return [
             ClientResponse(
@@ -97,6 +101,7 @@ class ClientService:
                 is_active=client.is_active,
                 created_at=client.created_at,
                 account_manager_name=names.get(client.account_manager_id),
+                account_manager_active=client.account_manager_id in active_manager_ids,
             )
             for client in clients
         ]

@@ -6,6 +6,7 @@ from app.repositories.attachment_repository import AttachmentRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.repositories.user_repository import UserRepository
 from app.schemas.interaction import InteractionResponse
 from app.schemas.open_email import OpenEmailResponse
 from app.schemas.payloads import EmailPayload
@@ -53,10 +54,12 @@ class OpenEmailService:
         interaction_repository: InteractionRepository,
         attachment_repository: AttachmentRepository | None = None,
         storage_service: StorageService | None = None,
+        user_repository: UserRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
         self.storage_service = storage_service
+        self.user_repository = user_repository
 
     async def get_email_details(
         self,
@@ -91,6 +94,11 @@ class OpenEmailService:
 
         replies = await self.interaction_repository.list_thread(interaction_id)
 
+        claimed_by_name = None
+        if self.user_repository is not None and interaction.claimed_by is not None:
+            claimer = await self.user_repository.get_by_id(interaction.claimed_by)
+            claimed_by_name = claimer.name if claimer is not None else None
+
         return OpenEmailResponse(
             interaction_id=interaction.interaction_id,
             ticket_id=interaction.ticket_id,
@@ -104,6 +112,8 @@ class OpenEmailService:
             message_id=interaction.message_id,
             received_at=interaction.received_at or interaction.created_at,
             status=interaction.status,
+            claimed_by=interaction.claimed_by,
+            claimed_by_name=claimed_by_name,
             attachments=attachments,
             replies=[_reply_to_response(reply) for reply in replies],
         )
