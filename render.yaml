@@ -1,0 +1,166 @@
+# Unified Render Blueprint for both services in this monorepo.
+#
+# This deploys 4 Web/Static services against the SAME EXTERNAL Neon Postgres
+# database (not Render's own managed Postgres) and the same Supabase Storage
+# project already used by both services. `sync: false` vars are intentional —
+# paste their values into the Render dashboard when you Apply this Blueprint
+# (a few, marked below, can't be known until AFTER the first deploy — see
+# DEPLOYMENT.md for the full "circular dependency, second pass" runbook).
+#
+# Services are independent (no shared dyno) but two of them depend on each
+# other at request time: `ticketing-backend` verifies JWTs issued by
+# `rbac-backend`, so both need the SAME `JWT_SECRET_KEY` value — generate one
+# value yourself (e.g. `python -c "import secrets; print(secrets.token_urlsafe(64))"`)
+# and paste the identical string into both prompts below. Do not use Render's
+# `generateValue: true` for this one — it would generate two different values.
+
+services:
+  # ---------------------------------------------------------------------
+  # RBAC service — sole issuer of auth tokens, owns users/roles/permissions
+  # ---------------------------------------------------------------------
+  - type: web
+    name: rbac-backend
+    runtime: python
+    plan: free
+    rootDir: rbac-service/backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.5
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: SECURE_COOKIES
+        value: "true"
+      - key: LOG_LEVEL
+        value: INFO
+      # Neon connection string (Neon dashboard -> Connect). Any of
+      # postgres:// / postgresql:// / postgresql+asyncpg:// schemes work —
+      # normalized automatically, sslmode/channel_binding included.
+      - key: DATABASE_URL
+        sync: false
+      # Shared with ticketing-backend below — same value in both, see the
+      # note at the top of this file. NOT auto-generated.
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: ACCESS_TOKEN_EXPIRE_MINUTES
+        value: "30"
+      - key: REFRESH_TOKEN_EXPIRE_DAYS
+        value: "7"
+      # SECOND PASS: after first deploy, set to the real rbac-frontend URL
+      # PLUS the real ticketing-frontend URL (comma-separated, no trailing
+      # slash) — ticketing-frontend calls this service's /auth/* endpoints
+      # directly (cross-origin) for the unified login flow.
+      - key: CORS_ORIGINS
+        sync: false
+
+  - type: web
+    name: rbac-frontend
+    runtime: node
+    plan: free
+    rootDir: rbac-service/frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_VERSION
+        value: 20.18.0
+      # SECOND PASS: real rbac-backend URL + /api/v1. NEXT_PUBLIC_* vars are
+      # baked in at build time — after setting this, trigger a manual
+      # rebuild, saving the env var alone does nothing.
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+      # SECOND PASS: real ticketing-frontend URL — the embedded Ticket
+      # Workspace's "open in Ticketing's own app" link.
+      - key: NEXT_PUBLIC_TICKETING_FRONTEND_URL
+        sync: false
+      # SECOND PASS: real ticketing-backend URL — base URL the embedded
+      # ticket-workspace (src/ticket-workspace) talks to directly.
+      - key: NEXT_PUBLIC_TICKETING_API_URL
+        sync: false
+
+  # ---------------------------------------------------------------------
+  # Ticketing service — owns tickets/interactions/attachments, verifies
+  # RBAC-issued JWTs, reads (never writes) the users/roles tables
+  # ---------------------------------------------------------------------
+  - type: web
+    name: ticketing-backend
+    runtime: python
+    plan: free
+    # rootDir is ticketing-service, NOT ticketing-service/backend: the
+    # `-e ../shared_models` editable line in requirements.txt is resolved by
+    # pip relative to the BUILD'S CWD (i.e. rootDir), not relative to
+    # requirements.txt's own location. With rootDir=backend, `../shared_models`
+    # would resolve to ticketing-service/shared_models (doesn't exist) and
+    # fail with "not a valid editable requirement". rootDir=ticketing-service
+    # makes both `requirements.txt` and `../shared_models` resolve correctly,
+    # matching how it's installed locally.
+    rootDir: ticketing-service
+    buildCommand: pip install -r requirements.txt
+    startCommand: cd backend && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.5
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: LOG_LEVEL
+        value: INFO
+      # Same Neon database as rbac-backend, async + sync variants.
+      - key: DATABASE_URL
+        sync: false
+      - key: ALEMBIC_DATABASE_URL
+        sync: false
+      # MUST be byte-for-byte identical to rbac-backend's JWT_SECRET_KEY.
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: JWT_ALGORITHM
+        value: HS256
+      # SECOND PASS: real rbac-frontend URL PLUS real ticketing-frontend URL
+      # (comma-separated, no trailing slash).
+      - key: CORS_ORIGINS
+        sync: false
+      - key: STORAGE_BACKEND
+        value: supabase
+      - key: STORAGE_BUCKET
+        value: communication-attachments
+      - key: STORAGE_URL_EXPIRY_SECONDS
+        value: "3600"
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+
+  - type: web
+    name: ticketing-frontend
+    runtime: static
+    # No `plan` field here — static sites have no compute dyno/tier (Render
+    # serves them free off a CDN), and Render rejects `plan: free` for
+    # runtime: static specifically (it's valid on the other 3 services above).
+    rootDir: ticketing-service/frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: NODE_VERSION
+        value: 20.18.0
+      # SECOND PASS: real ticketing-backend URL. Vite bakes VITE_* vars in
+      # at build time — trigger a manual rebuild after setting this.
+      - key: VITE_API_BASE_URL
+        sync: false
+      # SECOND PASS: real rbac-backend URL + /api/v1 — used for the unified
+      # login flow (this frontend authenticates against RBAC directly).
+      - key: VITE_RBAC_API_BASE_URL
+        sync: false
+      # SECOND PASS: real rbac-frontend URL — sidebar's "RBAC Admin" link.
+      - key: VITE_RBAC_FRONTEND_URL
+        sync: false
