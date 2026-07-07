@@ -33,10 +33,19 @@ member.
    - `ticket = await self._get_ticket_or_404(ticket_id)`
    - capture any "before" state you'll need for the interaction/audit payload
    - guard against invalid transitions with `HTTPException(400, "...")` if applicable
+<<<<<<< Updated upstream
      (see `ensure_ticket_not_closed` / claim's already-claimed guard)
    - `actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(current_user)`
      — synchronous, takes the authenticated `current_user` directly (there is no
      `agent_name` string to resolve; auth is real JWT, not a query param — see CLAUDE.md)
+=======
+     (see `resolve_ticket`'s already-resolved guard)
+   - if the action should be visibility-restricted, call
+     `ensure_agent_can_view_ticket(ticket, current_user)` (from `app/services/access_control.py`)
+   - `actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(current_user)` —
+     synchronous, no DB lookup; `current_user` is the already-verified `User` passed in from
+     the route's `Depends(get_current_agent)`, not a name string
+>>>>>>> Stashed changes
    - mutate the ticket via `self.ticket_repository.update(ticket, TicketUpdate(...))`
    - `interaction = await self._create_ticket_interaction(ticket_id=..., interaction_type="<NEW_TYPE>", direction=InteractionDirection.INTERNAL, payload={...}, performed_by=actor_id)`
      — `interaction_type` is a free string, no migration needed for a new one; only pass
@@ -45,17 +54,37 @@ member.
    - `await AuditLogService.log_event(self.ticket_repository.db, entity_type=AuditEntityType.TICKET, entity_id=ticket_id, event_type=..., actor_id=actor_id, actor_name=actor_name, actor_role=actor_role, old_values={...}, new_values={...})`
    - `return TicketActionResponse(interaction_id=interaction.interaction_id, ticket_id=ticket_id, message="...", created_at=interaction.created_at)`
 4. **Route** — add `POST /tickets/{ticket_id}/<verb>` to `backend/app/api/ticket.py`,
+<<<<<<< Updated upstream
    wired identically to the `/status` or `/transfer` route: same three repositories, same
    `InteractionService` construction, `current_user: User = Depends(get_current_agent)` —
    not a query param.
+=======
+   wired identically to the `/status` or `/resolve` route: `current_user: User = Depends(get_current_agent)`
+   (from `app/dependencies/auth.py`), passed into the service method — **not** an `agent_name`
+   query/form param; that mechanism was removed when RBAC-issued JWTs became the identity source.
+   Use `Depends(get_current_user)` instead of `get_current_agent` if the route should also be
+   reachable by Viewer (read-only routes only — see CLAUDE.md's access-control section).
+>>>>>>> Stashed changes
 
 ## Frontend steps
+
+This frontend has a second, embedded copy at
+`../rbac-service/frontend/src/ticket-workspace/` (mounted inside RBAC's Next.js app —
+see that repo's CLAUDE.md). It is **not** kept in sync automatically. Do the steps
+below in this app first, verify the action end-to-end here, then decide whether the
+same change needs porting into the embedded copy (same relative paths, but under
+`ticket-workspace/` and importing via the `@tw/*` alias instead of `@/*`).
 
 1. **Types** (`frontend/src/types/index.ts`) — add the request interface, and if you
    added an `AuditEventType` value, add it to that union too.
 2. **API wrapper** (`frontend/src/api/interaction.ts`) — thin POST wrapper matching
+<<<<<<< Updated upstream
    `changeTicketStatus`/`changeTicketPriority`. Mirror it into the RBAC-embedded copy's
    `api/interaction.ts` too (see CLAUDE.md's dual-frontend rule).
+=======
+   `resolveTicket`/`changeTicketStatus`. Identity comes from the bearer token attached by
+   `api/client.ts`'s request interceptor — never add an `agentName`/`agent_name` param.
+>>>>>>> Stashed changes
 3. **UI** (`frontend/src/components/ticket/TicketActions.tsx`) — add an `ActionTile`
    (pick a `Tone`/icon that isn't already overloaded) wired through `useApiAction` with a
    `successMessage`, opening a `Modal` if the action needs input, then calling
