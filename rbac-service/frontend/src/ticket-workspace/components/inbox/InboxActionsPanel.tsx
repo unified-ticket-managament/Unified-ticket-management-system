@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   CheckCheck,
@@ -12,15 +12,15 @@ import { EmptyState } from "@tw/components/common/EmptyState";
 import { Modal } from "@tw/components/common/Modal";
 import { SelectInput, TextInput } from "@tw/components/common/FormField";
 import { useApiAction } from "@tw/hooks/useApiAction";
+import { listCategories } from "@tw/api/categories";
 import {
   attachInteractionToTicket,
   createTicketFromInteraction,
 } from "@tw/api/ticket";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
-import type { TicketCategory, TicketPriority } from "@tw/types";
+import type { CategoryResponse, TicketPriority } from "@tw/types";
 
 const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
-const CATEGORIES: TicketCategory[] = ["TECHNICAL", "BILLING", "HIRING", "GENERAL"];
 
 export function InboxActionsPanel() {
   const navigate = useNavigate();
@@ -29,10 +29,24 @@ export function InboxActionsPanel() {
   const [createOpen, setCreateOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
 
+  const [categories, setCategories] = useState<CategoryResponse[]>([]);
   const [title, setTitle] = useState("");
-  const [ticketType, setTicketType] = useState<TicketCategory>("TECHNICAL");
+  const [ticketType, setTicketType] = useState("");
   const [priority, setPriority] = useState<TicketPriority>("MEDIUM");
   const [existingTicketId, setExistingTicketId] = useState("");
+
+  useEffect(() => {
+    listCategories()
+      .then((result) => {
+        setCategories(result);
+        setTicketType((current) => current || result[0]?.category_name || "");
+      })
+      .catch(() => {
+        // Category fetch failing shouldn't block the rest of the
+        // panel — the Select just renders empty and the agent sees
+        // no options rather than a broken page.
+      });
+  }, []);
 
   const { run: runCreate, isLoading: isCreating } = useApiAction(
     createTicketFromInteraction,
@@ -190,11 +204,11 @@ export function InboxActionsPanel() {
           <SelectInput
             label="Category"
             value={ticketType}
-            onChange={(e) => setTicketType(e.target.value as TicketCategory)}
+            onChange={(e) => setTicketType(e.target.value)}
           >
-            {CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {c}
+            {categories.map((c) => (
+              <option key={c.category_id} value={c.category_name}>
+                {c.category_name}
               </option>
             ))}
           </SelectInput>

@@ -35,9 +35,9 @@ import { EmptyState } from "@/components/shared/stats";
 import { useToast } from "@/hooks/use-toast";
 import { cn, formatDate } from "@/lib/utils";
 import { ROLE_NAMES } from "@/lib/role-access";
-import { permissionService, roleService, userService } from "@/services";
+import { categoryService, permissionService, roleService, userService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
-import { Permission, Role, User } from "@/types";
+import { Category, Permission, Role, User } from "@/types";
 
 const GROUP_LABELS: Record<string, string> = {
   user: "Users",
@@ -107,6 +107,12 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
     enabled: open,
   });
 
+  const categoriesQuery = useQuery({
+    queryKey: ["categories-options"],
+    queryFn: () => categoryService.list({ page_size: 100 }),
+    enabled: open,
+  });
+
   const permissionsQuery = useQuery({
     queryKey: ["permissions-all"],
     queryFn: () => permissionService.list({ page: 1, page_size: 100 }),
@@ -130,10 +136,15 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
   const roles: Role[] = rolesQuery.data?.roles ?? [];
   const allUsers: User[] = usersQuery.data?.users ?? [];
   const allPermissions: Permission[] = permissionsQuery.data?.permissions ?? [];
+  const categories: Category[] = categoriesQuery.data?.categories ?? [];
 
   const roleName = useMemo(
     () => roles.find((r) => r.role_id === user?.role_id)?.name ?? "Unassigned",
     [roles, user]
+  );
+  const categoryName = useMemo(
+    () => categories.find((c) => c.category_id === user?.category_id)?.category_name ?? null,
+    [categories, user]
   );
   const managerName = useMemo(
     () => allUsers.find((u) => u.user_id === user?.manager_id)?.name ?? "—",
@@ -273,6 +284,14 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
                   </Badge>
                 </dd>
               </div>
+              {categoryName && (
+                <div>
+                  <dt className="text-xs text-muted-foreground">Category</dt>
+                  <dd className="mt-1">
+                    <Badge variant="outline">{categoryName}</Badge>
+                  </dd>
+                </div>
+              )}
               <div className="col-span-2">
                 <dt className="text-xs text-muted-foreground">Created Date</dt>
                 <dd className="mt-1 flex items-center gap-1.5 text-sm font-medium">

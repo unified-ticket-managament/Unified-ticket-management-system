@@ -26,9 +26,9 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { getCreatableRoleNames, ROLE_NAMES } from "@/lib/role-access";
-import { roleService, userService } from "@/services";
+import { categoryService, roleService, userService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
-import { Role, User } from "@/types";
+import { Category, Role, User } from "@/types";
 
 function buildSchema(mode: "create" | "edit", currentUserRole: string | undefined, roleMap: Map<string, string>) {
   return z
@@ -39,6 +39,7 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
       is_active: z.boolean(),
       manager_id: z.string().optional(),
       teamlead_id: z.string().optional(),
+      category_id: z.string().optional(),
       password:
         mode === "create"
           ? z.string().min(8, "Password must be at least 8 characters")
@@ -48,6 +49,12 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
     })
     .superRefine((data, ctx) => {
       const selectedRoleName = roleMap.get(data.role_id);
+      const needsCategory =
+        selectedRoleName === ROLE_NAMES.STAFF || selectedRoleName === ROLE_NAMES.TEAM_LEAD;
+
+      if (needsCategory && !data.category_id) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["category_id"], message: "Select a category" });
+      }
 
       if (selectedRoleName === ROLE_NAMES.STAFF) {
         if (currentUserRole === ROLE_NAMES.SUPER_ADMIN) {
@@ -121,6 +128,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
       is_active: true,
       manager_id: "",
       teamlead_id: "",
+      category_id: "",
     },
   });
 
@@ -134,6 +142,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
         is_active: user?.is_active ?? true,
         manager_id: user?.manager_id ?? "",
         teamlead_id: user?.teamlead_id ?? "",
+        category_id: user?.category_id ?? "",
       });
       setShowPassword(false);
     }
@@ -143,6 +152,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
   const isActive = watch("is_active");
   const managerId = watch("manager_id");
   const teamleadId = watch("teamlead_id");
+  const categoryId = watch("category_id");
 
   const roleName = roleMap.get(roleId);
   const showStaffHierarchy = roleName === ROLE_NAMES.STAFF;
@@ -154,6 +164,14 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
     queryFn: () => userService.list({ page_size: 100 }),
     enabled: open && showHierarchyFields,
   });
+
+  const categoriesQuery = useQuery({
+    queryKey: ["categories-options"],
+    queryFn: () => categoryService.list({ page_size: 100 }),
+    enabled: open && showHierarchyFields,
+  });
+
+  const categories: Category[] = categoriesQuery.data?.categories ?? [];
 
   const allUsers: User[] = hierarchyUsersQuery.data?.users ?? [];
   const managerOptions = allUsers.filter((u) => roleMap.get(u.role_id) === ROLE_NAMES.ACCOUNT_MANAGER);
@@ -167,6 +185,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
     if (!showHierarchyFields) {
       setValue("manager_id", "");
       setValue("teamlead_id", "");
+      setValue("category_id", "");
       return;
     }
 
@@ -182,12 +201,16 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
   const mutation = useMutation({
     mutationFn: async (values: UserFormValues) => {
       const selectedRoleName = roleMap.get(values.role_id);
-      const hierarchyFields =
-        selectedRoleName === ROLE_NAMES.STAFF
+      const needsCategory =
+        selectedRoleName === ROLE_NAMES.STAFF || selectedRoleName === ROLE_NAMES.TEAM_LEAD;
+      const hierarchyFields = {
+        ...(selectedRoleName === ROLE_NAMES.STAFF
           ? { manager_id: values.manager_id || null, teamlead_id: values.teamlead_id || null }
           : selectedRoleName === ROLE_NAMES.TEAM_LEAD
             ? { manager_id: values.manager_id || null }
-            : {};
+            : {}),
+        ...(needsCategory ? { category_id: values.category_id || null } : {}),
+      };
 
       if (mode === "edit" && user) {
         return userService.update(user.user_id, {
@@ -292,6 +315,32 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
             </Select>
             {errors.role_id && <p className="text-sm text-destructive">{errors.role_id.message}</p>}
           </div>
+
+          {showHierarchyFields && (
+            <div className="space-y-2">
+              <Label>Work Category</Label>
+              <Select
+                value={categoryId || ""}
+                onValueChange={(value) => setValue("category_id", value, { shouldValidate: true })}
+              >
+                <SelectTrigger>
+                  <SelectValue
+                    placeholder={categoriesQuery.isLoading ? "Loading categories..." : "Select a category"}
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {categories.map((category) => (
+                    <SelectItem key={category.category_id} value={category.category_id}>
+                      {category.category_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {errors.category_id && (
+                <p className="text-sm text-destructive">{errors.category_id.message}</p>
+              )}
+            </div>
+          )}
 
           {showStaffHierarchy && (
             <div className="space-y-4 rounded-lg border border-dashed border-border p-3">

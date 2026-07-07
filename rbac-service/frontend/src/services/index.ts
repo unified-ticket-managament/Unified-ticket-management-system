@@ -2,6 +2,7 @@ import api, { clearTokens, setTokens } from "@/lib/api";
 import {
   AuditLog,
   AuthUser,
+  CategoryForm,
   LoginForm,
   OrganizationNode,
   Permission,
@@ -179,6 +180,51 @@ export const roleService = {
 
   delete: async (id: string) => {
     await api.delete(`/roles/${id}`);
+  },
+};
+
+/* -------------------------------------------------------------------------- */
+/*                               CATEGORIES                                   */
+/* -------------------------------------------------------------------------- */
+
+export const categoryService = {
+  list: async (
+    params?: Record<string, string | number | undefined>
+  ) => {
+    const response = await api.get("/categories", { params });
+
+    return response.data;
+  },
+
+  get: async (id: string) => {
+    const response = await api.get(`/categories/${id}`);
+
+    return response.data;
+  },
+
+  create: async (data: CategoryForm) => {
+    const response = await api.post(
+      "/categories",
+      data
+    );
+
+    return response.data;
+  },
+
+  update: async (
+    id: string,
+    data: Partial<CategoryForm>
+  ) => {
+    const response = await api.put(
+      `/categories/${id}`,
+      data
+    );
+
+    return response.data;
+  },
+
+  delete: async (id: string) => {
+    await api.delete(`/categories/${id}`);
   },
 };
 

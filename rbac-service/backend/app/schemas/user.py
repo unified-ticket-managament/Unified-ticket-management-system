@@ -14,6 +14,10 @@ class UserBase(BaseModel):
     role_id: UUID
     manager_id: UUID | None = None
     teamlead_id: UUID | None = None
+    # Work-specialization category — required for Staff/Team Lead,
+    # enforced in UserService.create_user (not here, since the
+    # requirement depends on which role_id was chosen).
+    category_id: UUID | None = None
     is_active: bool = True
 
 
@@ -35,6 +39,7 @@ class UserUpdate(BaseModel):
     role_id: UUID | None = None
     manager_id: UUID | None = None
     teamlead_id: UUID | None = None
+    category_id: UUID | None = None
     is_active: bool | None = None
 
 

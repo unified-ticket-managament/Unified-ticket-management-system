@@ -9,6 +9,7 @@ from shared_models.database import Base
 from shared_models.mixins import TimestampMixin
 
 if TYPE_CHECKING:
+    from .category import Category
     from .role import Role
 
 
@@ -56,6 +57,18 @@ class User(TimestampMixin, Base):
         nullable=True,
     )
 
+    # Work-specialization category (Eligibility, AR, Claims, ...) —
+    # nullable because only Staff/Team Lead are expected to have one;
+    # every other role (and every pre-existing user, before this
+    # column existed) legitimately has none. Enforced as required for
+    # Staff/Team Lead at the application layer, not via a DB
+    # constraint, same pattern as manager_id/teamlead_id above.
+    category_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("categories.category_id"),
+        nullable=True,
+    )
+
     is_active: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
@@ -83,4 +96,9 @@ class User(TimestampMixin, Base):
         foreign_keys=[teamlead_id],
         remote_side=[user_id],
         post_update=True,
+    )
+
+    category: Mapped["Category | None"] = relationship(
+        "Category",
+        back_populates="users",
     )

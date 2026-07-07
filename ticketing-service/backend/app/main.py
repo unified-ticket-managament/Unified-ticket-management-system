@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.agent import router as agent_router
 from app.api.attachment import router as attachment_router
+from app.api.category import router as category_router
 from app.api.client import router as client_router
 from app.api.email import router as email_router
 from app.api.inbox import router as inbox_router
@@ -58,6 +59,8 @@ app.include_router(email_router)
 app.include_router(agent_router)
 
 app.include_router(client_router)
+
+app.include_router(category_router)
 
 app.include_router(inbox_router)
 

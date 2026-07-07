@@ -21,6 +21,7 @@ export interface User {
   role_id: string;
   manager_id: string | null;
   teamlead_id: string | null;
+  category_id: string | null;
   is_active: boolean;
   created_at: string;
   updated_at: string;
@@ -29,6 +30,14 @@ export interface User {
 export interface Role {
   role_id: string;
   name: string;
+}
+
+// Work-specialization category (Eligibility, AR, Claims, ...) — Staff
+// and Team Lead users each belong to exactly one, used to filter/
+// assign tickets by the category a user works.
+export interface Category {
+  category_id: string;
+  category_name: string;
 }
 
 export interface Permission {
@@ -64,10 +73,15 @@ export interface UserForm {
   is_active: boolean;
   manager_id?: string | null;
   teamlead_id?: string | null;
+  category_id?: string | null;
 }
 
 export interface RoleForm {
   name: string;
+}
+
+export interface CategoryForm {
+  category_name: string;
 }
 
 export interface ProfileForm {

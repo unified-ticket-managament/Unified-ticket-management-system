@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from app.auth.password import get_password_hash
 from app.database.session import AsyncSessionLocal, engine
-from app.models import Base, Permission, Role, RolePermission, User
+from app.models import Base, Category, Permission, Role, RolePermission, User
 
 DEFAULT_PERMISSIONS = [
     ("user:create", "Create users"),
@@ -169,6 +169,7 @@ DEMO_USERS = [
         "password": "TeamLead@123",
         "role": "Team Lead",
         "manager_email": "manager@probeps.com",
+        "category": "Eligibility",
     },
     {
         "name": "Priya Nair",
@@ -176,6 +177,7 @@ DEMO_USERS = [
         "password": "Welcome@123",
         "role": "Team Lead",
         "manager_email": "manager@probeps.com",
+        "category": "Patient Calling",
     },
     {
         "name": "Staff",
@@ -184,6 +186,7 @@ DEMO_USERS = [
         "role": "Staff",
         "manager_email": "manager@probeps.com",
         "teamlead_email": "teamlead@probeps.com",
+        "category": "Eligibility",
     },
     {
         "name": "John Carter",
@@ -192,6 +195,7 @@ DEMO_USERS = [
         "role": "Staff",
         "manager_email": "manager@probeps.com",
         "teamlead_email": "teamlead@probeps.com",
+        "category": "Eligibility",
     },
     {
         "name": "Emma Watts",
@@ -200,6 +204,7 @@ DEMO_USERS = [
         "role": "Staff",
         "manager_email": "manager@probeps.com",
         "teamlead_email": "priya.nair@probeps.com",
+        "category": "Patient Calling",
     },
     {
         "name": "Liam Brooks",
@@ -208,6 +213,144 @@ DEMO_USERS = [
         "role": "Staff",
         "manager_email": "manager@probeps.com",
         "teamlead_email": "priya.nair@probeps.com",
+        "category": "Patient Calling",
+    },
+    # --------------------------------------------------
+    # Category coverage demo data: one Team Lead + two Staff per
+    # remaining category (AR, Payment Posting, PA, Charge Entry,
+    # Claims), all reporting to the same demo Account Manager, so
+    # every category in the categories table has real people to
+    # filter/assign tickets by.
+    # --------------------------------------------------
+    {
+        "name": "Rahul Mehta",
+        "email": "rahul.mehta@probeps.com",
+        "password": "Welcome@123",
+        "role": "Team Lead",
+        "manager_email": "manager@probeps.com",
+        "category": "AR",
+    },
+    {
+        "name": "Ananya Rao",
+        "email": "ananya.rao@probeps.com",
+        "password": "Welcome@123",
+        "role": "Staff",
+        "manager_email": "manager@probeps.com",
+        "teamlead_email": "rahul.mehta@probeps.com",
+        "category": "AR",
+    },
+    {
+        "name": "Vikram Shah",
+        "email": "vikram.shah@probeps.com",
+        "password": "Welcome@123",
+        "role": "Staff",
+        "manager_email": "manager@probeps.com",
+        "teamlead_email": "rahul.mehta@probeps.com",
+        "category": "AR",
+    },
+    {
+        "name": "Neha Kapoor",
+        "email": "neha.kapoor@probeps.com",
+        "password": "Welcome@123",
+        "role": "Team Lead",
+        "manager_email": "manager@probeps.com",
+        "category": "Payment Posting",
+    },
+    {
+        "name": "Rohan Gupta",
+        "email": "rohan.gupta@probeps.com",
+        "password": "Welcome@123",
+        "role": "Staff",
+        "manager_email": "manager@probeps.com",
+        "teamlead_email": "neha.kapoor@probeps.com",
+        "category": "Payment Posting",
+    },
+    {
+        "name": "Isha Malhotra",
+        "email": "isha.malhotra@probeps.com",
+        "password": "Welcome@123",
+        "role": "Staff",
+        "manager_email": "manager@probeps.com",
+        "teamlead_email": "neha.kapoor@probeps.com",
+        "category": "Payment Posting",
+    },
+    {
+        "name": "Arjun Verma",
+        "email": "arjun.verma@probeps.com",
+        "password": "Welcome@123",
+        "role": "Team Lead",
+        "manager_email": "manager@probeps.com",
+        "category": "PA",
+    },
+    {
+        "name": "Kavya Iyer",
+        "email": "kavya.iyer@probeps.com",
+        "password": "Welcome@123",
+        "role": "Staff",
+        "manager_email": "manager@probeps.com",
+        "teamlead_email": "arjun.verma@probeps.com",
+        "category": "PA",
+    },
+    {
+        "name": "Aditya Kumar",
+        "email": "aditya.kumar@probeps.com",
+        "password": "Welcome@123",
+        "role": "Staff",
+        "manager_email": "manager@probeps.com",
+        "teamlead_email": "arjun.verma@probeps.com",
+        "category": "PA",
+    },
+    {
+        "name": "Simran Kaur",
+        "email": "simran.kaur@probeps.com",
+        "password": "Welcome@123",
+        "role": "Team Lead",
+        "manager_email": "manager@probeps.com",
+        "category": "Charge Entry",
+    },
+    {
+        "name": "Karan Singh",
+        "email": "karan.singh@probeps.com",
+        "password": "Welcome@123",
+        "role": "Staff",
+        "manager_email": "manager@probeps.com",
+        "teamlead_email": "simran.kaur@probeps.com",
+        "category": "Charge Entry",
+    },
+    {
+        "name": "Divya Pillai",
+        "email": "divya.pillai@probeps.com",
+        "password": "Welcome@123",
+        "role": "Staff",
+        "manager_email": "manager@probeps.com",
+        "teamlead_email": "simran.kaur@probeps.com",
+        "category": "Charge Entry",
+    },
+    {
+        "name": "Farhan Ali",
+        "email": "farhan.ali@probeps.com",
+        "password": "Welcome@123",
+        "role": "Team Lead",
+        "manager_email": "manager@probeps.com",
+        "category": "Claims",
+    },
+    {
+        "name": "Meera Joshi",
+        "email": "meera.joshi@probeps.com",
+        "password": "Welcome@123",
+        "role": "Staff",
+        "manager_email": "manager@probeps.com",
+        "teamlead_email": "farhan.ali@probeps.com",
+        "category": "Claims",
+    },
+    {
+        "name": "Sanjay Reddy",
+        "email": "sanjay.reddy@probeps.com",
+        "password": "Welcome@123",
+        "role": "Staff",
+        "manager_email": "manager@probeps.com",
+        "teamlead_email": "farhan.ali@probeps.com",
+        "category": "Claims",
     },
     {
         "name": "Viewer",
@@ -366,6 +509,21 @@ async def seed() -> None:
             roles[role_name] = role
 
         # --------------------------------------------------
+        # Categories — read-only here. The categories table is owned
+        # and seeded by an Alembic migration (a native Postgres enum
+        # column, not a freeform lookup this script should be writing
+        # to), so this just resolves category_name -> Category for the
+        # demo users' category_id backfill below. If the migration
+        # hasn't run yet, category_id assignment is skipped with a
+        # warning rather than crashing the whole seed run.
+        # --------------------------------------------------
+
+        categories_by_name: dict[str, Category] = {
+            category.category_name.value: category
+            for category in (await session.execute(select(Category))).scalars().all()
+        }
+
+        # --------------------------------------------------
         # Role -> Permission mappings (idempotent, additive-only —
         # never revokes a permission a role already has, even if this
         # run's default list for that role no longer includes it, so
@@ -455,10 +613,12 @@ async def seed() -> None:
 
             users_by_email[demo["email"]] = user
 
-        # Backfill manager/team-lead reporting lines wherever they're
-        # still unset. Never overwrites an existing assignment, so
-        # this is safe to re-run even if a user's links were changed
-        # by hand afterwards.
+        # Backfill manager/team-lead reporting lines and category
+        # assignment wherever they're still unset. Never overwrites an
+        # existing assignment, so this is safe to re-run even if a
+        # user's links were changed by hand afterwards.
+        missing_categories: set[str] = set()
+
         for demo in DEMO_USERS:
             user = users_by_email[demo["email"]]
 
@@ -470,7 +630,22 @@ async def seed() -> None:
             if teamlead_email and user.teamlead_id is None:
                 user.teamlead_id = users_by_email[teamlead_email].user_id
 
+            category_name = demo.get("category")
+            if category_name and user.category_id is None:
+                category = categories_by_name.get(category_name)
+                if category is not None:
+                    user.category_id = category.category_id
+                else:
+                    missing_categories.add(category_name)
+
         await session.commit()
+
+        if missing_categories:
+            print(
+                "Warning: could not assign these categories (run "
+                "`alembic upgrade head` first to seed the categories "
+                f"table): {sorted(missing_categories)}"
+            )
 
         print("Seed completed.")
         for demo in DEMO_USERS:

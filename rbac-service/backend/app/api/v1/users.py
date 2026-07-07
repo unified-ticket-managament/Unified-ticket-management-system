@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
 from app.database.session import get_db
+from app.repositories.category_repository import CategoryRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.organization import OrganizationNode
@@ -37,10 +38,12 @@ def get_user_service(
 
     user_repository = UserRepository(db)
     role_repository = RoleRepository(db)
+    category_repository = CategoryRepository(db)
 
     return UserService(
         user_repository=user_repository,
         role_repository=role_repository,
+        category_repository=category_repository,
     )
 
 
@@ -103,17 +106,23 @@ async def list_users(
     search: str | None = Query(
         default=None,
     ),
+    category_id: UUID | None = Query(
+        default=None,
+        description="Filter to users belonging to this work-specialization category.",
+    ),
     service: UserService = Depends(get_user_service),
     current_user=Depends(get_current_active_user),
 ):
     """
-    Returns paginated list of users.
+    Returns paginated list of users, optionally filtered by category
+    (e.g. to find every Staff/Team Lead who works a given category).
     """
 
     users, total = await service.list_users(
         page=page,
         page_size=page_size,
         search=search,
+        category_id=category_id,
     )
 
     return UserListResponse(

@@ -54,12 +54,12 @@ import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { formatDate } from "@/lib/utils";
 import { ROLE_NAMES } from "@/lib/role-access";
-import { roleService, userService } from "@/services";
+import { categoryService, roleService, userService } from "@/services";
 import { PermissionGuard } from "@/components/auth/PermissionGuard";
 import { useAuthStore } from "@/store/auth-store";
-import { Role, User } from "@/types";
+import { Category, Role, User } from "@/types";
 
-type UserRow = User & { roleName: string };
+type UserRow = User & { roleName: string; categoryName: string };
 
 const USERS_PAGE_ALLOWED_ROLES: string[] = [
   ROLE_NAMES.SUPER_ADMIN,
@@ -95,16 +95,33 @@ export default function UsersPage() {
     queryFn: () => roleService.list(),
   });
 
+  const categoriesQuery = useQuery({
+    queryKey: ["categories-options"],
+    queryFn: () => categoryService.list({ page_size: 100 }),
+  });
+
   const roleMap = useMemo(() => {
     const map = new Map<string, string>();
     (rolesQuery.data?.roles ?? []).forEach((role: Role) => map.set(role.role_id, role.name));
     return map;
   }, [rolesQuery.data]);
 
+  const categoryMap = useMemo(() => {
+    const map = new Map<string, string>();
+    (categoriesQuery.data?.categories ?? []).forEach((category: Category) =>
+      map.set(category.category_id, category.category_name)
+    );
+    return map;
+  }, [categoriesQuery.data]);
+
   const rows: UserRow[] = useMemo(() => {
     const users: User[] = usersQuery.data?.users ?? [];
-    return users.map((user) => ({ ...user, roleName: roleMap.get(user.role_id) ?? "Unassigned" }));
-  }, [usersQuery.data, roleMap]);
+    return users.map((user) => ({
+      ...user,
+      roleName: roleMap.get(user.role_id) ?? "Unassigned",
+      categoryName: user.category_id ? categoryMap.get(user.category_id) ?? "Unknown" : "—",
+    }));
+  }, [usersQuery.data, roleMap, categoryMap]);
 
   // Reporting-hierarchy visibility: each role only sees the slice of the
   // org it's responsible for, derived from the manager_id/teamlead_id each
@@ -176,9 +193,16 @@ export default function UsersPage() {
         ? filteredRows.filter((_, index) => selectedIds.includes(String(index)))
         : filteredRows;
 
-    const header = ["Name", "Email", "Role", "Status", "Created At"];
+    const header = ["Name", "Email", "Role", "Category", "Status", "Created At"];
     const csvRows = source.map((user) =>
-      [user.name, user.email, user.roleName, user.is_active ? "Active" : "Inactive", user.created_at]
+      [
+        user.name,
+        user.email,
+        user.roleName,
+        user.categoryName,
+        user.is_active ? "Active" : "Inactive",
+        user.created_at,
+      ]
         .map((value) => `"${String(value).replace(/"/g, '""')}"`)
         .join(",")
     );
@@ -243,6 +267,13 @@ export default function UsersPage() {
         accessorKey: "roleName",
         header: "Role",
         cell: ({ row }) => <Badge variant="secondary">{row.original.roleName}</Badge>,
+      },
+      {
+        accessorKey: "categoryName",
+        header: "Category",
+        cell: ({ row }) => (
+          <span className="text-muted-foreground">{row.original.categoryName}</span>
+        ),
       },
       {
         accessorKey: "is_active",

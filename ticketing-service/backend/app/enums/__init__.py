@@ -1,4 +1,4 @@
-from .ticket_enums import TicketCategory, TicketPriority, TicketStatus
+from .ticket_enums import TicketPriority, TicketStatus
 #enums/__init__.py
 from .interaction_enums import (
     InteractionDirection,
@@ -13,7 +13,6 @@ from .audit_enums import (
 __all__ = [
     "TicketStatus",
     "TicketPriority",
-    "TicketCategory",
     "InteractionStatus",
     "InteractionDirection",
     "ActorRole",

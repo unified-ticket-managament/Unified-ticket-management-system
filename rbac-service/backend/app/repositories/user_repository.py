@@ -54,6 +54,7 @@ class UserRepository(BaseRepository):
         page: int = 1,
         page_size: int = 10,
         search: str | None = None,
+        category_id: UUID | None = None,
     ) -> tuple[list[User], int]:
         """
         Returns:
@@ -78,6 +79,10 @@ class UserRepository(BaseRepository):
 
             query = query.where(search_filter)
             count_query = count_query.where(search_filter)
+
+        if category_id is not None:
+            query = query.where(User.category_id == category_id)
+            count_query = count_query.where(User.category_id == category_id)
 
         total = (
             await self.db.execute(count_query)
@@ -164,6 +169,20 @@ class UserRepository(BaseRepository):
             select(User)
             .options(selectinload(User.role))
             .where(User.teamlead_id == teamlead_id)
+            .order_by(User.name)
+        )
+
+        return list(result.scalars().all())
+
+    async def get_by_category(
+        self,
+        category_id: UUID,
+    ) -> list[User]:
+
+        result = await self.db.execute(
+            select(User)
+            .options(selectinload(User.role))
+            .where(User.category_id == category_id)
             .order_by(User.name)
         )
 

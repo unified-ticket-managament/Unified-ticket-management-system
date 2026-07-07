@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.enums import TicketCategory, TicketPriority, TicketStatus
+from app.enums import TicketPriority, TicketStatus
 from app.schemas.common import ORMBase
 
 #ticket.py
@@ -28,7 +28,12 @@ class TicketCreate(BaseModel):
 
     title: str = Field(..., min_length=1, max_length=255)
 
-    ticket_type: TicketCategory
+    # The category name (e.g. "Eligibility", "AR", "Claims") from the
+    # RBAC-owned `categories` table — GET /categories on this service
+    # is what the frontend's dropdown is populated from. Plain string
+    # here (not a fixed enum) since that table, not this schema, is
+    # the source of truth and can grow without a code change.
+    ticket_type: str = Field(..., min_length=1, max_length=100)
 
     current_priority: TicketPriority = TicketPriority.MEDIUM
 
@@ -47,7 +52,7 @@ class TicketUpdate(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=255)
 
-    ticket_type: TicketCategory | None = None
+    ticket_type: str | None = Field(default=None, min_length=1, max_length=100)
 
     current_status: TicketStatus | None = None
 

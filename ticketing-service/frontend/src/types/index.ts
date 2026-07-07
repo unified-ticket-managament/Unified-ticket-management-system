@@ -17,7 +17,17 @@ export type TicketStatus =
 
 export type TicketPriority = "LOW" | "MEDIUM" | "HIGH";
 
-export type TicketCategory = "TECHNICAL" | "BILLING" | "HIRING" | "GENERAL";
+// ==========================================================
+// Categories — work-specialization categories (Eligibility, AR,
+// Claims, ...) owned by the RBAC service; a ticket's `ticket_type`
+// is one of these category names, fetched live via GET /categories
+// rather than a fixed frontend enum.
+// ==========================================================
+
+export interface CategoryResponse {
+  category_id: string;
+  category_name: string;
+}
 
 // ==========================================================
 // Email
@@ -193,7 +203,7 @@ export interface TransferAgentRequest {
 export interface TicketUpdateRequest {
   agent_id?: string | null;
   title?: string;
-  ticket_type?: TicketCategory;
+  ticket_type?: string;
   current_status?: TicketStatus;
   current_priority?: TicketPriority;
   custom_fields?: Record<string, unknown>;
@@ -203,7 +213,7 @@ export interface TicketUpdateRequest {
 export interface TicketFromInteractionRequest {
   interaction_id: string;
   title: string;
-  ticket_type: TicketCategory;
+  ticket_type: string;
   current_priority?: TicketPriority;
 }
 

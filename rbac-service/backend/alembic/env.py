@@ -7,7 +7,7 @@ from app.core.config import get_settings
 from app.models import Base
 
 # Import models so Alembic registers them
-from shared_models.models import User, Role
+from shared_models.models import User, Role, Category
 from app.models.permission import Permission
 from app.models.role_permission import RolePermission
 from app.models.audit_log import AuditLog

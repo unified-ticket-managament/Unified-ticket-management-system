@@ -5,8 +5,14 @@ from fastapi import HTTPException, status
 from shared_models.models import User
 
 from app.auth.password import get_password_hash
-from app.repositories import RoleRepository, UserRepository
+from app.repositories import CategoryRepository, RoleRepository, UserRepository
 from app.schemas.user import UserCreate, UserUpdate
+
+# Roles required to belong to a work-specialization category — see
+# shared_models.models.Category. Not imported from a shared constant
+# because RBAC's role-name literals live only in the frontend's
+# role-access.ts today; keep this set in sync with it by hand.
+CATEGORY_REQUIRED_ROLE_NAMES = {"Staff", "Team Lead"}
 
 
 class UserService:
@@ -18,9 +24,11 @@ class UserService:
         self,
         user_repository: UserRepository,
         role_repository: RoleRepository,
+        category_repository: CategoryRepository,
     ):
         self.user_repository = user_repository
         self.role_repository = role_repository
+        self.category_repository = category_repository
 
     # --------------------------------------------------
     # Create User
@@ -75,6 +83,26 @@ class UserService:
                     detail="Team Lead not found.",
                 )
 
+        # Staff/Team Lead must belong to a work-specialization
+        # category; every other role leaves it unset.
+        if role.name in CATEGORY_REQUIRED_ROLE_NAMES and user_data.category_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Category is required for Staff and Team Lead users.",
+            )
+
+        if user_data.category_id is not None:
+
+            category = await self.category_repository.get_by_id(
+                user_data.category_id
+            )
+
+            if category is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Category not found.",
+                )
+
         user = User(
             name=user_data.name,
             email=user_data.email,
@@ -84,6 +112,7 @@ class UserService:
             role_id=user_data.role_id,
             manager_id=user_data.manager_id,
             teamlead_id=user_data.teamlead_id,
+            category_id=user_data.category_id,
             is_active=user_data.is_active,
         )
 
@@ -132,12 +161,14 @@ class UserService:
         page: int = 1,
         page_size: int = 10,
         search: str | None = None,
+        category_id: UUID | None = None,
     ):
 
         return await self.user_repository.get_all(
             page,
             page_size,
             search,
+            category_id,
         )
 
     # --------------------------------------------------
