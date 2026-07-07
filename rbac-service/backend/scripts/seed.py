@@ -11,13 +11,37 @@ DEFAULT_PERMISSIONS = [
     ("user:view", "View users"),
     ("user:update", "Update users"),
     ("user:delete", "Delete users"),
+    ("user:disable", "Activate or deactivate a user account"),
+    ("user:reset_password", "Force-reset another user's password"),
     ("role:create", "Create roles"),
     ("role:view", "View roles"),
     ("role:update", "Update roles"),
     ("role:delete", "Delete roles"),
     ("permission:view", "View permissions"),
     ("permission:update", "Update role permissions"),
+    ("permission:override_grant", "Grant a one-off permission exception to a specific user"),
+    ("permission:override_revoke", "Revoke a previously granted permission exception"),
     ("audit:view", "View audit logs"),
+    ("audit:export", "Export the audit log"),
+    # Communication capabilities (ticketing-service) — RBAC's own
+    # permission records for the Communication-first workflow (every
+    # client interaction starts as a Communication; only some become
+    # Tickets). Like the ticket:* rows below, these aren't enforced by
+    # either backend yet — they exist so roles can be provisioned ahead
+    # of the Communication feature being built, matching the same
+    # forward-looking pattern already used for ticket:*.
+    ("communication:create", "Log a new communication"),
+    ("communication:view_all", "See every communication in the system"),
+    ("communication:view_assigned", "See communications assigned to you or your team"),
+    ("communication:reply_external", "Reply to a communication so the client sees it"),
+    ("communication:reply_internal", "Add a staff-only note on a communication"),
+    ("communication:forward", "Forward a communication to someone else"),
+    ("communication:convert_to_ticket", "Turn a communication into a formal ticket"),
+    ("communication:merge", "Merge a communication into an existing ticket"),
+    ("communication:archive", "Close out a communication without a ticket"),
+    ("communication:view_timeline", "See a communication's full history"),
+    ("communication:assign", "Hand a communication to a specific person or team"),
+    ("communication:override_grant", "Grant a one-off communication permission exception"),
     # Ticket Management capabilities (ticketing-service) — RBAC's own
     # permission records for the ticket workspace. These aren't
     # enforced by the Ticketing backend (it authorizes purely by role
@@ -33,51 +57,89 @@ DEFAULT_PERMISSIONS = [
     ("ticket:view_own", "View tickets assigned to you"),
     ("ticket:view_unassigned", "View unassigned tickets"),
     ("ticket:view_others", "View tickets assigned to other agents"),
-    ("ticket:reply", "Reply to tickets and add internal notes"),
-    ("ticket:update_status", "Change ticket status and priority"),
-    ("ticket:reopen", "Reopen a closed ticket"),
+    ("ticket:assign", "Hand a ticket to a specific person or team"),
     ("ticket:transfer", "Transfer a ticket to another agent"),
-    ("ticket:bulk_reassign", "Bulk reassign or rebalance ticket workload"),
+    ("ticket:change_priority", "Change how urgent a ticket is marked"),
+    ("ticket:change_category", "Change what type of issue a ticket is filed under"),
+    ("ticket:change_sla", "Adjust the response/resolution time target on a ticket"),
+    ("ticket:reply", "Reply to tickets and add internal notes"),
+    ("ticket:update_status", "Change ticket status"),
+    ("ticket:reopen", "Reopen a closed ticket"),
+    ("ticket:escalate", "Flag a ticket as needing attention from someone more senior"),
     ("ticket:manage_attachments", "Upload or delete ticket attachments"),
     ("ticket:hide_interaction", "Hide (soft-delete) a ticket interaction"),
     ("ticket:view_audit_trail", "View a ticket's own audit trail"),
     ("ticket:view_global_audit_log", "View the global ticket audit log"),
     ("ticket:view_dashboard_kpis", "View ticket workspace dashboard KPIs"),
-    ("ticket:configure_routing", "Configure auto-assignment and routing rules"),
     ("ticket:manage_agents", "Activate or deactivate agent accounts"),
     ("ticket:manage_roles_permissions", "Manage roles and permissions for the ticket workspace"),
     ("ticket:system_config", "Configure ticket system and storage settings"),
 ]
 
-# Ticket Management defaults below mirror the capability matrix agreed
-# for Staff / Team Lead / Manager / Super Admin. Super Admin is
-# "all" already, so it isn't repeated per-permission here.
+# `ticket:bulk_reassign` and `ticket:configure_routing` (previously part
+# of DEFAULT_PERMISSIONS) were deliberately removed as separate concepts
+# during the RBAC redesign: bulk reassignment needs no dedicated
+# permission beyond `ticket:assign`/`ticket:transfer` applied per item
+# via a multi-select UI, and routing-rule configuration folds into
+# `ticket:system_config`. `permission:view_effective` (a proposed
+# "what can this person do" screen) was likewise decided to be a UI
+# feature built on `permission:view`/`role:view`, not its own gate — it
+# was never added here, so there's nothing to remove for it.
+_ALL_PERMISSION_NAMES = [name for name, _ in DEFAULT_PERMISSIONS]
+
+# Site Lead gets every permission except the two kept Super-Admin-only
+# by design: deep system/infrastructure configuration and compliance
+# audit export. Computed from the full list (rather than hand-listed)
+# so it can never silently drift out of sync as permissions are added.
+_SITE_LEAD_EXCLUDED = {"ticket:system_config", "audit:export"}
+SITE_LEAD_PERMISSIONS = [
+    name for name in _ALL_PERMISSION_NAMES if name not in _SITE_LEAD_EXCLUDED
+]
+
+# Role hierarchy: Super Admin (system/technical, "all") > Site Lead (top
+# business/operational role, "all except two") > Account Manager >
+# Team Lead > Staff. Viewer sits outside this hierarchy entirely
+# (client-facing, unchanged). Grants below reflect only what a role
+# gets *by default* ("Full" in the RBAC redesign doc) — everything a
+# role doesn't hold by default is meant to be reachable later via a
+# scoped, expiring permission override, not by widening these lists.
 DEFAULT_ROLES = {
     "Super Admin": "all",
-    "Manager": [
-        "user:view", "user:create", "user:update", "role:view",
-        "ticket:view_own", "ticket:view_unassigned", "ticket:view_others",
-        "ticket:reply", "ticket:update_status", "ticket:reopen",
-        "ticket:transfer", "ticket:bulk_reassign", "ticket:manage_attachments",
-        "ticket:hide_interaction", "ticket:view_audit_trail",
-        "ticket:view_global_audit_log", "ticket:view_dashboard_kpis",
-        "ticket:configure_routing", "ticket:manage_agents",
+    "Site Lead": SITE_LEAD_PERMISSIONS,
+    "Account Manager": [
+        # Communication — full ownership of the client-facing inbox.
+        "communication:create", "communication:view_all", "communication:view_assigned",
+        "communication:reply_external", "communication:reply_internal", "communication:forward",
+        "communication:convert_to_ticket", "communication:merge", "communication:archive",
+        "communication:view_timeline", "communication:assign", "communication:override_grant",
+        # Ticket — everything except deep system configuration.
+        "ticket:create", "ticket:view_own", "ticket:view_unassigned", "ticket:view_others",
+        "ticket:assign", "ticket:transfer", "ticket:change_priority", "ticket:change_category",
+        "ticket:change_sla", "ticket:update_status", "ticket:reply", "ticket:reopen",
+        "ticket:escalate", "ticket:manage_attachments", "ticket:hide_interaction",
+        "ticket:view_audit_trail", "ticket:view_global_audit_log", "ticket:view_dashboard_kpis",
+        "ticket:manage_agents", "ticket:manage_roles_permissions",
+        # User management — can manage Team Leads and Staff.
+        "user:view", "user:create", "user:update", "user:disable", "user:reset_password",
+        # Role & permission — can view and grant/revoke scoped overrides
+        # for their own reports, but not edit role definitions.
+        "role:view", "permission:view", "permission:override_grant", "permission:override_revoke",
     ],
     "Team Lead": [
-        "user:view", "user:update", "role:view",
-        "ticket:view_own", "ticket:view_unassigned", "ticket:view_others",
-        "ticket:reply", "ticket:update_status", "ticket:reopen",
-        "ticket:transfer", "ticket:bulk_reassign", "ticket:manage_attachments",
-        "ticket:hide_interaction", "ticket:view_audit_trail",
+        "communication:view_assigned", "communication:reply_internal", "communication:forward",
+        "communication:view_timeline",
+        "ticket:view_own", "ticket:view_unassigned", "ticket:view_others", "ticket:assign",
+        "ticket:transfer", "ticket:update_status", "ticket:reply", "ticket:escalate",
+        "ticket:manage_attachments", "ticket:hide_interaction", "ticket:view_audit_trail",
         "ticket:view_global_audit_log", "ticket:view_dashboard_kpis",
+        "user:view", "user:update",
+        "role:view",
     ],
     "Staff": [
+        "communication:reply_internal",
+        "ticket:view_own", "ticket:update_status", "ticket:reply", "ticket:manage_attachments",
+        "ticket:hide_interaction", "ticket:view_audit_trail", "ticket:view_dashboard_kpis",
         "user:view",
-        "ticket:create", "ticket:view_own", "ticket:view_unassigned",
-        "ticket:reply", "ticket:update_status", "ticket:reopen",
-        "ticket:transfer", "ticket:manage_attachments",
-        "ticket:hide_interaction", "ticket:view_audit_trail",
-        "ticket:view_dashboard_kpis",
     ],
     "Viewer": ["user:view", "role:view", "permission:view"],
 }
@@ -90,10 +152,16 @@ DEMO_USERS = [
         "role": "Super Admin",
     },
     {
-        "name": "Manager",
+        "name": "Site Lead",
+        "email": "sitelead@probeps.com",
+        "password": "SiteLead@123",
+        "role": "Site Lead",
+    },
+    {
+        "name": "Account Manager",
         "email": "manager@probeps.com",
         "password": "Manager@123",
-        "role": "Manager",
+        "role": "Account Manager",
     },
     {
         "name": "Team Lead",
@@ -161,12 +229,103 @@ LEGACY_EMAIL_FIXES = {
     "admin@rbac.local": "admin@rbac.com",
 }
 
+# Display names left over from before the "Manager" -> "Account Manager"
+# role rename. Fixed in place the same way LEGACY_EMAIL_FIXES is, keyed
+# by email since that's the stable identifier across reseeds.
+LEGACY_NAME_FIXES = {
+    "manager@probeps.com": "Account Manager",
+}
+
+# Permissions removed entirely as concepts during the RBAC redesign
+# (not moved to override-only — deleted). Role -> Permission grants
+# referencing them are revoked first, then the Permission rows
+# themselves are deleted, so no orphaned role_permissions row can
+# reference a permission_id that no longer exists.
+DEPRECATED_PERMISSIONS = ["ticket:bulk_reassign", "ticket:configure_routing"]
+
+# Specific (role, permission) grants that existed under the old
+# capability matrix but were deliberately downgraded to override-only
+# in the new one. The main seeding loop below is additive-only (it
+# never revokes a grant just because a role's default list changed),
+# by design — so these particular, deliberate downgrades need an
+# explicit one-time revocation instead of relying on that loop.
+REVOKED_GRANTS = [
+    ("Staff", "ticket:create"),
+    ("Staff", "ticket:view_unassigned"),
+    ("Staff", "ticket:transfer"),
+    ("Staff", "ticket:reopen"),
+    ("Staff", "user:update"),
+    ("Team Lead", "ticket:reopen"),
+]
+
 
 async def seed() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as session:
+
+        # --------------------------------------------------
+        # One-time rename: "Manager" -> "Account Manager"
+        # (in place, so it keeps its role_id and every existing user,
+        # role_permission grant, and manager_id/teamlead_id
+        # relationship pointing at it keeps working with no further
+        # migration needed)
+        # --------------------------------------------------
+
+        legacy_manager_result = await session.execute(
+            select(Role).where(Role.name == "Manager")
+        )
+        legacy_manager_role = legacy_manager_result.scalar_one_or_none()
+
+        if legacy_manager_role is not None:
+            account_manager_result = await session.execute(
+                select(Role).where(Role.name == "Account Manager")
+            )
+            if account_manager_result.scalar_one_or_none() is None:
+                legacy_manager_role.name = "Account Manager"
+                await session.flush()
+
+        # --------------------------------------------------
+        # One-time cleanup: deprecated permissions and the specific
+        # grants that were downgraded to override-only (see the two
+        # lists' docstrings above for why this can't just be additive)
+        # --------------------------------------------------
+
+        for permission_name in DEPRECATED_PERMISSIONS:
+            deprecated_permission = (
+                await session.execute(
+                    select(Permission).where(Permission.permission_name == permission_name)
+                )
+            ).scalar_one_or_none()
+
+            if deprecated_permission is not None:
+                await session.execute(
+                    RolePermission.__table__.delete().where(
+                        RolePermission.permission_id == deprecated_permission.permission_id
+                    )
+                )
+                await session.delete(deprecated_permission)
+
+        for role_name, permission_name in REVOKED_GRANTS:
+            role_for_revoke = (
+                await session.execute(select(Role).where(Role.name == role_name))
+            ).scalar_one_or_none()
+            permission_for_revoke = (
+                await session.execute(
+                    select(Permission).where(Permission.permission_name == permission_name)
+                )
+            ).scalar_one_or_none()
+
+            if role_for_revoke is not None and permission_for_revoke is not None:
+                await session.execute(
+                    RolePermission.__table__.delete().where(
+                        RolePermission.role_id == role_for_revoke.role_id,
+                        RolePermission.permission_id == permission_for_revoke.permission_id,
+                    )
+                )
+
+        await session.flush()
 
         # --------------------------------------------------
         # Permissions (idempotent)
@@ -207,7 +366,11 @@ async def seed() -> None:
             roles[role_name] = role
 
         # --------------------------------------------------
-        # Role -> Permission mappings (idempotent)
+        # Role -> Permission mappings (idempotent, additive-only —
+        # never revokes a permission a role already has, even if this
+        # run's default list for that role no longer includes it, so
+        # any permission granted by hand or by an override mechanism
+        # later is never silently clawed back by re-seeding)
         # --------------------------------------------------
 
         for role_name, perm_names in DEFAULT_ROLES.items():
@@ -250,6 +413,20 @@ async def seed() -> None:
 
             if legacy_user is not None:
                 legacy_user.email = new_email
+
+        # --------------------------------------------------
+        # Fix display names left over from the Manager -> Account
+        # Manager rename
+        # --------------------------------------------------
+
+        for email, correct_name in LEGACY_NAME_FIXES.items():
+            result = await session.execute(
+                select(User).where(User.email == email)
+            )
+            legacy_named_user = result.scalar_one_or_none()
+
+            if legacy_named_user is not None and legacy_named_user.name != correct_name:
+                legacy_named_user.name = correct_name
 
         await session.flush()
 

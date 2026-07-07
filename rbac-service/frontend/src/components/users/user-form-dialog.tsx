@@ -57,7 +57,7 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
           if (!data.teamlead_id) {
             ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["teamlead_id"], message: "Select a team lead" });
           }
-        } else if (currentUserRole === ROLE_NAMES.MANAGER) {
+        } else if (currentUserRole === ROLE_NAMES.ACCOUNT_MANAGER) {
           if (!data.teamlead_id) {
             ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["teamlead_id"], message: "Select a team lead" });
           }
@@ -156,10 +156,10 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
   });
 
   const allUsers: User[] = hierarchyUsersQuery.data?.users ?? [];
-  const managerOptions = allUsers.filter((u) => roleMap.get(u.role_id) === ROLE_NAMES.MANAGER);
+  const managerOptions = allUsers.filter((u) => roleMap.get(u.role_id) === ROLE_NAMES.ACCOUNT_MANAGER);
   const teamLeadOptionsRaw = allUsers.filter((u) => roleMap.get(u.role_id) === ROLE_NAMES.TEAM_LEAD);
   const teamLeadOptions =
-    currentUser?.role === ROLE_NAMES.MANAGER
+    currentUser?.role === ROLE_NAMES.ACCOUNT_MANAGER
       ? teamLeadOptionsRaw.filter((u) => u.manager_id === currentUser.user_id)
       : teamLeadOptionsRaw;
 
@@ -170,8 +170,8 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
       return;
     }
 
-    if (currentUser?.role === ROLE_NAMES.MANAGER) {
-      // Manager creating Staff or Team Lead — always reports to the current Manager.
+    if (currentUser?.role === ROLE_NAMES.ACCOUNT_MANAGER) {
+      // Account Manager creating Staff or Team Lead — always reports to the current Account Manager.
       setValue("manager_id", currentUser.user_id);
       if (!showStaffHierarchy) {
         setValue("teamlead_id", "");
@@ -300,13 +300,13 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
               {currentUser?.role === ROLE_NAMES.SUPER_ADMIN && (
                 <>
                   <div className="space-y-2">
-                    <Label>Manager</Label>
+                    <Label>Account Manager</Label>
                     <Select
                       value={managerId || ""}
                       onValueChange={(value) => setValue("manager_id", value, { shouldValidate: true })}
                     >
                       <SelectTrigger>
-                        <SelectValue placeholder="Select a manager" />
+                        <SelectValue placeholder="Select an Account Manager" />
                       </SelectTrigger>
                       <SelectContent>
                         {managerOptions.map((m) => (
@@ -345,10 +345,10 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
                 </>
               )}
 
-              {currentUser?.role === ROLE_NAMES.MANAGER && (
+              {currentUser?.role === ROLE_NAMES.ACCOUNT_MANAGER && (
                 <>
                   <div className="space-y-2">
-                    <Label>Manager</Label>
+                    <Label>Account Manager</Label>
                     <Input value={currentUser.name} disabled />
                     <p className="text-xs text-muted-foreground">Automatically assigned as you.</p>
                   </div>
@@ -388,13 +388,13 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
 
               {currentUser?.role === ROLE_NAMES.SUPER_ADMIN && (
                 <div className="space-y-2">
-                  <Label>Reporting Manager</Label>
+                  <Label>Reporting Account Manager</Label>
                   <Select
                     value={managerId || ""}
                     onValueChange={(value) => setValue("manager_id", value, { shouldValidate: true })}
                   >
                     <SelectTrigger>
-                      <SelectValue placeholder="Select a reporting manager" />
+                      <SelectValue placeholder="Select a reporting Account Manager" />
                     </SelectTrigger>
                     <SelectContent>
                       {managerOptions.map((m) => (
@@ -410,9 +410,9 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
                 </div>
               )}
 
-              {currentUser?.role === ROLE_NAMES.MANAGER && (
+              {currentUser?.role === ROLE_NAMES.ACCOUNT_MANAGER && (
                 <div className="space-y-2">
-                  <Label>Reporting Manager</Label>
+                  <Label>Reporting Account Manager</Label>
                   <Input value={currentUser.name} disabled />
                   <p className="text-xs text-muted-foreground">Automatically assigned as you.</p>
                 </div>

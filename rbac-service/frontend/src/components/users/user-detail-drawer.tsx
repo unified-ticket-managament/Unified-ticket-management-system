@@ -76,13 +76,14 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
 
-  // Super Admin can assign any permission. A Manager can only assign
-  // permissions they personally hold — they can never grant something they
-  // don't have themselves. Team Lead / Staff / Viewer cannot manage
-  // permissions at all (read-only).
-  const isManagerActor = currentUser?.role === ROLE_NAMES.MANAGER;
-  const canManagePermissions =
-    currentUser?.role === ROLE_NAMES.SUPER_ADMIN || isManagerActor;
+  // Super Admin can assign any permission. An Account Manager can only
+  // assign permissions they personally hold — they can never grant
+  // something they don't have themselves. Team Lead / Staff / Viewer
+  // cannot manage permissions at all (read-only).
+  const isManagerActor = currentUser?.role === ROLE_NAMES.ACCOUNT_MANAGER;
+  const isUnrestrictedActor =
+    currentUser?.role === ROLE_NAMES.SUPER_ADMIN || currentUser?.role === ROLE_NAMES.SITE_LEAD;
+  const canManagePermissions = isUnrestrictedActor || isManagerActor;
 
   const isPermissionAssignable = (permissionName: string) => {
     if (!isManagerActor) return true;
@@ -294,7 +295,7 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
                 >
                   {showReportingManager && (
                     <div>
-                      <dt className="text-xs text-muted-foreground">Reporting Manager</dt>
+                      <dt className="text-xs text-muted-foreground">Reporting Account Manager</dt>
                       <dd className="mt-1 flex items-center gap-1.5 text-sm font-medium">
                         <UserCog className="h-3.5 w-3.5 text-muted-foreground" />
                         {managerName}

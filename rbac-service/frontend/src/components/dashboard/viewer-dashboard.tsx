@@ -95,8 +95,8 @@ export function ViewerDashboard() {
   );
 
   const canSeeUsers =
-    role === ROLE_NAMES.SUPER_ADMIN || role === ROLE_NAMES.MANAGER || role === ROLE_NAMES.TEAM_LEAD;
-  const canSeeRoles = role === ROLE_NAMES.SUPER_ADMIN || role === ROLE_NAMES.MANAGER;
+    role === ROLE_NAMES.SUPER_ADMIN || role === ROLE_NAMES.ACCOUNT_MANAGER || role === ROLE_NAMES.TEAM_LEAD;
+  const canSeeRoles = role === ROLE_NAMES.SUPER_ADMIN || role === ROLE_NAMES.ACCOUNT_MANAGER;
   const canSeePermissions = role === ROLE_NAMES.SUPER_ADMIN;
   const canSeeAuditLogs = role === ROLE_NAMES.SUPER_ADMIN;
   const canSeeCharts = role === ROLE_NAMES.SUPER_ADMIN;

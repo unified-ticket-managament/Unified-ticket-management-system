@@ -2,7 +2,8 @@ import { TranslationKey } from "@/lib/i18n/translations";
 
 export const ROLE_NAMES = {
   SUPER_ADMIN: "Super Admin",
-  MANAGER: "Manager",
+  SITE_LEAD: "Site Lead",
+  ACCOUNT_MANAGER: "Account Manager",
   TEAM_LEAD: "Team Lead",
   STAFF: "Staff",
   VIEWER: "Viewer",
@@ -35,24 +36,33 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   Settings: "nav.settings",
 };
 
-// Staff/Team Lead/Manager — the actual agent roles — land on the
-// embedded Ticket Management workspace at /dashboard instead of RBAC's
-// own admin dashboard — see app/(dashboard)/dashboard/[[...slug]]/
-// page.tsx and src/ticket-workspace/. Their sidebar shows the ticket
-// workspace modules (matching Ticketing's own nav) alongside RBAC's
-// own Users/Roles admin pages (same visibility as before the workspace
-// was embedded — Users: Manager/Team Lead, Roles: Manager) plus
-// Profile/Settings. "Ticket Audit Log" is the populated audit trail
-// for ticket activity, linked for every agent role.
+// Staff/Team Lead/Account Manager — the actual agent roles — land on
+// the embedded Ticket Management workspace at /dashboard instead of
+// RBAC's own admin dashboard — see app/(dashboard)/dashboard/
+// [[...slug]]/page.tsx and src/ticket-workspace/. Their sidebar shows
+// the ticket workspace modules (matching Ticketing's own nav) alongside
+// RBAC's own Users/Roles admin pages (same visibility as before the
+// workspace was embedded — Users: Account Manager/Team Lead, Roles:
+// Account Manager) plus Profile/Settings. "Ticket Audit Log" is the
+// populated audit trail for ticket activity, linked for every agent role.
 //
-// Super Admin and Viewer both keep the original, unmodified RBAC
-// dashboard/nav instead — Viewer as the client-facing role that was
-// never an agent, Super Admin per an explicit later decision to keep
-// that role's whole interface RBAC-only (Users/Roles/Dashboard/Profile/
-// Settings), with no ticket-workspace nav items at all.
+// Super Admin, Site Lead, and Viewer all keep the original, unmodified
+// RBAC dashboard/nav instead of the ticket workspace — Viewer as the
+// client-facing role that was never an agent; Super Admin per an
+// explicit decision to keep that role's whole interface RBAC-only;
+// Site Lead because its day-to-day work is org oversight and permission
+// governance, not hands-on ticket work (see the "Primary vs. full"
+// distinction in the RBAC redesign doc) — Site Lead still holds full
+// ticket permissions, it just isn't routed to the ticket workspace UI,
+// the same way Super Admin already wasn't.
+//
+// "Audit Logs" (the RBAC-level log, distinct from "Ticket Audit Log")
+// is included for Super Admin and Site Lead, the two roles with the
+// `audit:view` permission by default.
 const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
-  [ROLE_NAMES.SUPER_ADMIN]: ["Dashboard", "Users", "Roles", "Profile", "Settings"],
-  [ROLE_NAMES.MANAGER]: ["Dashboard", "Users", "Roles", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
+  [ROLE_NAMES.SUPER_ADMIN]: ["Dashboard", "Users", "Roles", "Audit Logs", "Profile", "Settings"],
+  [ROLE_NAMES.SITE_LEAD]: ["Dashboard", "Users", "Roles", "Audit Logs", "Profile", "Settings"],
+  [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Roles", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
   [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
   [ROLE_NAMES.STAFF]: ["Dashboard", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
   [ROLE_NAMES.VIEWER]: ["Dashboard", "Profile", "Settings"],
@@ -70,15 +80,16 @@ export function canSeeNavItem(role: string | undefined, item: NavItemKey): boole
 }
 
 // Mirrors ticketing-service/backend/app/services/access_control.py's
-// SUPERVISOR_ROLE_NAMES exactly — Team Lead/Manager/Super Admin see
-// every ticket regardless of assignment, Staff sees only tickets
-// assigned to them (or unassigned). The backend is what actually
-// enforces this (GET /tickets scopes its own query by the caller's
-// JWT), but the ticket workspace pages read this to describe the
-// scope accurately rather than always claiming "assigned to you."
+// SUPERVISOR_ROLE_NAMES exactly — Team Lead/Account Manager/Site Lead/
+// Super Admin see every ticket regardless of assignment, Staff sees
+// only tickets assigned to them (or unassigned). The backend is what
+// actually enforces this (GET /tickets scopes its own query by the
+// caller's JWT), but the ticket workspace pages read this to describe
+// the scope accurately rather than always claiming "assigned to you."
 export const SUPERVISOR_ROLE_NAMES: readonly string[] = [
   ROLE_NAMES.TEAM_LEAD,
-  ROLE_NAMES.MANAGER,
+  ROLE_NAMES.ACCOUNT_MANAGER,
+  ROLE_NAMES.SITE_LEAD,
   ROLE_NAMES.SUPER_ADMIN,
 ];
 
@@ -90,7 +101,8 @@ export function isSupervisorRole(role: string | undefined): boolean {
 // new user. `undefined` means no restriction (all roles are selectable).
 const CREATABLE_ROLES_BY_ROLE: Record<string, string[] | undefined> = {
   [ROLE_NAMES.SUPER_ADMIN]: undefined,
-  [ROLE_NAMES.MANAGER]: [ROLE_NAMES.TEAM_LEAD, ROLE_NAMES.STAFF],
+  [ROLE_NAMES.SITE_LEAD]: [ROLE_NAMES.ACCOUNT_MANAGER, ROLE_NAMES.TEAM_LEAD, ROLE_NAMES.STAFF],
+  [ROLE_NAMES.ACCOUNT_MANAGER]: [ROLE_NAMES.TEAM_LEAD, ROLE_NAMES.STAFF],
 };
 
 /**

@@ -9,12 +9,12 @@ from app.models.ticket import Ticket
 
 # Every RBAC role except Viewer (the client-facing role) can log into
 # Ticketing and act as an agent.
-AGENT_ROLE_NAMES = {"Staff", "Team Lead", "Manager", "Super Admin"}
+AGENT_ROLE_NAMES = {"Staff", "Team Lead", "Account Manager", "Site Lead", "Super Admin"}
 
-# Team Lead/Manager/Super Admin can see every ticket regardless of
-# assignment; Staff stays restricted to tickets assigned to them (or
-# unassigned ones).
-SUPERVISOR_ROLE_NAMES = {"Team Lead", "Manager", "Super Admin"}
+# Team Lead/Account Manager/Site Lead/Super Admin can see every ticket
+# regardless of assignment; Staff stays restricted to tickets assigned
+# to them (or unassigned ones).
+SUPERVISOR_ROLE_NAMES = {"Team Lead", "Account Manager", "Site Lead", "Super Admin"}
 
 
 def ensure_ticket_not_closed(ticket: Ticket) -> None:
@@ -40,9 +40,9 @@ def ensure_agent_can_view_ticket(
     """
     A ticket, and everything scoped to it (its interaction timeline
     included), is visible only to the agent it's assigned to. An
-    unassigned ticket stays visible to everyone. Team Lead/Manager/
-    Super Admin bypass this check entirely and can see every ticket,
-    regardless of assignment.
+    unassigned ticket stays visible to everyone. Team Lead/Account
+    Manager/Site Lead/Super Admin bypass this check entirely and can
+    see every ticket, regardless of assignment.
     """
 
     if current_user.role.name in SUPERVISOR_ROLE_NAMES:

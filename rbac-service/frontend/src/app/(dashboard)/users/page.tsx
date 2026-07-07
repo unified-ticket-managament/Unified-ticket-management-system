@@ -63,7 +63,8 @@ type UserRow = User & { roleName: string };
 
 const USERS_PAGE_ALLOWED_ROLES: string[] = [
   ROLE_NAMES.SUPER_ADMIN,
-  ROLE_NAMES.MANAGER,
+  ROLE_NAMES.SITE_LEAD,
+  ROLE_NAMES.ACCOUNT_MANAGER,
   ROLE_NAMES.TEAM_LEAD,
 ];
 
@@ -112,8 +113,9 @@ export default function UsersPage() {
     if (!currentUser) return [];
     switch (currentUser.role) {
       case ROLE_NAMES.SUPER_ADMIN:
+      case ROLE_NAMES.SITE_LEAD:
         return rows.filter((user) => user.roleName !== ROLE_NAMES.SUPER_ADMIN);
-      case ROLE_NAMES.MANAGER:
+      case ROLE_NAMES.ACCOUNT_MANAGER:
         return rows.filter((user) => user.manager_id === currentUser.user_id);
       case ROLE_NAMES.TEAM_LEAD:
         return rows.filter((user) => user.teamlead_id === currentUser.user_id);

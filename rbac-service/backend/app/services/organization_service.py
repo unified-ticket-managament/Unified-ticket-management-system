@@ -4,18 +4,20 @@ from app.repositories import RoleRepository, UserRepository
 from app.schemas.organization import OrganizationNode
 
 # Fixed hierarchy levels this chart understands. Roles outside this
-# list (e.g. Viewer) are not part of the formal reporting structure.
-ROLE_HIERARCHY = ["Super Admin", "Manager", "Team Lead", "Staff"]
+# list (e.g. Viewer, and the newer standalone Site Lead role) are not
+# part of the formal reporting structure — they're rendered as
+# standalone nodes instead (see get_chart_for_user below).
+ROLE_HIERARCHY = ["Super Admin", "Account Manager", "Team Lead", "Staff"]
 
 
 class OrganizationService:
     """
     Builds the organization chart for a user.
 
-    The chart is derived from role level (Super Admin > Manager >
-    Team Lead > Staff) combined with the existing `manager_id` /
-    `teamlead_id` relationships on User - no additional schema is
-    required.
+    The chart is derived from role level (Super Admin > Account
+    Manager > Team Lead > Staff) combined with the existing
+    `manager_id` / `teamlead_id` relationships on User - no additional
+    schema is required.
     """
 
     def __init__(
@@ -49,7 +51,7 @@ class OrganizationService:
 
         # ...but ancestors above them are a single chain, never
         # fanning out to a sibling's branch (e.g. a Team Lead must
-        # not see their Manager's other Team Leads).
+        # not see their Account Manager's other Team Leads).
         for depth in range(level, 0, -1):
             parent = await self._get_parent(user, depth)
 
@@ -75,7 +77,7 @@ class OrganizationService:
         hierarchy depth `depth - 1`.
         """
 
-        # Staff -> Team Lead (fall back to Manager if unassigned)
+        # Staff -> Team Lead (fall back to Account Manager if unassigned)
         if depth == 3:
             if user.teamlead_id is not None:
                 return await self.user_repository.get_by_id(user.teamlead_id)
@@ -85,15 +87,16 @@ class OrganizationService:
 
             return None
 
-        # Team Lead -> Manager
+        # Team Lead -> Account Manager
         if depth == 2:
             if user.manager_id is not None:
                 return await self.user_repository.get_by_id(user.manager_id)
 
             return None
 
-        # Manager -> Super Admin (no manager_id is set by default, so
-        # fall back to the first Super Admin account on record)
+        # Account Manager -> Super Admin (no manager_id is set by
+        # default, so fall back to the first Super Admin account on
+        # record)
         if depth == 1:
             if user.manager_id is not None:
                 return await self.user_repository.get_by_id(user.manager_id)
@@ -115,9 +118,9 @@ class OrganizationService:
         children_users: list[User] = []
 
         if role_name == "Super Admin":
-            children_users = await self._all_by_role("Manager")
+            children_users = await self._all_by_role("Account Manager")
 
-        elif role_name == "Manager":
+        elif role_name == "Account Manager":
             team_lead_role = await self.role_repository.get_by_name("Team Lead")
 
             if team_lead_role is not None:
