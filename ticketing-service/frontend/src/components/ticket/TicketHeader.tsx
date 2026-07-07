@@ -39,7 +39,9 @@ export function TicketHeader({ ticket }: { ticket: TicketResponse }) {
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Client</p>
           <p className="mt-1 font-medium text-slate-800">
-            {ticket.client_name ?? shortId(ticket.client_id)}
+            {ticket.client_company_name ??
+              ticket.client_name ??
+              (ticket.client_id ? shortId(ticket.client_id) : "—")}
           </p>
         </div>
         <div>

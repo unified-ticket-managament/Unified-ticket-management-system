@@ -20,6 +20,32 @@ class ReplyCreate(BaseModel):
     )
 
 
+class InteractionReplyRequest(BaseModel):
+    """
+    Request body for replying to a client on a bare (not-yet-
+    ticketed) inbox interaction — the "general communication, no
+    ticket needed" path.
+    """
+
+    message: str = Field(
+        ...,
+        min_length=1,
+        max_length=5000,
+        description="Reply visible to the client.",
+    )
+
+
+class InteractionReplyResponse(ORMBase):
+    """
+    Response returned after replying to a bare interaction.
+    """
+
+    interaction_id: UUID
+    parent_interaction_id: UUID
+    message: str
+    created_at: datetime
+
+
 class StatusChangeRequest(BaseModel):
     """
     Request body for changing a ticket's status.

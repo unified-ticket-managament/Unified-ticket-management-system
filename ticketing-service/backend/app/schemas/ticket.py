@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.enums import TicketPriority, TicketStatus
+from app.enums import TicketCategory, TicketPriority, TicketStatus
 from app.schemas.common import ORMBase
 
 #ticket.py
@@ -17,7 +17,10 @@ class TicketCreate(BaseModel):
     intentionally not accepted here.
     """
 
-    client_id: UUID
+    # Legacy — leave unset for new tickets. Use client_company_id.
+    client_id: UUID | None = None
+
+    client_company_id: UUID | None = None
 
     agent_id: UUID | None = None
 
@@ -25,7 +28,7 @@ class TicketCreate(BaseModel):
 
     title: str = Field(..., min_length=1, max_length=255)
 
-    ticket_type: str = Field(..., min_length=1, max_length=50)
+    ticket_type: TicketCategory
 
     current_priority: TicketPriority = TicketPriority.MEDIUM
 
@@ -44,7 +47,7 @@ class TicketUpdate(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=255)
 
-    ticket_type: str | None = Field(default=None, min_length=1, max_length=50)
+    ticket_type: TicketCategory | None = None
 
     current_status: TicketStatus | None = None
 
@@ -57,7 +60,8 @@ class TicketUpdate(BaseModel):
 
 class TicketResponse(ORMBase):
     ticket_id: UUID
-    client_id: UUID
+    client_id: UUID | None
+    client_company_id: UUID | None = None
     agent_id: UUID | None
     created_by: UUID | None
     title: str
@@ -74,5 +78,6 @@ class TicketResponse(ORMBase):
     # persisted on the ticket row itself. None if the service
     # didn't attach them (e.g. lookup failed) or agent_id is null.
     client_name: str | None = None
+    client_company_name: str | None = None
     agent_name: str | None = None
     created_by_name: str | None = None

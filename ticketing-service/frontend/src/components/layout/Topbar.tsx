@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Bell, Mail, Menu, Moon, Search, Sun } from "lucide-react";
 import { useApiAction } from "@/hooks/useApiAction";
-import { getAgentInbox } from "@/api/agent";
+import { getInbox } from "@/api/inbox";
 import { getTicket } from "@/api/ticket";
 import { useAuthContext } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
@@ -48,7 +48,7 @@ export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
 
     async function load() {
       try {
-        const data = await getAgentInbox();
+        const data = await getInbox();
         if (!cancelled) setInbox(data);
       } catch {
         // ignore

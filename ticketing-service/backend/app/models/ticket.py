@@ -29,10 +29,24 @@ class Ticket(Base):
         default=uuid.uuid4,
     )
 
-    client_id: Mapped[uuid.UUID] = mapped_column(
+    # Legacy FK to an individual `users` row — kept nullable only so
+    # existing rows created before the client-company model stay
+    # valid. New tickets leave this NULL and use client_company_id
+    # instead; do not write to this column going forward.
+    client_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.user_id"),
-        nullable=False,
+        nullable=True,
+    )
+
+    # The client (company) this ticket belongs to. Ownership is the
+    # company's Account Manager (clients.account_manager_id), not
+    # this ticket's agent_id — agent_id is only "who is currently
+    # working on it" (set via claim/transfer).
+    client_company_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("clients.client_id"),
+        nullable=True,
     )
 
     agent_id: Mapped[uuid.UUID | None] = mapped_column(

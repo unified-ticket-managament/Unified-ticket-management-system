@@ -17,9 +17,10 @@ import {
   createTicketFromInteraction,
 } from "@/api/ticket";
 import { useWorkflowContext } from "@/context/WorkflowContext";
-import type { TicketPriority } from "@/types";
+import type { TicketCategory, TicketPriority } from "@/types";
 
 const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
+const CATEGORIES: TicketCategory[] = ["TECHNICAL", "BILLING", "HIRING", "GENERAL"];
 
 export function InboxActionsPanel() {
   const navigate = useNavigate();
@@ -29,7 +30,7 @@ export function InboxActionsPanel() {
   const [attachOpen, setAttachOpen] = useState(false);
 
   const [title, setTitle] = useState("");
-  const [ticketType, setTicketType] = useState("TECHNICAL");
+  const [ticketType, setTicketType] = useState<TicketCategory>("TECHNICAL");
   const [priority, setPriority] = useState<TicketPriority>("MEDIUM");
   const [existingTicketId, setExistingTicketId] = useState("");
 
@@ -186,11 +187,17 @@ export function InboxActionsPanel() {
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
-          <TextInput
-            label="Ticket type"
+          <SelectInput
+            label="Category"
             value={ticketType}
-            onChange={(e) => setTicketType(e.target.value)}
-          />
+            onChange={(e) => setTicketType(e.target.value as TicketCategory)}
+          >
+            {CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </SelectInput>
           <SelectInput
             label="Priority"
             value={priority}

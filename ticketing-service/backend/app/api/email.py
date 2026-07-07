@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -11,17 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
 from app.repositories.attachment_repository import AttachmentRepository
+from app.repositories.client_repository import ClientRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
 from app.repositories.ticket_repository import TicketRepository
-from app.repositories.user_repository import UserRepository
 from app.schemas.email import (
     EmailRequest,
     EmailResponse,
-)
-from app.services.agent_assignment_service import (
-    AgentAssignmentService,
 )
 from app.services.attachment_service import AttachmentService
 from app.services.email_service import (
@@ -41,43 +40,52 @@ router = APIRouter(
     status_code=status.HTTP_201_CREATED,
 )
 async def receive_email(
+    to_email: str = Form(...),
     from_email: str = Form(...),
+    from_name: str | None = Form(default=None),
     subject: str = Form(...),
     body: str = Form(...),
+    html_body: str | None = Form(default=None),
     message_id: str = Form(...),
+    received_at: datetime | None = Form(default=None),
+    in_reply_to: str | None = Form(default=None),
+    # Space-separated Message-IDs, matching the RFC 5322 References
+    # header convention — split into a list before validation.
+    references: str = Form(default=""),
     files: list[UploadFile] = File(default=[]),
     db: AsyncSession = Depends(get_db),
 ):
 
     email = EmailRequest(
+        to_email=to_email,
         from_email=from_email,
+        from_name=from_name,
         subject=subject,
         body=body,
+        html_body=html_body,
         message_id=message_id,
+        received_at=received_at,
+        in_reply_to=in_reply_to,
+        references=references.split() if references else [],
     )
 
     interaction_repository = InteractionRepository(db)
-    user_repository = UserRepository(db)
-    ticket_repository = TicketRepository(db)
+    client_repository = ClientRepository(db)
     attachment_repository = AttachmentRepository(db)
-
-    agent_assignment_service = AgentAssignmentService(
-        user_repository=user_repository,
-        ticket_repository=ticket_repository,
-        interaction_repository=interaction_repository,
-    )
 
     attachment_service = AttachmentService(
         attachment_repository=attachment_repository,
         interaction_repository=interaction_repository,
-        ticket_repository=ticket_repository,
+        # Not used by validate_and_store_files (the only method this
+        # intake path calls) — constructed for parity with the
+        # ticket-upload path's AttachmentService.
+        ticket_repository=TicketRepository(db),
         storage_service=get_storage_service(),
     )
 
     service = EmailService(
         interaction_repository=interaction_repository,
-        user_repository=user_repository,
-        agent_assignment_service=agent_assignment_service,
+        client_repository=client_repository,
         attachment_service=attachment_service,
     )
 
@@ -95,17 +103,10 @@ async def receive_email(
                 detail=message,
             )
 
-        if message == "Unknown client email.":
+        if message == "Unknown inbox address.":
 
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=message,
-            )
-
-        if message == "No active agents available.":
-
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=message,
             )
 

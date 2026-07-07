@@ -33,11 +33,11 @@ export interface InteractionDrawerRow {
 }
 
 // Present for pending inbox rows once fetched via the existing
-// GET /agents/{agent}/inbox/{interaction_id} endpoint.
+// GET /inbox/{interaction_id} endpoint.
 export interface InteractionDrawerEmail {
-  from_email: string;
+  from_email: string | null;
   client_name: string;
-  agent_name: string;
+  to_email: string | null;
   subject: string;
   body: string;
   message_id: string | null;
@@ -147,7 +147,7 @@ function resolveFields(
     }
     return {
       from: email.client_name ?? email.from_email,
-      to: email.agent_name,
+      to: email.to_email,
       subject: email.subject,
       message: email.body,
       attachments: email.attachments ?? [],

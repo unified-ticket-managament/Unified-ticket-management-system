@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import UploadFile
 
 from app.enums import (
@@ -7,10 +9,10 @@ from app.enums import (
     InteractionDirection,
     InteractionStatus,
 )
+from app.repositories.client_repository import ClientRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
-from app.repositories.user_repository import UserRepository
 from app.schemas.attachment import AttachmentMetadata
 from app.schemas.email import (
     EmailRequest,
@@ -19,14 +21,11 @@ from app.schemas.email import (
 from app.schemas.interaction import (
     InteractionCreate,
 )
-from app.services.agent_assignment_service import AgentAssignmentService
 from app.services.attachment_service import (
     AttachmentService,
     attachments_to_metadata,
 )
 from app.services.audit_log_service import AuditLogService
-
-VIEWER_ROLE_NAME = "Viewer"
 
 
 class EmailService:
@@ -41,28 +40,34 @@ class EmailService:
     Validate Duplicate
             │
             ▼
-    Lookup Client (users table, role = Viewer)
+    Resolve Client (by the shared inbox address it arrived at,
+    NOT by matching the sender to a platform user)
             │
             ▼
-    Assign Agent (interim rule — see AgentAssignmentService)
+    Thread Check (In-Reply-To / References against stored
+    message_ids — lands on a ticket, joins an inbox thread, or
+    becomes a new inbox item)
             │
             ▼
-    Create Pending Interaction
+    Create Interaction
             │
             ▼
     Return Response
+
+    No agent is assigned here anymore — every client's mail routes to
+    the client's Account Manager (via ClientRepository), who triages
+    it from their inbox; staff pick up resulting tickets from the
+    shared pool instead of being auto-assigned at intake.
     """
 
     def __init__(
         self,
         interaction_repository: InteractionRepository,
-        user_repository: UserRepository,
-        agent_assignment_service: AgentAssignmentService,
+        client_repository: ClientRepository,
         attachment_service: AttachmentService,
     ):
         self.interaction_repository = interaction_repository
-        self.user_repository = user_repository
-        self.agent_assignment_service = agent_assignment_service
+        self.client_repository = client_repository
         self.attachment_service = attachment_service
 
     async def receive_email(
@@ -77,9 +82,7 @@ class EmailService:
 
         exists = (
             await self.interaction_repository
-            .exists_by_message_id(
-                email.message_id
-            )
+            .exists_by_message_id(email.message_id)
         )
 
         if exists:
@@ -88,28 +91,59 @@ class EmailService:
             )
 
         # ---------------------------------------
-        # Client Lookup (real users table)
+        # Client Lookup — by the shared inbox address this
+        # email arrived at, not by who sent it.
         # ---------------------------------------
 
-        client = await self.user_repository.get_by_email(
-            email.from_email
+        client = await self.client_repository.get_active_by_inbox_email(
+            email.to_email
         )
 
-        if client is None or client.role.name != VIEWER_ROLE_NAME:
+        if client is None:
             raise ValueError(
-                "Unknown client email."
+                "Unknown inbox address."
             )
 
+        received_at = email.received_at or datetime.now(timezone.utc)
+
         # ---------------------------------------
-        # Agent Assignment (interim rule)
+        # Thread Check — does this email's In-Reply-To /
+        # References match a message_id we've already stored?
         # ---------------------------------------
 
-        agent = await self.agent_assignment_service.select_agent()
+        candidate_ids = list(email.references)
+        if email.in_reply_to:
+            candidate_ids.append(email.in_reply_to)
 
-        if agent is None:
-            raise ValueError(
-                "No active agents available."
+        matched = None
+
+        if candidate_ids:
+            matches = await self.interaction_repository.get_by_message_ids(
+                candidate_ids
             )
+            if matches:
+                matched = matches[0]
+
+        ticket_id = None
+        parent_interaction_id = None
+        interaction_status = InteractionStatus.PENDING
+
+        if matched is not None:
+            # Walk to the thread root either way, so every reply in a
+            # thread points at the same root, not a chain of parents
+            # — without this, a follow-up email lands with
+            # parent_interaction_id NULL and shows up as a brand-new,
+            # duplicate root in the AM inbox instead of nesting under
+            # the conversation it's actually replying to.
+            parent_interaction_id = (
+                matched.parent_interaction_id or matched.interaction_id
+            )
+
+            if matched.ticket_id is not None:
+                # The match already lives on a ticket — this reply
+                # joins that ticket's timeline directly.
+                ticket_id = matched.ticket_id
+                interaction_status = InteractionStatus.ASSIGNED
 
         # ---------------------------------------
         # Build Interaction Payload
@@ -117,23 +151,25 @@ class EmailService:
 
         payload = {
 
+            "client_id": str(client.client_id),
+
+            "client_name": client.name,
+
+            "to_email": email.to_email,
+
             "from_email": email.from_email,
+
+            "from_name": email.from_name,
 
             "subject": email.subject,
 
             "body": email.body,
 
-            "client_id": str(
-                client.user_id
-            ),
+            "html_body": email.html_body,
 
-            "client_name": client.name,
+            "in_reply_to": email.in_reply_to,
 
-            "agent_id": str(
-                agent.user_id
-            ),
-
-            "agent_name": agent.name,
+            "references": email.references,
         }
 
         # ---------------------------------------
@@ -142,11 +178,11 @@ class EmailService:
 
         interaction = InteractionCreate(
 
-    ticket_id=None,
+    ticket_id=ticket_id,
 
     interaction_type="EMAIL",
 
-    status=InteractionStatus.PENDING,
+    status=interaction_status,
 
     direction=InteractionDirection.INBOUND,
 
@@ -160,6 +196,12 @@ class EmailService:
     is_visible=True,
 
     message_id=email.message_id,
+
+    client_id=client.client_id,
+
+    parent_interaction_id=parent_interaction_id,
+
+    received_at=received_at,
 )
 
         created = (
@@ -169,7 +211,7 @@ class EmailService:
 
         # ---------------------------------------
         # Audit Trail — the client is the actor here,
-        # not the assigning agent.
+        # not an assigning agent (there is none anymore).
         # ---------------------------------------
 
         await AuditLogService.log_event(
@@ -177,14 +219,15 @@ class EmailService:
             entity_type=AuditEntityType.INTERACTION,
             entity_id=created.interaction_id,
             event_type=AuditEventType.EMAIL_RECEIVED,
-            actor_id=client.user_id,
-            actor_name=client.name,
+            actor_id=None,
+            actor_name=email.from_name or email.from_email,
             actor_role=ActorRole.CLIENT,
             new_values={
                 "subject": email.subject,
                 "message_id": email.message_id,
-                "assigned_agent_id": agent.user_id,
-                "assigned_agent_name": agent.name,
+                "client_id": client.client_id,
+                "client_name": client.name,
+                "ticket_id": ticket_id,
             },
         )
 
@@ -214,9 +257,15 @@ class EmailService:
                 created.interaction_id
             ),
 
+            client_id=str(client.client_id),
+
             client_name=client.name,
 
-            agent_name=agent.name,
+            ticket_id=str(ticket_id) if ticket_id else None,
+
+            threaded_under=(
+                str(parent_interaction_id) if parent_interaction_id else None
+            ),
 
             status=created.status.value,
 

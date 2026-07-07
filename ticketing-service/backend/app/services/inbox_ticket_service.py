@@ -1,6 +1,7 @@
 from fastapi import HTTPException, status
+from shared_models.models import User
 
-from app.enums import ActorRole, AuditEntityType, AuditEventType, InteractionStatus
+from app.enums import AuditEntityType, AuditEventType, InteractionStatus
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
@@ -11,7 +12,6 @@ from app.schemas.attach_interaction import (
     AttachInteractionRequest,
     AttachInteractionResponse,
 )
-from app.schemas.payloads import EmailPayload
 from app.schemas.ticket import TicketCreate
 from app.schemas.ticket_from_interaction import (
     TicketFromInteractionCreate,
@@ -79,25 +79,31 @@ class InboxTicketService:
     async def create_ticket_from_interaction(
         self,
         request: TicketFromInteractionCreate,
+        current_user: User,
     ) -> TicketFromInteractionResponse:
 
         interaction = await self._get_pending_interaction(
             request.interaction_id
         )
 
-        payload = EmailPayload.model_validate(
-            interaction.payload
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
         )
 
+        # Tickets are born unclaimed (agent_id=None) — they sit in
+        # the shared pool until someone claims them. `created_by`
+        # still records who actually did the promoting.
         ticket = await self.ticket_repository.create(
 
             TicketCreate(
 
-                client_id=payload.client_id,
+                client_id=None,
 
-                agent_id=payload.agent_id,
+                client_company_id=interaction.client_id,
 
-                created_by=payload.agent_id,
+                agent_id=None,
+
+                created_by=actor_id,
 
                 title=request.title,
 
@@ -111,8 +117,10 @@ class InboxTicketService:
 
         )
 
-        await self.interaction_repository.assign_to_ticket(
-            interaction=interaction,
+        # Moves the interaction AND every reply already filed under
+        # it (if this was already a thread) onto the new ticket.
+        await self.interaction_repository.assign_thread_to_ticket(
+            root_interaction_id=interaction.interaction_id,
             ticket_id=ticket.ticket_id,
         )
 
@@ -121,15 +129,14 @@ class InboxTicketService:
             entity_type=AuditEntityType.TICKET,
             entity_id=ticket.ticket_id,
             event_type=AuditEventType.TICKET_CREATED,
-            actor_id=payload.agent_id,
-            actor_name=payload.agent_name,
-            actor_role=ActorRole.AGENT,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
             new_values={
                 "title": ticket.title,
                 "ticket_type": ticket.ticket_type,
                 "current_priority": ticket.current_priority,
-                "client_id": ticket.client_id,
-                "agent_id": ticket.agent_id,
+                "client_company_id": ticket.client_company_id,
                 "interaction_id": interaction.interaction_id,
             },
         )
@@ -150,6 +157,7 @@ class InboxTicketService:
         self,
         ticket_id,
         request: AttachInteractionRequest,
+        current_user: User,
     ) -> AttachInteractionResponse:
 
         # Validate interaction
@@ -168,9 +176,10 @@ class InboxTicketService:
                 detail="Ticket not found.",
             )
 
-        # Attach interaction
-        await self.interaction_repository.assign_to_ticket(
-            interaction=interaction,
+        # Attach the interaction AND every reply already filed
+        # under it (if this was already a thread) to the ticket.
+        await self.interaction_repository.assign_thread_to_ticket(
+            root_interaction_id=interaction.interaction_id,
             ticket_id=ticket.ticket_id,
         )
 

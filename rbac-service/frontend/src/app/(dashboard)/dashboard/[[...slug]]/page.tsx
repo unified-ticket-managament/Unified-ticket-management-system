@@ -20,15 +20,12 @@ const TicketWorkspaceApp = dynamic(
 // workspace's own routes — /dashboard/tickets, /dashboard/inbox, etc.)
 // resolves to this one Next.js page. Viewer (the client-facing role,
 // never an agent) and Super Admin (the RBAC-focused administrator role)
-// keep the original RBAC dashboard; Site Lead gets its own dedicated
-// dashboard (org oversight/permission governance is its day-to-day
-// work, not ticket handling — see the RBAC redesign doc's "Primary vs.
-// full" distinction); Staff/Team Lead/Account Manager — the actual
+// keep the original RBAC dashboard; Staff/Team Lead/Manager — the actual
 // agent roles — get the ticket workspace as their landing experience
-// instead. None of Super Admin/Site Lead/Viewer's NAV_ITEMS_BY_ROLE
-// entries (role-access.ts) include ticket-workspace nav items, so
-// there's no in-app path into /dashboard/tickets etc. for those roles
-// even though this same page technically serves that URL too.
+// instead. Super Admin's own NAV_ITEMS_BY_ROLE entry (role-access.ts)
+// has no ticket-workspace nav items, so there's no in-app path into
+// /dashboard/tickets etc. for that role even though this same page
+// technically serves that URL too.
 export default function DashboardCatchAllPage() {
   const role = useAuthStore((state) => state.user?.role);
 

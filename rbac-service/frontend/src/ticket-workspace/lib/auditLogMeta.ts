@@ -18,6 +18,7 @@ const EVENT_META: Record<AuditEventType, AuditEventMeta> = {
   NOTE_ADDED: { icon: "📝", label: "Note Added", tone: "warning" },
   REPLY_ADDED: { icon: "📤", label: "Reply Added", tone: "success" },
   EMAIL_RECEIVED: { icon: "📧", label: "Email Received", tone: "accent" },
+  CLIENT_CREATED: { icon: "🏢", label: "Client Onboarded", tone: "success" },
 };
 
 export function auditMetaFor(type: AuditEventType): AuditEventMeta {

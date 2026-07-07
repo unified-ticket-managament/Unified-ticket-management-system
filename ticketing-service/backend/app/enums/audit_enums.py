@@ -32,6 +32,7 @@ class AuditEventType(str, Enum):
     NOTE_ADDED = "NOTE_ADDED"
     REPLY_ADDED = "REPLY_ADDED"
     EMAIL_RECEIVED = "EMAIL_RECEIVED"
+    CLIENT_CREATED = "CLIENT_CREATED"
 
 
 class ActorRole(str, Enum):

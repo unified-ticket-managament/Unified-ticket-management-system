@@ -1,3 +1,9 @@
+import logging
+from uuid import UUID
+
+from pydantic import ValidationError
+from shared_models.models import User
+
 from app.repositories.attachment_repository import AttachmentRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
@@ -9,15 +15,21 @@ from app.schemas.inbox import (
 )
 
 from app.schemas.payloads import EmailPayload
+from app.services.access_control import SUPERVISOR_ROLE_NAMES
+
+logger = logging.getLogger(__name__)
 
 
 class InboxService:
     """
-    Service responsible for the Agent Inbox workflow.
+    Service responsible for the Account Manager Inbox workflow.
 
     Responsibilities:
-    - Retrieve pending inbox interactions
-    - Transform database models into API response models
+    - Scope the inbox to the clients the current user manages
+      (Manager/Super Admin see every client's inbox — the escape
+      hatch for when an Account Manager is on leave).
+    - Retrieve pending inbox interactions, or the full activity feed.
+    - Transform database models into API response models.
     """
 
     def __init__(
@@ -28,18 +40,36 @@ class InboxService:
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
 
-    async def get_agent_inbox(
+    async def get_inbox(
         self,
-        agent_name: str,
+        current_user: User,
+        client_id: UUID | None = None,
+        view: str = "pending",
+        scope: str = "mine",
     ) -> InboxResponse:
         """
-        Returns all pending emails assigned
-        to the specified agent.
+        Returns the inbox for the current user.
+
+        `scope="mine"` (default): only clients this user manages.
+        `scope="all"`: every client's mail — the "All Inboxes"
+        overview. Only meaningful for Manager/Super Admin; silently
+        falls back to "mine" for anyone else so a crafted request
+        can't peek at other Account Managers' mail.
         """
 
-        interactions = (
-            await self.interaction_repository
-            .list_pending_inbox(agent_name)
+        is_supervisor = current_user.role.name in SUPERVISOR_ROLE_NAMES
+        wants_every_client = scope == "all" or view == "all"
+
+        account_manager_id = (
+            None
+            if is_supervisor and wants_every_client
+            else current_user.user_id
+        )
+
+        interactions = await self.interaction_repository.list_inbox(
+            account_manager_id=account_manager_id,
+            client_id=client_id,
+            view=view,
         )
 
         interactions_with_attachments: set = set()
@@ -56,9 +86,21 @@ class InboxService:
 
         for interaction in interactions:
 
-            payload = EmailPayload.model_validate(
-                interaction.payload
-            )
+            # Defense in depth: the repository query already restricts
+            # "all activity" to EMAIL/REPLY rows, but a single
+            # unparseable payload (e.g. stale pre-Day-1 dev data)
+            # should never take down the whole inbox listing.
+            try:
+                payload = EmailPayload.model_validate(
+                    interaction.payload
+                )
+            except ValidationError:
+                logger.warning(
+                    "Skipping interaction %s in inbox listing — payload "
+                    "doesn't match EmailPayload.",
+                    interaction.interaction_id,
+                )
+                continue
 
             inbox_items.append(
 
@@ -66,15 +108,25 @@ class InboxService:
 
                     interaction_id=interaction.interaction_id,
 
-                    client_name=payload.client_name,
+                    client_id=interaction.client_id,
+
+                    client_name=payload.client_name or "Unknown",
+
+                    from_email=payload.from_email,
+
+                    to_email=payload.to_email,
 
                     subject=payload.subject,
 
                     message_id=interaction.message_id,
 
-                    received_at=interaction.created_at,
+                    received_at=interaction.received_at or interaction.created_at,
 
                     status=interaction.status,
+
+                    direction=interaction.direction,
+
+                    ticket_id=interaction.ticket_id,
 
                     has_attachments=(
                         interaction.interaction_id in interactions_with_attachments

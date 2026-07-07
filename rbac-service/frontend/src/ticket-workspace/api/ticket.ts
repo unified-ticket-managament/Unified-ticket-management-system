@@ -70,3 +70,14 @@ export async function transferTicketAgent(
   );
   return data;
 }
+
+// POST /tickets/{ticket_id}/claim — pick up an unclaimed open
+// ticket from the shared pool. 409 if someone already has it.
+export async function claimTicket(
+  ticketId: string
+): Promise<TicketActionResponse> {
+  const { data } = await apiClient.post<TicketActionResponse>(
+    `/tickets/${ticketId}/claim`
+  );
+  return data;
+}

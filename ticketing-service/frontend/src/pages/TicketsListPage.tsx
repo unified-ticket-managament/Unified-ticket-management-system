@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, ArrowUpDown, MessagesSquare, Search } from "lucide-react";
+import { AlertTriangle, ArrowUpDown, MessagesSquare, Search, UserPlus } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Badge } from "@/components/common/Badge";
 import { Button } from "@/components/common/Button";
 import { EmptyState } from "@/components/common/EmptyState";
 import { SkeletonRows } from "@/components/common/Skeleton";
-import { listTickets } from "@/api/ticket";
+import { claimTicket, listTickets } from "@/api/ticket";
+import { useApiAction } from "@/hooks/useApiAction";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useAuthContext } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
@@ -27,6 +28,7 @@ const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
 const PAGE_SIZE = 10;
 
 type SortKey = "created_at" | "updated_at" | "title";
+type PoolTab = "pool" | "mine" | "all";
 
 const selectClass =
   "rounded-md2 border border-border bg-surface px-3 py-2 text-xs font-medium text-slate-700 shadow-xs transition-colors focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";
@@ -38,6 +40,7 @@ export function TicketsListPage() {
 
   const [tickets, setTickets] = useState<TicketResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [poolTab, setPoolTab] = useState<PoolTab>("pool");
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -68,19 +71,48 @@ export function TicketsListPage() {
     load();
   }, [load]);
 
+  const { run: runClaim, isLoading: isClaiming } = useApiAction(claimTicket, {
+    successMessage: "Ticket claimed.",
+  });
+  const [claimingId, setClaimingId] = useState<string | null>(null);
+
+  async function handleClaim(ticketId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    setClaimingId(ticketId);
+    const result = await runClaim(ticketId);
+    setClaimingId(null);
+    if (result) load();
+  }
+
   const categories = useMemo(
     () => Array.from(new Set(tickets.map((t) => t.ticket_type))).sort(),
     [tickets]
   );
 
+  const poolRows = useMemo(
+    () => tickets.filter((t) => t.current_status === "OPEN" && !t.agent_id),
+    [tickets]
+  );
+  const myRows = useMemo(
+    () => tickets.filter((t) => t.agent_id === currentUser?.user_id),
+    [tickets, currentUser]
+  );
+  const poolTabRows: Record<PoolTab, TicketResponse[]> = {
+    pool: poolRows,
+    mine: myRows,
+    all: tickets,
+  };
+  const scopedTickets = poolTabRows[poolTab];
+
   const filtered = useMemo(() => {
     const term = debouncedSearch.trim().toLowerCase();
-    return tickets.filter((t) => {
+    return scopedTickets.filter((t) => {
+      const clientLabel = t.client_company_name ?? t.client_name ?? "";
       if (
         term &&
         !t.title.toLowerCase().includes(term) &&
         !t.ticket_id.includes(term) &&
-        !(t.client_name ?? "").toLowerCase().includes(term)
+        !clientLabel.toLowerCase().includes(term)
       ) {
         return false;
       }
@@ -93,7 +125,7 @@ export function TicketsListPage() {
       }
       return true;
     });
-  }, [tickets, debouncedSearch, statusFilter, priorityFilter, categoryFilter, dateFrom, dateTo]);
+  }, [scopedTickets, debouncedSearch, statusFilter, priorityFilter, categoryFilter, dateFrom, dateTo]);
 
   const sorted = useMemo(() => {
     const copy = [...filtered];
@@ -149,9 +181,51 @@ export function TicketsListPage() {
   return (
     <AppLayout
       title="Tickets"
-      description={`Tickets assigned to ${currentUser?.name}, plus anything still unassigned.`}
+      description={
+        poolTab === "pool"
+          ? "Unclaimed open tickets from every Account Manager — claim one to start working it."
+          : poolTab === "mine"
+          ? "Tickets currently claimed by you."
+          : "Every ticket across every Account Manager."
+      }
     >
       <div className="flex flex-col gap-4">
+        <div className="flex items-center gap-1 rounded-md2 border border-border bg-surface p-1.5 shadow-xs">
+          {(
+            [
+              { key: "pool" as const, label: "Open Pool", rows: poolRows },
+              { key: "mine" as const, label: "My Tickets", rows: myRows },
+              { key: "all" as const, label: "All", rows: tickets },
+            ]
+          ).map((tab) => {
+            const isActive = poolTab === tab.key;
+            return (
+              <button
+                key={tab.key}
+                onClick={() => {
+                  setPoolTab(tab.key);
+                  setPage(1);
+                }}
+                aria-pressed={isActive}
+                className={`flex items-center gap-1.5 rounded-md2 px-3 py-1.5 text-[12px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
+                  isActive
+                    ? "bg-accent/10 text-accent"
+                    : "text-muted hover:bg-surfaceHover hover:text-slate-700"
+                }`}
+              >
+                {tab.label}
+                <span
+                  className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                    isActive ? "bg-accent/20 text-accent" : "bg-slate-100 text-slate-500"
+                  }`}
+                >
+                  {tab.rows.length}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
         <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2.5 rounded-md2 border border-border bg-surface p-3.5 shadow-xs">
           <div className="relative min-w-[240px] flex-1">
             <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />
@@ -328,7 +402,9 @@ export function TicketsListPage() {
                         {ticket.title}
                       </td>
                       <td className="px-5 py-3.5 text-slate-700">
-                        {ticket.client_name ?? shortId(ticket.client_id)}
+                        {ticket.client_company_name ??
+                          ticket.client_name ??
+                          (ticket.client_id ? shortId(ticket.client_id) : "—")}
                       </td>
                       <td className="px-5 py-3.5">
                         <Badge tone={statusTone[ticket.current_status]} dot>
@@ -342,9 +418,13 @@ export function TicketsListPage() {
                       </td>
                       <td className="px-5 py-3.5 text-slate-700">
                         {ticket.agent_id ? (
-                          ticket.agent_name ?? shortId(ticket.agent_id)
+                          ticket.agent_id === currentUser?.user_id ? (
+                            "You"
+                          ) : (
+                            ticket.agent_name ?? shortId(ticket.agent_id)
+                          )
                         ) : (
-                          <span className="text-muted">Unassigned</span>
+                          <span className="text-muted">Unclaimed</span>
                         )}
                       </td>
                       <td className="px-5 py-3.5 text-xs text-muted">
@@ -352,6 +432,16 @@ export function TicketsListPage() {
                       </td>
                       <td className="px-5 py-3.5">
                         <div className="flex items-center gap-1">
+                          {!ticket.agent_id && (
+                            <Button
+                              size="sm"
+                              variant="primary"
+                              isLoading={isClaiming && claimingId === ticket.ticket_id}
+                              onClick={(e) => handleClaim(ticket.ticket_id, e)}
+                            >
+                              <UserPlus size={13} /> Claim
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="ghost"

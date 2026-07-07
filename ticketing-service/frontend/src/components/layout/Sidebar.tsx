@@ -13,7 +13,7 @@ import { useAuthContext } from "@/context/AuthContext";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/create-mail", label: "Create Dummy Mail", icon: MailPlus },
+  { to: "/create-mail", label: "Create Dummy Mail", icon: MailPlus, hideForStaff: true },
   { to: "/inbox", label: "Inbox", icon: Inbox },
   { to: "/interactions", label: "Interactions", icon: MessageSquare },
   { to: "/tickets", label: "Tickets", icon: Ticket },
@@ -87,7 +87,9 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
           <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-wider text-muted/70">
             Workspace
           </p>
-          {navItems.map((item) => {
+          {navItems
+            .filter((item) => !(item.hideForStaff && currentUser?.role === "Staff"))
+            .map((item) => {
             const Icon = item.icon;
             return (
               <NavLink

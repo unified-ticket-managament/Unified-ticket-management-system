@@ -3,22 +3,26 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from app.enums import InteractionStatus
+from app.enums import InteractionDirection, InteractionStatus
 
 
 class InboxItemResponse(BaseModel):
     """
-    Represents one email shown in the
-    Agent Inbox.
+    Represents one email shown in the Account Manager inbox.
 
-    Only summary information is returned.
-    The full email content is retrieved
-    using the Email Details endpoint.
+    Only summary information is returned. The full email content
+    (and its replies) is retrieved using the thread-detail endpoint.
     """
 
     interaction_id: UUID
 
+    client_id: UUID | None
+
     client_name: str
+
+    from_email: str | None
+
+    to_email: str | None
 
     subject: str
 
@@ -28,12 +32,19 @@ class InboxItemResponse(BaseModel):
 
     status: InteractionStatus
 
+    direction: InteractionDirection
+
+    # Set when this root email was promoted to (or attached onto) a
+    # ticket — populated in the "ticketed" and "all" views so those
+    # rows can link straight to the ticket.
+    ticket_id: UUID | None = None
+
     has_attachments: bool = False
 
 
 class InboxResponse(BaseModel):
     """
-    Agent Inbox Response.
+    Account Manager Inbox Response.
     """
 
     total: int

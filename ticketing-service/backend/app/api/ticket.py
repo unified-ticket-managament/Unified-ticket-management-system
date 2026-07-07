@@ -13,6 +13,7 @@ from app.repositories.attachment_repository import (
 from app.repositories.audit_log_repository import (
     AuditLogRepository,
 )
+from app.repositories.client_repository import ClientRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
@@ -75,10 +76,13 @@ router = APIRouter(
 )
 async def create_ticket_from_interaction(
     request: TicketFromInteractionCreate,
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Create a new ticket from a pending inbox interaction.
+    Create a new ticket from a pending inbox interaction. The whole
+    thread already exchanged under that interaction (if any) moves
+    onto the new ticket's timeline too.
     """
 
     ticket_repository = TicketRepository(db)
@@ -89,7 +93,7 @@ async def create_ticket_from_interaction(
         interaction_repository=interaction_repository,
     )
 
-    return await service.create_ticket_from_interaction(request)
+    return await service.create_ticket_from_interaction(request, current_user=current_user)
 
 
 # =========================================================
@@ -105,6 +109,7 @@ async def create_ticket_from_interaction(
 async def attach_interaction_to_ticket(
     ticket_id: UUID,
     request: AttachInteractionRequest,
+    current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
 
@@ -119,6 +124,7 @@ async def attach_interaction_to_ticket(
     return await service.attach_to_existing_ticket(
         ticket_id=ticket_id,
         request=request,
+        current_user=current_user,
     )
 
 
@@ -243,8 +249,48 @@ async def reply_to_client(
     """
     Sends a reply to the client on this ticket.
 
-    Stored as an OUTBOUND interaction on the
-    ticket timeline.
+    Stored as an OUTBOUND interaction on the ticket timeline, with a
+    full outbound envelope built when the ticket's client and prior
+    inbound email can be resolved.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    return await service.add_reply(
+        ticket_id=ticket_id,
+        request=request,
+        current_user=current_user,
+    )
+
+
+# =========================================================
+# Claim Ticket
+# =========================================================
+
+@router.post(
+    "/{ticket_id}/claim",
+    response_model=TicketActionResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def claim_ticket(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Claims an unassigned open ticket from the shared pool for the
+    calling agent. 409 if it's already been claimed (by anyone,
+    including a race with another agent claiming at the same time).
     """
 
     interaction_repository = InteractionRepository(db)
@@ -257,9 +303,8 @@ async def reply_to_client(
         user_repository=user_repository,
     )
 
-    return await service.add_reply(
+    return await service.claim_ticket(
         ticket_id=ticket_id,
-        request=request,
         current_user=current_user,
     )
 
@@ -485,10 +530,12 @@ async def update_ticket(
 
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
 
     service = TicketService(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        client_repository=client_repository,
     )
 
     return await service.update(
@@ -519,10 +566,12 @@ async def list_tickets(
 
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
 
     service = TicketService(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        client_repository=client_repository,
     )
 
     return await service.list_all(current_user=current_user)
@@ -552,10 +601,12 @@ async def get_ticket(
 
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
 
     service = TicketService(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        client_repository=client_repository,
     )
 
     return await service.get_by_id(ticket_id, current_user=current_user)

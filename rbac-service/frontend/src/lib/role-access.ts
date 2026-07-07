@@ -2,8 +2,15 @@ import { TranslationKey } from "@/lib/i18n/translations";
 
 export const ROLE_NAMES = {
   SUPER_ADMIN: "Super Admin",
-  SITE_LEAD: "Site Lead",
+
+  // No role is literally named "Manager" in this system — kept here
+  // only because other admin-permission call sites still reference
+  // it (dead until/unless that role is actually created). Account
+  // Manager and Site Lead are the two real roles this system uses.
+  MANAGER: "Manager",
   ACCOUNT_MANAGER: "Account Manager",
+  SITE_LEAD: "Site Lead",
+
   TEAM_LEAD: "Team Lead",
   STAFF: "Staff",
   VIEWER: "Viewer",
@@ -36,15 +43,22 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   Settings: "nav.settings",
 };
 
-// Staff/Team Lead/Account Manager — the actual agent roles — land on
-// the embedded Ticket Management workspace at /dashboard instead of
-// RBAC's own admin dashboard — see app/(dashboard)/dashboard/
-// [[...slug]]/page.tsx and src/ticket-workspace/. Their sidebar shows
-// the ticket workspace modules (matching Ticketing's own nav) alongside
-// RBAC's own Users/Roles admin pages (same visibility as before the
-// workspace was embedded — Users: Account Manager/Team Lead, Roles:
-// Account Manager) plus Profile/Settings. "Ticket Audit Log" is the
-// populated audit trail for ticket activity, linked for every agent role.
+
+
+// Staff/Team Lead/Account Manager/Site Lead — the actual agent roles —
+// land on the embedded Ticket Management workspace at /dashboard
+// instead of RBAC's own admin dashboard — see
+// app/(dashboard)/dashboard/[[...slug]]/page.tsx and
+// src/ticket-workspace/. Their sidebar shows the ticket workspace
+// modules (matching Ticketing's own nav) plus Profile/Settings.
+// "Ticket Audit Log" is the populated audit trail for ticket
+// activity, linked for every agent role.
+//
+// Site Lead gets RBAC's Users/Roles admin pages too, alongside Super
+// Admin — per the org model, Super Admin and Site Lead are the two
+// full-oversight roles. Account Manager/Team Lead/Staff don't manage
+// users or roles.
+
 //
 // Super Admin, Site Lead, and Viewer all keep the original, unmodified
 // RBAC dashboard/nav instead of the ticket workspace — Viewer as the
@@ -64,7 +78,7 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
   [ROLE_NAMES.SITE_LEAD]: ["Dashboard", "Users", "Roles", "Audit Logs", "Profile", "Settings"],
   [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Roles", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
   [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
-  [ROLE_NAMES.STAFF]: ["Dashboard", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
+  [ROLE_NAMES.STAFF]: ["Dashboard", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
   [ROLE_NAMES.VIEWER]: ["Dashboard", "Profile", "Settings"],
 };
 
@@ -80,15 +94,15 @@ export function canSeeNavItem(role: string | undefined, item: NavItemKey): boole
 }
 
 // Mirrors ticketing-service/backend/app/services/access_control.py's
-// SUPERVISOR_ROLE_NAMES exactly — Team Lead/Account Manager/Site Lead/
-// Super Admin see every ticket regardless of assignment, Staff sees
-// only tickets assigned to them (or unassigned). The backend is what
-// actually enforces this (GET /tickets scopes its own query by the
-// caller's JWT), but the ticket workspace pages read this to describe
-// the scope accurately rather than always claiming "assigned to you."
+// SUPERVISOR_ROLE_NAMES exactly — Super Admin/Site Lead see every
+// ticket regardless of client ownership; everyone else is scoped
+// (Account Manager to their own clients; Team Lead/Staff unrestricted
+// until category-based routing is defined — see that file's comment).
+// The backend is what actually enforces this (GET /tickets scopes its
+// own query by the caller's JWT), but the ticket workspace pages read
+// this to describe the scope accurately rather than always claiming
+// "assigned to you."
 export const SUPERVISOR_ROLE_NAMES: readonly string[] = [
-  ROLE_NAMES.TEAM_LEAD,
-  ROLE_NAMES.ACCOUNT_MANAGER,
   ROLE_NAMES.SITE_LEAD,
   ROLE_NAMES.SUPER_ADMIN,
 ];

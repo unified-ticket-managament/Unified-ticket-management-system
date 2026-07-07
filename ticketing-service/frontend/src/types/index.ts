@@ -17,24 +17,55 @@ export type TicketStatus =
 
 export type TicketPriority = "LOW" | "MEDIUM" | "HIGH";
 
+export type TicketCategory = "TECHNICAL" | "BILLING" | "HIRING" | "GENERAL";
+
 // ==========================================================
 // Email
 // ==========================================================
 
 export interface EmailRequest {
+  to_email: string;
   from_email: string;
+  from_name?: string;
   subject: string;
   body: string;
+  html_body?: string;
   message_id: string;
+  received_at?: string;
+  in_reply_to?: string;
+  references?: string;
 }
 
 export interface EmailResponse {
   message: string;
   interaction_id: string;
+  client_id: string;
   client_name: string;
-  agent_name: string;
+  ticket_id: string | null;
+  threaded_under: string | null;
   status: string;
   attachments?: AttachmentMeta[];
+}
+
+// ==========================================================
+// Clients — a client company, identified by the dedicated
+// shared inbox address it was given at onboarding.
+// ==========================================================
+
+export interface ClientCreateRequest {
+  name: string;
+  inbox_email: string;
+  account_manager_id: string;
+}
+
+export interface ClientResponse {
+  client_id: string;
+  name: string;
+  inbox_email: string;
+  account_manager_id: string;
+  is_active: boolean;
+  created_at: string;
+  account_manager_name: string | null;
 }
 
 // ==========================================================
@@ -76,16 +107,24 @@ export interface CurrentUser {
 }
 
 // ==========================================================
-// Agent Inbox
+// Account Manager Inbox
 // ==========================================================
+
+export type InboxView = "pending" | "replied" | "ticketed" | "all";
+export type InboxScope = "mine" | "all";
 
 export interface InboxItem {
   interaction_id: string;
+  client_id: string | null;
   client_name: string;
+  from_email: string | null;
+  to_email: string | null;
   subject: string;
   message_id: string | null;
   received_at: string;
   status: InteractionStatus;
+  direction: InteractionDirection;
+  ticket_id: string | null;
   has_attachments: boolean;
 }
 
@@ -96,15 +135,30 @@ export interface InboxResponse {
 
 export interface OpenEmailResponse {
   interaction_id: string;
+  ticket_id: string | null;
+  client_id: string | null;
   client_name: string;
-  agent_name: string;
-  from_email: string;
+  to_email: string | null;
+  from_email: string | null;
+  from_name: string | null;
   subject: string;
   body: string;
   message_id: string | null;
   received_at: string;
   status: InteractionStatus;
   attachments?: AttachmentMeta[];
+  replies: InteractionResponse[];
+}
+
+export interface InteractionReplyRequest {
+  message: string;
+}
+
+export interface InteractionReplyResponse {
+  interaction_id: string;
+  parent_interaction_id: string;
+  message: string;
+  created_at: string;
 }
 
 // ==========================================================
@@ -113,7 +167,8 @@ export interface OpenEmailResponse {
 
 export interface TicketResponse {
   ticket_id: string;
-  client_id: string;
+  client_id: string | null;
+  client_company_id: string | null;
   agent_id: string | null;
   created_by: string | null;
   title: string;
@@ -126,6 +181,7 @@ export interface TicketResponse {
   created_at: string;
   updated_at: string;
   client_name: string | null;
+  client_company_name: string | null;
   agent_name: string | null;
   created_by_name: string | null;
 }
@@ -137,7 +193,7 @@ export interface TransferAgentRequest {
 export interface TicketUpdateRequest {
   agent_id?: string | null;
   title?: string;
-  ticket_type?: string;
+  ticket_type?: TicketCategory;
   current_status?: TicketStatus;
   current_priority?: TicketPriority;
   custom_fields?: Record<string, unknown>;
@@ -147,7 +203,7 @@ export interface TicketUpdateRequest {
 export interface TicketFromInteractionRequest {
   interaction_id: string;
   title: string;
-  ticket_type: string;
+  ticket_type: TicketCategory;
   current_priority?: TicketPriority;
 }
 
@@ -185,6 +241,9 @@ export interface InteractionResponse {
   removed_by: string | null;
   removed_at: string | null;
   message_id: string | null;
+  client_id?: string | null;
+  parent_interaction_id?: string | null;
+  received_at?: string | null;
   created_at: string;
   attachments?: AttachmentMeta[];
 }
@@ -260,7 +319,8 @@ export type AuditEventType =
   | "ATTACHMENT_UPLOADED"
   | "NOTE_ADDED"
   | "REPLY_ADDED"
-  | "EMAIL_RECEIVED";
+  | "EMAIL_RECEIVED"
+  | "CLIENT_CREATED";
 
 export type ActorRole = "AGENT" | "CLIENT" | "SYSTEM";
 

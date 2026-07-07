@@ -7,7 +7,7 @@ import { Button } from "@/components/common/Button";
 import { EmptyState } from "@/components/common/EmptyState";
 import { InteractionDetailsDrawer } from "@/components/common/InteractionDetailsDrawer";
 import { SkeletonRows } from "@/components/common/Skeleton";
-import { getAgentInbox, openEmail } from "@/api/agent";
+import { getInbox, openInboxThread } from "@/api/inbox";
 import { listTickets } from "@/api/ticket";
 import { getTicketTimeline, hideInteractionById } from "@/api/interaction";
 import { useApiAction } from "@/hooks/useApiAction";
@@ -73,7 +73,7 @@ export function InteractionsPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerRow, setDrawerRow] = useState<InteractionRow | null>(null);
   const [drawerEmail, setDrawerEmail] = useState<OpenEmailResponse | null>(null);
-  const { run: runOpenEmail, isLoading: isLoadingEmail } = useApiAction(openEmail);
+  const { run: runOpenEmail, isLoading: isLoadingEmail } = useApiAction(openInboxThread);
   const { run: runHide, isLoading: isHiding } = useApiAction(hideInteractionById, {
     successMessage: "Interaction hidden.",
   });
@@ -117,7 +117,7 @@ export function InteractionsPage() {
         )
       ).flat();
 
-      const inbox = await getAgentInbox();
+      const inbox = await getInbox();
       const pendingRows: InteractionRow[] = inbox.items.map((item) => ({
         id: item.interaction_id,
         createdAt: item.received_at,

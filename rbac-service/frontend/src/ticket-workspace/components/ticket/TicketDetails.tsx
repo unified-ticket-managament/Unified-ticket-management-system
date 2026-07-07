@@ -37,7 +37,9 @@ export function TicketDetails() {
         <Row label="Category">{activeTicket.ticket_type}</Row>
         <Row label="Version">{activeTicket.version}</Row>
         <Row label="Client">
-          {activeTicket.client_name ?? shortId(activeTicket.client_id)}
+          {activeTicket.client_company_name ??
+            activeTicket.client_name ??
+            (activeTicket.client_id ? shortId(activeTicket.client_id) : "—")}
         </Row>
         <Row label="Assigned Agent">
           {activeTicket.agent_id

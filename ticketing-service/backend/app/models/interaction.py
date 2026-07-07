@@ -96,6 +96,36 @@ class Interaction(Base):
         nullable=True,
     )
 
+    # Which client (company) this interaction belongs to — set on
+    # every inbound email by resolving the receiving shared-inbox
+    # address, and propagated onto every reply in the same thread.
+    # Real column (not payload-only) because the inbox query filters
+    # on it directly.
+    client_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("clients.client_id"),
+        nullable=True,
+    )
+
+    # Self-referencing thread link: a reply or a follow-up email
+    # points at the root interaction of its conversation. NULL means
+    # "this interaction is itself a thread root" (or doesn't belong
+    # to a thread at all, e.g. a ticket-timeline status change).
+    parent_interaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("interactions.interaction_id"),
+        nullable=True,
+    )
+
+    # Mailbox arrival time reported by the transport layer for
+    # inbound emails — the SLA clock start. NULL for interaction
+    # types that were never "received" (replies, notes, status
+    # changes, claims); those aren't part of the SLA calculation.
+    received_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
     DateTime(timezone=True),
     default=lambda: datetime.now(timezone.utc),

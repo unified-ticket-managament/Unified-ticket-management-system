@@ -18,6 +18,9 @@ class InteractionCreate(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     is_visible: bool = True
     message_id: str | None = Field(default=None, max_length=255)
+    client_id: UUID | None = None
+    parent_interaction_id: UUID | None = None
+    received_at: datetime | None = None
 
 
 class InteractionUpdate(BaseModel):
@@ -41,6 +44,9 @@ class InteractionResponse(ORMBase):
     removed_by: UUID | None
     removed_at: datetime | None
     message_id: str | None
+    client_id: UUID | None = None
+    parent_interaction_id: UUID | None = None
+    received_at: datetime | None = None
     created_at: datetime
     attachments: list[AttachmentMetadata] = Field(default_factory=list)
 

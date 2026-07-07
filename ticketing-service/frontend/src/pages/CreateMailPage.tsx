@@ -1,60 +1,78 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, CheckCircle2, MailPlus } from "lucide-react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { Card } from "@/components/common/Card";
 import { Button } from "@/components/common/Button";
-import { TextArea, TextInput } from "@/components/common/FormField";
+import { TextArea, TextInput, SelectInput } from "@/components/common/FormField";
 import { FileDropzone } from "@/components/common/FileDropzone";
 import { useApiAction } from "@/hooks/useApiAction";
 import { receiveIncomingEmail } from "@/api/email";
+import { listClients } from "@/api/clients";
 import { validateFiles } from "@/lib/attachmentMeta";
-import type { EmailResponse } from "@/types";
-
-// Active Viewer (client) users in the RBAC `users` table — the
-// backend now looks senders up for real, so only emails that
-// exist there with the Viewer role are accepted.
-const DUMMY_SENDERS = [
-  { email: "sophia.turner@probeps.com", label: "Sophia Turner (sophia.turner@probeps.com)" },
-  { email: "viewer@probeps.com", label: "Viewer (viewer@probeps.com)" },
-];
+import type { ClientResponse, EmailResponse } from "@/types";
 
 function randomMessageId() {
-  return `msg-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
+  return `<msg-${Date.now()}-${Math.floor(Math.random() * 10000)}@dummy.local>`;
 }
 
 export function CreateMailPage() {
-  const [fromEmail, setFromEmail] = useState(DUMMY_SENDERS[0].email);
+  const [clients, setClients] = useState<ClientResponse[]>([]);
+  const [toEmail, setToEmail] = useState("");
+  const [fromEmail, setFromEmail] = useState("mary.j@abcclinic.com");
+  const [fromName, setFromName] = useState("Mary Johnson");
   const [subject, setSubject] = useState("Unable to Login");
   const [body, setBody] = useState("Doctor cannot login to the patient portal.");
+  const [inReplyTo, setInReplyTo] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [lastResult, setLastResult] = useState<EmailResponse | null>(null);
 
+  useEffect(() => {
+    let cancelled = false;
+    listClients()
+      .then((fetched) => {
+        if (cancelled) return;
+        setClients(fetched);
+        if (fetched.length > 0) setToEmail(fetched[0].inbox_email);
+      })
+      .catch(() => {
+        // Keep the empty list — the send button stays disabled below.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const { run, isLoading } = useApiAction(receiveIncomingEmail, {
-    successMessage: (res) => `Email received. Routed to ${res.agent_name}'s inbox.`,
+    successMessage: (res) => `Email delivered to ${res.client_name}'s inbox.`,
   });
 
-  const canSend = validateFiles(files).errors.length === 0;
+  const canSend = validateFiles(files).errors.length === 0 && Boolean(toEmail);
 
   async function handleSend() {
     const result = await run({
+      to_email: toEmail,
       from_email: fromEmail,
+      from_name: fromName || undefined,
       subject,
       body,
       message_id: randomMessageId(),
+      received_at: new Date().toISOString(),
+      in_reply_to: inReplyTo || undefined,
       files,
     });
 
     if (result) {
       setLastResult(result);
       setFiles([]);
+      setInReplyTo("");
     }
   }
 
   return (
     <AppLayout
       title="Create Dummy Mail"
-      description="Simulate an incoming client email to test the inbox workflow."
+      description="Simulate an incoming client email to test the inbox workflow — this is the local stand-in for the real transport layer."
     >
       <div className="mx-auto flex max-w-xl flex-col gap-5">
         <Card
@@ -67,22 +85,38 @@ export function CreateMailPage() {
           }
         >
           <div className="flex flex-col gap-4">
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-semibold text-slate-600">
-                Sender
-              </span>
-              <select
-                value={fromEmail}
-                onChange={(e) => setFromEmail(e.target.value)}
-                className="w-full cursor-pointer rounded-md2 border border-border bg-surface px-3.5 py-2.5 text-sm text-slate-900 shadow-xs transition-all focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10"
+            {clients.length === 0 ? (
+              <p className="rounded-md2 border border-warning/20 bg-warning/5 px-3.5 py-2.5 text-xs text-slate-700">
+                No clients onboarded yet — create one via <code>POST /clients</code> (or run{" "}
+                <code>scripts/seed_clients.py</code>) before sending a dummy email.
+              </p>
+            ) : (
+              <SelectInput
+                label="To (shared inbox address)"
+                value={toEmail}
+                onChange={(e) => setToEmail(e.target.value)}
+                hint="Which client's dedicated inbox this email arrives at — this is what routes it to their Account Manager."
               >
-                {DUMMY_SENDERS.map((sender) => (
-                  <option key={sender.email} value={sender.email}>
-                    {sender.label}
+                {clients.map((client) => (
+                  <option key={client.client_id} value={client.inbox_email}>
+                    {client.name} ({client.inbox_email})
                   </option>
                 ))}
-              </select>
-            </label>
+              </SelectInput>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <TextInput
+                label="From (sender email)"
+                value={fromEmail}
+                onChange={(e) => setFromEmail(e.target.value)}
+              />
+              <TextInput
+                label="From (sender name)"
+                value={fromName}
+                onChange={(e) => setFromName(e.target.value)}
+              />
+            </div>
 
             <TextInput
               label="Subject"
@@ -94,6 +128,14 @@ export function CreateMailPage() {
               label="Message"
               value={body}
               onChange={(e) => setBody(e.target.value)}
+            />
+
+            <TextInput
+              label="In-Reply-To (optional)"
+              placeholder="Paste a previous outbound Message-ID to test threading"
+              value={inReplyTo}
+              onChange={(e) => setInReplyTo(e.target.value)}
+              hint="Leave blank for a brand-new conversation. Set this to an earlier reply's message_id to simulate the client answering it."
             />
 
             <FileDropzone label="Attachments" files={files} onFilesChange={setFiles} />
@@ -117,10 +159,12 @@ export function CreateMailPage() {
               <CheckCircle2 size={20} className="flex-none text-success" />
               <div>
                 <p className="text-sm font-semibold text-slate-900">
-                  Email delivered to {lastResult.agent_name}
+                  Delivered to {lastResult.client_name}'s shared inbox
                 </p>
                 <p className="mt-0.5 text-xs text-muted">
-                  From {lastResult.client_name} · status {lastResult.status}
+                  status {lastResult.status}
+                  {lastResult.ticket_id ? ` · landed on an existing ticket` : ""}
+                  {lastResult.threaded_under ? ` · threaded under an earlier email` : ""}
                   {lastResult.attachments && lastResult.attachments.length > 0
                     ? ` · ${lastResult.attachments.length} file${lastResult.attachments.length === 1 ? "" : "s"} attached`
                     : ""}

@@ -43,6 +43,7 @@ target_metadata = Base.metadata
 # -----------------------------------------------------
 
 OWNED_TABLES = {
+    "clients",
     "tickets",
     "interactions",
     "attachments",

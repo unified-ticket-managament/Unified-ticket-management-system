@@ -10,6 +10,7 @@ from fastapi import status as http_status
 
 from shared_models.models import User
 
+from app.repositories.client_repository import ClientRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
@@ -30,6 +31,8 @@ from app.schemas.note import (
 )
 from app.schemas.ticket import TicketUpdate
 from app.schemas.ticket_action import (
+    InteractionReplyRequest,
+    InteractionReplyResponse,
     PriorityChangeRequest,
     ReplyCreate,
     StatusChangeRequest,
@@ -43,6 +46,8 @@ from app.services.access_control import (
     ensure_ticket_not_closed,
 )
 from app.services.audit_log_service import AuditLogService
+from app.services.email_envelope import build_reply_envelope
+from app.services.outbound_dispatcher import OutboundDispatcher
 
 from app.enums import (
     AuditEntityType,
@@ -56,6 +61,7 @@ from typing import Any
 from app.models.interaction import Interaction
 from app.repositories.attachment_repository import AttachmentRepository
 from app.schemas.attachment import AttachmentMetadata
+from app.schemas.payloads import EmailPayload
 from app.services.attachment_service import attachments_to_metadata
 from app.storage.base import StorageService
 
@@ -85,6 +91,9 @@ def _to_response(
         removed_by=interaction.removed_by,
         removed_at=interaction.removed_at,
         message_id=interaction.message_id,
+        client_id=interaction.client_id,
+        parent_interaction_id=interaction.parent_interaction_id,
+        received_at=interaction.received_at,
         created_at=interaction.created_at,
         attachments=attachments or [],
     )
@@ -105,6 +114,8 @@ class InteractionService:
         attachment_repository: AttachmentRepository | None = None,
         storage_service: StorageService | None = None,
         audit_log_repository: AuditLogRepository | None = None,
+        client_repository: ClientRepository | None = None,
+        outbound_dispatcher: OutboundDispatcher | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
@@ -112,6 +123,8 @@ class InteractionService:
         self.attachment_repository = attachment_repository
         self.storage_service = storage_service
         self.audit_log_repository = audit_log_repository
+        self.client_repository = client_repository
+        self.outbound_dispatcher = outbound_dispatcher or OutboundDispatcher()
 
     # ---------------------------------------------------------
     # Create Interaction
@@ -277,6 +290,16 @@ class InteractionService:
 
         return ticket
 
+    async def _resolve_account_manager_email(self, client) -> str | None:
+        """
+        Looks up the email of the client's Account Manager, for the
+        auto-Cc on outbound replies. Best-effort — a missing/removed
+        user just means no Cc, not a failed reply.
+        """
+
+        manager = await self.user_repository.get_by_id(client.account_manager_id)
+        return manager.email if manager is not None else None
+
     async def _create_ticket_interaction(
         self,
         *,
@@ -286,6 +309,9 @@ class InteractionService:
         payload: dict[str, Any],
         performed_by: UUID | None = None,
         interaction_status: InteractionStatus = InteractionStatus.ASSIGNED,
+        message_id: str | None = None,
+        client_id: UUID | None = None,
+        parent_interaction_id: UUID | None = None,
     ) -> Interaction:
         """
         Creates any interaction that belongs to a ticket.
@@ -296,7 +322,18 @@ class InteractionService:
         - Status Change
         - Priority Change
         - Assignment Change
+        - Claim
         - Attachments
+
+        `message_id` is set on outbound replies so a future inbound
+        answer's In-Reply-To can be matched back to this ticket.
+        `client_id` propagates the ticket's client onto the
+        interaction row so it also surfaces in that client's
+        "All activity" inbox view. `parent_interaction_id` threads a
+        reply under the ticket's original email thread root — only
+        Reply passes it; every other caller leaves it NULL since
+        notes/status/priority/transfer/claim/attachments aren't part
+        of the client email conversation.
         """
 
         await self._get_ticket_or_404(ticket_id)
@@ -319,7 +356,11 @@ class InteractionService:
 
                 is_visible=True,
 
-                message_id=None,
+                message_id=message_id,
+
+                client_id=client_id,
+
+                parent_interaction_id=parent_interaction_id,
 
             )
 
@@ -398,8 +439,12 @@ class InteractionService:
         """
         Adds a reply to the client on a ticket.
 
-        Stored as an OUTBOUND interaction, visible
-        to the client.
+        Stored as an OUTBOUND interaction, visible to the client.
+        When the ticket has a resolvable client and a prior inbound
+        email, this also builds a full outbound envelope (From the
+        client's shared inbox, To the original sender, threaded
+        Subject/Message-ID) and hands it to the dispatch seam — the
+        actual send is Task 1's transport layer.
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
@@ -409,14 +454,50 @@ class InteractionService:
             current_user
         )
 
+        # The latest inbound email on this ticket is both the envelope
+        # source (recipient address, In-Reply-To) and the thread this
+        # reply belongs to — resolved once, used for both, regardless
+        # of whether envelope-building succeeds.
+        latest_email = await self.interaction_repository.get_latest_inbound_email_for_ticket(
+            ticket_id
+        )
+        thread_root_id = (
+            (latest_email.parent_interaction_id or latest_email.interaction_id)
+            if latest_email is not None
+            else None
+        )
+
+        envelope = None
+        if self.client_repository is not None and ticket.client_company_id is not None:
+            client = await self.client_repository.get_by_id(ticket.client_company_id)
+            if client is not None and latest_email is not None:
+                inbound_payload = EmailPayload.model_validate(latest_email.payload)
+                am_email = await self._resolve_account_manager_email(client)
+                envelope = build_reply_envelope(
+                    client=client,
+                    inbound_payload=inbound_payload,
+                    inbound_message_id=latest_email.message_id,
+                    body=request.message,
+                    agent_name=current_user.name,
+                    account_manager_email=am_email,
+                )
+
+        payload: dict[str, Any] = {"message": request.message}
+        if envelope is not None:
+            payload["envelope"] = envelope.model_dump()
+            payload["dispatch_status"] = "QUEUED"
+        else:
+            payload["dispatch_status"] = "NO_RECIPIENT"
+
         interaction = await self._create_ticket_interaction(
             ticket_id=ticket_id,
             interaction_type="REPLY",
             direction=InteractionDirection.OUTBOUND,
-            payload={
-                "message": request.message,
-            },
+            payload=payload,
             performed_by=actor_id,
+            message_id=envelope.message_id if envelope is not None else None,
+            client_id=ticket.client_company_id,
+            parent_interaction_id=thread_root_id,
         )
 
         # Metadata only — the reply body itself is never written to
@@ -432,10 +513,133 @@ class InteractionService:
             new_values={"ticket_id": ticket_id},
         )
 
+        if envelope is not None:
+            await self.outbound_dispatcher.dispatch(interaction.interaction_id, envelope)
+
         return TicketActionResponse(
             interaction_id=interaction.interaction_id,
             ticket_id=ticket_id,
             message="Reply sent successfully.",
+            created_at=interaction.created_at,
+        )
+
+    # ---------------------------------------------------------
+    # Reply To A Bare (Not-Yet-Ticketed) Interaction
+    # ---------------------------------------------------------
+
+    async def add_interaction_reply(
+        self,
+        interaction_id: UUID,
+        request: InteractionReplyRequest,
+        current_user: User,
+    ) -> InteractionReplyResponse:
+        """
+        Replies to a client on an inbox conversation that hasn't
+        (and may never) become a ticket — the "general communication,
+        no ticket needed" path. Builds the same kind of outbound
+        envelope as a ticket reply, just addressed from the thread's
+        root email instead of a ticket's email history.
+        """
+
+        root_interaction = await self.interaction_repository.get_by_id(interaction_id)
+
+        if root_interaction is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        if root_interaction.ticket_id is not None:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="This interaction already belongs to a ticket — use the ticket reply endpoint.",
+            )
+
+        # Resolve the thread root: replying on a reply should still
+        # thread under the original conversation, not fork a new one.
+        root_id = root_interaction.parent_interaction_id or root_interaction.interaction_id
+        root = (
+            root_interaction
+            if root_interaction.parent_interaction_id is None
+            else await self.interaction_repository.get_by_id(root_id)
+        )
+
+        if root is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        inbound_payload = EmailPayload.model_validate(root.payload)
+
+        envelope = None
+        if self.client_repository is not None and root.client_id is not None:
+            client = await self.client_repository.get_by_id(root.client_id)
+            if client is not None:
+                am_email = await self._resolve_account_manager_email(client)
+                envelope = build_reply_envelope(
+                    client=client,
+                    inbound_payload=inbound_payload,
+                    inbound_message_id=root.message_id,
+                    body=request.message,
+                    agent_name=current_user.name,
+                    account_manager_email=am_email,
+                )
+
+        payload: dict[str, Any] = {"message": request.message}
+        if envelope is not None:
+            payload["envelope"] = envelope.model_dump()
+            payload["dispatch_status"] = "QUEUED"
+        else:
+            payload["dispatch_status"] = "NO_RECIPIENT"
+
+        interaction = await self.interaction_repository.create(
+            InteractionCreate(
+                ticket_id=None,
+                interaction_type="REPLY",
+                direction=InteractionDirection.OUTBOUND,
+                status=InteractionStatus.ASSIGNED,
+                performed_by=actor_id,
+                payload=payload,
+                is_visible=True,
+                message_id=envelope.message_id if envelope is not None else None,
+                client_id=root.client_id,
+                parent_interaction_id=root.interaction_id,
+            )
+        )
+
+        # Metadata only — the reply body itself is never written to
+        # the audit trail.
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=interaction.interaction_id,
+            event_type=AuditEventType.REPLY_ADDED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            new_values={"parent_interaction_id": root.interaction_id},
+        )
+
+        if envelope is not None:
+            await self.outbound_dispatcher.dispatch(interaction.interaction_id, envelope)
+
+        # The root leaves the Pending triage queue once it's been
+        # replied to — "general communication, no ticket needed" is
+        # now handled, not waiting on anyone.
+        if root.status == InteractionStatus.PENDING:
+            await self.interaction_repository.update(
+                root, InteractionUpdate(status=InteractionStatus.ASSIGNED)
+            )
+
+        return InteractionReplyResponse(
+            interaction_id=interaction.interaction_id,
+            parent_interaction_id=root.interaction_id,
+            message=request.message,
             created_at=interaction.created_at,
         )
 
@@ -670,6 +874,81 @@ class InteractionService:
             interaction_id=interaction.interaction_id,
             ticket_id=ticket_id,
             message=f"Ticket transferred to {new_agent.name}.",
+            created_at=interaction.created_at,
+        )
+
+    # ---------------------------------------------------------
+    # Claim Ticket
+    # ---------------------------------------------------------
+
+    async def claim_ticket(
+        self,
+        ticket_id: UUID,
+        current_user: User,
+    ) -> TicketActionResponse:
+        """
+        Lets an agent pick up an unclaimed open ticket from the
+        shared pool — the CEO's "team members can pick any ticket"
+        model. Ownership of the client relationship stays with the
+        Account Manager; this only records who is currently working
+        the ticket.
+
+        Race-guarded at the repository level: if two agents claim
+        the same ticket at once, exactly one succeeds and the other
+        gets a 409 rather than silently overwriting the winner.
+        """
+
+        ticket = await self._get_ticket_or_404(ticket_id)
+        ensure_ticket_not_closed(ticket)
+
+        if ticket.agent_id is not None:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail="This ticket has already been claimed.",
+            )
+
+        claimed = await self.ticket_repository.claim(ticket, current_user.user_id)
+
+        if claimed is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail="This ticket has already been claimed by another agent.",
+            )
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        interaction = await self._create_ticket_interaction(
+            ticket_id=ticket_id,
+            interaction_type="CLAIM",
+            direction=InteractionDirection.INTERNAL,
+            payload={
+                "agent_id": str(current_user.user_id),
+                "agent_name": current_user.name,
+            },
+            performed_by=actor_id,
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.AGENT_TRANSFERRED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"agent_id": None},
+            new_values={
+                "agent_id": current_user.user_id,
+                "interaction_id": interaction.interaction_id,
+            },
+        )
+
+        return TicketActionResponse(
+            interaction_id=interaction.interaction_id,
+            ticket_id=ticket_id,
+            message=f"Ticket claimed by {current_user.name}.",
             created_at=interaction.created_at,
         )
 

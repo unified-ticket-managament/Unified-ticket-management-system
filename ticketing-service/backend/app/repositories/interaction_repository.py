@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.enums import InteractionStatus
+from app.models.client import Client
 from app.models.interaction import Interaction
 from app.schemas.interaction import (
     InteractionCreate,
@@ -66,61 +67,158 @@ class InteractionRepository:
 
         return list(result.scalars().all())
 
-    async def list_pending_inbox(
+    async def list_inbox(
         self,
-        agent_name: str,
+        account_manager_id: UUID | None = None,
+        client_id: UUID | None = None,
+        view: str = "pending",
     ) -> list[Interaction]:
+        """
+        The Account Manager inbox query — always over thread ROOTS
+        (parent_interaction_id IS NULL, interaction_type == "EMAIL");
+        replies are fetched separately via `list_thread` once a root
+        is opened.
 
-        result = await self.db.execute(
+        - `account_manager_id` set: only mail belonging to clients
+          that AM owns (a join against `clients`). None means "every
+          client" — the Manager/Super Admin escape hatch for when an
+          AM is on leave, or the "All Inboxes" overview.
+        - `client_id` set: further narrows to one client (the
+          per-client filter on the inbox UI).
+        - `view`:
+          - "pending": not yet replied to or ticketed — the triage queue.
+          - "replied": answered directly, never became a ticket.
+          - "ticketed": promoted to (or attached onto) a ticket.
+          - "all": every root email regardless of state — the "All
+            Inboxes" overview, normally paired with no account_manager
+            scoping.
+        """
 
-            select(Interaction)
-            .where(
+        query = select(Interaction)
+
+        if account_manager_id is not None or client_id is not None:
+            query = query.join(Client, Client.client_id == Interaction.client_id)
+
+        if account_manager_id is not None:
+            query = query.where(Client.account_manager_id == account_manager_id)
+
+        if client_id is not None:
+            query = query.where(Interaction.client_id == client_id)
+
+        query = query.where(
+            Interaction.is_visible.is_(True),
+            Interaction.interaction_type == "EMAIL",
+            Interaction.parent_interaction_id.is_(None),
+        )
+
+        if view == "pending":
+            query = query.where(
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.PENDING,
-                Interaction.payload["agent_name"].astext == agent_name,
-                # A soft-deleted inbox item should actually leave
-                # the actionable queue, unlike a hidden interaction
-                # on a ticket timeline (which stays visible, dimmed,
-                # for audit purposes).
+            )
+        elif view == "replied":
+            query = query.where(
+                Interaction.ticket_id.is_(None),
+                Interaction.status == InteractionStatus.ASSIGNED,
+            )
+        elif view == "ticketed":
+            query = query.where(Interaction.ticket_id.isnot(None))
+        # view == "all": no further filter — every root email.
+
+        query = query.order_by(Interaction.received_at.desc())
+
+        result = await self.db.execute(query)
+
+        return list(result.scalars().all())
+
+    async def list_thread(
+        self,
+        root_interaction_id: UUID,
+    ) -> list[Interaction]:
+        """
+        Every reply/follow-up filed under a thread root, oldest
+        first — the conversation shown under an inbox email.
+        """
+
+        result = await self.db.execute(
+            select(Interaction)
+            .where(
+                Interaction.parent_interaction_id == root_interaction_id,
                 Interaction.is_visible.is_(True),
             )
-            .order_by(
-                Interaction.created_at.asc()
-            )
-
+            .order_by(Interaction.created_at.asc())
         )
 
         return list(result.scalars().all())
 
-    async def count_pending_by_agent(
+    async def get_by_message_ids(
         self,
-        agent_ids: list[UUID],
-    ) -> dict[UUID, int]:
+        message_ids: list[str],
+    ) -> list[Interaction]:
         """
-        Number of not-yet-ticketed pending emails currently
-        sitting in each agent's inbox. Combined with open-ticket
-        counts, this is the workload signal for interim agent
-        assignment — without it, a burst of new emails would all
-        land on the same agent until the first ticket is created.
+        Looks up interactions by their message_id — the thread-match
+        step: an inbound email's In-Reply-To/References are checked
+        against message_ids we've already stored (ours or the
+        client's) to decide whether it's a new conversation or a
+        continuation of one.
         """
 
-        if not agent_ids:
-            return {}
-
-        agent_id_strings = [str(agent_id) for agent_id in agent_ids]
-
-        agent_id_column = Interaction.payload["agent_id"].astext
+        if not message_ids:
+            return []
 
         result = await self.db.execute(
-            select(agent_id_column, func.count(Interaction.interaction_id))
-            .where(
-                Interaction.status == InteractionStatus.PENDING,
-                agent_id_column.in_(agent_id_strings),
-            )
-            .group_by(agent_id_column)
+            select(Interaction).where(Interaction.message_id.in_(message_ids))
         )
 
-        return {UUID(agent_id_str): count for agent_id_str, count in result.all()}
+        return list(result.scalars().all())
+
+    async def assign_thread_to_ticket(
+        self,
+        root_interaction_id: UUID,
+        ticket_id: UUID,
+    ) -> None:
+        """
+        Moves an entire inbox thread (its root plus every reply
+        filed under it) onto a ticket in one go — used when a
+        pending email (or a whole conversation under it) is
+        promoted to a ticket, so replies already exchanged before
+        the ticket existed still show up on its timeline.
+        """
+
+        root = await self.get_by_id(root_interaction_id)
+        if root is not None and root.ticket_id is None:
+            root.ticket_id = ticket_id
+            root.status = InteractionStatus.ASSIGNED
+
+        thread = await self.list_thread(root_interaction_id)
+        for reply in thread:
+            reply.ticket_id = ticket_id
+            reply.status = InteractionStatus.ASSIGNED
+
+        await self.db.flush()
+
+    async def get_latest_inbound_email_for_ticket(
+        self,
+        ticket_id: UUID,
+    ) -> Interaction | None:
+        """
+        The most recent INBOUND email interaction on a ticket —
+        used to build a reply's envelope (recipient address,
+        In-Reply-To header) without the caller needing to know the
+        ticket's email history.
+        """
+
+        result = await self.db.execute(
+            select(Interaction)
+            .where(
+                Interaction.ticket_id == ticket_id,
+                Interaction.interaction_type == "EMAIL",
+            )
+            .order_by(Interaction.created_at.desc())
+            .limit(1)
+        )
+
+        return result.scalar_one_or_none()
 
     async def update(
         self,

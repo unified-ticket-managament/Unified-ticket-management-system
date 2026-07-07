@@ -22,7 +22,11 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://rbac_user:rbac_password@localhost:5432/rbac_db"
 
-    jwt_secret_key: str = "change-this-to-a-secure-random-secret-key-in-production"
+    # Shared with ticketing-backend, which only ever verifies tokens this
+    # service issues — no default: fail fast at boot if the shared secret
+    # isn't provisioned, rather than silently issuing tokens signed with a
+    # well-known placeholder value.
+    jwt_secret_key: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
@@ -35,6 +39,7 @@ class Settings(BaseSettings):
     # for the unified login flow.
     cors_origins: str = (
         "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
         "http://localhost:5173,"
         "http://127.0.0.1:5173,"
         "http://localhost:5174,"

@@ -2,7 +2,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.enums import TicketPriority
+from app.enums import TicketCategory, TicketPriority
 
 
 class TicketFromInteractionCreate(BaseModel):
@@ -19,11 +19,7 @@ class TicketFromInteractionCreate(BaseModel):
         max_length=255,
     )
 
-    ticket_type: str = Field(
-        ...,
-        min_length=1,
-        max_length=50,
-    )
+    ticket_type: TicketCategory
 
     current_priority: TicketPriority = TicketPriority.MEDIUM
 

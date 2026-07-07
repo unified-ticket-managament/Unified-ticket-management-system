@@ -17,7 +17,7 @@ import { Card } from "@tw/components/common/Card";
 import { Badge } from "@tw/components/common/Badge";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
-import { getAgentInbox } from "@tw/api/agent";
+import { getInbox } from "@tw/api/inbox";
 import { listTickets } from "@tw/api/ticket";
 import { useToast } from "@tw/context/ToastContext";
 import { useAuthContext } from "@tw/context/AuthContext";
@@ -129,7 +129,7 @@ export function Dashboard() {
     async function load() {
       setIsLoading(true);
       try {
-        const [ticketList, inbox] = await Promise.all([listTickets(), getAgentInbox()]);
+        const [ticketList, inbox] = await Promise.all([listTickets(), getInbox()]);
         if (cancelled) return;
         setTickets(ticketList);
         setPendingInboxCount(inbox.total);
@@ -243,13 +243,15 @@ export function Dashboard() {
           />
         </div>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <QuickAction
-            to="/create-mail"
-            icon={<MailPlus size={17} />}
-            label="Create Dummy Mail"
-            description="Simulate an incoming client email"
-          />
+        <div className={`grid grid-cols-1 gap-3 ${currentUser?.role === "Staff" ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
+          {currentUser?.role !== "Staff" && (
+            <QuickAction
+              to="/create-mail"
+              icon={<MailPlus size={17} />}
+              label="Create Dummy Mail"
+              description="Simulate an incoming client email"
+            />
+          )}
           <QuickAction
             to="/inbox"
             icon={<InboxIcon size={17} />}

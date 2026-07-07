@@ -79,8 +79,7 @@ class AuditLogRepository:
                     (AuditLog.entity_type == AuditEntityType.TICKET)
                     & (AuditLog.entity_id == ticket_id),
                     # JSONB ->> is text — compare against the string
-                    # form of the UUID, same idiom as
-                    # InteractionRepository.count_pending_by_agent.
+                    # form of the UUID.
                     AuditLog.new_values["ticket_id"].astext == str(ticket_id),
                 )
             )
