@@ -108,6 +108,78 @@ def ensure_agent_can_view_ticket(
         )
 
 
+def ensure_agent_can_act_on_ticket(
+    ticket: Ticket,
+    current_user: User,
+) -> None:
+    """
+    Working a ticket — replying, adding an internal note, changing
+    status/priority, uploading an attachment — is restricted to the
+    agent it's actually assigned to. Teammates who share the same
+    category can already see the ticket (ensure_agent_can_view_ticket,
+    called first here) but not act on someone else's claimed work;
+    an unclaimed ticket (agent_id is None) blocks everyone but
+    supervisors until someone claims it. Supervisors (SUPERVISOR_ROLE_
+    NAMES) bypass this, same as they bypass ownership scoping
+    everywhere else in this file.
+
+    Deliberately NOT applied to claim_ticket (picking up an unclaimed
+    ticket is how you become its assigned agent in the first place)
+    or transfer_agent (already gated by ensure_can_reassign_ticket,
+    which is supervisor-only regardless of current assignment).
+    """
+
+    ensure_agent_can_view_ticket(ticket, current_user)
+
+    if current_user.role.name in SUPERVISOR_ROLE_NAMES:
+        return
+
+    if ticket.agent_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the agent this ticket is assigned to can perform this action.",
+        )
+
+
+async def ensure_account_manager_owns_ticket_client(
+    ticket: Ticket,
+    current_user: User,
+    client_repository,
+) -> None:
+    """
+    `ensure_agent_can_view_ticket` only handles the Team Lead/Staff
+    category gate — it deliberately no-ops for Account Manager, whose
+    scoping is by client ownership instead. That ownership check lives
+    in `ticket_service._resolve_owned_client_ids` for the ticket
+    list/detail routes, but nothing in this module enforced it for
+    interaction-level reads (the thread-fetch endpoint) until now — an
+    Account Manager could open any ticket's conversation, not just
+    their own clients'. Site Lead/Super Admin/Team Lead/Staff are
+    untouched here (Team Lead/Staff already get their own gate from
+    ensure_agent_can_view_ticket; Site Lead/Super Admin stay
+    unrestricted everywhere by design).
+    """
+
+    if current_user.role.name != ACCOUNT_MANAGER_ROLE_NAME:
+        return
+
+    if ticket.client_company_id is None or client_repository is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this ticket.",
+        )
+
+    owned_client_ids = await client_repository.list_client_ids_by_account_manager(
+        current_user.user_id
+    )
+
+    if ticket.client_company_id not in owned_client_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this ticket.",
+        )
+
+
 async def ensure_agent_can_view_pending_interaction(
     interaction,
     current_user: User,

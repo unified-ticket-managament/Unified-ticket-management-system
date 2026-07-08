@@ -26,6 +26,7 @@ from app.schemas.attachment import (
 from app.schemas.interaction import InteractionCreate
 from app.services.access_control import (
     SUPERVISOR_ROLE_NAMES,
+    ensure_agent_can_act_on_ticket,
     ensure_agent_can_view_ticket,
     ensure_ticket_not_closed,
 )
@@ -219,6 +220,7 @@ class AttachmentService:
             )
 
         ensure_ticket_not_closed(ticket)
+        ensure_agent_can_act_on_ticket(ticket, current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user

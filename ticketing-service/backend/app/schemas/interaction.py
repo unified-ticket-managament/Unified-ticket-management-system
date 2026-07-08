@@ -43,6 +43,7 @@ class InteractionResponse(ORMBase):
     status: InteractionStatus
     direction: InteractionDirection
     performed_by: UUID | None
+    performed_by_name: str | None = None
     payload: dict[str, Any]
     is_visible: bool
     removed_by: UUID | None

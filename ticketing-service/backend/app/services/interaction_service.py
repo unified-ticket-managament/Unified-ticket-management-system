@@ -55,6 +55,8 @@ from app.schemas.ticket_action import (
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.schemas.audit_log import AuditLogResponse
 from app.services.access_control import (
+    ensure_account_manager_owns_ticket_client,
+    ensure_agent_can_act_on_ticket,
     ensure_agent_can_view_pending_interaction,
     ensure_agent_can_view_ticket,
     ensure_can_reassign_ticket,
@@ -84,6 +86,7 @@ from app.storage.base import StorageService
 def _to_response(
     interaction: Interaction,
     attachments: list[AttachmentMetadata] | None = None,
+    performed_by_name: str | None = None,
 ) -> InteractionResponse:
     """
     Builds an InteractionResponse without touching
@@ -101,6 +104,7 @@ def _to_response(
         status=interaction.status,
         direction=interaction.direction,
         performed_by=interaction.performed_by,
+        performed_by_name=performed_by_name,
         payload=interaction.payload,
         is_visible=interaction.is_visible,
         removed_by=interaction.removed_by,
@@ -252,10 +256,20 @@ class InteractionService:
             )
             attachments_by_interaction = dict(zip(interaction_ids_with_files, metadata_lists))
 
+        performer_ids = [
+            i.performed_by for i in interactions if i.performed_by is not None
+        ]
+        names_by_id = await self.user_repository.get_names_by_ids(performer_ids)
+
         return [
             _to_response(
                 interaction,
                 attachments_by_interaction.get(interaction.interaction_id),
+                performed_by_name=(
+                    names_by_id.get(interaction.performed_by)
+                    if interaction.performed_by is not None
+                    else None
+                ),
             )
             for interaction in interactions
         ]
@@ -406,6 +420,7 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
+        ensure_agent_can_act_on_ticket(ticket, current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -469,6 +484,7 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
+        ensure_agent_can_act_on_ticket(ticket, current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -679,6 +695,7 @@ class InteractionService:
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
+        ensure_agent_can_act_on_ticket(ticket, current_user)
 
         old_status = ticket.current_status
         old_closed_at = ticket.closed_at
@@ -764,6 +781,7 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
+        ensure_agent_can_act_on_ticket(ticket, current_user)
 
         old_priority = ticket.current_priority
 
@@ -955,7 +973,7 @@ class InteractionService:
             self.ticket_repository.db,
             entity_type=AuditEntityType.TICKET,
             entity_id=ticket_id,
-            event_type=AuditEventType.AGENT_TRANSFERRED,
+            event_type=AuditEventType.TICKET_CLAIMED,
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
@@ -1533,6 +1551,9 @@ class InteractionService:
         if root.ticket_id is not None:
             ticket = await self._get_ticket_or_404(root.ticket_id)
             ensure_agent_can_view_ticket(ticket, current_user)
+            await ensure_account_manager_owns_ticket_client(
+                ticket, current_user, self.client_repository
+            )
         else:
             await self._ensure_can_act_on_pending_interaction(root, current_user)
 
