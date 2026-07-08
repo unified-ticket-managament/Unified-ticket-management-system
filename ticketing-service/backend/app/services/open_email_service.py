@@ -14,6 +14,10 @@ from app.repositories.user_repository import UserRepository
 from app.schemas.interaction import InteractionResponse
 from app.schemas.open_email import OpenEmailResponse
 from app.schemas.payloads import EmailPayload
+from app.services.access_control import (
+    ensure_agent_can_view_pending_interaction,
+    ensure_agent_can_view_ticket,
+)
 from app.services.attachment_service import attachments_to_metadata
 from app.storage.base import StorageService
 
@@ -44,6 +48,9 @@ def _reply_to_response(interaction) -> InteractionResponse:
         received_at=interaction.received_at,
         created_at=interaction.created_at,
         attachments=[],
+        conversation_id=interaction.conversation_id,
+        in_reply_to_message_id=interaction.in_reply_to_message_id,
+        references=interaction.references or [],
     )
 
 
@@ -104,6 +111,22 @@ class OpenEmailService:
                 interaction = root
                 interaction_id = root.interaction_id
 
+        # Access control — the same rule GET /inbox's list view
+        # already applies (role-scoped visibility), now also enforced
+        # on opening a specific thread by id, so a role that can't see
+        # an item in its own list can't reach it by guessing/copying
+        # its interaction_id either.
+        ticket = None
+        if interaction.ticket_id is not None:
+            if self.ticket_repository is not None:
+                ticket = await self.ticket_repository.get_by_id(interaction.ticket_id)
+            if current_user is not None and ticket is not None:
+                ensure_agent_can_view_ticket(ticket, current_user)
+        elif current_user is not None:
+            await ensure_agent_can_view_pending_interaction(
+                interaction, current_user, self.client_repository
+            )
+
         try:
             payload = EmailPayload.model_validate(interaction.payload)
         except ValidationError:
@@ -147,11 +170,11 @@ class OpenEmailService:
 
         ticket_priority = None
         ticket_category = None
-        if self.ticket_repository is not None and interaction.ticket_id is not None:
-            ticket = await self.ticket_repository.get_by_id(interaction.ticket_id)
-            if ticket is not None:
-                ticket_priority = ticket.current_priority.value
-                ticket_category = ticket.ticket_type
+        ticket_status = None
+        if ticket is not None:
+            ticket_priority = ticket.current_priority.value
+            ticket_category = ticket.ticket_type
+            ticket_status = ticket.current_status.value
 
         draft_message = None
         if current_user is not None and interaction.ticket_id is None:
@@ -160,6 +183,10 @@ class OpenEmailService:
             )
             if draft is not None and isinstance(draft.payload, dict):
                 draft_message = draft.payload.get("message")
+
+        recommended_ticket_id, recommended_ticket_reason = (
+            await self._recommend_ticket(interaction, replies)
+        )
 
         return OpenEmailResponse(
             interaction_id=interaction.interaction_id,
@@ -179,10 +206,68 @@ class OpenEmailService:
             account_manager_name=account_manager_name,
             ticket_priority=ticket_priority,
             ticket_category=ticket_category,
+            ticket_status=ticket_status,
             tags=interaction.tags,
             folder_id=interaction.folder_id,
             snoozed_until=interaction.snoozed_until,
             draft_message=draft_message,
             attachments=attachments,
             replies=[_reply_to_response(reply) for reply in replies],
+            recommended_ticket_id=recommended_ticket_id,
+            recommended_ticket_reason=recommended_ticket_reason,
         )
+
+    async def _recommend_ticket(
+        self,
+        root,
+        replies: list,
+    ) -> tuple[UUID | None, str | None]:
+        """
+        "Attach to Existing Ticket" convenience for a thread that
+        isn't already linked to one — best-effort, never a hard
+        attach. Checked in order, first hit wins:
+
+        1. The root itself already carries a ticket_id (defensive —
+           by the time a thread reaches this far unticketed, this
+           shouldn't fire, but a manual DB edit or a future code path
+           could leave it set).
+        2. Any reply already filed under this thread carries a
+           ticket_id (same defensive reasoning).
+        3. The root's own In-Reply-To/References headers resolve to
+           an already-ticketed interaction — the same header match
+           EmailService.receive_email runs at intake time, re-run
+           here as a safety net for threads received before this
+           feature existed (or where the match wasn't attempted).
+
+        A subject-contains-ticket-reference tier is deliberately not
+        implemented — this codebase has no human-readable ticket
+        code/number, only UUID ticket_ids, so there's nothing
+        meaningful to parse out of a subject line yet.
+        """
+
+        if root.ticket_id is not None:
+            return root.ticket_id, "This thread is already linked to this ticket."
+
+        for reply in replies:
+            if reply.ticket_id is not None:
+                return (
+                    reply.ticket_id,
+                    "A reply already filed under this thread is linked to this ticket.",
+                )
+
+        candidate_message_ids = list(root.references or [])
+        if root.in_reply_to_message_id:
+            candidate_message_ids.append(root.in_reply_to_message_id)
+
+        if candidate_message_ids:
+            matches = await self.interaction_repository.get_by_message_ids(
+                candidate_message_ids
+            )
+            for match in matches:
+                if match.ticket_id is not None:
+                    return (
+                        match.ticket_id,
+                        "Matched from this email's In-Reply-To/References headers.",
+                    )
+
+        return None, None

@@ -18,11 +18,12 @@ function randomMessageId() {
   return `<msg-${Date.now()}-${Math.floor(Math.random() * 10000)}@dummy.local>`;
 }
 
-// Nav-hidden for Team Lead (see Sidebar.tsx's hideForRoles) — this is
-// the defense-in-depth check for anyone who navigates here directly
-// by URL anyway. Frontend-only, matching this app's existing
-// architecture (no backend authorization layer).
-const RESTRICTED_ROLES = ["Team Lead"];
+// Only Site Lead gets the dummy-mail simulator (see Sidebar.tsx's
+// hideForRoles) — this is the defense-in-depth check for anyone who
+// navigates here directly by URL anyway. The backend enforces the
+// same rule on POST /emails/dummy (403s for any other role), so this
+// is UX, not the real gate.
+const ALLOWED_ROLES = ["Site Lead"];
 
 export function CreateMailPage() {
   const { currentUser } = useAuthContext();
@@ -78,13 +79,13 @@ export function CreateMailPage() {
     }
   }
 
-  if (RESTRICTED_ROLES.includes(currentUser?.role ?? "")) {
+  if (!ALLOWED_ROLES.includes(currentUser?.role ?? "")) {
     return (
       <AppLayout title="Create Dummy Mail">
         <EmptyState
           icon={<ShieldAlert size={22} />}
           title="Not available for your role"
-          description="This simulator isn't part of the Team Lead workflow."
+          description="Only Site Lead can create dummy mail."
         />
       </AppLayout>
     );

@@ -60,6 +60,12 @@ class EmailRequest(BaseModel):
 
     references: list[str] = Field(default_factory=list)
 
+    # Microsoft Graph's own conversation identifier — unavailable
+    # until Task 1 ships; accepted now (optional) so this schema
+    # doesn't need to change again once it does. Highest-priority
+    # thread-match signal when present (see EmailService.receive_email).
+    conversation_id: str | None = Field(default=None, max_length=255)
+
 
 class EmailResponse(BaseModel):
     """

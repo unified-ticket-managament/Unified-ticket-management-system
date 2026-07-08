@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.enums import InteractionDirection, InteractionStatus
 from app.models.client import Client
 from app.models.interaction import Interaction
+from app.models.ticket import Ticket
 from app.schemas.interaction import (
     InteractionCreate,
     InteractionUpdate,
@@ -73,23 +74,34 @@ class InteractionRepository:
         client_id: UUID | None = None,
         view: str = "pending",
         folder_id: UUID | None = None,
+        ticket_type: str | None = None,
+        assigned_agent_id: UUID | None = None,
     ) -> list[Interaction]:
         """
-        The Account Manager inbox query — always over thread ROOTS
+        The role-scoped inbox query — always over thread ROOTS
         (parent_interaction_id IS NULL, interaction_type == "EMAIL");
         replies are fetched separately via `list_thread` once a root
         is opened.
 
         - `account_manager_id` set: only mail belonging to clients
-          that AM owns (a join against `clients`). None means "every
-          client" — the Manager/Super Admin escape hatch for when an
-          AM is on leave, or the "All Inboxes" overview.
+          that AM owns (a join against `clients`). None (and
+          `ticket_type`/`assigned_agent_id` also None) means "every
+          client" — the Site Lead/Super Admin global inbox.
         - `client_id` set: further narrows to one client (the
           per-client filter on the inbox UI).
         - `folder_id` set: further narrows to one custom folder —
           orthogonal to `view` (a folder can hold items in any
           status), so this composes with any of the views below
           rather than being its own view.
+        - `ticket_type` set: Team Lead scoping — only threads whose
+          ticket is filed under this work-specialization category.
+          Implemented as an INNER join against `tickets`, so this
+          also implicitly restricts to ticketed threads only (a
+          Team Lead never sees a still-pending, pre-ticket item —
+          see the role propagation rules in InboxService.get_inbox).
+        - `assigned_agent_id` set: Staff scoping — only threads whose
+          ticket is currently assigned to (claimed by) this agent.
+          Same inner-join-implies-ticketed-only reasoning as above.
         - `view`:
           - "pending": not yet replied to or ticketed, and not
             currently snoozed — the triage queue.
@@ -115,6 +127,15 @@ class InteractionRepository:
 
         if client_id is not None:
             query = query.where(Interaction.client_id == client_id)
+
+        if ticket_type is not None or assigned_agent_id is not None:
+            query = query.join(Ticket, Ticket.ticket_id == Interaction.ticket_id)
+
+        if ticket_type is not None:
+            query = query.where(Ticket.ticket_type == ticket_type)
+
+        if assigned_agent_id is not None:
+            query = query.where(Ticket.agent_id == assigned_agent_id)
 
         if folder_id is not None:
             query = query.where(Interaction.folder_id == folder_id)
@@ -313,6 +334,59 @@ class InteractionRepository:
         )
 
         return list(result.scalars().all())
+
+    async def get_by_conversation_id(
+        self,
+        conversation_id: str,
+    ) -> list[Interaction]:
+        """
+        Looks up interactions by Graph's conversation_id — the
+        highest-priority thread-match signal once Task 1 ships real
+        Graph data (unused by the dummy-mail flow today, since
+        nothing populates conversation_id yet).
+        """
+
+        result = await self.db.execute(
+            select(Interaction).where(Interaction.conversation_id == conversation_id)
+        )
+
+        return list(result.scalars().all())
+
+    async def list_thread_summaries(
+        self,
+        root_interaction_ids: list[UUID],
+    ) -> dict[UUID, tuple[int, Interaction | None]]:
+        """
+        Batched "how many replies, and what's the latest one" lookup
+        for a set of thread roots — used to populate the inbox list's
+        reply_count/latest_* columns without an N+1 query per row.
+        Returns {root_id: (reply_count, latest_reply_or_None)}; a
+        root with zero replies is simply absent from the dict.
+        """
+
+        if not root_interaction_ids:
+            return {}
+
+        result = await self.db.execute(
+            select(Interaction)
+            .where(
+                Interaction.parent_interaction_id.in_(root_interaction_ids),
+                Interaction.is_visible.is_(True),
+                Interaction.is_draft.is_(False),
+            )
+            .order_by(Interaction.created_at.asc())
+        )
+
+        summaries: dict[UUID, tuple[int, Interaction | None]] = {}
+        for reply in result.scalars().all():
+            root_id = reply.parent_interaction_id
+            count, _latest = summaries.get(root_id, (0, None))
+            # Rows arrive oldest-first, so the last one seen per root
+            # is always the most recent — no separate max(created_at)
+            # pass needed.
+            summaries[root_id] = (count + 1, reply)
+
+        return summaries
 
     async def assign_thread_to_ticket(
         self,

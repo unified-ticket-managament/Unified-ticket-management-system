@@ -14,7 +14,12 @@ import { useAuthContext } from "@/context/AuthContext";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
-  { to: "/create-mail", label: "Create Dummy Mail", icon: MailPlus, hideForRoles: ["Staff", "Team Lead"] },
+  {
+    to: "/create-mail",
+    label: "Create Dummy Mail",
+    icon: MailPlus,
+    hideForRoles: ["Staff", "Team Lead", "Account Manager", "Super Admin"],
+  },
   { to: "/inbox", label: "Mail", icon: Inbox },
   { to: "/interactions", label: "Interactions", icon: MessageSquare },
   { to: "/tickets", label: "Tickets", icon: Ticket },

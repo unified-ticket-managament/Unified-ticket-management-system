@@ -1,4 +1,4 @@
-import { Paperclip, RefreshCw, Search, Ticket as TicketIcon } from "lucide-react";
+import { MessageSquare, Paperclip, RefreshCw, Search, Ticket as TicketIcon } from "lucide-react";
 import { Avatar } from "@tw/components/common/Avatar";
 import { Badge } from "@tw/components/common/Badge";
 import { Button } from "@tw/components/common/Button";
@@ -169,7 +169,7 @@ export function AgentInbox({
                           {item.client_name}
                         </p>
                         <span className="flex-none text-[10px] font-medium text-muted">
-                          {new Date(item.received_at).toLocaleTimeString([], {
+                          {new Date(item.latest_at ?? item.received_at).toLocaleTimeString([], {
                             hour: "2-digit",
                             minute: "2-digit",
                           })}
@@ -188,6 +188,18 @@ export function AgentInbox({
                       >
                         {item.subject}
                       </p>
+                      {item.reply_count > 0 && item.latest_message && (
+                        // Outlook-style "latest message" preview — the
+                        // most recent reply in the thread, not the
+                        // root email's own body, so this row reflects
+                        // whatever anyone (agent or client) last said.
+                        <p className="mt-0.5 truncate text-[10.5px] text-muted">
+                          <span className="font-medium text-slate-600">
+                            {item.latest_sender ?? "Reply"}:
+                          </span>{" "}
+                          {item.latest_message}
+                        </p>
+                      )}
                       <div className="mt-1.5 flex items-center gap-1.5">
                         <Badge tone={badge.tone} dot>
                           {badge.label ?? item.status}
@@ -196,6 +208,12 @@ export function AgentInbox({
                           <span className="flex items-center gap-1 text-[10px] font-medium text-muted">
                             <TicketIcon size={11} className="flex-none" />
                             Ticketed
+                          </span>
+                        )}
+                        {item.reply_count > 0 && (
+                          <span className="flex items-center gap-1 text-[10px] font-medium text-muted">
+                            <MessageSquare size={11} className="flex-none" />
+                            {item.reply_count}
                           </span>
                         )}
                         {item.has_attachments && (

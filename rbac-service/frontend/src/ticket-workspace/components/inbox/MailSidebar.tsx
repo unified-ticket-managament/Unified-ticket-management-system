@@ -35,8 +35,11 @@ const VIEW_ITEMS: Array<{ key: MailViewKey; label: string; icon: LucideIcon }> =
 // "Compose" has no raw outbound-authoring feature in this app yet —
 // the closest real equivalent is simulating an inbound email via
 // Create Dummy Mail. Hidden entirely for roles that can't reach that
-// page (mirrors Sidebar.tsx's own hideForRoles).
-const COMPOSE_HIDDEN_ROLES = ["Staff", "Team Lead"];
+// page (mirrors role-access.ts's NAV_ITEMS_BY_ROLE — Site Lead only,
+// but Site Lead never reaches this Mail page in the embedded copy
+// anyway — see DashboardCatchAllPage — so this only actually matters
+// in the standalone app).
+const COMPOSE_HIDDEN_ROLES = ["Staff", "Team Lead", "Account Manager", "Super Admin"];
 
 interface MailSidebarProps {
   activeView: MailViewKey;

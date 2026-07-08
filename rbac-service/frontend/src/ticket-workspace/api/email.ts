@@ -1,7 +1,11 @@
 import { apiClient } from "./client";
 import type { EmailRequest, EmailResponse } from "@tw/types";
 
-// POST /emails/incoming
+// POST /emails/dummy — the internal "Create Dummy Mail" simulator,
+// Site Lead only (backend-enforced). Runs through the exact same
+// EmailService.receive_email as the real transport route
+// (POST /emails/incoming), which stays unauthenticated for the
+// future Graph/n8n webhook and is never called from this UI.
 export async function receiveIncomingEmail(
   payload: EmailRequest & { files?: File[] }
 ): Promise<EmailResponse> {
@@ -18,6 +22,6 @@ export async function receiveIncomingEmail(
   if (payload.references) formData.append("references", payload.references);
   (payload.files ?? []).forEach((file) => formData.append("files", file));
 
-  const { data } = await apiClient.post<EmailResponse>("/emails/incoming", formData);
+  const { data } = await apiClient.post<EmailResponse>("/emails/dummy", formData);
   return data;
 }

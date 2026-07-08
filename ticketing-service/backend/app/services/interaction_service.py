@@ -36,6 +36,7 @@ from app.schemas.interaction import (
     InteractionUpdate,
     SnoozeRequest,
     TagsUpdateRequest,
+    ThreadResponse,
 )
 from app.schemas.note import (
     InternalNoteCreate,
@@ -54,7 +55,7 @@ from app.schemas.ticket_action import (
 from app.repositories.audit_log_repository import AuditLogRepository
 from app.schemas.audit_log import AuditLogResponse
 from app.services.access_control import (
-    SUPERVISOR_ROLE_NAMES,
+    ensure_agent_can_view_pending_interaction,
     ensure_agent_can_view_ticket,
     ensure_can_reassign_ticket,
     ensure_ticket_not_closed,
@@ -110,6 +111,9 @@ def _to_response(
         received_at=interaction.received_at,
         created_at=interaction.created_at,
         attachments=attachments or [],
+        conversation_id=interaction.conversation_id,
+        in_reply_to_message_id=interaction.in_reply_to_message_id,
+        references=interaction.references or [],
     )
 
 
@@ -979,28 +983,14 @@ class InteractionService:
         current_user: User,
     ) -> None:
         """
-        Restricts claim/archive on a pending inbox item to whoever
-        can already see it in GET /inbox: the Account Manager who
-        owns the item's client, or a supervisor (Team Lead/Site
-        Lead/Super Admin) using the "all inboxes" escape hatch — the
-        same scoping InboxService.get_inbox already applies to the
-        list view, now also enforced on the action itself.
+        Thin wrapper around the shared access_control check — kept as
+        a method since every call site in this class already calls
+        `self._ensure_can_act_on_pending_interaction(...)`.
         """
 
-        if current_user.role.name in SUPERVISOR_ROLE_NAMES:
-            return
-
-        client = (
-            await self.client_repository.get_by_id(interaction.client_id)
-            if self.client_repository is not None and interaction.client_id is not None
-            else None
+        await ensure_agent_can_view_pending_interaction(
+            interaction, current_user, self.client_repository
         )
-
-        if client is None or client.account_manager_id != current_user.user_id:
-            raise HTTPException(
-                status_code=http_status.HTTP_403_FORBIDDEN,
-                detail="You do not have access to this item.",
-            )
 
     async def claim_interaction(
         self,
@@ -1499,6 +1489,61 @@ class InteractionService:
     # ---------------------------------------------------------
     # Hide / Delete Interaction
     # ---------------------------------------------------------
+
+    # ---------------------------------------------------------
+    # Thread Fetch — Outlook-style "open the conversation"
+    # ---------------------------------------------------------
+
+    async def get_thread(
+        self,
+        interaction_id: UUID,
+        current_user: User,
+    ) -> ThreadResponse:
+        """
+        Resolves any id within a conversation — the root itself, or
+        any reply filed under it — up to the thread root, then
+        returns that root plus every reply, oldest first. Access is
+        gated the same way the rest of Mail/Tickets already are: a
+        still-pending (pre-ticket) thread uses the Account-Manager-
+        ownership-or-global-inbox check; a ticketed thread uses the
+        same category/ownership gate as the ticket timeline.
+        """
+
+        interaction = await self.interaction_repository.get_by_id(interaction_id)
+
+        if interaction is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        root_id = interaction.parent_interaction_id or interaction.interaction_id
+        root = (
+            interaction
+            if interaction.parent_interaction_id is None
+            else await self.interaction_repository.get_by_id(root_id)
+        )
+
+        if root is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        if root.ticket_id is not None:
+            ticket = await self._get_ticket_or_404(root.ticket_id)
+            ensure_agent_can_view_ticket(ticket, current_user)
+        else:
+            await self._ensure_can_act_on_pending_interaction(root, current_user)
+
+        replies = await self.interaction_repository.list_thread(root.interaction_id)
+
+        return ThreadResponse(
+            root=_to_response(root),
+            replies=[_to_response(reply) for reply in replies],
+            reply_count=len(replies),
+            latest_reply=_to_response(replies[-1]) if replies else None,
+        )
 
     async def hide_interaction(
         self,

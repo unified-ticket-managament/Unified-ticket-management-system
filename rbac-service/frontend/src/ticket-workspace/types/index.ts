@@ -44,6 +44,7 @@ export interface EmailRequest {
   received_at?: string;
   in_reply_to?: string;
   references?: string;
+  conversation_id?: string;
 }
 
 export interface EmailResponse {
@@ -142,6 +143,10 @@ export interface InboxItem {
   tags: string[];
   folder_id: string | null;
   snoozed_until: string | null;
+  reply_count: number;
+  latest_message: string | null;
+  latest_sender: string | null;
+  latest_at: string | null;
 }
 
 export interface InboxResponse {
@@ -181,12 +186,15 @@ export interface OpenEmailResponse {
   account_manager_name: string | null;
   ticket_priority: string | null;
   ticket_category: string | null;
+  ticket_status: string | null;
   tags: string[];
   folder_id: string | null;
   snoozed_until: string | null;
   draft_message: string | null;
   attachments?: AttachmentMeta[];
   replies: InteractionResponse[];
+  recommended_ticket_id: string | null;
+  recommended_ticket_reason: string | null;
 }
 
 export interface InteractionSnoozeResponse {
@@ -373,6 +381,17 @@ export interface InteractionResponse {
   received_at?: string | null;
   created_at: string;
   attachments?: AttachmentMeta[];
+  conversation_id?: string | null;
+  in_reply_to_message_id?: string | null;
+  references?: string[];
+}
+
+// GET /interactions/{id}/thread
+export interface ThreadResponse {
+  root: InteractionResponse;
+  replies: InteractionResponse[];
+  reply_count: number;
+  latest_reply: InteractionResponse | null;
 }
 
 export interface InternalNoteRequest {

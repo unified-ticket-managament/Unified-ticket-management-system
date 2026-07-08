@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
+import { EnvelopePreview } from "@tw/components/common/EnvelopePreview";
 import { TextArea } from "@tw/components/common/FormField";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { addInternalNote, replyToClient } from "@tw/api/interaction";
@@ -14,11 +15,6 @@ interface TicketComposerProps {
   mode: ComposerMode;
   onClose: () => void;
   onSent: () => void;
-}
-
-function subjectAsReply(subject: string | undefined): string {
-  if (!subject) return "this ticket";
-  return subject.trim().toLowerCase().startsWith("re:") ? subject : `Re: ${subject}`;
 }
 
 export function TicketComposer({ mode, onClose, onSent }: TicketComposerProps) {
@@ -102,25 +98,12 @@ export function TicketComposer({ mode, onClose, onSent }: TicketComposerProps) {
         </div>
 
         {isReply && (
-          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md2 bg-canvas px-3 py-2 text-[10.5px] text-muted">
-            <span>Sending as</span>
-            <span className="rounded-full border border-border bg-surface px-2 py-0.5 font-medium text-slate-700">
-              {currentUser?.name ?? "you"}
-              {toEmail ? ` · via ${toEmail}` : ""}
-            </span>
-            {fromEmail && (
-              <>
-                <span>to</span>
-                <span className="rounded-full border border-border bg-surface px-2 py-0.5 font-medium text-slate-700">
-                  {fromEmail}
-                </span>
-              </>
-            )}
-            <span className="rounded-full border border-teal/20 bg-teal/10 px-2 py-0.5 font-medium text-teal">
-              CC: Account Manager (auto)
-            </span>
-            <span className="ml-auto">threads as {subjectAsReply(subject)}</span>
-          </div>
+          <EnvelopePreview
+            senderName={currentUser?.name ?? "you"}
+            viaEmail={toEmail}
+            toEmail={fromEmail}
+            subject={subject}
+          />
         )}
 
         <TextArea

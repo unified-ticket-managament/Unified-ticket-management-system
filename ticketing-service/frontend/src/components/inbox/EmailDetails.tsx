@@ -6,18 +6,22 @@ import { Badge } from "@/components/common/Badge";
 import { Button } from "@/components/common/Button";
 import { Collapsible } from "@/components/common/Collapsible";
 import { EmptyState } from "@/components/common/EmptyState";
+import { EnvelopePreview } from "@/components/common/EnvelopePreview";
 import { AttachmentList } from "@/components/common/AttachmentList";
 import { useApiAction } from "@/hooks/useApiAction";
 import { replyToInteraction } from "@/api/inbox";
+import { replyToClient } from "@/api/interaction";
 import { useAuthContext } from "@/context/AuthContext";
 import { useWorkflowContext } from "@/context/WorkflowContext";
 import type { InteractionReplyResponse, OpenEmailResponse } from "@/types";
 
-function subjectAsReply(subject: string): string {
-  return subject.trim().toLowerCase().startsWith("re:") ? subject : `Re: ${subject}`;
+interface ReplySent {
+  interaction_id: string;
+  message: string;
+  created_at: string;
 }
 
-function appendReply(email: OpenEmailResponse, result: InteractionReplyResponse): OpenEmailResponse {
+function appendReply(email: OpenEmailResponse, result: ReplySent): OpenEmailResponse {
   return {
     ...email,
     status: "ASSIGNED",
@@ -26,7 +30,7 @@ function appendReply(email: OpenEmailResponse, result: InteractionReplyResponse)
       ...email.replies,
       {
         interaction_id: result.interaction_id,
-        ticket_id: null,
+        ticket_id: email.ticket_id,
         interaction_type: "REPLY",
         status: "ASSIGNED",
         direction: "OUTBOUND",
@@ -36,7 +40,7 @@ function appendReply(email: OpenEmailResponse, result: InteractionReplyResponse)
         removed_by: null,
         removed_at: null,
         message_id: null,
-        parent_interaction_id: result.parent_interaction_id,
+        parent_interaction_id: email.interaction_id,
         created_at: result.created_at,
       },
     ],
@@ -50,7 +54,7 @@ interface EmailDetailsProps {
 }
 
 export function EmailDetails({ onSaveDraft, onSendDraft, onDiscardDraft }: EmailDetailsProps) {
-  const { selectedEmail, setSelectedEmail, activeTicket } = useWorkflowContext();
+  const { selectedEmail, setSelectedEmail } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const [message, setMessage] = useState("");
   const [isSavingDraft, setIsSavingDraft] = useState(false);
@@ -58,6 +62,12 @@ export function EmailDetails({ onSaveDraft, onSendDraft, onDiscardDraft }: Email
   const [isSendingDraft, setIsSendingDraft] = useState(false);
 
   const { run: runReply, isLoading: isReplying } = useApiAction(replyToInteraction, {
+    successMessage: "Reply sent.",
+  });
+  // Once a thread is ticketed, replying from Mail reuses the exact
+  // same backend call TicketComposer uses on the ticket's own page —
+  // one reply code path, not a second one duplicated here.
+  const { run: runTicketReply, isLoading: isReplyingToTicket } = useApiAction(replyToClient, {
     successMessage: "Reply sent.",
   });
 
@@ -81,6 +91,7 @@ export function EmailDetails({ onSaveDraft, onSendDraft, onDiscardDraft }: Email
   }
 
   const isTicketed = Boolean(selectedEmail.ticket_id);
+  const isClosed = selectedEmail.ticket_status === "CLOSED";
   const hasDraft = Boolean(selectedEmail.draft_message);
 
   async function handleSaveDraft() {
@@ -92,6 +103,17 @@ export function EmailDetails({ onSaveDraft, onSendDraft, onDiscardDraft }: Email
 
   async function handleSend() {
     if (!selectedEmail || !message.trim()) return;
+
+    if (isTicketed) {
+      // Ticketed thread — no drafts here (those are pre-ticket only),
+      // reuse the ticket-level reply endpoint directly.
+      const result = await runTicketReply(selectedEmail.ticket_id!, { message: message.trim() });
+      if (result) {
+        setMessage("");
+        setSelectedEmail(appendReply(selectedEmail, result));
+      }
+      return;
+    }
 
     if (hasDraft) {
       // A draft already exists on this thread — make sure the latest
@@ -206,13 +228,17 @@ export function EmailDetails({ onSaveDraft, onSendDraft, onDiscardDraft }: Email
         )}
       </div>
 
-      {!isTicketed && (
+      {isClosed ? (
+        <div className="border-t border-border p-4 text-center text-[11.5px] text-muted">
+          This ticket is closed — reopen it from the ticket page to reply.
+        </div>
+      ) : (
         <div className="border-t border-border p-4">
           <div className="mb-2 flex items-center justify-between">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-              Reply — no ticket needed
+              {isTicketed ? "Reply" : "Reply — no ticket needed"}
             </p>
-            {hasDraft && (
+            {!isTicketed && hasDraft && (
               <button
                 onClick={handleDiscardDraft}
                 disabled={isDiscardingDraft}
@@ -222,24 +248,13 @@ export function EmailDetails({ onSaveDraft, onSendDraft, onDiscardDraft }: Email
               </button>
             )}
           </div>
-          <div className="mb-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md2 bg-canvas px-3 py-2 text-[10.5px] text-muted">
-            <span>Sending as</span>
-            <span className="rounded-full border border-border bg-surface px-2 py-0.5 font-medium text-slate-700">
-              {currentUser?.name ?? "you"}
-              {selectedEmail.to_email ? ` · via ${selectedEmail.to_email}` : ""}
-            </span>
-            {selectedEmail.from_email && (
-              <>
-                <span>to</span>
-                <span className="rounded-full border border-border bg-surface px-2 py-0.5 font-medium text-slate-700">
-                  {selectedEmail.from_email}
-                </span>
-              </>
-            )}
-            <span className="rounded-full border border-teal/20 bg-teal/10 px-2 py-0.5 font-medium text-teal">
-              CC: Account Manager (auto)
-            </span>
-            <span className="ml-auto">threads as {subjectAsReply(selectedEmail.subject)}</span>
+          <div className="mb-2">
+            <EnvelopePreview
+              senderName={currentUser?.name ?? "you"}
+              viaEmail={selectedEmail.to_email}
+              toEmail={selectedEmail.from_email}
+              subject={selectedEmail.subject}
+            />
           </div>
           <div className="flex items-end gap-2">
             <textarea
@@ -253,34 +268,40 @@ export function EmailDetails({ onSaveDraft, onSendDraft, onDiscardDraft }: Email
               <Button
                 variant="primary"
                 size="sm"
-                isLoading={isReplying || isSendingDraft}
+                isLoading={isReplying || isSendingDraft || isReplyingToTicket}
                 disabled={!message.trim()}
                 onClick={handleSend}
               >
                 <Send size={13} /> Send
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                isLoading={isSavingDraft}
-                disabled={!message.trim()}
-                onClick={handleSaveDraft}
-              >
-                Save draft
-              </Button>
+              {!isTicketed && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  isLoading={isSavingDraft}
+                  disabled={!message.trim()}
+                  onClick={handleSaveDraft}
+                >
+                  Save draft
+                </Button>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {activeTicket && (
+      {selectedEmail.ticket_id && (
+        // Based on selectedEmail.ticket_id, not the WorkflowContext's
+        // activeTicket — opening a thread from Mail never populates
+        // activeTicket (that's only set by TicketDetailPage), so this
+        // link would silently never show if it depended on that.
         <Link
-          to={`/tickets/${activeTicket.ticket_id}`}
+          to={`/tickets/${selectedEmail.ticket_id}`}
           className="flex items-center gap-2 border-t border-border bg-accent/5 px-5 py-3 text-xs font-medium text-accent transition-colors hover:bg-accent/10"
         >
           <TicketIcon size={13} />
-          Linked to ticket{" "}
-          <span className="font-mono">{activeTicket.ticket_id.slice(0, 8)}…</span>
+          View full ticket{" "}
+          <span className="font-mono">{selectedEmail.ticket_id.slice(0, 8)}…</span>
         </Link>
       )}
     </div>

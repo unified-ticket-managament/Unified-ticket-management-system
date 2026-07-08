@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import ValidationError
 from shared_models.models import User
 
+from app.models.interaction import Interaction
 from app.repositories.attachment_repository import AttachmentRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
@@ -20,21 +21,40 @@ from app.schemas.inbox import (
 )
 
 from app.schemas.payloads import EmailPayload
-from app.services.access_control import SUPERVISOR_ROLE_NAMES
+from app.services.access_control import (
+    ACCOUNT_MANAGER_ROLE_NAME,
+    GLOBAL_INBOX_ROLE_NAMES,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class InboxService:
     """
-    Service responsible for the Account Manager Inbox workflow.
+    Service responsible for the role-scoped Mail inbox workflow.
 
-    Responsibilities:
-    - Scope the inbox to the clients the current user manages
-      (Manager/Super Admin see every client's inbox — the escape
-      hatch for when an Account Manager is on leave).
-    - Retrieve pending inbox interactions, or the full activity feed.
-    - Transform database models into API response models.
+    Role-based visibility (Part 2/3 of the Outlook-style threading
+    work — see CLAUDE.md and the propagation model it documents):
+    - Site Lead / Super Admin: every thread, every client, every
+      team — the global inbox. `client_id`/`scope`/`view` are the
+      only narrowing knobs available to them.
+    - Account Manager: only threads belonging to clients they own
+      (`clients.account_manager_id`) — never every client's mail,
+      there is no "all" escape hatch for this role anymore.
+    - Team Lead: only threads whose ticket is filed under their own
+      category — never a still-pending, pre-ticket item (those only
+      belong to the owning client's Account Manager until a ticket
+      exists). A Team Lead with no category assigned sees nothing,
+      matching ensure_agent_can_view_ticket's own safe-failure
+      convention.
+    - Staff: only threads whose ticket is currently assigned to them
+      — same "ticketed only" restriction as Team Lead, scoped by
+      agent_id instead of category.
+
+    Because a reply is stored once on the shared thread row (never
+    duplicated per viewer), this same scoped query automatically
+    picks up new replies for every role authorized to see that
+    thread — there's no separate "fan out to N inboxes" step.
     """
 
     def __init__(
@@ -56,29 +76,50 @@ class InboxService:
         folder_id: UUID | None = None,
     ) -> InboxResponse:
         """
-        Returns the inbox for the current user.
+        Returns the role-scoped inbox for the current user.
 
-        `scope="mine"` (default): only clients this user manages.
-        `scope="all"`: every client's mail — the "All Inboxes"
-        overview. Only meaningful for Manager/Super Admin; silently
-        falls back to "mine" for anyone else so a crafted request
-        can't peek at other Account Managers' mail.
+        `scope`/`view="all"` only ever widens anything for Site Lead/
+        Super Admin (the global-inbox roles) — for every other role
+        it's ignored and their fixed scope (own clients / own
+        category / own assignments) always applies, so a crafted
+        request can't peek at another user's mail.
         """
 
-        is_supervisor = current_user.role.name in SUPERVISOR_ROLE_NAMES
-        wants_every_client = scope == "all" or view == "all"
+        role_name = current_user.role.name
 
-        account_manager_id = (
-            None
-            if is_supervisor and wants_every_client
-            else current_user.user_id
-        )
+        account_manager_id: UUID | None = None
+        ticket_type: str | None = None
+        assigned_agent_id: UUID | None = None
+
+        if role_name in GLOBAL_INBOX_ROLE_NAMES:
+            # No filter at all when they've asked to see everything;
+            # otherwise `client_id` (if provided) is the only
+            # narrowing already applied below.
+            pass
+        elif role_name == ACCOUNT_MANAGER_ROLE_NAME:
+            account_manager_id = current_user.user_id
+        elif role_name == "Team Lead":
+            ticket_type = (
+                current_user.category.category_name.value
+                if current_user.category is not None
+                else "__no_category__"
+            )
+        elif role_name == "Staff":
+            assigned_agent_id = current_user.user_id
+        else:
+            # Shouldn't happen — get_current_agent already blocks
+            # Viewer, and every other AGENT_ROLE_NAMES member is
+            # handled above. Safe fallback: scope to "owns nothing",
+            # same as an Account Manager with no clients.
+            account_manager_id = current_user.user_id
 
         interactions = await self.interaction_repository.list_inbox(
             account_manager_id=account_manager_id,
             client_id=client_id,
             view=view,
             folder_id=folder_id,
+            ticket_type=ticket_type,
+            assigned_agent_id=assigned_agent_id,
         )
 
         interactions_with_attachments: set = set()
@@ -99,6 +140,52 @@ class InboxService:
             ]
             claimer_names = await self.user_repository.get_names_by_ids(claimer_ids)
 
+        # Outlook-style "latest message" preview per row — one batched
+        # query for every root on this page rather than an N+1 fetch.
+        thread_summaries = await self.interaction_repository.list_thread_summaries(
+            [i.interaction_id for i in interactions]
+        )
+
+        latest_sender_names: dict[UUID, str] = {}
+        if self.user_repository is not None:
+            performed_by_ids = [
+                latest.performed_by
+                for _count, latest in thread_summaries.values()
+                if latest is not None and latest.performed_by is not None
+            ]
+            latest_sender_names = await self.user_repository.get_names_by_ids(
+                performed_by_ids
+            )
+
+        def _latest_reply_preview(latest: Interaction | None) -> tuple[str | None, str | None]:
+            """Returns (message_snippet, sender_label) for a thread's latest reply."""
+
+            if latest is None:
+                return None, None
+
+            if latest.interaction_type == "REPLY":
+                message = latest.payload.get("message") if isinstance(latest.payload, dict) else None
+                sender = (
+                    latest_sender_names.get(latest.performed_by)
+                    if latest.performed_by is not None
+                    else None
+                ) or "Agent"
+                return message, sender
+
+            if latest.interaction_type == "EMAIL":
+                # A client follow-up email chained under the root via
+                # In-Reply-To/References — the "Client Reply" node in
+                # the Outlook-style thread diagram.
+                message = latest.payload.get("body") if isinstance(latest.payload, dict) else None
+                sender = (
+                    (latest.payload.get("from_name") or latest.payload.get("from_email"))
+                    if isinstance(latest.payload, dict)
+                    else None
+                )
+                return message, sender
+
+            return None, None
+
         inbox_items: list[InboxItemResponse] = []
 
         for interaction in interactions:
@@ -118,6 +205,11 @@ class InboxService:
                     interaction.interaction_id,
                 )
                 continue
+
+            reply_count, latest_reply = thread_summaries.get(
+                interaction.interaction_id, (0, None)
+            )
+            latest_message, latest_sender = _latest_reply_preview(latest_reply)
 
             inbox_items.append(
 
@@ -162,6 +254,18 @@ class InboxService:
                     folder_id=interaction.folder_id,
 
                     snoozed_until=interaction.snoozed_until,
+
+                    reply_count=reply_count,
+
+                    latest_message=latest_message,
+
+                    latest_sender=latest_sender,
+
+                    latest_at=(
+                        latest_reply.created_at
+                        if latest_reply is not None
+                        else None
+                    ),
 
                 )
 

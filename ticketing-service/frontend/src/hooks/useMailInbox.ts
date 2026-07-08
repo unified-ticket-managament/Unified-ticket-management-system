@@ -55,6 +55,10 @@ function sentItemToInboxItem(item: SentItem): InboxItem {
     tags: [],
     folder_id: null,
     snoozed_until: null,
+    reply_count: 0,
+    latest_message: null,
+    latest_sender: null,
+    latest_at: null,
   };
 }
 
@@ -80,6 +84,10 @@ function draftItemToInboxItem(item: DraftItem): InboxItem {
     tags: [],
     folder_id: null,
     snoozed_until: null,
+    reply_count: 0,
+    latest_message: null,
+    latest_sender: null,
+    latest_at: null,
   };
 }
 

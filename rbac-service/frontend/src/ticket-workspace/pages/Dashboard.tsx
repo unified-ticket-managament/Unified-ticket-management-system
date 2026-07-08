@@ -243,8 +243,8 @@ export function Dashboard() {
           />
         </div>
 
-        <div className={`grid grid-cols-1 gap-3 ${currentUser?.role === "Staff" ? "sm:grid-cols-2" : "sm:grid-cols-3"}`}>
-          {currentUser?.role !== "Staff" && (
+        <div className={`grid grid-cols-1 gap-3 ${currentUser?.role === "Site Lead" ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+          {currentUser?.role === "Site Lead" && (
             <QuickAction
               to="/create-mail"
               icon={<MailPlus size={17} />}

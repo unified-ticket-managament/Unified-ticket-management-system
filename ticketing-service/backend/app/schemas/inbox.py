@@ -53,6 +53,19 @@ class InboxItemResponse(BaseModel):
 
     snoozed_until: datetime | None = None
 
+    # Outlook-style thread summary — how many replies (agent or
+    # client) are filed under this root, and a snippet of the most
+    # recent one, so the inbox row updates without opening the
+    # thread. reply_count == 0 / latest_* == None means nobody has
+    # replied yet — the row still shows the root email's own info.
+    reply_count: int = 0
+
+    latest_message: str | None = None
+
+    latest_sender: str | None = None
+
+    latest_at: datetime | None = None
+
 
 class InboxResponse(BaseModel):
     """

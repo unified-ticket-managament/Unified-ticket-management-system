@@ -93,6 +93,13 @@ export function InboxActionsPanel() {
     }
   }
 
+  function openAttachModal() {
+    // Prefill from the backend's best-effort recommendation, if any
+    // — the agent can still clear/override it before confirming.
+    setExistingTicketId(selectedEmail?.recommended_ticket_id ?? "");
+    setAttachOpen(true);
+  }
+
   async function handleAttachExisting() {
     if (!selectedEmail || !existingTicketId) return;
 
@@ -158,7 +165,7 @@ export function InboxActionsPanel() {
         </button>
 
         <button
-          onClick={() => setAttachOpen(true)}
+          onClick={openAttachModal}
           className="group flex items-center gap-3 rounded-md2 border border-accent/20 bg-accent/5 px-4 py-3.5 text-left transition-all duration-150 hover:-translate-y-0.5 hover:border-accent/30 hover:bg-accent/10 hover:shadow-xs"
         >
           <div className="flex h-9 w-9 flex-none items-center justify-center rounded-md2 bg-accent/15 text-accent">
@@ -168,7 +175,11 @@ export function InboxActionsPanel() {
             <p className="text-[13px] font-semibold text-slate-900">
               Attach to Existing Ticket
             </p>
-            <p className="text-[11px] text-muted">Link this email to an existing ticket</p>
+            <p className="text-[11px] text-muted">
+              {selectedEmail.recommended_ticket_id
+                ? "We found a likely match from this thread"
+                : "Link this email to an existing ticket"}
+            </p>
           </div>
         </button>
 
@@ -352,12 +363,35 @@ export function InboxActionsPanel() {
           </>
         }
       >
-        <TextInput
-          label="Existing ticket ID"
-          placeholder="Paste a ticket_id"
-          value={existingTicketId}
-          onChange={(e) => setExistingTicketId(e.target.value)}
-        />
+        <div className="flex flex-col gap-3">
+          {selectedEmail.recommended_ticket_id && (
+            <div className="rounded-md2 border border-accent/20 bg-accent/5 px-3.5 py-2.5 text-xs">
+              <p className="font-semibold text-accent">
+                Recommended: {selectedEmail.recommended_ticket_id.slice(0, 8)}…
+              </p>
+              <p className="mt-0.5 text-muted">{selectedEmail.recommended_ticket_reason}</p>
+              {existingTicketId !== selectedEmail.recommended_ticket_id && (
+                <button
+                  onClick={() => setExistingTicketId(selectedEmail.recommended_ticket_id!)}
+                  className="mt-1.5 font-medium text-accent hover:underline"
+                >
+                  Use this ticket
+                </button>
+              )}
+            </div>
+          )}
+          <TextInput
+            label="Existing ticket ID"
+            placeholder="Paste a ticket_id"
+            value={existingTicketId}
+            onChange={(e) => setExistingTicketId(e.target.value)}
+            hint={
+              selectedEmail.recommended_ticket_id
+                ? "Prefilled from the recommendation above — clear it to search/paste a different one."
+                : undefined
+            }
+          />
+        </div>
       </Modal>
     </>
   );

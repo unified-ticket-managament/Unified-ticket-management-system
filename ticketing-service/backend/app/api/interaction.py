@@ -13,9 +13,12 @@ from app.repositories.ticket_repository import (
     TicketRepository,
 )
 from app.repositories.user_repository import UserRepository
+from app.repositories.attachment_repository import AttachmentRepository
+from app.repositories.client_repository import ClientRepository
 from app.schemas.interaction import (
     HideInteractionRequest,
     HideInteractionResponse,
+    ThreadResponse,
 )
 from app.services.interaction_service import InteractionService
 
@@ -23,6 +26,46 @@ router = APIRouter(
     prefix="/interactions",
     tags=["Interactions"],
 )
+
+
+# =========================================================
+# Thread Fetch — Outlook-style "open the conversation"
+# =========================================================
+
+@router.get(
+    "/{interaction_id}/thread",
+    response_model=ThreadResponse,
+)
+async def get_thread(
+    interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns the full conversation for any id within it — the root
+    itself, or any reply/follow-up filed under it. Resolves up to the
+    thread root first, so opening a reply's own id still returns the
+    complete thread, not just that one message.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+    attachment_repository = AttachmentRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+        attachment_repository=attachment_repository,
+    )
+
+    return await service.get_thread(
+        interaction_id=interaction_id,
+        current_user=current_user,
+    )
 
 
 # =========================================================

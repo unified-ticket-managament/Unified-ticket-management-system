@@ -55,6 +55,12 @@ class OpenEmailResponse(BaseModel):
 
     ticket_category: str | None = None
 
+    # Lets the Mail inbox's own reply composer disable/hide itself on
+    # a closed ticket without a failed round-trip — the backend's
+    # ensure_ticket_not_closed (called from add_reply) is still the
+    # real enforcement, this is just so the UI doesn't need to guess.
+    ticket_status: str | None = None
+
     tags: list[str] = Field(default_factory=list)
 
     folder_id: UUID | None = None
@@ -70,3 +76,13 @@ class OpenEmailResponse(BaseModel):
     attachments: list[AttachmentMetadata] = Field(default_factory=list)
 
     replies: list[InteractionResponse] = Field(default_factory=list)
+
+    # "Attach to Existing Ticket" convenience — populated when the
+    # thread's own headers (or an already-ticketed reply within it)
+    # let us infer which ticket this is probably about, so the
+    # Account Manager isn't stuck pasting a ticket_id from memory.
+    # None means "no confident guess", not an error — the normal
+    # manual search/paste flow still works either way.
+    recommended_ticket_id: UUID | None = None
+
+    recommended_ticket_reason: str | None = None

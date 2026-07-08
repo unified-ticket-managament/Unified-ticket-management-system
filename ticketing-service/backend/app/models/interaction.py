@@ -182,6 +182,32 @@ class Interaction(Base):
         nullable=True,
     )
 
+    # Graph-ready threading headers — real columns (not payload-only)
+    # so future lookups can index/query them directly instead of
+    # scanning JSON. `conversation_id` is Microsoft Graph's own
+    # thread identifier (unavailable until Task 1 ships; NULL for
+    # every dummy-mail-flow interaction today). `in_reply_to_message_id`
+    # and `references` mirror the RFC 5322 headers already carried in
+    # `payload["in_reply_to"]`/`payload["references"]` for a fresh
+    # inbound EMAIL row, promoted to first-class columns so thread
+    # matching doesn't need to deserialize payload JSON.
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+    )
+
+    in_reply_to_message_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+    )
+
+    references: Mapped[list | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
     DateTime(timezone=True),
     default=lambda: datetime.now(timezone.utc),

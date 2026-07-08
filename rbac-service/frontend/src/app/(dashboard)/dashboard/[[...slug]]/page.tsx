@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { useParams } from "next/navigation";
 import { SuperAdminDashboard } from "@/components/dashboard/super-admin-dashboard";
 import { ViewerDashboard } from "@/components/dashboard/viewer-dashboard";
 import { ROLE_NAMES } from "@/lib/role-access";
@@ -13,6 +14,19 @@ import { useAuthStore } from "@/store/auth-store";
 // this subtree and mounts it purely on the client instead.
 const TicketWorkspaceApp = dynamic(
   () => import("@tw/TicketWorkspaceApp").then((mod) => mod.TicketWorkspaceApp),
+  { ssr: false }
+);
+
+// Site Lead's one, deliberately narrow exception to "Site Lead never
+// reaches the ticket workspace" (see the role check below) — the
+// dummy-mail simulator, rendered on its own rather than via the full
+// TicketWorkspaceApp. See DummyMailOnlyApp's own docstring for why
+// that isolation matters (mounting the full app's <BrowserRouter>
+// would let an in-app <Link> navigate Site Lead into every other
+// ticket-workspace route without this page's role check running
+// again).
+const DummyMailOnlyApp = dynamic(
+  () => import("@tw/DummyMailOnlyApp").then((mod) => mod.DummyMailOnlyApp),
   { ssr: false }
 );
 
@@ -33,6 +47,12 @@ const TicketWorkspaceApp = dynamic(
 // too.
 export default function DashboardCatchAllPage() {
   const role = useAuthStore((state) => state.user?.role);
+  const params = useParams<{ slug?: string[] }>();
+  const slug = params?.slug ?? [];
+
+  if (role === ROLE_NAMES.SITE_LEAD && slug.length === 1 && slug[0] === "create-mail") {
+    return <DummyMailOnlyApp />;
+  }
 
   if (role === ROLE_NAMES.SUPER_ADMIN || role === ROLE_NAMES.SITE_LEAD) {
     return <SuperAdminDashboard />;

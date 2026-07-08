@@ -34,6 +34,25 @@ ACCOUNT_MANAGER_ROLE_NAME = "Account Manager"
 # and Site Lead/Super Admin retain full oversight by design.
 CATEGORY_SCOPED_ROLE_NAMES = {"Team Lead", "Staff"}
 
+# Roles with an unrestricted, org-wide Mail inbox — every client,
+# every team, every agent's threads (InboxService.get_inbox). Site
+# Lead is the CEO's "global inbox" role; Super Admin retains the same
+# oversight it has everywhere else. Deliberately NOT the same set as
+# SUPERVISOR_ROLE_NAMES above: Team Lead and Account Manager can
+# still bypass ownership scoping for ticket-level actions like
+# reassignment, but neither gets the raw "see every client's mail"
+# escape hatch that used to live behind view=all/scope=all for every
+# SUPERVISOR_ROLE_NAMES member — Team Lead is now category-scoped and
+# Account Manager stays client-scoped for Mail specifically.
+GLOBAL_INBOX_ROLE_NAMES = {"Site Lead", "Super Admin"}
+
+# The only role allowed to use the internal "Create Dummy Mail"
+# simulator (POST /emails/dummy) — a testing/demo tool, not the real
+# inbound-email transport route (POST /emails/incoming, which stays
+# unauthenticated for the future Graph/n8n webhook and is untouched
+# by this restriction).
+DUMMY_MAIL_ROLE_NAMES = {"Site Lead"}
+
 
 def ensure_ticket_not_closed(ticket: Ticket) -> None:
     """
@@ -86,6 +105,40 @@ def ensure_agent_can_view_ticket(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have access to this ticket.",
+        )
+
+
+async def ensure_agent_can_view_pending_interaction(
+    interaction,
+    current_user: User,
+    client_repository,
+) -> None:
+    """
+    Gates a still-pending (pre-ticket) Mail item the same way
+    InboxService.get_inbox already scopes the list view: the Account
+    Manager who owns the item's client, or a global-inbox role (Site
+    Lead/Super Admin). Team Lead/Staff are deliberately excluded —
+    they never see a pending item in their own inbox list either, so
+    a crafted request for its interaction_id shouldn't work either.
+
+    Shared by InteractionService (claim/archive/snooze/tags/folder/
+    drafts) and OpenEmailService (opening the thread itself) so
+    "can act on it" and "can see it" stay the same rule.
+    """
+
+    if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
+        return
+
+    client = (
+        await client_repository.get_by_id(interaction.client_id)
+        if client_repository is not None and interaction.client_id is not None
+        else None
+    )
+
+    if client is None or client.account_manager_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this item.",
         )
 
 

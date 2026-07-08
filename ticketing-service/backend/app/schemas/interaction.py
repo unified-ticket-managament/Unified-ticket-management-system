@@ -22,6 +22,9 @@ class InteractionCreate(BaseModel):
     parent_interaction_id: UUID | None = None
     received_at: datetime | None = None
     is_draft: bool = False
+    conversation_id: str | None = Field(default=None, max_length=255)
+    in_reply_to_message_id: str | None = Field(default=None, max_length=255)
+    references: list[str] | None = None
 
 
 class InteractionUpdate(BaseModel):
@@ -50,6 +53,24 @@ class InteractionResponse(ORMBase):
     received_at: datetime | None = None
     created_at: datetime
     attachments: list[AttachmentMetadata] = Field(default_factory=list)
+    conversation_id: str | None = None
+    in_reply_to_message_id: str | None = None
+    references: list[str] = Field(default_factory=list)
+
+
+class ThreadResponse(ORMBase):
+    """
+    A full conversation — the root (parent) interaction plus every
+    reply/follow-up filed under it, chronologically ordered. Returned
+    regardless of whether the caller asked for the root's own id or
+    any reply/draft within the thread (the id is resolved up to the
+    root first — see InteractionService.get_thread).
+    """
+
+    root: InteractionResponse
+    replies: list[InteractionResponse] = Field(default_factory=list)
+    reply_count: int = 0
+    latest_reply: InteractionResponse | None = None
 
 
 class HideInteractionRequest(BaseModel):

@@ -143,22 +143,36 @@ class EmailService:
         received_at = email.received_at or datetime.now(timezone.utc)
 
         # ---------------------------------------
-        # Thread Check — does this email's In-Reply-To /
-        # References match a message_id we've already stored?
+        # Thread Check — priority order: conversation_id (Graph's own
+        # thread id, once Task 1 ships) -> in_reply_to -> references.
+        # First tier that resolves to a stored interaction wins; we
+        # don't merge candidates from lower tiers once a higher one
+        # matches, so a conversation_id match can't be second-guessed
+        # by an unrelated References entry.
         # ---------------------------------------
-
-        candidate_ids = list(email.references)
-        if email.in_reply_to:
-            candidate_ids.append(email.in_reply_to)
 
         matched = None
 
-        if candidate_ids:
-            matches = await self.interaction_repository.get_by_message_ids(
-                candidate_ids
+        if email.conversation_id:
+            conversation_matches = await self.interaction_repository.get_by_conversation_id(
+                email.conversation_id
             )
-            if matches:
-                matched = matches[0]
+            if conversation_matches:
+                matched = conversation_matches[0]
+
+        if matched is None and email.in_reply_to:
+            in_reply_to_matches = await self.interaction_repository.get_by_message_ids(
+                [email.in_reply_to]
+            )
+            if in_reply_to_matches:
+                matched = in_reply_to_matches[0]
+
+        if matched is None and email.references:
+            reference_matches = await self.interaction_repository.get_by_message_ids(
+                email.references
+            )
+            if reference_matches:
+                matched = reference_matches[0]
 
         ticket_id = None
         parent_interaction_id = None
@@ -238,6 +252,12 @@ class EmailService:
     parent_interaction_id=parent_interaction_id,
 
     received_at=received_at,
+
+    conversation_id=email.conversation_id,
+
+    in_reply_to_message_id=email.in_reply_to,
+
+    references=email.references or None,
 )
 
         created = (
