@@ -50,6 +50,7 @@ OWNED_TABLES = {
     "ticket_audit_logs",
     "mail_folders",
     "ticket_relations",
+    "ticket_edit_access_requests",
 }
 
 

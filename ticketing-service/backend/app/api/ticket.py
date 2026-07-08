@@ -17,6 +17,9 @@ from app.repositories.client_repository import ClientRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.repositories.ticket_edit_access_repository import (
+    TicketEditAccessRequestRepository,
+)
 from app.repositories.ticket_relation_repository import TicketRelationRepository
 from app.repositories.ticket_repository import (
     TicketRepository,
@@ -31,6 +34,12 @@ from app.schemas.attachment import (
     AttachmentUploadResponse,
 )
 from app.schemas.audit_log import AuditLogResponse
+from app.schemas.edit_access import (
+    EditAccessApproveRequest,
+    EditAccessRejectRequest,
+    EditAccessRequestCreate,
+    EditAccessRequestResponse,
+)
 from app.schemas.interaction import (
     HideInteractionRequest,
     HideInteractionResponse,
@@ -60,6 +69,7 @@ from app.schemas.ticket_from_interaction import (
 )
 
 from app.services.attachment_service import AttachmentService
+from app.services.edit_access_service import EditAccessService
 from app.services.inbox_ticket_service import InboxTicketService
 from app.services.interaction_service import InteractionService
 from app.services.ticket_service import TicketService
@@ -224,11 +234,13 @@ async def add_internal_note(
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
+    edit_access_repository = TicketEditAccessRequestRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        edit_access_repository=edit_access_repository,
     )
 
     return await service.add_internal_note(
@@ -265,12 +277,14 @@ async def reply_to_client(
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     client_repository = ClientRepository(db)
+    edit_access_repository = TicketEditAccessRequestRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         client_repository=client_repository,
+        edit_access_repository=edit_access_repository,
     )
 
     return await service.add_reply(
@@ -339,11 +353,13 @@ async def change_ticket_status(
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
+    edit_access_repository = TicketEditAccessRequestRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        edit_access_repository=edit_access_repository,
     )
 
     return await service.change_status(
@@ -691,3 +707,110 @@ async def get_ticket(
     )
 
     return await service.get_by_id(ticket_id, current_user=current_user)
+
+
+# =========================================================
+# Edit Access — Request / Approve / Reject
+# =========================================================
+
+
+def _get_edit_access_service(db: AsyncSession) -> EditAccessService:
+    return EditAccessService(
+        ticket_repository=TicketRepository(db),
+        user_repository=UserRepository(db),
+        interaction_repository=InteractionRepository(db),
+        edit_access_repository=TicketEditAccessRequestRepository(db),
+    )
+
+
+@router.post(
+    "/{ticket_id}/edit-access/request",
+    response_model=EditAccessRequestResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def request_edit_access(
+    ticket_id: UUID,
+    request: EditAccessRequestCreate,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Asks to work a ticket you're not the assigned agent on and don't
+    already hold ticket:edit_ticket for. Reviewed by anyone who does.
+    """
+
+    service = _get_edit_access_service(db)
+
+    return await service.request_access(
+        ticket_id=ticket_id,
+        request=request,
+        current_user=current_user,
+    )
+
+
+@router.get(
+    "/{ticket_id}/edit-access",
+    response_model=list[EditAccessRequestResponse],
+    status_code=status.HTTP_200_OK,
+)
+async def list_edit_access_requests(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Returns every edit-access request on this ticket, newest first."""
+
+    service = _get_edit_access_service(db)
+
+    return await service.list_for_ticket(ticket_id, current_user=current_user)
+
+
+@router.post(
+    "/{ticket_id}/edit-access/{request_id}/approve",
+    response_model=EditAccessRequestResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def approve_edit_access(
+    ticket_id: UUID,
+    request_id: UUID,
+    request: EditAccessApproveRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Approves a pending edit-access request. Requires ticket:edit_ticket
+    yourself — the same permission this grants the requester.
+    """
+
+    service = _get_edit_access_service(db)
+
+    return await service.approve(
+        ticket_id=ticket_id,
+        request_id=request_id,
+        request=request,
+        current_user=current_user,
+    )
+
+
+@router.post(
+    "/{ticket_id}/edit-access/{request_id}/reject",
+    response_model=EditAccessRequestResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def reject_edit_access(
+    ticket_id: UUID,
+    request_id: UUID,
+    request: EditAccessRejectRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rejects a pending edit-access request."""
+
+    service = _get_edit_access_service(db)
+
+    return await service.reject(
+        ticket_id=ticket_id,
+        request_id=request_id,
+        request=request,
+        current_user=current_user,
+    )

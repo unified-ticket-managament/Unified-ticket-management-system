@@ -9,6 +9,7 @@ RBAC owns:
     - Permission
     - RolePermission
     - AuditLog
+    - UserPermissionOverride
 """
 
 from shared_models.database import Base
@@ -17,6 +18,7 @@ from shared_models.models import User, Role, Category
 from app.models.permission import Permission
 from app.models.role_permission import RolePermission
 from app.models.audit_log import AuditLog
+from app.models.permission_override import UserPermissionOverride
 
 __all__ = [
     "Base",
@@ -26,4 +28,5 @@ __all__ = [
     "Permission",
     "RolePermission",
     "AuditLog",
+    "UserPermissionOverride",
 ]

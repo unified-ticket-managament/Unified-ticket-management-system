@@ -3,6 +3,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
 from app.database.session import get_db
+from app.repositories.permission_override_repository import (
+    PermissionOverrideRepository,
+)
 from app.repositories.role_permission_repository import RolePermissionRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.auth import (
@@ -14,6 +17,7 @@ from app.schemas.auth import (
     UpdateProfileRequest,
 )
 from app.services.auth_service import AuthService
+from app.services.permission_resolver import PermissionResolverService
 
 router = APIRouter(
     prefix="/auth",
@@ -34,10 +38,17 @@ def get_auth_service(
     """
     user_repository = UserRepository(db)
     role_permission_repository = RolePermissionRepository(db)
+    permission_override_repository = PermissionOverrideRepository(db)
+
+    permission_resolver = PermissionResolverService(
+        role_permission_repository=role_permission_repository,
+        permission_override_repository=permission_override_repository,
+    )
 
     return AuthService(
         user_repository=user_repository,
         role_permission_repository=role_permission_repository,
+        permission_resolver=permission_resolver,
     )
 
 

@@ -15,6 +15,9 @@ from app.repositories.interaction_repository import (
     InteractionRepository,
 )
 from app.repositories.mail_folder_repository import MailFolderRepository
+from app.repositories.ticket_edit_access_repository import (
+    TicketEditAccessRequestRepository,
+)
 from app.repositories.ticket_repository import (
     TicketRepository,
 )
@@ -60,6 +63,7 @@ from app.services.access_control import (
     ensure_agent_can_view_pending_interaction,
     ensure_agent_can_view_ticket,
     ensure_can_reassign_ticket,
+    ensure_has_permission,
     ensure_ticket_not_closed,
 )
 from app.services.audit_log_service import AuditLogService
@@ -139,6 +143,7 @@ class InteractionService:
         client_repository: ClientRepository | None = None,
         outbound_dispatcher: OutboundDispatcher | None = None,
         mail_folder_repository: MailFolderRepository | None = None,
+        edit_access_repository: TicketEditAccessRequestRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
@@ -149,6 +154,7 @@ class InteractionService:
         self.client_repository = client_repository
         self.outbound_dispatcher = outbound_dispatcher or OutboundDispatcher()
         self.mail_folder_repository = mail_folder_repository
+        self.edit_access_repository = edit_access_repository
 
     # ---------------------------------------------------------
     # Create Interaction
@@ -420,7 +426,7 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
-        ensure_agent_can_act_on_ticket(ticket, current_user)
+        await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -484,7 +490,7 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
-        ensure_agent_can_act_on_ticket(ticket, current_user)
+        await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -695,7 +701,7 @@ class InteractionService:
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
-        ensure_agent_can_act_on_ticket(ticket, current_user)
+        await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
 
         old_status = ticket.current_status
         old_closed_at = ticket.closed_at
@@ -781,7 +787,7 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
-        ensure_agent_can_act_on_ticket(ticket, current_user)
+        ensure_has_permission(current_user, "ticket:change_priority")
 
         old_priority = ticket.current_priority
 

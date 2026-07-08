@@ -15,6 +15,7 @@ from app.auth.password import (
 )
 from app.repositories.role_permission_repository import RolePermissionRepository
 from app.repositories.user_repository import UserRepository
+from app.services.permission_resolver import PermissionResolverService
 from app.schemas.auth import (
     ChangePasswordRequest,
     CurrentUser,
@@ -33,9 +34,11 @@ class AuthService:
         self,
         user_repository: UserRepository,
         role_permission_repository: RolePermissionRepository,
+        permission_resolver: PermissionResolverService,
     ):
         self.user_repository = user_repository
         self.role_permission_repository = role_permission_repository
+        self.permission_resolver = permission_resolver
 
     # --------------------------------------------------
     # Login
@@ -71,10 +74,15 @@ class AuthService:
                 detail="Invalid email or password.",
             )
 
+        permissions, _ = await self.permission_resolver.get_effective_permissions(
+            user
+        )
+
         access_token = create_access_token(
             user_id=user.user_id,
             email=user.email,
             role=user.role.name,
+            permissions=permissions,
         )
 
         refresh_token = create_refresh_token(
@@ -136,10 +144,15 @@ class AuthService:
                 detail="User account is inactive.",
             )
 
+        permissions, _ = await self.permission_resolver.get_effective_permissions(
+            user
+        )
+
         access_token = create_access_token(
             user_id=user.user_id,
             email=user.email,
             role=user.role.name,
+            permissions=permissions,
         )
 
         refresh_token = create_refresh_token(
@@ -160,10 +173,8 @@ class AuthService:
         user: User,
     ) -> CurrentUser:
 
-        permissions = (
-            await self.role_permission_repository.get_permissions_by_role(
-                user.role_id
-            )
+        permissions, override_permissions = (
+            await self.permission_resolver.get_effective_permissions(user)
         )
 
         return CurrentUser(
@@ -173,7 +184,8 @@ class AuthService:
             role=user.role.name,
             role_id=user.role_id,
             is_active=user.is_active,
-            permissions=[p.permission_name for p in permissions],
+            permissions=permissions,
+            override_permissions=override_permissions,
         )
     
     # --------------------------------------------------

@@ -26,6 +26,7 @@ class CurrentUser(BaseModel):
     role_id: UUID
     is_active: bool
     permissions: list[str]
+    override_permissions: list[str] = []
 
 
 class ChangePasswordRequest(BaseModel):

@@ -63,6 +63,12 @@ async def get_current_user(
             detail="User account is inactive.",
         )
 
+    # Transient attribute, not a mapped column — same pattern as
+    # TicketService._attach_names, so SQLAlchemy never tries to
+    # persist it. Defaults to [] rather than KeyError-ing so a token
+    # issued before this claim existed still decodes safely.
+    user.permissions = payload.get("permissions") or []
+
     return user
 
 

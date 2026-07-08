@@ -108,20 +108,33 @@ def ensure_agent_can_view_ticket(
         )
 
 
-def ensure_agent_can_act_on_ticket(
+async def ensure_agent_can_act_on_ticket(
     ticket: Ticket,
     current_user: User,
+    edit_access_repository=None,
 ) -> None:
     """
     Working a ticket — replying, adding an internal note, changing
-    status/priority, uploading an attachment — is restricted to the
-    agent it's actually assigned to. Teammates who share the same
-    category can already see the ticket (ensure_agent_can_view_ticket,
-    called first here) but not act on someone else's claimed work;
-    an unclaimed ticket (agent_id is None) blocks everyone but
-    supervisors until someone claims it. Supervisors (SUPERVISOR_ROLE_
-    NAMES) bypass this, same as they bypass ownership scoping
-    everywhere else in this file.
+    status, uploading an attachment — is restricted to the agent it's
+    actually assigned to. Teammates who share the same category can
+    already see the ticket (ensure_agent_can_view_ticket, called first
+    here) but not act on someone else's claimed work; an unclaimed
+    ticket (agent_id is None) blocks everyone but supervisors until
+    someone claims it. Supervisors (SUPERVISOR_ROLE_NAMES) bypass
+    this, same as they bypass ownership scoping everywhere else in
+    this file.
+
+    Two further ways to act on a ticket you're not assigned to, both
+    letting more than one person work the same ticket at once (see
+    ticket:edit_ticket in seed.py's DEFAULT_ROLES): holding
+    ticket:edit_ticket outright (by role default or a personal
+    override — see rbac-service's permission_overrides), or having an
+    approved, not-yet-expired per-ticket edit-access grant (see
+    TicketEditAccessRequestRepository.has_active_grant) requested and
+    reviewed via the edit-access endpoints. `edit_access_repository`
+    is optional so callers that don't pass one simply skip the
+    per-ticket-grant check (still get the permission-based bypass,
+    which needs no repository).
 
     Deliberately NOT applied to claim_ticket (picking up an unclaimed
     ticket is how you become its assigned agent in the first place)
@@ -134,11 +147,21 @@ def ensure_agent_can_act_on_ticket(
     if current_user.role.name in SUPERVISOR_ROLE_NAMES:
         return
 
-    if ticket.agent_id != current_user.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the agent this ticket is assigned to can perform this action.",
-        )
+    if ticket.agent_id == current_user.user_id:
+        return
+
+    if has_permission(current_user, "ticket:edit_ticket"):
+        return
+
+    if edit_access_repository is not None and await edit_access_repository.has_active_grant(
+        ticket.ticket_id, current_user.user_id
+    ):
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Only the agent this ticket is assigned to can perform this action.",
+    )
 
 
 async def ensure_account_manager_owns_ticket_client(
@@ -214,6 +237,50 @@ async def ensure_agent_can_view_pending_interaction(
         )
 
 
+def has_permission(current_user: User, permission_name: str) -> bool:
+    """
+    Non-raising check against the permission list threaded onto
+    `current_user` from the decoded JWT's `permissions` claim (see
+    dependencies/auth.py) — never a fresh network call back to RBAC,
+    matching this service's verify-only design. A token issued before
+    this claim existed, or one that's simply stale relative to a
+    since-changed RBAC grant within its own TTL, degrades to an empty
+    list rather than crashing.
+    """
+
+    permissions = getattr(current_user, "permissions", None) or []
+
+    return permission_name in permissions
+
+
+def ensure_has_permission(current_user: User, permission_name: str) -> None:
+    """Raising wrapper around has_permission — 403s if it's missing."""
+
+    if not has_permission(current_user, permission_name):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Missing required permission: {permission_name}",
+        )
+
+
+def ensure_can_review_edit_access(
+    ticket: Ticket,
+    current_user: User,
+) -> None:
+    """
+    Gates approving/rejecting a per-ticket edit-access request:
+    reviewer must be able to see the ticket at all (the same category
+    gate every other ticket action uses) and must hold
+    ticket:edit_ticket themselves — the same permission that lets
+    someone bypass ensure_agent_can_act_on_ticket's ownership check,
+    so only someone who could already act on any ticket in scope can
+    decide to let someone else in too.
+    """
+
+    ensure_agent_can_view_ticket(ticket, current_user)
+    ensure_has_permission(current_user, "ticket:edit_ticket")
+
+
 def ensure_can_reassign_ticket(current_user: User) -> None:
     """
     Only Team Lead/Account Manager/Site Lead/Super Admin may move a
@@ -222,6 +289,12 @@ def ensure_can_reassign_ticket(current_user: User) -> None:
     (`ticket:transfer` is Full for these roles, Override-only for
     Staff), which nothing enforced server-side until now.
 
+    A Staff member with no override still falls through to
+    ensure_has_permission, which 403s them (the pre-existing
+    behavior); a Staff member individually granted `ticket:transfer`
+    via a personal permission override (see permission_overrides in
+    rbac-service) is let through by that same check instead.
+
     Deliberately NOT applied to claim_ticket: picking up an unclaimed
     ticket from the shared pool for *yourself* is Staff's normal
     daily workflow (see EmailService's own docstring: "staff pick up
@@ -229,8 +302,7 @@ def ensure_can_reassign_ticket(current_user: User) -> None:
     assigned at intake") and must stay open to every agent role.
     """
 
-    if current_user.role.name not in SUPERVISOR_ROLE_NAMES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only a Team Lead, Account Manager, Site Lead, or Super Admin can reassign a ticket to another agent.",
-        )
+    if current_user.role.name in SUPERVISOR_ROLE_NAMES:
+        return
+
+    ensure_has_permission(current_user, "ticket:transfer")

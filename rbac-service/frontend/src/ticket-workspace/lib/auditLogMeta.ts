@@ -21,6 +21,9 @@ const EVENT_META: Record<AuditEventType, AuditEventMeta> = {
   CLIENT_CREATED: { icon: "🏢", label: "Client Onboarded", tone: "success" },
   INTERACTION_CLAIMED: { icon: "🙋", label: "Assigned to Me", tone: "accent" },
   INTERACTION_ARCHIVED: { icon: "🗄", label: "Archived", tone: "default" },
+  EDIT_ACCESS_REQUESTED: { icon: "🙏", label: "Edit Access Requested", tone: "warning" },
+  EDIT_ACCESS_APPROVED: { icon: "🤝", label: "Edit Access Approved", tone: "success" },
+  EDIT_ACCESS_REJECTED: { icon: "🚫", label: "Edit Access Rejected", tone: "danger" },
 };
 
 export function auditMetaFor(type: AuditEventType): AuditEventMeta {

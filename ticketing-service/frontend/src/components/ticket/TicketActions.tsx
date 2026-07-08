@@ -52,18 +52,21 @@ function ActionTile({
   label,
   tone,
   disabled,
+  title,
   onClick,
 }: {
   icon: ReactNode;
   label: string;
   tone: Tone;
   disabled?: boolean;
+  title?: string;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className="group flex flex-col items-center gap-2 rounded-md2 border border-border bg-surface px-3 py-4 text-center transition-all duration-150 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-cardHover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:shadow-none"
     >
       <span className={`flex h-9 w-9 items-center justify-center rounded-md2 transition-colors ${tileToneClasses[tone]}`}>
@@ -121,6 +124,12 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   if (!activeTicket) return null;
 
   const isStaff = currentUser?.role === "Staff";
+  const canChangePriority = (currentUser?.permissions ?? []).includes(
+    "ticket:change_priority"
+  );
+  const canTransfer = isStaff
+    ? (currentUser?.permissions ?? []).includes("ticket:transfer")
+    : true;
   const isUnclaimed = activeTicket.agent_id == null;
   const transferCandidates = agents.filter((a) => a.user_id !== activeTicket.agent_id);
   // Closed is terminal for every action except Change Status itself —
@@ -198,10 +207,11 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
             icon={<Flame size={16} />}
             label="Change Priority"
             tone="danger"
-            disabled={isTicketClosed}
+            disabled={isTicketClosed || !canChangePriority}
+            title={canChangePriority ? undefined : "Requires the Change Priority permission"}
             onClick={() => setModal("priority")}
           />
-          {!isStaff && (
+          {(!isStaff || canTransfer) && (
             <ActionTile
               icon={<ArrowLeftRight size={16} />}
               label={isUnclaimed ? "Assign to Staff" : "Transfer Agent"}

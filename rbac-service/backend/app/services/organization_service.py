@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from shared_models.models import User
 
 from app.repositories import RoleRepository, UserRepository
@@ -140,6 +142,35 @@ class OrganizationService:
         ]
 
         return await self._to_node(user, children)
+
+    # --------------------------------------------------
+    # Subordinate Lookup
+    # --------------------------------------------------
+
+    async def get_subordinate_user_ids(
+        self,
+        user: User,
+    ) -> set[UUID]:
+        """
+        Flattens this user's own subtree (see _build_subtree) into the
+        set of every user_id reporting to them, directly or
+        transitively. Reuses the same manager_id/teamlead_id traversal
+        already built for the org chart instead of duplicating it —
+        used to scope an Account Manager's permission-override grant
+        authority to "their own reports" only.
+        """
+
+        root = await self._build_subtree(user)
+        subordinate_ids: set[UUID] = set()
+
+        def collect(node: OrganizationNode) -> None:
+            for child in node.children:
+                subordinate_ids.add(child.user_id)
+                collect(child)
+
+        collect(root)
+
+        return subordinate_ids
 
     # --------------------------------------------------
     # Helpers

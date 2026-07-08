@@ -2,6 +2,10 @@ import { apiClient } from "./client";
 import type {
   AttachInteractionRequest,
   AttachInteractionResponse,
+  EditAccessApproveRequest,
+  EditAccessRejectRequest,
+  EditAccessRequestCreate,
+  EditAccessRequestResponse,
   RelateTicketResponse,
   TicketActionResponse,
   TicketFromInteractionRequest,
@@ -104,6 +108,56 @@ export async function removeRelatedTicket(
 ): Promise<UnrelateTicketResponse> {
   const { data } = await apiClient.delete<UnrelateTicketResponse>(
     `/tickets/${ticketId}/related/${relatedTicketId}`
+  );
+  return data;
+}
+
+// POST /tickets/{ticket_id}/edit-access/request — ask to work a
+// ticket you're not the assigned agent on and don't already hold
+// ticket:edit_ticket for.
+export async function requestEditAccess(
+  ticketId: string,
+  payload: EditAccessRequestCreate
+): Promise<EditAccessRequestResponse> {
+  const { data } = await apiClient.post<EditAccessRequestResponse>(
+    `/tickets/${ticketId}/edit-access/request`,
+    payload
+  );
+  return data;
+}
+
+// GET /tickets/{ticket_id}/edit-access
+export async function listEditAccessRequests(
+  ticketId: string
+): Promise<EditAccessRequestResponse[]> {
+  const { data } = await apiClient.get<EditAccessRequestResponse[]>(
+    `/tickets/${ticketId}/edit-access`
+  );
+  return data;
+}
+
+// POST /tickets/{ticket_id}/edit-access/{request_id}/approve
+export async function approveEditAccess(
+  ticketId: string,
+  requestId: string,
+  payload: EditAccessApproveRequest = {}
+): Promise<EditAccessRequestResponse> {
+  const { data } = await apiClient.post<EditAccessRequestResponse>(
+    `/tickets/${ticketId}/edit-access/${requestId}/approve`,
+    payload
+  );
+  return data;
+}
+
+// POST /tickets/{ticket_id}/edit-access/{request_id}/reject
+export async function rejectEditAccess(
+  ticketId: string,
+  requestId: string,
+  payload: EditAccessRejectRequest = {}
+): Promise<EditAccessRequestResponse> {
+  const { data } = await apiClient.post<EditAccessRequestResponse>(
+    `/tickets/${ticketId}/edit-access/${requestId}/reject`,
+    payload
   );
   return data;
 }

@@ -12,6 +12,7 @@ export interface AuthUser {
   role_id: string;
   is_active: boolean;
   permissions: string[];
+  override_permissions?: string[];
 }
 
 export interface User {
@@ -45,6 +46,20 @@ export interface Permission {
   permission_name: string;
   description: string | null;
   created_at: string;
+}
+
+export interface PermissionOverride {
+  override_id: string;
+  user_id: string;
+  permission_id: string;
+  permission_name: string;
+  granted_by: string | null;
+  reason: string | null;
+  granted_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  is_active: boolean;
 }
 
 export interface AuditLog {

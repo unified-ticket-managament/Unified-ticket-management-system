@@ -6,6 +6,7 @@ import {
   LoginForm,
   OrganizationNode,
   Permission,
+  PermissionOverride,
   ProfileForm,
   Role,
   RoleForm,
@@ -300,6 +301,40 @@ export const permissionService = {
     );
 
     return response.data;
+  },
+};
+
+/* -------------------------------------------------------------------------- */
+/*                        PERSONAL PERMISSION OVERRIDES                       */
+/* -------------------------------------------------------------------------- */
+
+export const permissionOverrideService = {
+  list: async (
+    userId: string,
+    includeRevoked = false
+  ): Promise<PermissionOverride[]> => {
+    const response = await api.get<PermissionOverride[]>(
+      `/users/${userId}/permission-overrides`,
+      { params: { include_revoked: includeRevoked } }
+    );
+
+    return response.data;
+  },
+
+  grant: async (
+    userId: string,
+    data: { permission_id: string; reason?: string; expires_at?: string | null }
+  ): Promise<PermissionOverride> => {
+    const response = await api.post<PermissionOverride>(
+      `/users/${userId}/permission-overrides`,
+      data
+    );
+
+    return response.data;
+  },
+
+  revoke: async (userId: string, overrideId: string): Promise<void> => {
+    await api.delete(`/users/${userId}/permission-overrides/${overrideId}`);
   },
 };
 

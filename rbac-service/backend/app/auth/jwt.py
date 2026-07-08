@@ -20,6 +20,7 @@ class JWTManager:
         user_id: UUID,
         email: str,
         role: str,
+        permissions: list[str],
         expires_delta: timedelta | None = None,
     ) -> str:
 
@@ -35,6 +36,7 @@ class JWTManager:
             "user_id": str(user_id),
             "email": email,
             "role": role,
+            "permissions": permissions,
             "type": "access",
             "exp": expire,
         }

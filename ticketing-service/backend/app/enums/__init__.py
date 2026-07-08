@@ -9,6 +9,7 @@ from .audit_enums import (
     AuditEntityType,
     AuditEventType,
 )
+from .edit_access_enums import EditAccessStatus
 
 __all__ = [
     "TicketStatus",
@@ -18,4 +19,5 @@ __all__ = [
     "ActorRole",
     "AuditEntityType",
     "AuditEventType",
+    "EditAccessStatus",
 ]

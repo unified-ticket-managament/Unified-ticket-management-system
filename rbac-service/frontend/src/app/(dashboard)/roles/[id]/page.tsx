@@ -1,10 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { KeyRound, Shield, Users } from "lucide-react";
+import { KeyRound, Pencil, Shield, Users } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
+import { RolePermissionsDialog } from "@/components/roles/role-permissions-dialog";
 import { Breadcrumbs } from "@/components/shared/breadcrumbs";
 import { EmptyState, ErrorState } from "@/components/shared/stats";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -13,12 +15,18 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate } from "@/lib/utils";
+import { ROLE_NAMES } from "@/lib/role-access";
 import { permissionService, roleService, userService } from "@/services";
+import { useAuthStore } from "@/store/auth-store";
 import { Permission, Role, User } from "@/types";
 
 export default function RoleDetailsPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const currentUser = useAuthStore((s) => s.user);
+  const canManagePermissions =
+    currentUser?.role === ROLE_NAMES.SUPER_ADMIN || currentUser?.role === ROLE_NAMES.ACCOUNT_MANAGER;
+  const [permissionsDialogOpen, setPermissionsDialogOpen] = useState(false);
 
   const roleQuery = useQuery({
     queryKey: ["role-detail", params.id],
@@ -101,8 +109,19 @@ export default function RoleDetailsPage() {
           </Card>
 
           <Card>
-            <CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0">
               <CardTitle className="text-base">Permissions</CardTitle>
+              {canManagePermissions && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={() => setPermissionsDialogOpen(true)}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                  Permissions
+                </Button>
+              )}
             </CardHeader>
             <CardContent>
               {permissionsQuery.isLoading ? (
@@ -160,6 +179,12 @@ export default function RoleDetailsPage() {
           </Card>
         </div>
       </div>
+
+      <RolePermissionsDialog
+        role={role ?? null}
+        open={permissionsDialogOpen}
+        onOpenChange={setPermissionsDialogOpen}
+      />
     </div>
   );
 }

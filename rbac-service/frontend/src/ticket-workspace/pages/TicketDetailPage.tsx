@@ -7,6 +7,7 @@ import { TicketActivityPanel, type ActivityTab } from "@tw/components/ticket/Tic
 import { TicketComposer, type ComposerMode } from "@tw/components/ticket/TicketComposer";
 import { TicketDetails } from "@tw/components/ticket/TicketDetails";
 import { TicketActions } from "@tw/components/ticket/TicketActions";
+import { EditAccessPanel } from "@tw/components/ticket/EditAccessPanel";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { getTicket } from "@tw/api/ticket";
 import { getTicketTimeline } from "@tw/api/interaction";
@@ -102,6 +103,7 @@ export function TicketDetailPage() {
                 <div className="flex flex-col gap-5 lg:sticky lg:top-0">
                   <TicketDetails onRelatedChanged={refreshAll} />
                   <TicketActions onActionComplete={refreshAll} onOpenComposer={setComposerMode} />
+                  <EditAccessPanel />
                 </div>
               </div>
             </div>
