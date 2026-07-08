@@ -55,7 +55,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { formatDate } from "@/lib/utils";
-import { ROLE_NAMES } from "@/lib/role-access";
+import { canDeleteRecords, ROLE_NAMES } from "@/lib/role-access";
 import { categoryService, roleService, userService } from "@/services";
 import { PermissionGuard } from "@/components/auth/PermissionGuard";
 import { useAuthStore } from "@/store/auth-store";
