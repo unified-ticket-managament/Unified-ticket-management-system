@@ -2,12 +2,14 @@ import { apiClient } from "./client";
 import type {
   AttachInteractionRequest,
   AttachInteractionResponse,
+  RelateTicketResponse,
   TicketActionResponse,
   TicketFromInteractionRequest,
   TicketFromInteractionResponse,
   TicketResponse,
   TicketUpdateRequest,
   TransferAgentRequest,
+  UnrelateTicketResponse,
 } from "@tw/types";
 
 // GET /tickets
@@ -78,6 +80,30 @@ export async function claimTicket(
 ): Promise<TicketActionResponse> {
   const { data } = await apiClient.post<TicketActionResponse>(
     `/tickets/${ticketId}/claim`
+  );
+  return data;
+}
+
+// POST /tickets/{ticket_id}/related — symmetric link, both tickets
+// show each other under "Related Tickets" afterward.
+export async function addRelatedTicket(
+  ticketId: string,
+  relatedTicketId: string
+): Promise<RelateTicketResponse> {
+  const { data } = await apiClient.post<RelateTicketResponse>(
+    `/tickets/${ticketId}/related`,
+    { related_ticket_id: relatedTicketId }
+  );
+  return data;
+}
+
+// DELETE /tickets/{ticket_id}/related/{related_ticket_id}
+export async function removeRelatedTicket(
+  ticketId: string,
+  relatedTicketId: string
+): Promise<UnrelateTicketResponse> {
+  const { data } = await apiClient.delete<UnrelateTicketResponse>(
+    `/tickets/${ticketId}/related/${relatedTicketId}`
   );
   return data;
 }

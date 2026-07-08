@@ -11,8 +11,12 @@ from app.repositories.interaction_repository import (
 from app.repositories.user_repository import UserRepository
 
 from app.schemas.inbox import (
+    DraftItemResponse,
+    DraftListResponse,
     InboxItemResponse,
     InboxResponse,
+    SentItemResponse,
+    SentResponse,
 )
 
 from app.schemas.payloads import EmailPayload
@@ -49,6 +53,7 @@ class InboxService:
         client_id: UUID | None = None,
         view: str = "pending",
         scope: str = "mine",
+        folder_id: UUID | None = None,
     ) -> InboxResponse:
         """
         Returns the inbox for the current user.
@@ -73,6 +78,7 @@ class InboxService:
             account_manager_id=account_manager_id,
             client_id=client_id,
             view=view,
+            folder_id=folder_id,
         )
 
         interactions_with_attachments: set = set()
@@ -151,6 +157,12 @@ class InboxService:
                         else None
                     ),
 
+                    tags=interaction.tags,
+
+                    folder_id=interaction.folder_id,
+
+                    snoozed_until=interaction.snoozed_until,
+
                 )
 
             )
@@ -162,3 +174,112 @@ class InboxService:
             items=inbox_items,
 
         )
+
+    async def get_sent(self, current_user: User) -> SentResponse:
+        """
+        Every reply `current_user` has sent, pre-ticket or
+        ticket-level alike — a separate shape from `get_inbox` since
+        a sent reply is a thread child, not a root, and carries no
+        subject/client_name of its own (borrowed from its thread
+        root here).
+        """
+
+        replies = await self.interaction_repository.list_sent(current_user.user_id)
+
+        root_ids = {
+            reply.parent_interaction_id
+            for reply in replies
+            if reply.parent_interaction_id is not None
+        }
+        roots = await self.interaction_repository.list_by_ids(list(root_ids))
+        roots_by_id = {root.interaction_id: root for root in roots}
+
+        items: list[SentItemResponse] = []
+
+        for reply in replies:
+            root = roots_by_id.get(reply.parent_interaction_id)
+
+            client_name = "Unknown"
+            subject = "(no subject)"
+
+            if root is not None:
+                try:
+                    payload = EmailPayload.model_validate(root.payload)
+                    client_name = payload.client_name or "Unknown"
+                    subject = payload.subject
+                except ValidationError:
+                    logger.warning(
+                        "Skipping subject/client resolution for sent reply %s "
+                        "— thread root payload doesn't match EmailPayload.",
+                        reply.interaction_id,
+                    )
+
+            message = reply.payload.get("message", "") if isinstance(reply.payload, dict) else ""
+
+            items.append(
+                SentItemResponse(
+                    interaction_id=reply.interaction_id,
+                    root_interaction_id=reply.parent_interaction_id,
+                    ticket_id=reply.ticket_id,
+                    client_id=reply.client_id,
+                    client_name=client_name,
+                    subject=subject,
+                    message=message,
+                    sent_at=reply.created_at,
+                )
+            )
+
+        return SentResponse(total=len(items), items=items)
+
+    async def get_drafts(self, current_user: User) -> DraftListResponse:
+        """
+        Every draft `current_user` currently has saved, across every
+        thread — same subject/client_name-borrowed-from-root shape as
+        `get_sent`.
+        """
+
+        drafts = await self.interaction_repository.list_drafts(current_user.user_id)
+
+        root_ids = {
+            draft.parent_interaction_id
+            for draft in drafts
+            if draft.parent_interaction_id is not None
+        }
+        roots = await self.interaction_repository.list_by_ids(list(root_ids))
+        roots_by_id = {root.interaction_id: root for root in roots}
+
+        items: list[DraftItemResponse] = []
+
+        for draft in drafts:
+            root = roots_by_id.get(draft.parent_interaction_id)
+
+            client_name = "Unknown"
+            subject = "(no subject)"
+
+            if root is not None:
+                try:
+                    payload = EmailPayload.model_validate(root.payload)
+                    client_name = payload.client_name or "Unknown"
+                    subject = payload.subject
+                except ValidationError:
+                    logger.warning(
+                        "Skipping subject/client resolution for draft %s "
+                        "— thread root payload doesn't match EmailPayload.",
+                        draft.interaction_id,
+                    )
+
+            message = draft.payload.get("message", "") if isinstance(draft.payload, dict) else ""
+
+            items.append(
+                DraftItemResponse(
+                    interaction_id=draft.interaction_id,
+                    root_interaction_id=draft.parent_interaction_id,
+                    client_id=draft.client_id,
+                    client_name=client_name,
+                    subject=subject,
+                    message=message,
+                    created_at=draft.created_at,
+                )
+            )
+
+        return DraftListResponse(total=len(items), items=items)

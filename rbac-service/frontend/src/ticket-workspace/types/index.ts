@@ -121,7 +121,7 @@ export interface CurrentUser {
 // Account Manager Inbox
 // ==========================================================
 
-export type InboxView = "pending" | "replied" | "ticketed" | "archived" | "all";
+export type InboxView = "pending" | "replied" | "ticketed" | "archived" | "snoozed" | "all";
 export type InboxScope = "mine" | "all";
 
 export interface InboxItem {
@@ -139,6 +139,9 @@ export interface InboxItem {
   has_attachments: boolean;
   claimed_by: string | null;
   claimed_by_name: string | null;
+  tags: string[];
+  folder_id: string | null;
+  snoozed_until: string | null;
 }
 
 export interface InboxResponse {
@@ -175,8 +178,82 @@ export interface OpenEmailResponse {
   status: InteractionStatus;
   claimed_by: string | null;
   claimed_by_name: string | null;
+  account_manager_name: string | null;
+  ticket_priority: string | null;
+  ticket_category: string | null;
+  tags: string[];
+  folder_id: string | null;
+  snoozed_until: string | null;
+  draft_message: string | null;
   attachments?: AttachmentMeta[];
   replies: InteractionResponse[];
+}
+
+export interface InteractionSnoozeResponse {
+  interaction_id: string;
+  snoozed_until: string | null;
+  message: string;
+}
+
+export interface InteractionTagsResponse {
+  interaction_id: string;
+  tags: string[];
+  message: string;
+}
+
+export interface InteractionFolderResponse {
+  interaction_id: string;
+  folder_id: string | null;
+  message: string;
+}
+
+export interface MailFolder {
+  folder_id: string;
+  name: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface SentItem {
+  interaction_id: string;
+  root_interaction_id: string | null;
+  ticket_id: string | null;
+  client_id: string | null;
+  client_name: string;
+  subject: string;
+  message: string;
+  sent_at: string;
+}
+
+export interface SentResponse {
+  total: number;
+  items: SentItem[];
+}
+
+export interface DraftItem {
+  interaction_id: string;
+  root_interaction_id: string | null;
+  client_id: string | null;
+  client_name: string;
+  subject: string;
+  message: string;
+  created_at: string;
+}
+
+export interface DraftListResponse {
+  total: number;
+  items: DraftItem[];
+}
+
+export interface DraftSaveResponse {
+  interaction_id: string;
+  root_interaction_id: string;
+  message: string;
+  created_at: string;
+}
+
+export interface DraftDeleteResponse {
+  message: string;
 }
 
 export interface InteractionReplyRequest {
@@ -193,6 +270,12 @@ export interface InteractionReplyResponse {
 // ==========================================================
 // Ticket
 // ==========================================================
+
+export interface RelatedTicketSummary {
+  ticket_id: string;
+  title: string;
+  current_status: TicketStatus;
+}
 
 export interface TicketResponse {
   ticket_id: string;
@@ -213,6 +296,21 @@ export interface TicketResponse {
   client_company_name: string | null;
   agent_name: string | null;
   created_by_name: string | null;
+  related_tickets: RelatedTicketSummary[];
+}
+
+export interface RelateTicketRequest {
+  related_ticket_id: string;
+}
+
+export interface RelateTicketResponse {
+  ticket_id: string;
+  related_ticket_id: string;
+  message: string;
+}
+
+export interface UnrelateTicketResponse {
+  message: string;
 }
 
 export interface TransferAgentRequest {

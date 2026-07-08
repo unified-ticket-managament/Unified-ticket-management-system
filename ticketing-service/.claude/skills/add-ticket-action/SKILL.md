@@ -24,11 +24,26 @@ on the Interaction's own columns instead of `Ticket.agent_id`. Access is checked
 not `ensure_agent_can_view_ticket`. The rest of this skill (below) is written for the
 ticket-level case; adapt step 3 accordingly for a pending-interaction action.
 
+**Two further variants exist for shapes that don't fit either pattern above**, both added
+for the Mail rebuild — see `CLAUDE.md` for the full detail, summarized here:
+- **A thread-scoped, upsertable action** (Drafts): if the action should have "at most one
+  active row per thread per agent, overwritten on repeat calls" semantics rather than
+  "create a new row every time", look at `InteractionService.save_draft`/`send_draft`/
+  `discard_draft` and `_resolve_pending_thread_root` — the shared root-resolution helper
+  that lets a caller pass any id within the thread, not just the root's.
+- **A symmetric self-referential relation** (Related Tickets): if the action links two
+  existing rows of the same type together (not "mutate one row"), look at
+  `TicketRelationRepository`/`TicketService.add_related_ticket` — write **both** directions
+  at creation so reads never need an `OR`-across-two-columns query, and check visibility
+  (`ensure_agent_can_view_ticket`) on *both* sides before linking, not just the one the
+  route was called on.
+
 Read `CLAUDE.md` first for the two-log distinction (Interaction = business timeline,
 AuditLog = immutable compliance trail), the real-JWT auth model (no more `agent_name`
-query param), and the Postgres-enum migration gotcha before touching audit event types —
-use the **add-postgres-enum-value** skill if this action needs a new `AuditEventType`
-member.
+query param), the `OWNED_TABLES` gotcha (a new model's table must be added there before
+`alembic revision --autogenerate` will pick it up), and the Postgres-enum migration gotcha
+before touching audit event types — use the **add-postgres-enum-value** skill if this
+action needs a new `AuditEventType` member.
 
 ## Backend steps
 

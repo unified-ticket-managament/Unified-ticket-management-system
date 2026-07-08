@@ -14,18 +14,28 @@ from app.repositories.client_repository import ClientRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.repositories.mail_folder_repository import MailFolderRepository
 from app.repositories.ticket_repository import (
     TicketRepository,
 )
 from app.repositories.user_repository import UserRepository
 from app.schemas.interaction import (
+    DraftDeleteResponse,
+    DraftResponse,
+    DraftSaveRequest,
+    FolderAssignRequest,
     HideInteractionRequest,
     HideInteractionResponse,
     InteractionArchiveResponse,
     InteractionClaimResponse,
     InteractionCreate,
+    InteractionFolderResponse,
     InteractionResponse,
+    InteractionSnoozeResponse,
+    InteractionTagsResponse,
     InteractionUpdate,
+    SnoozeRequest,
+    TagsUpdateRequest,
 )
 from app.schemas.note import (
     InternalNoteCreate,
@@ -120,6 +130,7 @@ class InteractionService:
         audit_log_repository: AuditLogRepository | None = None,
         client_repository: ClientRepository | None = None,
         outbound_dispatcher: OutboundDispatcher | None = None,
+        mail_folder_repository: MailFolderRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
@@ -129,6 +140,7 @@ class InteractionService:
         self.audit_log_repository = audit_log_repository
         self.client_repository = client_repository
         self.outbound_dispatcher = outbound_dispatcher or OutboundDispatcher()
+        self.mail_folder_repository = mail_folder_repository
 
     # ---------------------------------------------------------
     # Create Interaction
@@ -1110,6 +1122,379 @@ class InteractionService:
             status=archived.status,
             message="Archived.",
         )
+
+    async def snooze_interaction(
+        self,
+        interaction_id: UUID,
+        request: SnoozeRequest,
+        current_user: User,
+    ) -> InteractionSnoozeResponse:
+        """
+        Hides a pending, unticketed inbox item from the "pending"
+        view until `request.snooze_until` — it resurfaces on its own,
+        no background job needed, since every read just compares
+        against `now()`.
+        """
+
+        snooze_until = request.snooze_until
+        interaction = await self.interaction_repository.get_by_id(interaction_id)
+
+        if interaction is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        if interaction.ticket_id is not None:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="This item has already become a ticket.",
+            )
+
+        await self._ensure_can_act_on_pending_interaction(interaction, current_user)
+
+        snoozed = await self.interaction_repository.snooze(interaction, snooze_until)
+
+        if snoozed is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail="This item is no longer pending.",
+            )
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=snoozed.interaction_id,
+            event_type=AuditEventType.INTERACTION_SNOOZED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"snoozed_until": None},
+            new_values={"snoozed_until": snooze_until.isoformat()},
+        )
+
+        return InteractionSnoozeResponse(
+            interaction_id=snoozed.interaction_id,
+            snoozed_until=snoozed.snoozed_until,
+            message=f"Snoozed until {snooze_until.isoformat()}.",
+        )
+
+    async def unsnooze_interaction(
+        self,
+        interaction_id: UUID,
+        current_user: User,
+    ) -> InteractionSnoozeResponse:
+        """
+        Clears an active snooze early, returning the item to
+        "pending" immediately.
+        """
+
+        interaction = await self.interaction_repository.get_by_id(interaction_id)
+
+        if interaction is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        await self._ensure_can_act_on_pending_interaction(interaction, current_user)
+
+        unsnoozed = await self.interaction_repository.unsnooze(interaction)
+
+        if unsnoozed is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_409_CONFLICT,
+                detail="This item isn't currently snoozed.",
+            )
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=unsnoozed.interaction_id,
+            event_type=AuditEventType.INTERACTION_UNSNOOZED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"snoozed_until": "..."},
+            new_values={"snoozed_until": None},
+        )
+
+        return InteractionSnoozeResponse(
+            interaction_id=unsnoozed.interaction_id,
+            snoozed_until=None,
+            message="Unsnoozed.",
+        )
+
+    async def set_interaction_tags(
+        self,
+        interaction_id: UUID,
+        request: TagsUpdateRequest,
+        current_user: User,
+    ) -> InteractionTagsResponse:
+        """
+        Full-replaces the tag list on a mail item. Not race-guarded
+        like claim/archive/snooze — tagging isn't a contested "only
+        one winner" action, and it stays available regardless of
+        ticket/claim state (unlike those, which stop being valid once
+        the item leaves the pending pool).
+        """
+
+        interaction = await self.interaction_repository.get_by_id(interaction_id)
+
+        if interaction is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        await self._ensure_can_act_on_pending_interaction(interaction, current_user)
+
+        old_tags = list(interaction.tags)
+        updated = await self.interaction_repository.set_tags(interaction, request.tags)
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=updated.interaction_id,
+            event_type=AuditEventType.INTERACTION_TAGGED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"tags": old_tags},
+            new_values={"tags": updated.tags},
+        )
+
+        return InteractionTagsResponse(
+            interaction_id=updated.interaction_id,
+            tags=updated.tags,
+            message="Tags updated.",
+        )
+
+    async def set_interaction_folder(
+        self,
+        interaction_id: UUID,
+        request: FolderAssignRequest,
+        current_user: User,
+    ) -> InteractionFolderResponse:
+        """
+        Files (or unfiles, if `request.folder_id` is None) a mail item
+        into a custom folder. Orthogonal to status — available
+        regardless of pending/replied/ticketed/archived state, same
+        reasoning as tags.
+        """
+
+        interaction = await self.interaction_repository.get_by_id(interaction_id)
+
+        if interaction is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        await self._ensure_can_act_on_pending_interaction(interaction, current_user)
+
+        folder_id = request.folder_id
+
+        if folder_id is not None and self.mail_folder_repository is not None:
+            folder = await self.mail_folder_repository.get_by_id(folder_id)
+            if folder is None:
+                raise HTTPException(
+                    status_code=http_status.HTTP_404_NOT_FOUND,
+                    detail="Folder not found.",
+                )
+
+        old_folder_id = interaction.folder_id
+        updated = await self.interaction_repository.set_folder(interaction, folder_id)
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=updated.interaction_id,
+            event_type=AuditEventType.INTERACTION_FOLDER_CHANGED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"folder_id": old_folder_id},
+            new_values={"folder_id": updated.folder_id},
+        )
+
+        return InteractionFolderResponse(
+            interaction_id=updated.interaction_id,
+            folder_id=updated.folder_id,
+            message="Folder updated.",
+        )
+
+    # ---------------------------------------------------------
+    # Drafts
+    # ---------------------------------------------------------
+
+    async def _resolve_pending_thread_root(
+        self,
+        interaction_id: UUID,
+    ) -> Interaction:
+        """
+        Resolves any id within a bare (pre-ticket) Mail thread — the
+        root itself, one of its replies, or a draft — up to the
+        thread root, same walk-up as `add_interaction_reply`. Shared
+        by the draft save/send/discard actions below, which all key
+        off "the current thread", not the specific id a client
+        happened to pass. 404s on a missing id, 400s if the thread
+        has already become a ticket (drafts, like the rest of Mail,
+        are pre-ticket only — see `add_interaction_reply`'s own
+        matching guard for already-ticketed threads).
+        """
+
+        interaction = await self.interaction_repository.get_by_id(interaction_id)
+
+        if interaction is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        root_id = interaction.parent_interaction_id or interaction.interaction_id
+        root = (
+            interaction
+            if interaction.parent_interaction_id is None
+            else await self.interaction_repository.get_by_id(root_id)
+        )
+
+        if root is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        if root.ticket_id is not None:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="This interaction already belongs to a ticket — use the ticket reply endpoint.",
+            )
+
+        return root
+
+    async def save_draft(
+        self,
+        interaction_id: UUID,
+        request: DraftSaveRequest,
+        current_user: User,
+    ) -> DraftResponse:
+        """
+        Upserts current_user's draft reply on this thread — one
+        active draft per thread per agent, overwritten (not
+        versioned) on every save.
+        """
+
+        root = await self._resolve_pending_thread_root(interaction_id)
+        await self._ensure_can_act_on_pending_interaction(root, current_user)
+
+        existing = await self.interaction_repository.get_draft(
+            root.interaction_id, current_user.user_id
+        )
+
+        if existing is not None:
+            draft = await self.interaction_repository.update_draft_message(
+                existing, request.message
+            )
+        else:
+            draft = await self.interaction_repository.create(
+                InteractionCreate(
+                    ticket_id=None,
+                    interaction_type="REPLY",
+                    direction=InteractionDirection.OUTBOUND,
+                    status=InteractionStatus.PENDING,
+                    performed_by=current_user.user_id,
+                    payload={"message": request.message, "dispatch_status": "DRAFT"},
+                    is_visible=True,
+                    client_id=root.client_id,
+                    parent_interaction_id=root.interaction_id,
+                    is_draft=True,
+                )
+            )
+
+        return DraftResponse(
+            interaction_id=draft.interaction_id,
+            root_interaction_id=root.interaction_id,
+            message=request.message,
+            created_at=draft.created_at,
+        )
+
+    async def send_draft(
+        self,
+        interaction_id: UUID,
+        current_user: User,
+    ) -> InteractionReplyResponse:
+        """
+        Sends current_user's draft on this thread — converts it into
+        a real reply by deleting the draft row and handing its saved
+        text to `add_interaction_reply`, which builds the same
+        envelope/dispatch/audit trail a normal reply would get. There
+        is deliberately no separate "draft becomes a reply" code path
+        to keep that logic in exactly one place.
+        """
+
+        root = await self._resolve_pending_thread_root(interaction_id)
+        await self._ensure_can_act_on_pending_interaction(root, current_user)
+
+        draft = await self.interaction_repository.get_draft(
+            root.interaction_id, current_user.user_id
+        )
+
+        if draft is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="No draft found on this thread.",
+            )
+
+        message = draft.payload.get("message", "") if isinstance(draft.payload, dict) else ""
+
+        await self.interaction_repository.delete_draft(draft)
+
+        return await self.add_interaction_reply(
+            interaction_id=root.interaction_id,
+            request=InteractionReplyRequest(message=message),
+            current_user=current_user,
+        )
+
+    async def discard_draft(
+        self,
+        interaction_id: UUID,
+        current_user: User,
+    ) -> DraftDeleteResponse:
+        """Deletes current_user's draft on this thread without sending it."""
+
+        root = await self._resolve_pending_thread_root(interaction_id)
+        await self._ensure_can_act_on_pending_interaction(root, current_user)
+
+        draft = await self.interaction_repository.get_draft(
+            root.interaction_id, current_user.user_id
+        )
+
+        if draft is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="No draft found on this thread.",
+            )
+
+        await self.interaction_repository.delete_draft(draft)
+
+        return DraftDeleteResponse(message="Draft discarded.")
 
     # ---------------------------------------------------------
     # Hide / Delete Interaction

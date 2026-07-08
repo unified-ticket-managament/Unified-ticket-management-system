@@ -21,6 +21,7 @@ class InteractionCreate(BaseModel):
     client_id: UUID | None = None
     parent_interaction_id: UUID | None = None
     received_at: datetime | None = None
+    is_draft: bool = False
 
 
 class InteractionUpdate(BaseModel):
@@ -94,4 +95,61 @@ class InteractionArchiveResponse(ORMBase):
 
     interaction_id: UUID
     status: InteractionStatus
+    message: str
+
+
+class TagsUpdateRequest(BaseModel):
+    """
+    Full-replace tag list — the frontend always sends the complete
+    set, there's no per-tag add/remove endpoint.
+    """
+
+    tags: list[str] = Field(default_factory=list)
+
+
+class InteractionTagsResponse(ORMBase):
+    interaction_id: UUID
+    tags: list[str]
+    message: str
+
+
+class FolderAssignRequest(BaseModel):
+    # None clears the folder assignment.
+    folder_id: UUID | None = None
+
+
+class InteractionFolderResponse(ORMBase):
+    interaction_id: UUID
+    folder_id: UUID | None
+    message: str
+
+
+class SnoozeRequest(BaseModel):
+    snooze_until: datetime
+
+
+class InteractionSnoozeResponse(ORMBase):
+    interaction_id: UUID
+    snoozed_until: datetime | None
+    message: str
+
+
+class DraftSaveRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+
+
+class DraftResponse(ORMBase):
+    """
+    One agent's saved-but-unsent draft reply on a bare (pre-ticket)
+    Mail thread. Upsert semantics — saving again on the same thread
+    overwrites this same row, one active draft per thread per agent.
+    """
+
+    interaction_id: UUID
+    root_interaction_id: UUID
+    message: str
+    created_at: datetime
+
+
+class DraftDeleteResponse(BaseModel):
     message: str

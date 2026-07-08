@@ -9,6 +9,7 @@ from app.api.client import router as client_router
 from app.api.email import router as email_router
 from app.api.inbox import router as inbox_router
 from app.api.interaction import router as interaction_router
+from app.api.mail_folder import router as mail_folder_router
 from app.core.config import get_settings
 from app.storage.base import StorageConfigurationError
 
@@ -63,6 +64,8 @@ app.include_router(client_router)
 app.include_router(category_router)
 
 app.include_router(inbox_router)
+
+app.include_router(mail_folder_router)
 
 app.include_router(ticket_router)
 

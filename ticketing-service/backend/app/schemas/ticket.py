@@ -63,6 +63,32 @@ class TicketUpdate(BaseModel):
     closed_at: datetime | None = None
 
 
+class RelatedTicketSummary(BaseModel):
+    """
+    Just enough to render a "Related Tickets" row/link — the full
+    ticket is a separate `GET /tickets/{id}` away if the user clicks
+    through.
+    """
+
+    ticket_id: UUID
+    title: str
+    current_status: TicketStatus
+
+
+class RelateTicketRequest(BaseModel):
+    related_ticket_id: UUID
+
+
+class RelateTicketResponse(BaseModel):
+    ticket_id: UUID
+    related_ticket_id: UUID
+    message: str
+
+
+class UnrelateTicketResponse(BaseModel):
+    message: str
+
+
 class TicketResponse(ORMBase):
     ticket_id: UUID
     client_id: UUID | None
@@ -86,3 +112,7 @@ class TicketResponse(ORMBase):
     client_company_name: str | None = None
     agent_name: str | None = None
     created_by_name: str | None = None
+
+    # Populated only on GET /tickets/{id} (not the list view, to
+    # avoid an N+1 lookup per row) — see TicketService._attach_related_tickets.
+    related_tickets: list[RelatedTicketSummary] = Field(default_factory=list)

@@ -106,6 +106,46 @@ class Interaction(Base):
         nullable=True,
     )
 
+    # Free-form labels — a plain JSON string list, not a join table,
+    # matching this repo's existing pattern for lightweight per-row
+    # metadata (see `payload`/`Ticket.custom_fields`). Full-replace
+    # semantics on write (no per-tag add/remove endpoint).
+    tags: Mapped[list] = mapped_column(
+        JSONB,
+        default=list,
+        nullable=False,
+    )
+
+    # Which custom folder (Billing/Claims/General/...) this item has
+    # been filed into — orthogonal to `status`; assigning a folder
+    # never changes pending/replied/ticketed/archived state.
+    folder_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("mail_folders.folder_id"),
+        nullable=True,
+    )
+
+    # Set to hide this item from the "pending" view until this time,
+    # after which it resurfaces automatically — no background job
+    # needed, `list_inbox`'s "pending"/"snoozed" filters just compare
+    # against `now()` on every read. Only meaningful pre-ticket, same
+    # as `claimed_by`.
+    snoozed_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # A saved-but-unsent reply — a normal REPLY/OUTBOUND row
+    # (parent_interaction_id set to the thread root) that's never
+    # dispatched until explicitly sent. One active draft per thread
+    # per agent: saving again overwrites the same row rather than
+    # creating a second one (see InteractionRepository.get_draft).
+    is_draft: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
     message_id: Mapped[str | None] = mapped_column(
         String(255),
         unique=True,

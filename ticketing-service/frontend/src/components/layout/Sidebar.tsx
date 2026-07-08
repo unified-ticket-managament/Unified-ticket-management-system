@@ -9,25 +9,17 @@ import {
   Ticket,
   X,
 } from "lucide-react";
+import { Avatar } from "@/components/common/Avatar";
 import { useAuthContext } from "@/context/AuthContext";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
   { to: "/create-mail", label: "Create Dummy Mail", icon: MailPlus, hideForRoles: ["Staff", "Team Lead"] },
-  { to: "/inbox", label: "Inbox", icon: Inbox },
+  { to: "/inbox", label: "Mail", icon: Inbox },
   { to: "/interactions", label: "Interactions", icon: MessageSquare },
   { to: "/tickets", label: "Tickets", icon: Ticket },
   { to: "/audit-logs", label: "Audit Log", icon: ShieldCheck },
 ];
-
-function initials(name: string) {
-  return name
-    .split(" ")
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-}
 
 interface SidebarProps {
   mobileOpen: boolean;
@@ -123,15 +115,7 @@ export function Sidebar({ mobileOpen, onCloseMobile }: SidebarProps) {
 
         <div className="border-t border-border p-3">
           <div className="flex items-center gap-2.5 rounded-md2 px-2.5 py-2.5">
-            <div className="relative flex-none">
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-accent/10 text-xs font-semibold text-accent">
-                {initials(currentUser?.name ?? "")}
-              </div>
-              <span
-                className="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface bg-success"
-                title="Active"
-              />
-            </div>
+            <Avatar name={currentUser?.name ?? ""} indicator="success" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-[13px] font-semibold text-slate-900">
                 {currentUser?.name}

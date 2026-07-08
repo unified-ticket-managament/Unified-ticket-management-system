@@ -17,6 +17,7 @@ from app.repositories.client_repository import ClientRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.repositories.ticket_relation_repository import TicketRelationRepository
 from app.repositories.ticket_repository import (
     TicketRepository,
 )
@@ -39,7 +40,13 @@ from app.schemas.note import (
     InternalNoteCreate,
     InternalNoteResponse,
 )
-from app.schemas.ticket import TicketResponse, TicketUpdate
+from app.schemas.ticket import (
+    RelateTicketRequest,
+    RelateTicketResponse,
+    TicketResponse,
+    TicketUpdate,
+    UnrelateTicketResponse,
+)
 from app.schemas.ticket_action import (
     PriorityChangeRequest,
     ReplyCreate,
@@ -505,6 +512,77 @@ async def transfer_ticket_agent(
 
 
 # =========================================================
+# Related Tickets
+# =========================================================
+
+@router.post(
+    "/{ticket_id}/related",
+    response_model=RelateTicketResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_related_ticket(
+    ticket_id: UUID,
+    request: RelateTicketRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Links this ticket to another one — symmetric, both tickets show
+    each other under "Related Tickets" afterward.
+    """
+
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+    ticket_relation_repository = TicketRelationRepository(db)
+
+    service = TicketService(
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+        ticket_relation_repository=ticket_relation_repository,
+    )
+
+    return await service.add_related_ticket(
+        ticket_id=ticket_id,
+        request=request,
+        current_user=current_user,
+    )
+
+
+@router.delete(
+    "/{ticket_id}/related/{related_ticket_id}",
+    response_model=UnrelateTicketResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def remove_related_ticket(
+    ticket_id: UUID,
+    related_ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Unlinks two related tickets — symmetric, removes both directions."""
+
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+    ticket_relation_repository = TicketRelationRepository(db)
+
+    service = TicketService(
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+        ticket_relation_repository=ticket_relation_repository,
+    )
+
+    return await service.remove_related_ticket(
+        ticket_id=ticket_id,
+        related_ticket_id=related_ticket_id,
+        current_user=current_user,
+    )
+
+
+# =========================================================
 # Update Ticket
 # =========================================================
 
@@ -603,10 +681,12 @@ async def get_ticket(
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     client_repository = ClientRepository(db)
+    ticket_relation_repository = TicketRelationRepository(db)
 
     service = TicketService(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        ticket_relation_repository=ticket_relation_repository,
         client_repository=client_repository,
     )
 

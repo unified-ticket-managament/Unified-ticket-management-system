@@ -100,7 +100,7 @@ export function TicketDetailPage() {
                   motion. */}
               <div>
                 <div className="flex flex-col gap-5 lg:sticky lg:top-0">
-                  <TicketDetails />
+                  <TicketDetails onRelatedChanged={refreshAll} />
                   <TicketActions onActionComplete={refreshAll} onOpenComposer={setComposerMode} />
                 </div>
               </div>

@@ -11,12 +11,22 @@ from app.repositories.client_repository import ClientRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.repositories.mail_folder_repository import MailFolderRepository
 from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
-from app.schemas.inbox import InboxResponse
+from app.schemas.inbox import DraftListResponse, InboxResponse, SentResponse
 from app.schemas.interaction import (
+    DraftDeleteResponse,
+    DraftResponse,
+    DraftSaveRequest,
+    FolderAssignRequest,
     InteractionArchiveResponse,
     InteractionClaimResponse,
+    InteractionFolderResponse,
+    InteractionSnoozeResponse,
+    InteractionTagsResponse,
+    SnoozeRequest,
+    TagsUpdateRequest,
 )
 from app.schemas.open_email import OpenEmailResponse
 from app.schemas.ticket_action import (
@@ -44,7 +54,8 @@ router = APIRouter(
 )
 async def get_inbox(
     client_id: UUID | None = Query(default=None),
-    view: str = Query(default="pending", pattern="^(pending|replied|ticketed|archived|all)$"),
+    folder_id: UUID | None = Query(default=None),
+    view: str = Query(default="pending", pattern="^(pending|replied|ticketed|archived|snoozed|all)$"),
     scope: str = Query(default="mine", pattern="^(mine|all)$"),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
@@ -55,8 +66,11 @@ async def get_inbox(
 
     `view` selects which root emails: not-yet-actioned ("pending"),
     replied-but-never-ticketed ("replied"), promoted-to-a-ticket
-    ("ticketed"), marked Informational/Archive ("archived"), or every
-    one of them ("all").
+    ("ticketed"), marked Informational/Archive ("archived"), hidden
+    until a future time ("snoozed"), or every one of them ("all").
+
+    `folder_id` further narrows to one custom folder — orthogonal to
+    `view`, composes with any of the above.
 
     `scope="all"` is the "All Inboxes" escape hatch — every client's
     mail, not just this user's own. Only takes effect for Team Lead /
@@ -78,7 +92,52 @@ async def get_inbox(
         client_id=client_id,
         view=view,
         scope=scope,
+        folder_id=folder_id,
     )
+
+
+# ---------------------------------------------------------
+# Sent / Drafts (list views)
+# ---------------------------------------------------------
+#
+# Registered before the "/{interaction_id}" path-param routes below
+# (open_email in particular) — FastAPI matches routes in registration
+# order, and "/inbox/sent"/"/inbox/drafts" would otherwise be
+# swallowed by "/inbox/{interaction_id}" trying (and failing) to
+# parse "sent"/"drafts" as a UUID.
+
+@router.get(
+    "/sent",
+    response_model=SentResponse,
+)
+async def get_sent(
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every reply the current user has sent, pre-ticket or ticket-level alike."""
+
+    repository = InteractionRepository(db)
+
+    service = InboxService(repository)
+
+    return await service.get_sent(current_user)
+
+
+@router.get(
+    "/drafts",
+    response_model=DraftListResponse,
+)
+async def get_drafts(
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every draft the current user currently has saved, across every thread."""
+
+    repository = InteractionRepository(db)
+
+    service = InboxService(repository)
+
+    return await service.get_drafts(current_user)
 
 
 # ---------------------------------------------------------
@@ -158,6 +217,246 @@ async def archive_interaction(
 
 
 # ---------------------------------------------------------
+# Snooze / Unsnooze
+# ---------------------------------------------------------
+
+@router.post(
+    "/{interaction_id}/snooze",
+    response_model=InteractionSnoozeResponse,
+    status_code=200,
+)
+async def snooze_interaction(
+    interaction_id: UUID,
+    request: SnoozeRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Hides a pending, unticketed inbox item from the "pending" view
+    until `snooze_until` — it resurfaces there automatically once
+    that time passes, no background job needed.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    return await service.snooze_interaction(
+        interaction_id=interaction_id,
+        request=request,
+        current_user=current_user,
+    )
+
+
+@router.post(
+    "/{interaction_id}/unsnooze",
+    response_model=InteractionSnoozeResponse,
+    status_code=200,
+)
+async def unsnooze_interaction(
+    interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clears an active snooze early, returning the item to "pending" immediately."""
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    return await service.unsnooze_interaction(
+        interaction_id=interaction_id,
+        current_user=current_user,
+    )
+
+
+# ---------------------------------------------------------
+# Tags
+# ---------------------------------------------------------
+
+@router.patch(
+    "/{interaction_id}/tags",
+    response_model=InteractionTagsResponse,
+    status_code=200,
+)
+async def update_interaction_tags(
+    interaction_id: UUID,
+    request: TagsUpdateRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Full-replaces the tag list on a mail item."""
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    return await service.set_interaction_tags(
+        interaction_id=interaction_id,
+        request=request,
+        current_user=current_user,
+    )
+
+
+# ---------------------------------------------------------
+# Folder assignment
+# ---------------------------------------------------------
+
+@router.patch(
+    "/{interaction_id}/folder",
+    response_model=InteractionFolderResponse,
+    status_code=200,
+)
+async def update_interaction_folder(
+    interaction_id: UUID,
+    request: FolderAssignRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Files (or unfiles, if folder_id is null) a mail item into a custom folder."""
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+    mail_folder_repository = MailFolderRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+        mail_folder_repository=mail_folder_repository,
+    )
+
+    return await service.set_interaction_folder(
+        interaction_id=interaction_id,
+        request=request,
+        current_user=current_user,
+    )
+
+
+# ---------------------------------------------------------
+# Drafts (per-thread actions)
+# ---------------------------------------------------------
+
+@router.put(
+    "/{interaction_id}/draft",
+    response_model=DraftResponse,
+    status_code=200,
+)
+async def save_draft(
+    interaction_id: UUID,
+    request: DraftSaveRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upserts the current user's draft reply on this thread."""
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    return await service.save_draft(
+        interaction_id=interaction_id,
+        request=request,
+        current_user=current_user,
+    )
+
+
+@router.post(
+    "/{interaction_id}/draft/send",
+    response_model=InteractionReplyResponse,
+    status_code=201,
+)
+async def send_draft(
+    interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sends the current user's draft on this thread as a real reply."""
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    return await service.send_draft(
+        interaction_id=interaction_id,
+        current_user=current_user,
+    )
+
+
+@router.delete(
+    "/{interaction_id}/draft",
+    response_model=DraftDeleteResponse,
+    status_code=200,
+)
+async def discard_draft(
+    interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deletes the current user's draft on this thread without sending it."""
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    return await service.discard_draft(
+        interaction_id=interaction_id,
+        current_user=current_user,
+    )
+
+
+# ---------------------------------------------------------
 # Open Email / Thread
 # ---------------------------------------------------------
 
@@ -178,16 +477,21 @@ async def open_email(
     repository = InteractionRepository(db)
     attachment_repository = AttachmentRepository(db)
     user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+    ticket_repository = TicketRepository(db)
 
     service = OpenEmailService(
         repository,
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
         user_repository=user_repository,
+        client_repository=client_repository,
+        ticket_repository=ticket_repository,
     )
 
     return await service.get_email_details(
         interaction_id=interaction_id,
+        current_user=current_user,
     )
 
 

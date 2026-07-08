@@ -9,14 +9,19 @@ from shared_models.models import User
 from app.enums import AuditEntityType, AuditEventType
 from app.models.ticket import Ticket
 from app.repositories.client_repository import ClientRepository
+from app.repositories.ticket_relation_repository import TicketRelationRepository
 from app.repositories.ticket_repository import (
     TicketRepository,
 )
 from app.repositories.user_repository import UserRepository
 from app.schemas.ticket import (
+    RelatedTicketSummary,
+    RelateTicketRequest,
+    RelateTicketResponse,
     TicketCreate,
     TicketResponse,
     TicketUpdate,
+    UnrelateTicketResponse,
 )
 from app.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
@@ -36,10 +41,12 @@ class TicketService:
         ticket_repository: TicketRepository,
         user_repository: UserRepository,
         client_repository: ClientRepository | None = None,
+        ticket_relation_repository: TicketRelationRepository | None = None,
     ):
         self.ticket_repository = ticket_repository
         self.user_repository = user_repository
         self.client_repository = client_repository
+        self.ticket_relation_repository = ticket_relation_repository
 
     # ---------------------------------------------------------
     # Name Enrichment
@@ -164,6 +171,37 @@ class TicketService:
     # Get Ticket By ID
     # ---------------------------------------------------------
 
+    async def _attach_related_tickets(self, ticket: Ticket) -> None:
+        """
+        Resolves this ticket's related tickets and sets them as a
+        transient attribute, same pattern as `_attach_names`. Only
+        called from `get_by_id` (detail view) — the list view has no
+        use for it and this is an N+1 lookup, small in practice since
+        a ticket is expected to have only a handful of related links.
+        """
+
+        if self.ticket_relation_repository is None:
+            ticket.related_tickets = []
+            return
+
+        related_ids = await self.ticket_relation_repository.list_related_ticket_ids(
+            ticket.ticket_id
+        )
+
+        related_tickets: list[RelatedTicketSummary] = []
+        for related_id in related_ids:
+            related = await self.ticket_repository.get_by_id(related_id)
+            if related is not None:
+                related_tickets.append(
+                    RelatedTicketSummary(
+                        ticket_id=related.ticket_id,
+                        title=related.title,
+                        current_status=related.current_status,
+                    )
+                )
+
+        ticket.related_tickets = related_tickets
+
     async def get_by_id(
         self,
         ticket_id: UUID,
@@ -190,10 +228,135 @@ class TicketService:
             )
 
         await self._attach_names([ticket])
+        await self._attach_related_tickets(ticket)
 
         return TicketResponse.model_validate(
             ticket
         )
+
+    # ---------------------------------------------------------
+    # Related Tickets
+    # ---------------------------------------------------------
+
+    async def add_related_ticket(
+        self,
+        ticket_id: UUID,
+        request: RelateTicketRequest,
+        current_user: User,
+    ) -> RelateTicketResponse:
+        """
+        Links two tickets together — symmetric, so either ticket's
+        "Related Tickets" panel shows the other one afterward. Both
+        tickets must be visible to the caller (same category/client-
+        ownership gate as viewing either one directly), so this can't
+        be used to confirm the existence of a ticket outside your
+        normal visibility.
+        """
+
+        if ticket_id == request.related_ticket_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A ticket cannot be related to itself.",
+            )
+
+        ticket = await self.ticket_repository.get_by_id(ticket_id)
+        if ticket is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found.",
+            )
+        ensure_agent_can_view_ticket(ticket, current_user)
+
+        related_ticket = await self.ticket_repository.get_by_id(request.related_ticket_id)
+        if related_ticket is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Related ticket not found.",
+            )
+        ensure_agent_can_view_ticket(related_ticket, current_user)
+
+        if self.ticket_relation_repository is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Related tickets are not configured.",
+            )
+
+        already_related = await self.ticket_relation_repository.exists(
+            ticket_id, request.related_ticket_id
+        )
+        if already_related:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="These tickets are already related.",
+            )
+
+        await self.ticket_relation_repository.create(ticket_id, request.related_ticket_id)
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.TICKET_RELATED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            new_values={"related_ticket_id": str(request.related_ticket_id)},
+        )
+
+        return RelateTicketResponse(
+            ticket_id=ticket_id,
+            related_ticket_id=request.related_ticket_id,
+            message="Tickets linked.",
+        )
+
+    async def remove_related_ticket(
+        self,
+        ticket_id: UUID,
+        related_ticket_id: UUID,
+        current_user: User,
+    ) -> UnrelateTicketResponse:
+
+        ticket = await self.ticket_repository.get_by_id(ticket_id)
+        if ticket is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found.",
+            )
+        ensure_agent_can_view_ticket(ticket, current_user)
+
+        if self.ticket_relation_repository is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Related tickets are not configured.",
+            )
+
+        deleted = await self.ticket_relation_repository.delete(ticket_id, related_ticket_id)
+        if deleted == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="These tickets are not related.",
+            )
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.TICKET_UNRELATED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"related_ticket_id": str(related_ticket_id)},
+        )
+
+        return UnrelateTicketResponse(message="Tickets unlinked.")
 
     # ---------------------------------------------------------
     # List Tickets

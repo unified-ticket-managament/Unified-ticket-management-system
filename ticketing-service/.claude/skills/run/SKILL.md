@@ -104,11 +104,14 @@ dual-frontend rule.
    round-robin or least-busy-agent), not auto-assigned to any Staff member. This nav item is
    hidden for Staff and Team Lead by design — log in as an Account Manager/Site Lead/Super
    Admin, or use Swagger's `POST /emails/incoming` directly if testing as one of those roles.
-3. **Inbox** (`/inbox`) shows it under the Pending tab (Account Manager sees only their own
-   clients' mail; Team Lead/Site Lead/Super Admin get an "All Inboxes" escape-hatch tab).
-   From there: reply directly (no ticket), claim it ("Assign to me"), archive it
-   (Informational/Archive — no ticket needed), create a ticket from it, or attach it to an
-   existing ticket.
+3. **Mail** (`/inbox`, nav label "Mail") shows it under the Inbox/Pending view in the left
+   sidebar (Account Manager sees only their own clients' mail; Team Lead/Site Lead/Super
+   Admin get an "All Inboxes" escape-hatch view). From there: reply directly (no ticket) or
+   save the reply as a draft first and send it later, tag it and/or file it into a custom
+   folder, snooze it (it disappears from Inbox until the snooze time passes, then
+   resurfaces on its own), claim it ("Assign to me"), archive it (Informational/Archive —
+   no ticket needed), create a ticket from it, or attach it to an existing ticket. Sent
+   replies and saved drafts get their own sidebar views (Sent/Drafts).
 4. **Tickets** (`/tickets`) — unclaimed tickets are visible to every agent role and anyone
    can self-claim one (sets `agent_id`, moves it to `IN_PROGRESS`); only Team Lead/Account
    Manager/Site Lead/Super Admin can transfer a ticket to a *different* named agent — Staff
@@ -116,3 +119,6 @@ dual-frontend rule.
 5. Reply from the ticket's composer and confirm the new interaction's
    `parent_interaction_id` threads back to the conversation's root (a real bug class here
    — see CLAUDE.md) rather than landing as a disconnected new thread.
+6. On a ticket's detail page, use "Related Tickets" to link it to a second ticket and
+   confirm the link shows up on **both** tickets' detail pages (it's written symmetrically
+   — see CLAUDE.md), then unlink and confirm it disappears from both.

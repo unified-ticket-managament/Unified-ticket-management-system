@@ -43,6 +43,30 @@ class OpenEmailResponse(BaseModel):
 
     claimed_by_name: str | None = None
 
+    # Resolved via the client's account_manager_id — who owns this
+    # client relationship (distinct from claimed_by, "who's working
+    # this item right now").
+    account_manager_name: str | None = None
+
+    # Only meaningful once this item has become a ticket — a
+    # pre-ticket Interaction has neither a priority nor a category
+    # (category is chosen at ticket-creation time). None pre-ticket.
+    ticket_priority: str | None = None
+
+    ticket_category: str | None = None
+
+    tags: list[str] = Field(default_factory=list)
+
+    folder_id: UUID | None = None
+
+    snoozed_until: datetime | None = None
+
+    # The requesting user's own saved-but-unsent draft reply on this
+    # thread, if any — lets the reply composer prefill/resume it.
+    # None both when there's no draft and when the thread is already
+    # ticketed (drafts are pre-ticket only).
+    draft_message: str | None = None
+
     attachments: list[AttachmentMetadata] = Field(default_factory=list)
 
     replies: list[InteractionResponse] = Field(default_factory=list)

@@ -47,6 +47,12 @@ class InboxItemResponse(BaseModel):
     claimed_by: UUID | None = None
     claimed_by_name: str | None = None
 
+    tags: list[str] = []
+
+    folder_id: UUID | None = None
+
+    snoozed_until: datetime | None = None
+
 
 class InboxResponse(BaseModel):
     """
@@ -56,3 +62,61 @@ class InboxResponse(BaseModel):
     total: int
 
     items: list[InboxItemResponse]
+
+
+class SentItemResponse(BaseModel):
+    """
+    One reply the current user has sent — pre-ticket or ticket-level
+    alike. `client_name`/`subject` are borrowed from the reply's
+    thread root (a bare REPLY interaction carries neither itself).
+    """
+
+    interaction_id: UUID
+
+    root_interaction_id: UUID | None
+
+    ticket_id: UUID | None
+
+    client_id: UUID | None
+
+    client_name: str
+
+    subject: str
+
+    message: str
+
+    sent_at: datetime
+
+
+class SentResponse(BaseModel):
+    total: int
+
+    items: list[SentItemResponse]
+
+
+class DraftItemResponse(BaseModel):
+    """
+    One saved-but-unsent draft, listed alongside its thread's
+    `client_name`/`subject` (borrowed from the thread root, same
+    reasoning as `SentItemResponse`).
+    """
+
+    interaction_id: UUID
+
+    root_interaction_id: UUID | None
+
+    client_id: UUID | None
+
+    client_name: str
+
+    subject: str
+
+    message: str
+
+    created_at: datetime
+
+
+class DraftListResponse(BaseModel):
+    total: int
+
+    items: list[DraftItemResponse]

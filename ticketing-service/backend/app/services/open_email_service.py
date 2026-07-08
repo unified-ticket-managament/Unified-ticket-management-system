@@ -1,11 +1,15 @@
 from uuid import UUID
 
 from fastapi import HTTPException, status
+from pydantic import ValidationError
+from shared_models.models import User
 
 from app.repositories.attachment_repository import AttachmentRepository
+from app.repositories.client_repository import ClientRepository
 from app.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.repositories.ticket_repository import TicketRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.interaction import InteractionResponse
 from app.schemas.open_email import OpenEmailResponse
@@ -55,15 +59,20 @@ class OpenEmailService:
         attachment_repository: AttachmentRepository | None = None,
         storage_service: StorageService | None = None,
         user_repository: UserRepository | None = None,
+        client_repository: ClientRepository | None = None,
+        ticket_repository: TicketRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
         self.storage_service = storage_service
         self.user_repository = user_repository
+        self.client_repository = client_repository
+        self.ticket_repository = ticket_repository
 
     async def get_email_details(
         self,
         interaction_id: UUID,
+        current_user: User | None = None,
     ) -> OpenEmailResponse:
         """
         Returns the complete email details for the specified
@@ -80,9 +89,35 @@ class OpenEmailService:
                 detail="Interaction not found.",
             )
 
-        payload = EmailPayload.model_validate(
-            interaction.payload
-        )
+        # A reply/follow-up isn't itself a thread root — resolve up to
+        # the root first (same walk-up as add_interaction_reply) so
+        # this endpoint always shows the full conversation regardless
+        # of which id within it the caller happened to pass. The Sent
+        # view is the main caller that can hand in a non-root id (a
+        # reply whose own thread root couldn't be resolved at send
+        # time — legacy data predating the threading rule).
+        if interaction.parent_interaction_id is not None:
+            root = await self.interaction_repository.get_by_id(
+                interaction.parent_interaction_id
+            )
+            if root is not None:
+                interaction = root
+                interaction_id = root.interaction_id
+
+        try:
+            payload = EmailPayload.model_validate(interaction.payload)
+        except ValidationError:
+            # Genuinely rootless reply (no resolvable EmailPayload at
+            # all) — degrade gracefully using the reply's own fields
+            # rather than 500ing the whole thread view.
+            payload = EmailPayload(
+                subject="(no subject)",
+                body=(
+                    interaction.payload.get("message", "")
+                    if isinstance(interaction.payload, dict)
+                    else ""
+                ),
+            )
 
         attachments = []
 
@@ -99,6 +134,33 @@ class OpenEmailService:
             claimer = await self.user_repository.get_by_id(interaction.claimed_by)
             claimed_by_name = claimer.name if claimer is not None else None
 
+        account_manager_name = None
+        if (
+            self.client_repository is not None
+            and self.user_repository is not None
+            and interaction.client_id is not None
+        ):
+            client = await self.client_repository.get_by_id(interaction.client_id)
+            if client is not None:
+                manager = await self.user_repository.get_by_id(client.account_manager_id)
+                account_manager_name = manager.name if manager is not None else None
+
+        ticket_priority = None
+        ticket_category = None
+        if self.ticket_repository is not None and interaction.ticket_id is not None:
+            ticket = await self.ticket_repository.get_by_id(interaction.ticket_id)
+            if ticket is not None:
+                ticket_priority = ticket.current_priority.value
+                ticket_category = ticket.ticket_type
+
+        draft_message = None
+        if current_user is not None and interaction.ticket_id is None:
+            draft = await self.interaction_repository.get_draft(
+                interaction.interaction_id, current_user.user_id
+            )
+            if draft is not None and isinstance(draft.payload, dict):
+                draft_message = draft.payload.get("message")
+
         return OpenEmailResponse(
             interaction_id=interaction.interaction_id,
             ticket_id=interaction.ticket_id,
@@ -114,6 +176,13 @@ class OpenEmailService:
             status=interaction.status,
             claimed_by=interaction.claimed_by,
             claimed_by_name=claimed_by_name,
+            account_manager_name=account_manager_name,
+            ticket_priority=ticket_priority,
+            ticket_category=ticket_category,
+            tags=interaction.tags,
+            folder_id=interaction.folder_id,
+            snoozed_until=interaction.snoozed_until,
+            draft_message=draft_message,
             attachments=attachments,
             replies=[_reply_to_response(reply) for reply in replies],
         )

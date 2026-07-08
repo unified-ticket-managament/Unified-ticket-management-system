@@ -1,89 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
 import { Paperclip, RefreshCw, Search, Ticket as TicketIcon } from "lucide-react";
+import { Avatar } from "@/components/common/Avatar";
 import { Badge } from "@/components/common/Badge";
 import { Button } from "@/components/common/Button";
 import { EmptyState } from "@/components/common/EmptyState";
 import { SkeletonRows } from "@/components/common/Skeleton";
-import { useApiAction } from "@/hooks/useApiAction";
-import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { getInbox, openInboxThread } from "@/api/inbox";
-import { listClients } from "@/api/clients";
-import { useAuthContext } from "@/context/AuthContext";
-import { useToast } from "@/context/ToastContext";
-import { useWorkflowContext } from "@/context/WorkflowContext";
-import type { ClientResponse, InboxItem, InboxView } from "@/types";
+import { TIME_FILTERS, type useMailInbox } from "@/hooks/useMailInbox";
 
-const SUPERVISOR_ROLES = ["Site Lead", "Super Admin"];
-
-function initials(name: string) {
-  return name.trim().charAt(0).toUpperCase() || "?";
-}
-
-// ==========================================================
-// Tabs
-//
-//   - Pending / Replied / Ticketed: the three states a root email
-//     can be in, always scoped to "my clients".
-//   - All Inboxes: the Manager/Super Admin escape hatch — every
-//     client's mail, not just this user's own. Rendered as its own
-//     tab, not a filter, so it's unmistakably a different view.
-// ==========================================================
-
-type TabKey = InboxView;
-
-const OWN_TABS: Array<{ key: TabKey; label: string }> = [
-  { key: "pending", label: "Pending" },
-  { key: "replied", label: "Replied" },
-  { key: "ticketed", label: "Ticketed" },
-  { key: "archived", label: "Archived" },
-];
-
-// ==========================================================
-// Time filter
-// ==========================================================
-
-type TimeFilterKey = "ALL" | "1H" | "TODAY" | "24H" | "1W";
-
-const TIME_FILTERS: Array<{ key: TimeFilterKey; label: string }> = [
-  { key: "ALL", label: "All Time" },
-  { key: "1H", label: "Last 1 Hour" },
-  { key: "TODAY", label: "Today" },
-  { key: "24H", label: "Last 24 Hours" },
-  { key: "1W", label: "Last 1 Week" },
-];
-
-function isWithinTimeFilter(receivedAt: string, filter: TimeFilterKey, now: Date): boolean {
-  if (filter === "ALL") return true;
-
-  const receivedTime = new Date(receivedAt).getTime();
-  const nowTime = now.getTime();
-
-  switch (filter) {
-    case "1H":
-      return nowTime - receivedTime <= 60 * 60 * 1000;
-    case "24H":
-      return nowTime - receivedTime <= 24 * 60 * 60 * 1000;
-    case "1W":
-      return nowTime - receivedTime <= 7 * 24 * 60 * 60 * 1000;
-    case "TODAY": {
-      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-      return receivedTime >= startOfToday;
-    }
-    default:
-      return true;
-  }
-}
-
-const SEARCHABLE_FIELDS: Array<(item: InboxItem) => string> = [
-  (item) => item.client_name,
-  (item) => item.subject,
-  (item) => item.from_email ?? "",
-];
-
-function matchesSearch(item: InboxItem, term: string): boolean {
-  if (!term) return true;
-  return SEARCHABLE_FIELDS.some((getField) => getField(item).toLowerCase().includes(term));
-}
+type AgentInboxProps = ReturnType<typeof useMailInbox>;
 
 const selectClass =
   "rounded-md2 border border-border bg-surface px-2.5 py-2 text-xs font-medium text-slate-700 shadow-xs transition-colors focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";
@@ -93,87 +16,40 @@ const STATUS_BADGE: Record<string, { tone: "warning" | "success" | "default"; la
   ASSIGNED: { tone: "success", label: "REPLIED" },
 };
 
-export function AgentInbox() {
-  const { selectedEmail, setSelectedEmail } = useWorkflowContext();
-  const { currentUser } = useAuthContext();
-  const { pushToast } = useToast();
+const EMPTY_STATE_COPY: Record<string, { title: string; description: string }> = {
+  pending: {
+    title: "Nothing pending",
+    description: "Create a dummy email addressed to one of your clients, then refresh to see it appear here.",
+  },
+  unassigned: { title: "Nothing unassigned", description: "Every pending item has already been claimed." },
+  mine: { title: "You haven't claimed anything", description: "Claimed items you're working show up here." },
+  sent: { title: "Nothing sent yet", description: "Replies you send show up here." },
+  drafts: { title: "No drafts", description: "Reply text you save without sending shows up here." },
+  replied: { title: "Nothing replied yet", description: "Mail will move here once it's been actioned." },
+  ticketed: { title: "Nothing ticketed yet", description: "Mail will move here once it's been actioned." },
+  archived: { title: "Nothing archived", description: "Mail will move here once it's been actioned." },
+  all: { title: "No mail yet", description: "Mail will move here once it's been actioned." },
+};
 
-  const isSupervisor = Boolean(currentUser && SUPERVISOR_ROLES.includes(currentUser.role));
-
-  const [rowsByTab, setRowsByTab] = useState<Record<TabKey, InboxItem[]>>({
-    pending: [],
-    replied: [],
-    ticketed: [],
-    archived: [],
-    all: [],
-  });
-  const [clients, setClients] = useState<ClientResponse[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [openingId, setOpeningId] = useState<string | null>(null);
-  const [search, setSearch] = useState("");
-  const [activeTab, setActiveTab] = useState<TabKey>("pending");
-  const [clientFilter, setClientFilter] = useState<string>("ALL");
-  const [timeFilter, setTimeFilter] = useState<TimeFilterKey>("ALL");
-  const [openedIds, setOpenedIds] = useState<Set<string>>(new Set());
-
-  const { run: runOpen } = useApiAction(openInboxThread);
-
-  const refresh = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const clientId = clientFilter === "ALL" ? undefined : clientFilter;
-
-      const [pending, replied, ticketed, archived, clientList] = await Promise.all([
-        getInbox("pending", { clientId }),
-        getInbox("replied", { clientId }),
-        getInbox("ticketed", { clientId }),
-        getInbox("archived", { clientId }),
-        listClients(),
-      ]);
-
-      const next: Record<TabKey, InboxItem[]> = {
-        pending: pending.items,
-        replied: replied.items,
-        ticketed: ticketed.items,
-        archived: archived.items,
-        all: [],
-      };
-
-      if (isSupervisor) {
-        const all = await getInbox("all", { clientId, scope: "all" });
-        next.all = all.items;
-      }
-
-      setRowsByTab(next);
-      setClients(clientList);
-    } catch (error) {
-      pushToast(
-        error instanceof Error ? error.message : "Failed to load inbox.",
-        "error"
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  }, [pushToast, clientFilter, isSupervisor]);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  async function handleOpen(interactionId: string) {
-    setOpeningId(interactionId);
-    const result = await runOpen(interactionId);
-    setOpeningId(null);
-
-    if (result) {
-      setSelectedEmail(result);
-      setOpenedIds((prev) => {
-        const next = new Set(prev);
-        next.add(interactionId);
-        return next;
-      });
-    }
-  }
+export function AgentInbox({
+  isSupervisor,
+  isLoading,
+  openingId,
+  openedIds,
+  clients,
+  clientFilter,
+  setClientFilter,
+  timeFilter,
+  setTimeFilter,
+  search,
+  setSearch,
+  activeView,
+  filteredItems,
+  managedClientCount,
+  refresh,
+  openThread,
+  selectedEmail,
+}: AgentInboxProps) {
 
   function handleListKeyDown(e: React.KeyboardEvent<HTMLUListElement>) {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -188,40 +64,17 @@ export function AgentInbox() {
     buttons[nextIndex]?.focus();
   }
 
-  const now = useMemo(() => new Date(), [rowsByTab, timeFilter]);
-  const debouncedSearch = useDebouncedValue(search, 300);
-  const term = debouncedSearch.trim().toLowerCase();
-
-  const applyFilters = useCallback(
-    (rows: InboxItem[]) =>
-      rows.filter(
-        (row) => isWithinTimeFilter(row.received_at, timeFilter, now) && matchesSearch(row, term)
-      ),
-    [timeFilter, now, term]
-  );
-
-  const tabRows: Record<TabKey, InboxItem[]> = {
-    pending: applyFilters(rowsByTab.pending),
-    replied: applyFilters(rowsByTab.replied),
-    ticketed: applyFilters(rowsByTab.ticketed),
-    archived: applyFilters(rowsByTab.archived),
-    all: applyFilters(rowsByTab.all),
-  };
-
-  const filteredItems = tabRows[activeTab];
-  const managedClientCount = currentUser
-    ? clients.filter((c) => c.account_manager_id === currentUser.user_id).length
-    : 0;
+  const emptyCopy = EMPTY_STATE_COPY[activeView] ?? EMPTY_STATE_COPY.all;
 
   return (
     <div className="flex h-full flex-col rounded-md2 border border-border bg-surface shadow-xs">
       <div className="flex items-center justify-between border-b border-border px-4 py-4">
         <div>
           <h3 className="text-[13px] font-semibold text-slate-900">
-            Inbox — My Clients
+            {isSupervisor && activeView === "all" ? "All Inboxes" : "My Clients"}
           </h3>
           <p className="mt-0.5 text-[11px] text-muted">
-            {rowsByTab.pending.length} pending action
+            {filteredItems.length} item{filteredItems.length === 1 ? "" : "s"}
             {managedClientCount > 0 ? ` · across ${managedClientCount} clients you manage` : ""}
           </p>
         </div>
@@ -234,54 +87,6 @@ export function AgentInbox() {
         >
           <RefreshCw size={14} />
         </Button>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-1 border-b border-border px-3 py-2">
-        {OWN_TABS.map((tab) => {
-          const isActive = activeTab === tab.key;
-          return (
-            <button
-              key={tab.key}
-              onClick={() => setActiveTab(tab.key)}
-              aria-pressed={isActive}
-              className={`flex items-center gap-1.5 rounded-md2 px-2.5 py-1.5 text-[11.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
-                isActive
-                  ? "bg-accent/10 text-accent"
-                  : "text-muted hover:bg-surfaceHover hover:text-slate-700"
-              }`}
-            >
-              {tab.label}
-              <span
-                className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                  isActive ? "bg-accent/20 text-accent" : "bg-slate-100 text-slate-500"
-                }`}
-              >
-                {tabRows[tab.key].length}
-              </span>
-            </button>
-          );
-        })}
-        {isSupervisor && (
-          <button
-            onClick={() => setActiveTab("all")}
-            aria-pressed={activeTab === "all"}
-            title="Every client's mail, not just yours — for when an Account Manager is on leave"
-            className={`flex items-center gap-1.5 rounded-md2 px-2.5 py-1.5 text-[11.5px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${
-              activeTab === "all"
-                ? "bg-accent/10 text-accent"
-                : "text-muted hover:bg-surfaceHover hover:text-slate-700"
-            }`}
-          >
-            All Inboxes
-            <span
-              className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                activeTab === "all" ? "bg-accent/20 text-accent" : "bg-slate-100 text-slate-500"
-              }`}
-            >
-              {tabRows.all.length}
-            </span>
-          </button>
-        )}
       </div>
 
       <div className="flex flex-col gap-2 border-b border-border px-3 py-2.5">
@@ -311,7 +116,7 @@ export function AgentInbox() {
           </select>
           <select
             value={timeFilter}
-            onChange={(e) => setTimeFilter(e.target.value as TimeFilterKey)}
+            onChange={(e) => setTimeFilter(e.target.value as typeof timeFilter)}
             aria-label="Filter by time received"
             className={selectClass}
           >
@@ -330,25 +135,7 @@ export function AgentInbox() {
             <SkeletonRows rows={5} />
           </div>
         ) : filteredItems.length === 0 ? (
-          <EmptyState
-            icon="📭"
-            title={
-              activeTab === "pending"
-                ? "Nothing pending"
-                : activeTab === "replied"
-                ? "Nothing replied yet"
-                : activeTab === "ticketed"
-                ? "Nothing ticketed yet"
-                : activeTab === "archived"
-                ? "Nothing archived"
-                : "No mail yet"
-            }
-            description={
-              activeTab === "pending"
-                ? "Create a dummy email addressed to one of your clients, then refresh to see it appear here."
-                : "Mail will move here once it's been actioned."
-            }
-          />
+          <EmptyState icon="📭" title={emptyCopy.title} description={emptyCopy.description} />
         ) : (
           <ul className="divide-y divide-border" onKeyDown={handleListKeyDown}>
             {filteredItems.map((item) => {
@@ -358,7 +145,7 @@ export function AgentInbox() {
               return (
                 <li key={item.interaction_id}>
                   <button
-                    onClick={() => handleOpen(item.interaction_id)}
+                    onClick={() => openThread(item.interaction_id)}
                     disabled={openingId === item.interaction_id}
                     aria-label={`${isUnread ? "Unread. " : ""}Email from ${item.client_name}: ${item.subject}`}
                     aria-current={isSelected}
@@ -368,17 +155,10 @@ export function AgentInbox() {
                         : "border-l-transparent hover:bg-surfaceHover"
                     }`}
                   >
-                    <div className="relative flex-none">
-                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-accent/10 text-xs font-semibold text-accent">
-                        {initials(item.client_name)}
-                      </div>
-                      {isUnread && (
-                        <span
-                          className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border-2 border-surface bg-accent"
-                          aria-hidden="true"
-                        />
-                      )}
-                    </div>
+                    <Avatar
+                      name={item.client_name}
+                      indicator={isUnread ? "warning" : undefined}
+                    />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-2">
                         <p

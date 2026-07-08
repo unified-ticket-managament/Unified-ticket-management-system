@@ -1,10 +1,10 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.enums import InteractionStatus
+from app.enums import InteractionDirection, InteractionStatus
 from app.models.client import Client
 from app.models.interaction import Interaction
 from app.schemas.interaction import (
@@ -72,6 +72,7 @@ class InteractionRepository:
         account_manager_id: UUID | None = None,
         client_id: UUID | None = None,
         view: str = "pending",
+        folder_id: UUID | None = None,
     ) -> list[Interaction]:
         """
         The Account Manager inbox query — always over thread ROOTS
@@ -85,12 +86,20 @@ class InteractionRepository:
           AM is on leave, or the "All Inboxes" overview.
         - `client_id` set: further narrows to one client (the
           per-client filter on the inbox UI).
+        - `folder_id` set: further narrows to one custom folder —
+          orthogonal to `view` (a folder can hold items in any
+          status), so this composes with any of the views below
+          rather than being its own view.
         - `view`:
-          - "pending": not yet replied to or ticketed — the triage queue.
+          - "pending": not yet replied to or ticketed, and not
+            currently snoozed — the triage queue.
           - "replied": answered directly, never became a ticket.
           - "ticketed": promoted to (or attached onto) a ticket.
           - "archived": marked Informational/Archive — stored, no
             ticket, no work assignment, still searchable here.
+          - "snoozed": pending, but hidden from "pending" until
+            `snoozed_until` — resurfaces automatically, no background
+            job needed since this is just a `now()` comparison on read.
           - "all": every root email regardless of state — the "All
             Inboxes" overview, normally paired with no account_manager
             scoping.
@@ -107,16 +116,32 @@ class InteractionRepository:
         if client_id is not None:
             query = query.where(Interaction.client_id == client_id)
 
+        if folder_id is not None:
+            query = query.where(Interaction.folder_id == folder_id)
+
         query = query.where(
             Interaction.is_visible.is_(True),
             Interaction.interaction_type == "EMAIL",
             Interaction.parent_interaction_id.is_(None),
         )
 
+        now = datetime.now(timezone.utc)
+
         if view == "pending":
             query = query.where(
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.PENDING,
+                or_(
+                    Interaction.snoozed_until.is_(None),
+                    Interaction.snoozed_until <= now,
+                ),
+            )
+        elif view == "snoozed":
+            query = query.where(
+                Interaction.ticket_id.is_(None),
+                Interaction.status == InteractionStatus.PENDING,
+                Interaction.snoozed_until.isnot(None),
+                Interaction.snoozed_until > now,
             )
         elif view == "replied":
             query = query.where(
@@ -154,6 +179,116 @@ class InteractionRepository:
                 Interaction.is_visible.is_(True),
             )
             .order_by(Interaction.created_at.asc())
+        )
+
+        return list(result.scalars().all())
+
+    async def list_sent(
+        self,
+        performed_by: UUID,
+    ) -> list[Interaction]:
+        """
+        Every reply the given user has sent — pre-ticket or
+        ticket-level alike, both created via the same REPLY/OUTBOUND
+        shape (see `InteractionService.add_interaction_reply`/
+        `add_reply`). Not root-only like `list_inbox`: a sent reply
+        is itself a thread child, so the caller resolves the
+        thread-root subject/client via `list_by_ids` on
+        `parent_interaction_id` separately.
+        """
+
+        result = await self.db.execute(
+            select(Interaction)
+            .where(
+                Interaction.interaction_type == "REPLY",
+                Interaction.direction == InteractionDirection.OUTBOUND,
+                Interaction.performed_by == performed_by,
+                Interaction.is_visible.is_(True),
+            )
+            .order_by(Interaction.created_at.desc())
+        )
+
+        return list(result.scalars().all())
+
+    async def list_by_ids(
+        self,
+        interaction_ids: list[UUID],
+    ) -> list[Interaction]:
+        """Batch fetch — used to resolve a set of thread roots in one query."""
+
+        if not interaction_ids:
+            return []
+
+        result = await self.db.execute(
+            select(Interaction).where(Interaction.interaction_id.in_(interaction_ids))
+        )
+
+        return list(result.scalars().all())
+
+    async def get_draft(
+        self,
+        root_interaction_id: UUID,
+        performed_by: UUID,
+    ) -> Interaction | None:
+        """
+        The given agent's active draft on this thread, if any — one
+        active draft per thread per agent, so this is always at most
+        one row.
+        """
+
+        result = await self.db.execute(
+            select(Interaction).where(
+                Interaction.parent_interaction_id == root_interaction_id,
+                Interaction.performed_by == performed_by,
+                Interaction.is_draft.is_(True),
+                Interaction.is_visible.is_(True),
+            )
+        )
+
+        return result.scalar_one_or_none()
+
+    async def update_draft_message(
+        self,
+        interaction: Interaction,
+        message: str,
+    ) -> Interaction:
+        """Overwrites a draft's saved text in place — upsert's "update" half."""
+
+        interaction.payload = {**interaction.payload, "message": message}
+
+        await self.db.flush()
+        await self.db.refresh(interaction)
+
+        return interaction
+
+    async def delete_draft(
+        self,
+        interaction: Interaction,
+    ) -> None:
+        """
+        Hard-deletes a draft row. Unlike every other Interaction (soft-
+        deleted via `hide`), a draft was never visible communication —
+        nothing on the timeline/audit trail ever references it, so
+        there's nothing a soft-delete would need to preserve.
+        """
+
+        await self.db.delete(interaction)
+        await self.db.flush()
+
+    async def list_drafts(
+        self,
+        performed_by: UUID,
+    ) -> list[Interaction]:
+        """Every draft the given agent currently has saved, across every thread."""
+
+        result = await self.db.execute(
+            select(Interaction)
+            .where(
+                Interaction.is_draft.is_(True),
+                Interaction.performed_by == performed_by,
+                Interaction.is_visible.is_(True),
+            )
+            .order_by(Interaction.created_at.desc())
         )
 
         return list(result.scalars().all())
@@ -344,6 +479,102 @@ class InteractionRepository:
 
         if result.rowcount == 0:
             return None
+
+        await self.db.flush()
+        await self.db.refresh(interaction)
+
+        return interaction
+
+    async def snooze(
+        self,
+        interaction: Interaction,
+        snooze_until: datetime,
+    ) -> Interaction | None:
+        """
+        Atomically hides a pending, unticketed interaction from the
+        "pending" view until `snooze_until` — same conditional-UPDATE
+        race guard as claim/archive, so a snooze racing a concurrent
+        claim/convert-to-ticket can't silently win.
+        """
+
+        result = await self.db.execute(
+            update(Interaction)
+            .where(
+                Interaction.interaction_id == interaction.interaction_id,
+                Interaction.ticket_id.is_(None),
+                Interaction.status == InteractionStatus.PENDING,
+            )
+            .values(snoozed_until=snooze_until)
+        )
+
+        if result.rowcount == 0:
+            return None
+
+        await self.db.flush()
+        await self.db.refresh(interaction)
+
+        return interaction
+
+    async def unsnooze(
+        self,
+        interaction: Interaction,
+    ) -> Interaction | None:
+        """
+        Clears an active snooze early, returning the item to
+        "pending" immediately. Guarded on `snoozed_until IS NOT NULL`
+        so calling this on an item that was never snoozed (or whose
+        snooze already lapsed and was cleared) is a clean no-op 409,
+        not a silent success.
+        """
+
+        result = await self.db.execute(
+            update(Interaction)
+            .where(
+                Interaction.interaction_id == interaction.interaction_id,
+                Interaction.snoozed_until.isnot(None),
+            )
+            .values(snoozed_until=None)
+        )
+
+        if result.rowcount == 0:
+            return None
+
+        await self.db.flush()
+        await self.db.refresh(interaction)
+
+        return interaction
+
+    async def set_tags(
+        self,
+        interaction: Interaction,
+        tags: list[str],
+    ) -> Interaction:
+        """
+        Full-replace of an interaction's tag list — no per-tag
+        add/remove endpoint, the frontend always sends the complete
+        set. Plain update, not a claim-style guard: tagging isn't a
+        contested "only one winner" action the way claiming is.
+        """
+
+        interaction.tags = tags
+
+        await self.db.flush()
+        await self.db.refresh(interaction)
+
+        return interaction
+
+    async def set_folder(
+        self,
+        interaction: Interaction,
+        folder_id: UUID | None,
+    ) -> Interaction:
+        """
+        Assigns (or clears, if `folder_id` is None) which custom
+        folder this item is filed under. Plain update — filing into a
+        folder isn't a race-sensitive action.
+        """
+
+        interaction.folder_id = folder_id
 
         await self.db.flush()
         await self.db.refresh(interaction)
