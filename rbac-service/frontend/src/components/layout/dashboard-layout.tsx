@@ -43,7 +43,7 @@ export function DashboardLayout({
 
         {/* Mobile Header */}
 
-        <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-4 lg:hidden">
+        <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-background px-4 lg:hidden print:hidden">
 
           <Button
             variant="ghost"
@@ -69,7 +69,7 @@ export function DashboardLayout({
 
         {/* Content */}
 
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="flex-1 overflow-y-auto p-6 print:overflow-visible print:p-0">
           <AnimatePresence mode="wait">
             <motion.div
               key={pathname}

@@ -5,15 +5,16 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  BarChart3,
   Bell,
   ClipboardList,
+  History,
   LayoutDashboard,
   LogOut,
-  Moon,
   Search,
   Settings as SettingsIcon,
   Shield,
-  Sun,
+  Ticket,
   User,
   UserCircle,
   Users,
@@ -35,13 +36,16 @@ import { useTranslation } from "@/hooks/use-translation";
 import { cn } from "@/lib/utils";
 import { getVisibleNavItems, NAV_ITEM_TRANSLATION_KEY, NavItemKey } from "@/lib/role-access";
 import { authService } from "@/services";
-import { getResolvedTheme, useAuthStore, useThemeStore } from "@/store/auth-store";
+import { useAuthStore } from "@/store/auth-store";
 
 const SEARCH_INDEX: { title: NavItemKey; href: string; icon: typeof LayoutDashboard }[] = [
   { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+  { title: "All Tickets", href: "/all-tickets", icon: Ticket },
+  { title: "My Tickets", href: "/my-tickets", icon: ClipboardList },
   { title: "Users", href: "/users", icon: Users },
   { title: "Roles", href: "/roles", icon: Shield },
-  { title: "Audit Logs", href: "/audit-logs", icon: ClipboardList },
+  { title: "Audit Logs", href: "/audit-logs", icon: History },
+  { title: "Reports", href: "/reports", icon: BarChart3 },
   { title: "Profile", href: "/profile", icon: UserCircle },
   { title: "Settings", href: "/settings", icon: SettingsIcon },
 ];
@@ -84,8 +88,6 @@ export function TopNavbar() {
 
   const user = useAuthStore((state) => state.user);
   const logout = useAuthStore((state) => state.logout);
-  const theme = useThemeStore((state) => state.theme);
-  const toggleTheme = useThemeStore((state) => state.toggleTheme);
 
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -131,7 +133,7 @@ export function TopNavbar() {
   };
 
   return (
-    <header className="sticky top-0 z-30 hidden h-16 items-center justify-between border-b border-border bg-background/95 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:flex">
+    <header className="sticky top-0 z-30 hidden h-16 items-center justify-between border-b border-border bg-background/95 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:flex print:hidden">
       {/* Left Section */}
       <div className="flex items-center gap-4">
         <div ref={searchRef} className="relative">
@@ -192,19 +194,6 @@ export function TopNavbar() {
 
       {/* Right Section */}
       <div className="flex items-center gap-2">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={toggleTheme}
-          aria-label="Toggle theme"
-        >
-          {getResolvedTheme(theme) === "dark" ? (
-            <Sun className="h-5 w-5" />
-          ) : (
-            <Moon className="h-5 w-5" />
-          )}
-        </Button>
-
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" className="relative" aria-label={t("navbar.notifications")}>

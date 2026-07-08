@@ -14,6 +14,7 @@ import {
   Ban,
   CheckCircle2,
   Download,
+  Eye,
   Pencil,
   Plus,
   Search,
@@ -33,6 +34,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { PageHeader } from "@/components/layout/dashboard-shell";
+import { Breadcrumbs } from "@/components/shared/breadcrumbs";
 import { DataTable, DataTablePagination } from "@/components/shared/data-table";
 import { AccessDenied, ErrorState } from "@/components/shared/stats";
 import { UserDetailDrawer } from "@/components/users/user-detail-drawer";
@@ -73,6 +75,7 @@ export default function UsersPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
+  const canDelete = canDeleteRecords(currentUser?.role);
 
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
@@ -302,6 +305,15 @@ export default function UsersPage() {
               className="flex items-center justify-end gap-1"
               onClick={(e) => e.stopPropagation()}
             >
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                aria-label="View user"
+                onClick={() => setViewingUser(user)}
+              >
+                <Eye className="h-4 w-4" />
+              </Button>
               <PermissionGuard permission="user:update">
                 <Button
                   variant="ghost"
@@ -328,23 +340,25 @@ export default function UsersPage() {
                   )}
                 </Button>
               </PermissionGuard>
-              <PermissionGuard permission="user:delete">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 text-destructive hover:text-destructive"
-                  aria-label="Delete user"
-                  onClick={() => setDeletingUser(user)}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </PermissionGuard>
+              {canDelete && (
+                <PermissionGuard permission="user:delete">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-destructive hover:text-destructive"
+                    aria-label="Delete user"
+                    onClick={() => setDeletingUser(user)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </PermissionGuard>
+              )}
             </div>
           );
         },
       },
     ],
-    [statusMutation]
+    [statusMutation, canDelete]
   );
 
   const table = useReactTable({
@@ -369,6 +383,8 @@ export default function UsersPage() {
 
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[{ label: "Dashboard", href: "/dashboard" }, { label: "Users" }]} />
+
       <PageHeader
         title={t("users.title")}
         description={`${t("users.description")}${usersQuery.data ? ` — ${hierarchyRows.length} ${t("common.total")}` : ""}.`}

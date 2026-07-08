@@ -49,18 +49,27 @@ export function ErrorState({ message }: { message: string }) {
   );
 }
 
+const STAT_CARD_TONE_CLASSES = {
+  default: "bg-primary/10 text-primary",
+  success: "bg-success/10 text-success",
+  warning: "bg-warning/10 text-warning",
+  danger: "bg-destructive/10 text-destructive",
+} as const;
+
 export function StatCard({
   title,
   value,
   subtitle,
   icon: Icon,
   trend,
+  tone = "default",
 }: {
   title: string;
   value: string | number;
   subtitle?: string;
   icon?: LucideIcon;
   trend?: { value: string; direction: "up" | "down" };
+  tone?: keyof typeof STAT_CARD_TONE_CLASSES;
 }) {
   return (
     <motion.div
@@ -71,7 +80,7 @@ export function StatCard({
       <div className="flex items-start justify-between">
         <p className="text-sm text-muted-foreground">{title}</p>
         {Icon && (
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <div className={cn("flex h-9 w-9 items-center justify-center rounded-lg", STAT_CARD_TONE_CLASSES[tone])}>
             <Icon className="h-5 w-5" />
           </div>
         )}

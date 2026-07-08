@@ -3,49 +3,86 @@
 @tailwind utilities;
 
 @layer base {
+  /* Modern enterprise light theme — UTMS design system.
+     No dark mode: `.dark` below intentionally mirrors `:root` so the
+     existing theme toggle (top-navbar) has no visible effect instead
+     of being ripped out along with its state/store wiring. */
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
+    --background: 216 33% 97%;       /* #F5F7FA */
+    --foreground: 221 39% 11%;       /* #111827 text primary */
+    --card: 0 0% 100%;               /* #FFFFFF */
+    --card-foreground: 221 39% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 240 5.9% 10%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 240 5.9% 10%;
-    --radius: 0.75rem;
+    --popover-foreground: 221 39% 11%;
+    --primary: 221 83% 53%;          /* #2563EB */
+    --primary-hover: 224 76% 48%;    /* #1D4ED8 */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 20% 95%;        /* light neutral surface */
+    --secondary-foreground: 221 83% 53%;
+    --muted: 220 20% 95%;
+    --muted-foreground: 220 9% 46%;  /* #6B7280 text secondary */
+    --accent: 214 100% 97%;          /* soft blue tint for hover states */
+    --accent-foreground: 221 39% 11%;
+    --destructive: 0 84% 60%;        /* #EF4444 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 91%;           /* #E5E7EB */
+    --input: 220 13% 91%;
+    --ring: 221 83% 53%;
+    --radius: 0.75rem;               /* 12px card radius */
+
+    /* rgb-triplet tokens shared with `.tm-scope` (see below) so the
+       `accent`/`success`/`warning`/`danger`/`info`/`teal`/`canvas`/
+       `surface` Tailwind utilities (already used by button/badge
+       variants) resolve correctly on plain pages too, not only
+       inside the embedded ticket workspace. */
+    --color-canvas: 245 247 250;
+    --color-surface: 255 255 255;
+    --color-surface-hover: 243 244 246;
+    --color-accent: 239 246 255;
+    --color-accent-50: 219 234 254;
+    --color-accent-600: 37 99 235;
+    --color-accent-700: 29 78 216;
+    --color-teal: 20 184 166;
+    --color-success: 34 197 94;
+    --color-warning: 245 158 11;
+    --color-danger: 239 68 68;
+    --color-info: 59 130 246;
   }
 
   .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 6%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 6%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 5.9% 10%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
+    --background: 216 33% 97%;
+    --foreground: 221 39% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 221 39% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 221 39% 11%;
+    --primary: 221 83% 53%;
+    --primary-hover: 224 76% 48%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 20% 95%;
+    --secondary-foreground: 221 83% 53%;
+    --muted: 220 20% 95%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 214 100% 97%;
+    --accent-foreground: 221 39% 11%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 221 83% 53%;
+
+    --color-canvas: 245 247 250;
+    --color-surface: 255 255 255;
+    --color-surface-hover: 243 244 246;
+    --color-accent: 239 246 255;
+    --color-accent-50: 219 234 254;
+    --color-accent-600: 37 99 235;
+    --color-accent-700: 29 78 216;
+    --color-teal: 20 184 166;
+    --color-success: 34 197 94;
+    --color-warning: 245 158 11;
+    --color-danger: 239 68 68;
+    --color-info: 59 130 246;
   }
 
   * {
@@ -61,73 +98,64 @@
 /* ===========================================================
    Ticket Workspace scope
    CSS variables + overrides for the embedded ticket-management
-   workspace (src/ticket-workspace), ported from the standalone
-   Ticketing frontend's dark theme (this app defaults to dark).
-   Scoped under `.tm-scope` rather than `:root`/`.dark` so nothing
-   here can affect RBAC's own pages outside the workspace.
+   workspace (src/ticket-workspace). Recolored from its original
+   dark palette to the app-wide light enterprise theme so ticket
+   pages and RBAC's own pages (Profile/Settings/Users/Roles) read
+   as one consistent design system. Scoped under `.tm-scope`
+   rather than `:root`/`.dark` so nothing here can affect RBAC's
+   own pages outside the workspace.
    =========================================================== */
 
 .tm-scope {
-  /* Canvas/surface were still Ticketing's own navy-tinted dark palette
-     (rgb(15,23,42) etc, Tailwind's default `slate` scale) even after
-     the accent/warning/danger/etc unification below — next to RBAC's
-     actual neutral near-black pages (Profile/Settings), that made the
-     ticket workspace read as a visibly different, bluer app. Values
-     below are RBAC's own dark-theme --background/--card/--secondary
-     (hsl(240 10% 3.9%) / hsl(240 10% 6%) / hsl(240 3.7% 15.9%))
-     converted once from HSL, so the workspace canvas matches RBAC's
-     pages exactly instead of approximating a similar dark tone. */
-  --color-canvas: 9 9 11;
-  --color-surface: 14 14 17;
-  --color-surface-hover: 39 39 42;
+  /* Canvas/surface: app background (#F5F7FA) / card white / light
+     hover tint, matching :root's --background/--card. */
+  --color-canvas: 245 247 250;
+  --color-surface: 255 255 255;
+  --color-surface-hover: 243 244 246;
 
   /* Ticketing's own accent/warning/danger/success/info/teal tokens are
      Tailwind-compiled as `rgb(var(--x) / <alpha-value>)`, so reassigning
      the variable here recolors every utility built from it (bg-warning/10,
      text-warning, border-danger/20, ...) at once, with no need to override
-     each generated class individually. Values below are this app's actual
-     dark-theme --primary/--destructive/--muted-foreground (hsl(0 0% 98%) /
-     hsl(0 62.8% 30.6%) / hsl(240 5% 64.9%)) converted once from HSL, so
-     the workspace matches RBAC's real palette instead of Ticketing's own
-     multi-hue one — applied to every role, not just Staff, so ticket
-     pages and RBAC's own pages (Profile/Settings/Users/Roles) read as
-     one consistent design system. */
-  --color-accent: 250 250 250;
-  --color-accent-50: 39 39 42;
-  --color-accent-600: 212 212 216;
-  --color-accent-700: 161 161 170;
-  --color-teal: 161 161 170;
-  --color-success: 161 161 170;
-  --color-warning: 161 161 170;
-  --color-danger: 127 29 29;
-  --color-info: 161 161 170;
+     each generated class individually. Values below are the app's actual
+     primary/success/warning/destructive colors converted from hex, so the
+     workspace matches RBAC's real palette instead of Ticketing's own
+     multi-hue one — applied to every role, not just Staff. */
+  --color-accent: 37 99 235;       /* #2563EB primary */
+  --color-accent-50: 239 246 255;  /* #EFF6FF */
+  --color-accent-600: 29 78 216;   /* #1D4ED8 primary hover */
+  --color-accent-700: 30 64 175;   /* #1E40AF */
+  --color-teal: 20 184 166;        /* #14B8A6 */
+  --color-success: 34 197 94;      /* #22C55E */
+  --color-warning: 245 158 11;     /* #F59E0B */
+  --color-danger: 239 68 68;       /* #EF4444 */
+  --color-info: 59 130 246;        /* #3B82F6 */
 
   /* Ticketing's own `border`/`muted`/`slate` collide with RBAC's
      shadcn tokens of the same name — kept under distinct `--tm-*`
      variables and reapplied below via scoped overrides instead of
-     touching the global Tailwind config. Values are RBAC's own
-     --border/--muted-foreground dark tokens, and the Tailwind `zinc`
-     scale (the neutral equivalent of Ticketing's blue-tinted `slate`
-     scale) in place of `slate-50`..`slate-900`, so every text/bg/
-     border shade in the workspace comes from the same neutral gray
-     ramp as RBAC's own pages instead of a bluer one. */
-  --tm-border: 39 39 42;
-  --tm-muted: 161 161 170;
-  --tm-slate-50: 24 24 27;
-  --tm-slate-100: 39 39 42;
-  --tm-slate-200: 63 63 70;
-  --tm-slate-300: 82 82 91;
-  --tm-slate-400: 113 113 122;
-  --tm-slate-500: 161 161 170;
-  --tm-slate-600: 212 212 216;
-  --tm-slate-700: 228 228 231;
-  --tm-slate-800: 244 244 245;
-  --tm-slate-900: 250 250 250;
+     touching the global Tailwind config. Values are the app's own
+     --border/--muted-foreground light tokens, and the standard
+     Tailwind `gray` scale in place of `slate-50`..`slate-900`, so
+     every text/bg/border shade in the workspace comes from the same
+     neutral gray ramp as RBAC's own pages. */
+  --tm-border: 229 231 235;    /* #E5E7EB */
+  --tm-muted: 107 114 128;     /* #6B7280 */
+  --tm-slate-50: 249 250 251;  /* #F9FAFB */
+  --tm-slate-100: 243 244 246; /* #F3F4F6 */
+  --tm-slate-200: 229 231 235; /* #E5E7EB */
+  --tm-slate-300: 209 213 219; /* #D1D5DB */
+  --tm-slate-400: 156 163 175; /* #9CA3AF */
+  --tm-slate-500: 107 114 128; /* #6B7280 */
+  --tm-slate-600: 75 85 99;    /* #4B5563 */
+  --tm-slate-700: 55 65 81;    /* #374151 */
+  --tm-slate-800: 31 41 55;    /* #1F2937 */
+  --tm-slate-900: 17 24 39;    /* #111827 */
 
-  --scrollbar-thumb: 63 63 70;
-  --scrollbar-thumb-hover: 82 82 91;
-  --skeleton-base: 24 24 27;
-  --skeleton-shine: 63 63 70;
+  --scrollbar-thumb: 209 213 219;
+  --scrollbar-thumb-hover: 156 163 175;
+  --skeleton-base: 229 231 235;
+  --skeleton-shine: 243 244 246;
 }
 
 .tm-scope .bg-border { background-color: rgb(var(--tm-border)); }

@@ -105,10 +105,16 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
     return map;
   }, [allRoles]);
 
+  // Applied in both create AND edit mode — a role that's off-limits to
+  // assign on creation (e.g. Site Lead can't hand out Super Admin) is
+  // just as off-limits when editing an existing user's role. The
+  // edited user's own current role is always included so the Select
+  // never ends up empty for a user who already holds a role outside
+  // the actor's creatable set.
   const creatableRoleNames = getCreatableRoleNames(currentUser?.role);
   const roles: Role[] =
-    mode === "create" && creatableRoleNames !== null
-      ? allRoles.filter((role) => creatableRoleNames.includes(role.name))
+    creatableRoleNames !== null
+      ? allRoles.filter((role) => creatableRoleNames.includes(role.name) || role.role_id === user?.role_id)
       : allRoles;
 
   const {

@@ -43,8 +43,7 @@ RBAC's actual roles are **Super Admin, Site Lead, Account Manager, Team Lead, St
 python -m venv .venv && .venv\Scripts\activate      # Windows
 pip install -r requirements.txt
 alembic upgrade head                                  # apply migrations
-uvicorn app.main:app --reload                         # http://127.0.0.1:8000, /docs for Swagger
-uvicorn app.main:app --port 8001                      # when RBAC's backend is also running (it defaults to 8000 too)
+uvicorn app.main:app --reload --port 8001              # http://127.0.0.1:8001, /docs for Swagger — 8001 because RBAC's backend already defaults to 8000
 alembic revision --autogenerate -m "message"          # new migration
 ```
 Requires a `.env` in `backend/`: `DATABASE_URL` (async) + `ALEMBIC_DATABASE_URL` (sync, for Alembic), plus `JWT_SECRET_KEY`/`JWT_ALGORITHM` — see `backend/.env.example` and "Access control" below. `JWT_SECRET_KEY` has no default; the app fails fast at boot if it's unset, and it must be byte-identical to RBAC's own `JWT_SECRET_KEY`.

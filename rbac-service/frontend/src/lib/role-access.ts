@@ -18,9 +18,12 @@ export const ROLE_NAMES = {
 
 export type NavItemKey =
   | "Dashboard"
+  | "All Tickets"
+  | "My Tickets"
   | "Users"
   | "Roles"
   | "Audit Logs"
+  | "Reports"
   | "Create Dummy Mail"
   | "Inbox"
   | "Interactions"
@@ -31,9 +34,12 @@ export type NavItemKey =
 
 export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   Dashboard: "nav.dashboard",
+  "All Tickets": "nav.allTickets",
+  "My Tickets": "nav.myTickets",
   Users: "nav.users",
   Roles: "nav.roles",
   "Audit Logs": "nav.auditLogs",
+  Reports: "nav.reports",
   "Create Dummy Mail": "nav.createDummyMail",
   Inbox: "nav.inbox",
   Interactions: "nav.interactions",
@@ -45,37 +51,52 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
 
 
 
-// Staff/Team Lead/Account Manager/Site Lead — the actual agent roles —
-// land on the embedded Ticket Management workspace at /dashboard
-// instead of RBAC's own admin dashboard — see
+// Staff/Team Lead/Account Manager — the hands-on agent roles — land on
+// the embedded Ticket Management workspace at /dashboard instead of
+// RBAC's own admin dashboard — see
 // app/(dashboard)/dashboard/[[...slug]]/page.tsx and
 // src/ticket-workspace/. Their sidebar shows the ticket workspace
 // modules (matching Ticketing's own nav) plus Profile/Settings.
 // "Ticket Audit Log" is the populated audit trail for ticket
 // activity, linked for every agent role.
 //
-// Site Lead gets RBAC's Users/Roles admin pages too, alongside Super
-// Admin — per the org model, Super Admin and Site Lead are the two
-// full-oversight roles. Account Manager/Team Lead/Staff don't manage
-// users or roles.
+// Site Lead's sidebar is intentionally IDENTICAL to Super Admin's (per
+// an explicit product decision — see canDeleteRecords/canManageRoles
+// below for how the two roles then diverge on actions, not navigation).
+// Account Manager/Team Lead/Staff still don't manage users or roles.
 
 //
 // Super Admin, Site Lead, and Viewer all keep the original, unmodified
 // RBAC dashboard/nav instead of the ticket workspace — Viewer as the
-// client-facing role that was never an agent; Super Admin per an
-// explicit decision to keep that role's whole interface RBAC-only;
-// Site Lead because its day-to-day work is org oversight and permission
-// governance, not hands-on ticket work (see the "Primary vs. full"
-// distinction in the RBAC redesign doc) — Site Lead still holds full
-// ticket permissions, it just isn't routed to the ticket workspace UI,
-// the same way Super Admin already wasn't.
+// client-facing role that was never an agent; Super Admin/Site Lead per
+// an explicit decision to keep those two roles' whole interface
+// RBAC-only, sharing the same SuperAdminDashboard component (see the
+// dashboard router) rather than the ticket workspace UI.
 //
 // "Audit Logs" (the RBAC-level log, distinct from "Ticket Audit Log")
 // is included for Super Admin and Site Lead, the two roles with the
 // `audit:view` permission by default.
 const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
-  [ROLE_NAMES.SUPER_ADMIN]: ["Dashboard", "Users", "Roles", "Audit Logs", "Profile", "Settings"],
-  [ROLE_NAMES.SITE_LEAD]: ["Dashboard", "Users", "Roles", "Audit Logs", "Profile", "Settings"],
+  [ROLE_NAMES.SUPER_ADMIN]: [
+    "Dashboard",
+    "All Tickets",
+    "My Tickets",
+    "Users",
+    "Roles",
+    "Audit Logs",
+    "Reports",
+    "Settings",
+  ],
+  [ROLE_NAMES.SITE_LEAD]: [
+    "Dashboard",
+    "All Tickets",
+    "My Tickets",
+    "Users",
+    "Roles",
+    "Audit Logs",
+    "Reports",
+    "Settings",
+  ],
   [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Roles", "Create Dummy Mail", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
   [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
   [ROLE_NAMES.STAFF]: ["Dashboard", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
@@ -109,6 +130,28 @@ export const SUPERVISOR_ROLE_NAMES: readonly string[] = [
 
 export function isSupervisorRole(role: string | undefined): boolean {
   return !!role && SUPERVISOR_ROLE_NAMES.includes(role);
+}
+
+// Site Lead reuses every Super Admin page/component as-is (same sidebar,
+// same tables, same dialogs — see NAV_ITEMS_BY_ROLE above) but is denied
+// a handful of destructive/structural actions on top of that shared UI.
+// This is deliberately a frontend-only gate, independent of the ticket:*/
+// user:*/role:* permission strings PermissionGuard checks: the backend
+// currently grants Site Lead nearly every permission (rank 4, "all
+// permissions except ticket:system_config/audit:export" — see
+// CLAUDE.md), which does not line up with this narrower product
+// decision. Call sites should combine this with the existing
+// PermissionGuard, not replace it, so tightening the backend grants
+// later only makes the UI more restrictive, never less.
+export function canDeleteRecords(role: string | undefined): boolean {
+  return role === ROLE_NAMES.SUPER_ADMIN;
+}
+
+// Role creation/editing/deletion ("modifying role structure") stays
+// Super Admin-only; Site Lead's Roles page is view-only (role info,
+// permissions, assigned users).
+export function canManageRoles(role: string | undefined): boolean {
+  return role === ROLE_NAMES.SUPER_ADMIN;
 }
 
 // Roles that a given logged-in role is permitted to assign when creating a

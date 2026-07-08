@@ -9,18 +9,22 @@ import {
   SortingState,
   useReactTable,
 } from "@tanstack/react-table";
-import { CheckCircle2, Search } from "lucide-react";
+import { CheckCircle2, Download, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
 import { actionBadgeVariant, ActionIcon } from "@/components/shared/audit";
-import { DataTable, DataTablePagination } from "@/components/shared/data-table";
-import { ErrorState } from "@/components/shared/stats";
+import { Breadcrumbs } from "@/components/shared/breadcrumbs";
+import { DataTablePagination } from "@/components/shared/data-table";
+import { EmptyState, ErrorState } from "@/components/shared/stats";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { formatDate } from "@/lib/utils";
 import { auditService, userService } from "@/services";
@@ -30,6 +34,7 @@ type AuditRow = AuditLog & { userName: string; userEmail: string | null };
 
 export default function AuditLogsPage() {
   const { t } = useTranslation();
+  const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -173,11 +178,41 @@ export default function AuditLogsPage() {
     return <ErrorState message="Failed to load audit logs. Please try again." />;
   }
 
+  const handleExport = () => {
+    const header = ["User", "Email", "Action", "Entity", "Entity ID", "Timestamp"];
+    const csvRows = filteredRows.map((log) =>
+      [log.userName, log.userEmail ?? "", log.action, log.entity_type, log.entity_id ?? "", log.timestamp]
+        .map((value) => `"${String(value).replace(/"/g, '""')}"`)
+        .join(",")
+    );
+    const csv = [header.join(","), ...csvRows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `audit-logs-export-${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+
+    toast({ title: "Export ready", description: `${filteredRows.length} log(s) exported.` });
+  };
+
+  const isLoading = auditQuery.isLoading || usersQuery.isLoading;
+  const pageRows = table.getRowModel().rows;
+
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[{ label: "Dashboard", href: "/dashboard" }, { label: "Audit Logs" }]} />
+
       <PageHeader
         title={t("auditLogs.title")}
         description={`${t("auditLogs.description")}${auditQuery.data ? ` — ${auditQuery.data.total} ${t("common.total")}` : ""}.`}
+        action={
+          <Button variant="outline" className="gap-2" onClick={handleExport}>
+            <Download className="h-4 w-4" />
+            Export
+          </Button>
+        }
       />
 
       <Card>
@@ -217,13 +252,55 @@ export default function AuditLogsPage() {
         </CardContent>
       </Card>
 
-      <DataTable
-        table={table}
-        columnCount={columns.length}
-        isLoading={auditQuery.isLoading || usersQuery.isLoading}
-        emptyTitle="No audit logs found"
-        emptyDescription="Try adjusting your search or date range."
-      />
+      <Card>
+        <CardContent className="p-5">
+          {isLoading ? (
+            <div className="space-y-6">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-14 w-full" />
+              ))}
+            </div>
+          ) : pageRows.length === 0 ? (
+            <EmptyState title="No audit logs found" description="Try adjusting your search or date range." />
+          ) : (
+            <ol>
+              {pageRows.map((row, index) => {
+                const log = row.original;
+                return (
+                  <li key={log.audit_log_id} className="relative flex gap-4 pl-2">
+                    <div className="flex flex-col items-center">
+                      <Avatar className="h-9 w-9 shrink-0 border border-border">
+                        <AvatarFallback className="text-xs">
+                          {log.userName.charAt(0).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                      {index < pageRows.length - 1 && <span className="mt-1 h-full w-px flex-1 bg-border" />}
+                    </div>
+                    <div className="flex-1 pb-6">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-semibold">{log.userName}</p>
+                        <Badge variant={actionBadgeVariant(log.action)} className="gap-1.5">
+                          <ActionIcon action={log.action} />
+                          {log.action}
+                        </Badge>
+                        <Badge variant="success" className="gap-1.5">
+                          <CheckCircle2 className="h-3 w-3" />
+                          Success
+                        </Badge>
+                      </div>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {log.entity_type}
+                        {log.entity_id && <span className="font-mono text-xs"> · {log.entity_id.slice(0, 8)}</span>}
+                      </p>
+                      <p className="mt-1 text-xs text-muted-foreground">{formatDate(log.timestamp)}</p>
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
+          )}
+        </CardContent>
+      </Card>
 
       <DataTablePagination table={table} />
     </div>

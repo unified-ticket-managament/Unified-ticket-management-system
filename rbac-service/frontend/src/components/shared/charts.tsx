@@ -149,7 +149,7 @@ export function AreaTrendChart({
 /* -------------------------------------------------------------------------- */
 
 interface CategoryBarListProps {
-  data: TrendPoint[];
+  data: (TrendPoint & { color?: string })[];
   className?: string;
 }
 
@@ -169,7 +169,10 @@ export function CategoryBarList({ data, className }: CategoryBarListProps) {
             </div>
             <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
               <div
-                className="h-full rounded-r-full bg-blue-500 transition-all duration-500 ease-out group-hover:bg-blue-400"
+                className={cn(
+                  "h-full rounded-r-full transition-all duration-500 ease-out",
+                  d.color ?? "bg-blue-500 group-hover:bg-blue-400"
+                )}
                 style={{ width: `${pct}%` }}
               />
             </div>

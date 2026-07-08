@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { SiteLeadDashboard } from "@/components/dashboard/site-lead-dashboard";
+import { SuperAdminDashboard } from "@/components/dashboard/super-admin-dashboard";
 import { ViewerDashboard } from "@/components/dashboard/viewer-dashboard";
 import { ROLE_NAMES } from "@/lib/role-access";
 import { useAuthStore } from "@/store/auth-store";
@@ -19,21 +19,26 @@ const TicketWorkspaceApp = dynamic(
 // Optional catch-all so every /dashboard/* path (the embedded ticket
 // workspace's own routes — /dashboard/tickets, /dashboard/inbox, etc.)
 // resolves to this one Next.js page. Viewer (the client-facing role,
-// never an agent) and Super Admin (the RBAC-focused administrator role)
-// keep the original RBAC dashboard; Staff/Team Lead/Manager — the actual
-// agent roles — get the ticket workspace as their landing experience
-// instead. Super Admin's own NAV_ITEMS_BY_ROLE entry (role-access.ts)
-// has no ticket-workspace nav items, so there's no in-app path into
-// /dashboard/tickets etc. for that role even though this same page
-// technically serves that URL too.
+// never an agent) keeps the original RBAC dashboard; Super Admin and
+// Site Lead share the exact same ticket-operations dashboard
+// (SuperAdminDashboard, mock-data backed — see lib/mock-tickets.ts) per
+// an explicit product decision that Site Lead's interface should look
+// identical to Super Admin's, differing only in which actions are
+// available (see canDeleteRecords/canManageRoles in role-access.ts);
+// Staff/Team Lead/Manager — the actual agent roles — get the ticket
+// workspace as their landing experience instead. Both Super Admin's and
+// Site Lead's NAV_ITEMS_BY_ROLE entries have no ticket-workspace nav
+// items, so there's no in-app path into /dashboard/tickets etc. for
+// either role even though this same page technically serves that URL
+// too.
 export default function DashboardCatchAllPage() {
   const role = useAuthStore((state) => state.user?.role);
 
-  if (role === ROLE_NAMES.SITE_LEAD) {
-    return <SiteLeadDashboard />;
+  if (role === ROLE_NAMES.SUPER_ADMIN || role === ROLE_NAMES.SITE_LEAD) {
+    return <SuperAdminDashboard />;
   }
 
-  if (role === ROLE_NAMES.VIEWER || role === ROLE_NAMES.SUPER_ADMIN) {
+  if (role === ROLE_NAMES.VIEWER) {
     return <ViewerDashboard />;
   }
 

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
+  BarChart3,
   ChevronsLeft,
   ChevronsRight,
   ClipboardList,
@@ -49,6 +50,16 @@ const menuItems: {
     icon: LayoutDashboard,
   },
   {
+    title: "All Tickets",
+    href: "/all-tickets",
+    icon: Ticket,
+  },
+  {
+    title: "My Tickets",
+    href: "/my-tickets",
+    icon: ClipboardList,
+  },
+  {
     title: "Users",
     href: "/users",
     icon: Users,
@@ -61,7 +72,12 @@ const menuItems: {
   {
     title: "Audit Logs",
     href: "/audit-logs",
-    icon: ClipboardList,
+    icon: History,
+  },
+  {
+    title: "Reports",
+    href: "/reports",
+    icon: BarChart3,
   },
   {
     title: "Create Dummy Mail",
@@ -230,7 +246,7 @@ export function Sidebar() {
     <motion.aside
       animate={{ width: collapsed ? 80 : 256 }}
       transition={{ type: "spring", stiffness: 300, damping: 32 }}
-      className="relative h-screen shrink-0 border-r border-border"
+      className="relative h-screen shrink-0 border-r border-border print:hidden"
     >
       <SidebarContent collapsed={collapsed} />
 

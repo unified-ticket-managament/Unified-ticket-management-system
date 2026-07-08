@@ -9,10 +9,14 @@ export const LANGUAGES: { value: Language; label: string }[] = [
 
 const en = {
   "nav.dashboard": "Dashboard",
+  "nav.allTickets": "All Tickets",
+  "nav.myTickets": "My Tickets",
+  "nav.queue": "Queue",
   "nav.users": "Users",
   "nav.roles": "Roles",
   "nav.permissions": "Permissions",
   "nav.auditLogs": "Audit Logs",
+  "nav.reports": "Reports",
   "nav.createDummyMail": "Create Dummy Mail",
   "nav.inbox": "Mail",
   "nav.interactions": "Interactions",
@@ -99,10 +103,14 @@ const en = {
 
 const es: Record<keyof typeof en, string> = {
   "nav.dashboard": "Panel",
+  "nav.allTickets": "Todos los tickets",
+  "nav.myTickets": "Mis tickets",
+  "nav.queue": "Cola",
   "nav.users": "Usuarios",
   "nav.roles": "Roles",
   "nav.permissions": "Permisos",
   "nav.auditLogs": "Registros de auditoría",
+  "nav.reports": "Informes",
   "nav.createDummyMail": "Crear correo de prueba",
   "nav.inbox": "Correo",
   "nav.interactions": "Interacciones",
@@ -189,10 +197,14 @@ const es: Record<keyof typeof en, string> = {
 
 const fr: Record<keyof typeof en, string> = {
   "nav.dashboard": "Tableau de bord",
+  "nav.allTickets": "Tous les tickets",
+  "nav.myTickets": "Mes tickets",
+  "nav.queue": "File d'attente",
   "nav.users": "Utilisateurs",
   "nav.roles": "Rôles",
   "nav.permissions": "Autorisations",
   "nav.auditLogs": "Journaux d'audit",
+  "nav.reports": "Rapports",
   "nav.createDummyMail": "Créer un e-mail test",
   "nav.inbox": "Courrier",
   "nav.interactions": "Interactions",
@@ -279,10 +291,14 @@ const fr: Record<keyof typeof en, string> = {
 
 const de: Record<keyof typeof en, string> = {
   "nav.dashboard": "Dashboard",
+  "nav.allTickets": "Alle Tickets",
+  "nav.myTickets": "Meine Tickets",
+  "nav.queue": "Warteschlange",
   "nav.users": "Benutzer",
   "nav.roles": "Rollen",
   "nav.permissions": "Berechtigungen",
   "nav.auditLogs": "Prüfprotokolle",
+  "nav.reports": "Berichte",
   "nav.createDummyMail": "Test-E-Mail erstellen",
   "nav.inbox": "Post",
   "nav.interactions": "Interaktionen",

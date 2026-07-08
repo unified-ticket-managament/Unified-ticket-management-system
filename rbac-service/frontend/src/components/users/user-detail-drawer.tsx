@@ -78,11 +78,15 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
 
   // Super Admin can assign any permission. An Account Manager can only
   // assign permissions they personally hold — they can never grant
-  // something they don't have themselves. Team Lead / Staff / Viewer
-  // cannot manage permissions at all (read-only).
+  // something they don't have themselves. Site Lead — despite holding
+  // nearly every backend permission (see canDeleteRecords/canManageRoles
+  // in role-access.ts for the broader Site Lead policy) — is
+  // deliberately read-only here per product decision: permission
+  // editing counts as "modifying role structure", which Site Lead can
+  // view but not change. Team Lead / Staff / Viewer cannot manage
+  // permissions at all either (read-only).
   const isManagerActor = currentUser?.role === ROLE_NAMES.ACCOUNT_MANAGER;
-  const isUnrestrictedActor =
-    currentUser?.role === ROLE_NAMES.SUPER_ADMIN || currentUser?.role === ROLE_NAMES.SITE_LEAD;
+  const isUnrestrictedActor = currentUser?.role === ROLE_NAMES.SUPER_ADMIN;
   const canManagePermissions = isUnrestrictedActor || isManagerActor;
 
   const isPermissionAssignable = (permissionName: string) => {

@@ -207,14 +207,17 @@ alembic upgrade head
 ## Run the Backend
 
 ```bash
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --port 8001
 ```
 
-Server runs at `http://127.0.0.1:8000`
+Runs on port 8001, not uvicorn's default 8000, since the RBAC service's own backend
+(`rbac-service/backend`) already defaults to 8000 and both are commonly run at the same time.
 
-Swagger UI: `http://127.0.0.1:8000/docs`
+Server runs at `http://127.0.0.1:8001`
 
-ReDoc: `http://127.0.0.1:8000/redoc`
+Swagger UI: `http://127.0.0.1:8001/docs`
+
+ReDoc: `http://127.0.0.1:8001/redoc`
 
 ---
 
@@ -228,7 +231,7 @@ npm install
 Create a `.env` file (copy `.env.example`):
 
 ```env
-VITE_API_BASE_URL=http://localhost:8000
+VITE_API_BASE_URL=http://localhost:8001
 ```
 
 Then run:

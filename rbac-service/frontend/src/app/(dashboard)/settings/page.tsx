@@ -5,15 +5,11 @@ import { useMutation } from "@tanstack/react-query";
 import { AxiosError } from "axios";
 import {
   Bell,
-  Check,
   Globe,
   Laptop,
   Loader2,
-  Monitor,
-  Moon,
   ShieldCheck,
   Smartphone,
-  Sun,
   UserRound,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -22,6 +18,7 @@ import { z } from "zod";
 
 import { ChangePasswordDialog } from "@/components/settings/change-password-dialog";
 import { PageHeader } from "@/components/layout/dashboard-shell";
+import { Breadcrumbs } from "@/components/shared/breadcrumbs";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -49,17 +46,10 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { Language, LANGUAGES } from "@/lib/i18n/translations";
-import { cn } from "@/lib/utils";
 import { authService } from "@/services";
-import { Theme, useAuthStore, useThemeStore } from "@/store/auth-store";
+import { useAuthStore } from "@/store/auth-store";
 import { useProfileExtrasStore } from "@/store/profile-extras-store";
 import { useSettingsStore } from "@/store/settings-store";
-
-const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun }[] = [
-  { value: "light", label: "Light", icon: Sun },
-  { value: "dark", label: "Dark", icon: Moon },
-  { value: "system", label: "System", icon: Monitor },
-];
 
 const accountSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -74,8 +64,6 @@ type AccountValues = z.infer<typeof accountSchema>;
 export default function SettingsPage() {
   const { toast } = useToast();
   const { t } = useTranslation();
-  const theme = useThemeStore((s) => s.theme);
-  const setTheme = useThemeStore((s) => s.setTheme);
 
   const currentUser = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
@@ -148,6 +136,8 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
+      <Breadcrumbs items={[{ label: "Dashboard", href: "/dashboard" }, { label: "Settings" }]} />
+
       <PageHeader
         title={t("settings.title")}
         description={t("settings.description")}
@@ -222,43 +212,6 @@ export default function SettingsPage() {
               </Button>
             </div>
           </form>
-        </CardContent>
-      </Card>
-
-      {/* Theme */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">{t("settings.theme")}</CardTitle>
-          <CardDescription>Choose how the platform looks on this device.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {THEME_OPTIONS.map((option) => {
-              const Icon = option.icon;
-              const active = theme === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => setTheme(option.value)}
-                  className={cn(
-                    "relative flex flex-col items-center gap-2 rounded-xl border p-4 text-sm font-medium transition-all hover:-translate-y-0.5 hover:shadow-md",
-                    active
-                      ? "border-primary bg-primary/5 ring-2 ring-primary/40"
-                      : "border-border bg-card"
-                  )}
-                >
-                  {active && (
-                    <div className="absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                      <Check className="h-3 w-3" />
-                    </div>
-                  )}
-                  <Icon className="h-5 w-5" />
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
         </CardContent>
       </Card>
 
