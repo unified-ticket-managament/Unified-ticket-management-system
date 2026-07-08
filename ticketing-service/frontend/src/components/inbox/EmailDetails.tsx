@@ -1,19 +1,71 @@
 import { useEffect, useState } from "react";
-import { ArrowUpRight, Send, Ticket as TicketIcon } from "lucide-react";
+import { Send, Ticket as TicketIcon } from "lucide-react";
 import { Link } from "react-router-dom";
-import { Avatar } from "@/components/common/Avatar";
 import { Badge } from "@/components/common/Badge";
 import { Button } from "@/components/common/Button";
 import { Collapsible } from "@/components/common/Collapsible";
 import { EmptyState } from "@/components/common/EmptyState";
 import { EnvelopePreview } from "@/components/common/EnvelopePreview";
-import { AttachmentList } from "@/components/common/AttachmentList";
+import { MessageCard, type MessageCardData } from "@/components/inbox/MessageCard";
 import { useApiAction } from "@/hooks/useApiAction";
 import { replyToInteraction } from "@/api/inbox";
 import { replyToClient } from "@/api/interaction";
 import { useAuthContext } from "@/context/AuthContext";
 import { useWorkflowContext } from "@/context/WorkflowContext";
-import type { InteractionReplyResponse, OpenEmailResponse } from "@/types";
+import type { InteractionReplyResponse, InteractionResponse, OpenEmailResponse } from "@/types";
+
+function rootMessage(email: OpenEmailResponse): MessageCardData {
+  return {
+    key: email.interaction_id,
+    senderName: email.from_name ?? email.client_name,
+    senderEmail: email.from_email,
+    toLabel: email.to_email,
+    timestamp: email.received_at,
+    body: email.body,
+    isClientMessage: true,
+    attachments: email.attachments,
+  };
+}
+
+// A thread reply can be either an agent's outbound REPLY (text in
+// payload.message, sender name in payload.envelope.from_name) or,
+// since In-Reply-To/References threading chains a client's follow-up
+// email under the same root, an inbound EMAIL (text in payload.body
+// instead) — reading payload.message unconditionally left the
+// client's half of the conversation rendering as an empty bubble.
+function replyMessage(reply: InteractionResponse): MessageCardData {
+  if (reply.interaction_type === "EMAIL") {
+    const payload = reply.payload as {
+      body?: string;
+      from_name?: string;
+      from_email?: string;
+      to_email?: string;
+    };
+    return {
+      key: reply.interaction_id,
+      senderName: payload.from_name || payload.from_email || "Client",
+      senderEmail: payload.from_email ?? null,
+      toLabel: payload.to_email ?? null,
+      timestamp: reply.created_at,
+      body: payload.body ?? "",
+      isClientMessage: true,
+    };
+  }
+
+  const payload = reply.payload as {
+    message?: string;
+    envelope?: { from_name?: string; from_email?: string; to_email?: string };
+  };
+  return {
+    key: reply.interaction_id,
+    senderName: payload.envelope?.from_name || "Agent",
+    senderEmail: payload.envelope?.from_email ?? null,
+    toLabel: payload.envelope?.to_email ?? null,
+    timestamp: reply.created_at,
+    body: payload.message ?? "",
+    isClientMessage: false,
+  };
+}
 
 interface ReplySent {
   interaction_id: string;
@@ -151,81 +203,46 @@ export function EmailDetails({ onSaveDraft, onSendDraft, onDiscardDraft }: Email
     if (ok) setMessage("");
   }
 
+  // Root email + every reply rendered through the exact same
+  // MessageCard shape, oldest first — the root and the latest message
+  // always stay visible, anything strictly in between collapses
+  // behind the "N previous messages" divider so a long thread doesn't
+  // force scrolling past every past message to reach the newest one.
+  const messages = [rootMessage(selectedEmail), ...selectedEmail.replies.map(replyMessage)];
+  const [firstMessage, ...restMessages] = messages;
+  const lastMessage = restMessages[restMessages.length - 1];
+  const middleMessages = restMessages.slice(0, -1);
+
   return (
     <div className="flex h-full flex-col rounded-md2 border border-border bg-surface shadow-xs">
       <div className="flex items-center justify-between gap-3 border-b border-border px-5 py-4">
-        <div className="flex items-center gap-3">
-          <Avatar name={selectedEmail.from_name ?? selectedEmail.client_name} />
-          <div className="min-w-0">
-            <p className="truncate text-[13px] font-semibold text-slate-900">
-              {selectedEmail.from_name ?? selectedEmail.from_email}
-            </p>
-            <p className="text-[11px] text-muted">{selectedEmail.client_name}</p>
-          </div>
+        <div className="min-w-0">
+          <p className="truncate text-[15px] font-semibold text-slate-900">{selectedEmail.subject}</p>
+          <p className="text-[11px] text-muted">{selectedEmail.client_name}</p>
         </div>
         <Badge tone={selectedEmail.status === "PENDING" ? "warning" : "success"} dot>
           {selectedEmail.status}
         </Badge>
       </div>
 
-      <div className="grid grid-cols-3 gap-3 border-b border-border bg-canvas/50 px-5 py-3 text-[11px]">
-        <div>
-          <p className="text-muted">Via</p>
-          <p className="mt-0.5 font-medium text-slate-700">{selectedEmail.to_email ?? "—"}</p>
-        </div>
-        <div>
-          <p className="text-muted">Received</p>
-          <p className="mt-0.5 font-medium text-slate-700">
-            {new Date(selectedEmail.received_at).toLocaleString()}
-          </p>
-        </div>
-        <div>
-          <p className="text-muted">Source</p>
-          <p className="mt-0.5 font-medium text-slate-700">Email</p>
-        </div>
-      </div>
-
       <div className="flex-1 overflow-y-auto scrollbar-thin px-5 py-5">
-        <p className="mb-1 text-[11px] font-semibold text-muted">{selectedEmail.from_email}</p>
-        <p className="mb-3 text-[15px] font-semibold text-slate-900">
-          {selectedEmail.subject}
-        </p>
-        <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
-          {selectedEmail.body}
-        </p>
+        <div className="flex flex-col gap-3">
+          <MessageCard data={firstMessage} />
 
-        {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
-          <div className="mt-5 border-t border-border pt-4">
-            <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted">
-              Attachments
-            </p>
-            <AttachmentList attachments={selectedEmail.attachments} />
-          </div>
-        )}
+          {middleMessages.length > 0 && (
+            <Collapsible
+              title={`${middleMessages.length} previous message${middleMessages.length === 1 ? "" : "s"}`}
+            >
+              <div className="flex flex-col gap-3">
+                {middleMessages.map((m) => (
+                  <MessageCard key={m.key} data={m} />
+                ))}
+              </div>
+            </Collapsible>
+          )}
 
-        {selectedEmail.replies.length > 0 && (
-          <div className="mt-5 flex flex-col gap-3 border-t border-border pt-4">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-              Replies
-            </p>
-            {/* Older replies collapse behind a toggle so the thread
-                doesn't force scrolling past every past message just
-                to reach the latest one — only the newest stays
-                visible by default. */}
-            {selectedEmail.replies.length > 1 && (
-              <Collapsible title={`${selectedEmail.replies.length - 1} earlier message${selectedEmail.replies.length - 1 === 1 ? "" : "s"}`}>
-                <div className="flex flex-col gap-3">
-                  {selectedEmail.replies.slice(0, -1).map((reply) => (
-                    <ReplyBubble key={reply.interaction_id} message={(reply.payload.message as string) ?? ""} />
-                  ))}
-                </div>
-              </Collapsible>
-            )}
-            {selectedEmail.replies.slice(-1).map((reply) => (
-              <ReplyBubble key={reply.interaction_id} message={(reply.payload.message as string) ?? ""} />
-            ))}
-          </div>
-        )}
+          {lastMessage && <MessageCard data={lastMessage} />}
+        </div>
       </div>
 
       {isClosed ? (
@@ -308,13 +325,3 @@ export function EmailDetails({ onSaveDraft, onSendDraft, onDiscardDraft }: Email
   );
 }
 
-function ReplyBubble({ message }: { message: string }) {
-  return (
-    <div className="ml-auto max-w-[85%] rounded-md2 border border-accent/20 bg-accent/5 px-4 py-3">
-      <div className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold text-accent">
-        <ArrowUpRight size={12} /> Reply
-      </div>
-      <p className="whitespace-pre-wrap text-sm text-slate-700">{message}</p>
-    </div>
-  );
-}

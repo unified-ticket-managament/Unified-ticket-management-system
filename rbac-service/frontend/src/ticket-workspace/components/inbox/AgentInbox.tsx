@@ -71,11 +71,15 @@ export function AgentInbox({
       <div className="flex items-center justify-between border-b border-border px-4 py-4">
         <div>
           <h3 className="text-[13px] font-semibold text-slate-900">
-            {isSupervisor && activeView === "all" ? "All Inboxes" : "My Clients"}
+            {isSupervisor ? "Global Inbox" : "My Clients"}
           </h3>
           <p className="mt-0.5 text-[11px] text-muted">
             {filteredItems.length} item{filteredItems.length === 1 ? "" : "s"}
-            {managedClientCount > 0 ? ` · across ${managedClientCount} clients you manage` : ""}
+            {isSupervisor
+              ? " · every client"
+              : managedClientCount > 0
+              ? ` · across ${managedClientCount} clients you manage`
+              : ""}
           </p>
         </div>
         <Button

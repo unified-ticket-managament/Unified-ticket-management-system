@@ -64,14 +64,18 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
 // an explicit product decision — see canDeleteRecords/canManageRoles
 // below for how the two roles then diverge on actions, not navigation).
 // Account Manager/Team Lead/Staff still don't manage users or roles.
-
 //
-// Super Admin, Site Lead, and Viewer all keep the original, unmodified
-// RBAC dashboard/nav instead of the ticket workspace — Viewer as the
-// client-facing role that was never an agent; Super Admin/Site Lead per
-// an explicit decision to keep those two roles' whole interface
-// RBAC-only, sharing the same SuperAdminDashboard component (see the
-// dashboard router) rather than the ticket workspace UI.
+// Super Admin and Site Lead land on RBAC's own SuperAdminDashboard for
+// the bare /dashboard root (Users/Roles/overview stuff has no ticket-
+// workspace equivalent), but — unlike an earlier version of this file —
+// they ALSO get the real ticket-workspace modules (Inbox/Interactions/
+// Tickets/Ticket Audit Log) instead of the RBAC-native "All Tickets"/
+// "My Tickets" pages, which were bound to static mock data
+// (lib/mock-tickets.ts) with no live backend behind them. The ticket
+// workspace's own Tickets page already has "Open Pool"/"My Tickets"/
+// "All" tabs built in, so nothing extra was needed to cover both.
+// Viewer keeps the original, unmodified RBAC dashboard/nav — the
+// client-facing role that was never an agent.
 //
 // "Audit Logs" (the RBAC-level log, distinct from "Ticket Audit Log")
 // is included for Super Admin and Site Lead, the two roles with the
@@ -79,23 +83,27 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
 const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
   [ROLE_NAMES.SUPER_ADMIN]: [
     "Dashboard",
-    "All Tickets",
-    "My Tickets",
     "Users",
     "Roles",
     "Audit Logs",
     "Reports",
+    "Inbox",
+    "Interactions",
+    "Tickets",
+    "Ticket Audit Log",
     "Settings",
   ],
   [ROLE_NAMES.SITE_LEAD]: [
     "Dashboard",
-    "All Tickets",
-    "My Tickets",
     "Users",
     "Roles",
     "Audit Logs",
     "Reports",
     "Create Dummy Mail",
+    "Inbox",
+    "Interactions",
+    "Tickets",
+    "Ticket Audit Log",
     "Settings",
   ],
   [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Roles", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],

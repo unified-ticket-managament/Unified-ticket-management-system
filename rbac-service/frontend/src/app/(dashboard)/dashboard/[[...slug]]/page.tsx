@@ -17,41 +17,33 @@ const TicketWorkspaceApp = dynamic(
   { ssr: false }
 );
 
-// Site Lead's one, deliberately narrow exception to "Site Lead never
-// reaches the ticket workspace" (see the role check below) — the
-// dummy-mail simulator, rendered on its own rather than via the full
-// TicketWorkspaceApp. See DummyMailOnlyApp's own docstring for why
-// that isolation matters (mounting the full app's <BrowserRouter>
-// would let an in-app <Link> navigate Site Lead into every other
-// ticket-workspace route without this page's role check running
-// again).
-const DummyMailOnlyApp = dynamic(
-  () => import("@tw/DummyMailOnlyApp").then((mod) => mod.DummyMailOnlyApp),
-  { ssr: false }
-);
-
 // Optional catch-all so every /dashboard/* path (the embedded ticket
 // workspace's own routes — /dashboard/tickets, /dashboard/inbox, etc.)
 // resolves to this one Next.js page. Viewer (the client-facing role,
-// never an agent) keeps the original RBAC dashboard; Super Admin and
-// Site Lead share the exact same ticket-operations dashboard
-// (SuperAdminDashboard, mock-data backed — see lib/mock-tickets.ts) per
-// an explicit product decision that Site Lead's interface should look
-// identical to Super Admin's, differing only in which actions are
-// available (see canDeleteRecords/canManageRoles in role-access.ts);
-// Staff/Team Lead/Manager — the actual agent roles — get the ticket
-// workspace as their landing experience instead. Both Super Admin's and
-// Site Lead's NAV_ITEMS_BY_ROLE entries have no ticket-workspace nav
-// items, so there's no in-app path into /dashboard/tickets etc. for
-// either role even though this same page technically serves that URL
-// too.
+// never an agent) keeps the original RBAC dashboard.
+//
+// Super Admin and Site Lead land on RBAC's own SuperAdminDashboard only
+// for the bare /dashboard root (its Users/Roles/overview KPIs have no
+// ticket-workspace equivalent) — any deeper slug (/dashboard/inbox,
+// /dashboard/tickets, /dashboard/tickets/:id, /dashboard/interactions,
+// /dashboard/audit-logs, /dashboard/create-mail) mounts the exact same
+// real TicketWorkspaceApp Staff/Team Lead/Account Manager already use,
+// with real backend data — see role-access.ts's NAV_ITEMS_BY_ROLE for
+// why this replaced the old RBAC-native "All Tickets"/"My Tickets"
+// pages (those were bound to static mock data with no live backend).
+// Mounting the FULL app (not an isolated single page) is safe here:
+// every route inside TicketWorkspaceApp's own <Routes> is something
+// these two roles are now meant to reach anyway (CreateMailPage still
+// self-gates to Site Lead only, backed by the real POST /emails/dummy
+// 403 for anyone else), so there's no in-app link that would leak them
+// somewhere they shouldn't be.
 export default function DashboardCatchAllPage() {
   const role = useAuthStore((state) => state.user?.role);
   const params = useParams<{ slug?: string[] }>();
   const slug = params?.slug ?? [];
 
-  if (role === ROLE_NAMES.SITE_LEAD && slug.length === 1 && slug[0] === "create-mail") {
-    return <DummyMailOnlyApp />;
+  if ((role === ROLE_NAMES.SUPER_ADMIN || role === ROLE_NAMES.SITE_LEAD) && slug.length > 0) {
+    return <TicketWorkspaceApp />;
   }
 
   if (role === ROLE_NAMES.SUPER_ADMIN || role === ROLE_NAMES.SITE_LEAD) {

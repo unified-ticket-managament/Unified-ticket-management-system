@@ -15,11 +15,23 @@ const SIZE_CLASSES = {
   lg: "h-11 w-11 text-sm",
 } as const;
 
+type Tone = "accent" | "info" | "warning" | "success" | "default";
+
+const TONE_CLASSES: Record<Tone, string> = {
+  accent: "bg-accent/10 text-accent",
+  info: "bg-info/10 text-info",
+  warning: "bg-warning/10 text-warning",
+  success: "bg-success/10 text-success",
+  default: "bg-slate-100 text-slate-600",
+};
+
 interface AvatarProps {
   name: string;
   size?: keyof typeof SIZE_CLASSES;
   /** Small colored dot in the bottom-right corner, e.g. an online/active indicator. */
   indicator?: "success" | "warning" | "danger";
+  /** Background/text color — lets a message thread give each party (e.g. client vs. agent) a distinct, consistent color. Defaults to the accent color used everywhere else this component already appears. */
+  tone?: Tone;
   className?: string;
 }
 
@@ -35,11 +47,11 @@ const INDICATOR_CLASSES = {
  * (Sidebar.tsx, Topbar.tsx, AgentInbox.tsx). Standardized on the
  * two-letter form two of the three already used.
  */
-export function Avatar({ name, size = "md", indicator, className = "" }: AvatarProps) {
+export function Avatar({ name, size = "md", indicator, tone = "accent", className = "" }: AvatarProps) {
   return (
     <div className={`relative flex-none ${className}`}>
       <div
-        className={`flex items-center justify-center rounded-full bg-accent/10 font-semibold text-accent ${SIZE_CLASSES[size]}`}
+        className={`flex items-center justify-center rounded-full font-semibold ${TONE_CLASSES[tone]} ${SIZE_CLASSES[size]}`}
       >
         {initials(name) || "?"}
       </div>

@@ -18,9 +18,10 @@ import { archiveInteraction, claimInteraction } from "@/api/inbox";
 import {
   attachInteractionToTicket,
   createTicketFromInteraction,
+  listTickets,
 } from "@/api/ticket";
 import { useWorkflowContext } from "@/context/WorkflowContext";
-import type { CategoryResponse, TicketPriority } from "@/types";
+import type { CategoryResponse, TicketPriority, TicketResponse } from "@/types";
 
 const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
 
@@ -36,6 +37,8 @@ export function InboxActionsPanel() {
   const [ticketType, setTicketType] = useState("");
   const [priority, setPriority] = useState<TicketPriority>("MEDIUM");
   const [existingTicketId, setExistingTicketId] = useState("");
+  const [clientTickets, setClientTickets] = useState<TicketResponse[]>([]);
+  const [isLoadingClientTickets, setIsLoadingClientTickets] = useState(false);
 
   useEffect(() => {
     listCategories()
@@ -93,11 +96,33 @@ export function InboxActionsPanel() {
     }
   }
 
-  function openAttachModal() {
+  async function openAttachModal() {
     // Prefill from the backend's best-effort recommendation, if any
     // — the agent can still clear/override it before confirming.
     setExistingTicketId(selectedEmail?.recommended_ticket_id ?? "");
     setAttachOpen(true);
+
+    if (!selectedEmail?.client_id) {
+      setClientTickets([]);
+      return;
+    }
+
+    // GET /tickets is already scoped to whatever this user is allowed
+    // to see (an Account Manager's own clients, or everything for
+    // Site Lead/Super Admin) — that scope always includes this
+    // client's tickets, since the caller could only open this email
+    // in the first place if they're allowed to see this client. No
+    // dedicated "tickets for one client" endpoint needed, just filter
+    // client-side.
+    setIsLoadingClientTickets(true);
+    try {
+      const all = await listTickets();
+      setClientTickets(all.filter((t) => t.client_company_id === selectedEmail.client_id));
+    } catch {
+      setClientTickets([]);
+    } finally {
+      setIsLoadingClientTickets(false);
+    }
   }
 
   async function handleAttachExisting() {
@@ -380,16 +405,35 @@ export function InboxActionsPanel() {
               )}
             </div>
           )}
+
+          {isLoadingClientTickets ? (
+            <p className="text-xs text-muted">Loading {selectedEmail.client_name}'s tickets…</p>
+          ) : clientTickets.length > 0 ? (
+            <SelectInput
+              label={`${selectedEmail.client_name}'s tickets`}
+              value={clientTickets.some((t) => t.ticket_id === existingTicketId) ? existingTicketId : ""}
+              onChange={(e) => setExistingTicketId(e.target.value)}
+              hint="Every existing ticket for this client — pick one instead of pasting an ID."
+            >
+              <option value="">Choose a ticket…</option>
+              {clientTickets.map((t) => (
+                <option key={t.ticket_id} value={t.ticket_id}>
+                  {t.title} · {t.current_status} ({t.ticket_id.slice(0, 8)})
+                </option>
+              ))}
+            </SelectInput>
+          ) : (
+            <p className="text-xs text-muted">
+              No existing tickets found for {selectedEmail.client_name} yet — paste a ticket ID
+              manually below if you have one from elsewhere.
+            </p>
+          )}
+
           <TextInput
-            label="Existing ticket ID"
+            label={clientTickets.length > 0 ? "Or paste a ticket ID manually" : "Existing ticket ID"}
             placeholder="Paste a ticket_id"
             value={existingTicketId}
             onChange={(e) => setExistingTicketId(e.target.value)}
-            hint={
-              selectedEmail.recommended_ticket_id
-                ? "Prefilled from the recommendation above — clear it to search/paste a different one."
-                : undefined
-            }
           />
         </div>
       </Modal>
