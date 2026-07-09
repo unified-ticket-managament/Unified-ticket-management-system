@@ -1,18 +1,22 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { Bell, Mail, Menu, Moon, Search, Sun } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Bell, Menu, Moon, Search, Sun } from "lucide-react";
 import { Avatar } from "@/components/common/Avatar";
 import { useApiAction } from "@/hooks/useApiAction";
-import { getInbox } from "@/api/inbox";
+import {
+  getNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  type NotificationItem,
+} from "@/api/notifications";
 import { getTicket } from "@/api/ticket";
 import { useAuthContext } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { useToast } from "@/context/ToastContext";
 import { formatDateTime } from "@/lib/format";
 import { isValidUUID } from "@/lib/validation";
-import type { InboxResponse } from "@/types";
 
-const INBOX_POLL_INTERVAL_MS = 15_000;
+const NOTIFICATION_POLL_INTERVAL_MS = 30_000;
 const NOTIFICATION_PREVIEW_COUNT = 5;
 
 interface TopbarProps {
@@ -28,33 +32,68 @@ export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
   const { pushToast } = useToast();
   const [ticketId, setTicketId] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
-  const [inbox, setInbox] = useState<InboxResponse>({ total: 0, items: [] });
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const { run: runGetTicket, isLoading } = useApiAction(getTicket);
 
-  // Polls the agent's pending inbox so the bell reflects new incoming
-  // emails without a full-page refresh. Silent on poll failures — the
-  // badge just keeps showing the last good count rather than flashing
-  // an error toast on every tick, same rationale as TicketAuditLog.
+  // Polls the real notification feed so the bell reflects new mail,
+  // ticket assignments, permission/edit-access decisions, etc. without
+  // a full-page refresh. Silent on poll failures — the badge just
+  // keeps showing the last good count rather than flashing an error
+  // toast on every tick, same rationale as TicketAuditLog.
   useEffect(() => {
     let cancelled = false;
 
     async function load() {
       try {
-        const data = await getInbox();
-        if (!cancelled) setInbox(data);
+        const data = await getNotifications();
+        if (!cancelled) {
+          setNotifications(data.items);
+          setUnreadCount(data.unread_count);
+        }
       } catch {
         // ignore
       }
     }
 
     load();
-    const interval = window.setInterval(load, INBOX_POLL_INTERVAL_MS);
+    const interval = window.setInterval(load, NOTIFICATION_POLL_INTERVAL_MS);
 
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
   }, []);
+
+  async function handleNotificationClick(notification: NotificationItem) {
+    if (!notification.is_read) {
+      setNotifications((prev) =>
+        prev.map((n) =>
+          n.notification_id === notification.notification_id ? { ...n, is_read: true } : n
+        )
+      );
+      setUnreadCount((prev) => Math.max(0, prev - 1));
+      try {
+        await markNotificationRead(notification.notification_id);
+      } catch {
+        // ignore
+      }
+    }
+    setShowNotifications(false);
+    if (notification.link) {
+      navigate(notification.link);
+    }
+  }
+
+  async function handleMarkAllRead() {
+    setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+    setUnreadCount(0);
+    try {
+      await markAllNotificationsRead();
+    } catch {
+      // ignore — next poll tick reconciles either way
+    }
+  }
 
   async function handleJump(e: React.FormEvent) {
     e.preventDefault();
@@ -124,14 +163,14 @@ export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
           <button
             onClick={() => setShowNotifications((v) => !v)}
             className="relative flex h-10 w-10 items-center justify-center rounded-md2 border border-border bg-surface text-muted transition-colors hover:bg-surfaceHover hover:text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-            aria-label={`Notifications${inbox.total > 0 ? ` (${inbox.total} pending)` : ""}`}
+            aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ""}`}
             aria-haspopup="true"
             aria-expanded={showNotifications}
           >
             <Bell size={16} />
-            {inbox.total > 0 && (
+            {unreadCount > 0 && (
               <span className="absolute -right-1 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full border-2 border-surface bg-danger px-1 text-[9px] font-bold leading-none text-white">
-                {inbox.total > 9 ? "9+" : inbox.total}
+                {unreadCount > 9 ? "9+" : unreadCount}
               </span>
             )}
           </button>
@@ -146,42 +185,49 @@ export function Topbar({ title, description, onOpenMenu }: TopbarProps) {
                 aria-label="Notifications"
                 className="absolute right-0 z-50 mt-2 w-80 rounded-md2 border border-border bg-surface shadow-popover animate-popIn"
               >
-                {inbox.total === 0 ? (
+                {notifications.length === 0 ? (
                   <div className="p-4 text-center">
                     <p className="text-xs font-medium text-slate-700">You're all caught up</p>
                     <p className="mt-1 text-[11px] text-muted">No new notifications right now.</p>
                   </div>
                 ) : (
                   <>
+                    <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
+                      <p className="text-xs font-semibold text-slate-900">Notifications</p>
+                      {unreadCount > 0 && (
+                        <button
+                          onClick={handleMarkAllRead}
+                          className="text-[11px] font-semibold text-accent transition-colors hover:text-accent-700"
+                        >
+                          Mark all read
+                        </button>
+                      )}
+                    </div>
                     <ul className="max-h-80 divide-y divide-border overflow-y-auto">
-                      {inbox.items.slice(0, NOTIFICATION_PREVIEW_COUNT).map((item) => (
-                        <li key={item.interaction_id}>
-                          <Link
-                            to="/inbox"
-                            onClick={() => setShowNotifications(false)}
-                            className="flex items-start gap-2.5 px-4 py-3 transition-colors hover:bg-surfaceHover"
+                      {notifications.slice(0, NOTIFICATION_PREVIEW_COUNT).map((item) => (
+                        <li key={item.notification_id}>
+                          <button
+                            onClick={() => handleNotificationClick(item)}
+                            className="flex w-full items-start gap-2.5 px-4 py-3 text-left transition-colors hover:bg-surfaceHover"
                           >
-                            <Mail size={14} className="mt-0.5 flex-none text-accent" />
+                            <span
+                              className={`mt-1.5 h-1.5 w-1.5 flex-none rounded-full ${
+                                item.is_read ? "bg-transparent" : "bg-accent"
+                              }`}
+                            />
                             <div className="min-w-0">
                               <p className="truncate text-xs font-semibold text-slate-900">
-                                {item.client_name}
+                                {item.title}
                               </p>
-                              <p className="truncate text-[11px] text-muted">{item.subject}</p>
+                              <p className="truncate text-[11px] text-muted">{item.message}</p>
                               <p className="mt-0.5 text-[10px] text-muted/80">
-                                {formatDateTime(item.received_at)}
+                                {formatDateTime(item.created_at)}
                               </p>
                             </div>
-                          </Link>
+                          </button>
                         </li>
                       ))}
                     </ul>
-                    <Link
-                      to="/inbox"
-                      onClick={() => setShowNotifications(false)}
-                      className="block border-t border-border px-4 py-2.5 text-center text-[11px] font-semibold text-accent transition-colors hover:bg-surfaceHover"
-                    >
-                      View all in Mail
-                    </Link>
                   </>
                 )}
               </div>

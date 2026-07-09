@@ -19,6 +19,7 @@ const EVENT_META: Record<AuditEventType, AuditEventMeta> = {
   REPLY_ADDED: { icon: "📤", label: "Reply Added", tone: "success" },
   EMAIL_RECEIVED: { icon: "📧", label: "Email Received", tone: "accent" },
   CLIENT_CREATED: { icon: "🏢", label: "Client Onboarded", tone: "success" },
+  TICKET_CLAIMED: { icon: "🙌", label: "Ticket Claimed", tone: "accent" },
   INTERACTION_CLAIMED: { icon: "🙋", label: "Assigned to Me", tone: "accent" },
   INTERACTION_ARCHIVED: { icon: "🗄", label: "Archived", tone: "default" },
   EDIT_ACCESS_REQUESTED: { icon: "🙏", label: "Edit Access Requested", tone: "warning" },

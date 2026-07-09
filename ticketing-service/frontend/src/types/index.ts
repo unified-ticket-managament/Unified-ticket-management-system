@@ -405,6 +405,7 @@ export interface InteractionResponse {
   status: InteractionStatus;
   direction: InteractionDirection;
   performed_by: string | null;
+  performed_by_name?: string | null;
   payload: Record<string, unknown>;
   is_visible: boolean;
   removed_by: string | null;
@@ -422,10 +423,11 @@ export interface InteractionResponse {
 
 // GET /interactions/{id}/thread
 export interface ThreadResponse {
-  root: InteractionResponse;
-  replies: InteractionResponse[];
+  parent_interaction: InteractionResponse;
+  child_interactions: InteractionResponse[];
+  ordered_thread: InteractionResponse[];
   reply_count: number;
-  latest_reply: InteractionResponse | null;
+  latest_interaction: InteractionResponse | null;
 }
 
 // GET /tickets/interactions
@@ -507,6 +509,7 @@ export type AuditEventType =
   | "REPLY_ADDED"
   | "EMAIL_RECEIVED"
   | "CLIENT_CREATED"
+  | "TICKET_CLAIMED"
   | "INTERACTION_CLAIMED"
   | "INTERACTION_ARCHIVED"
   | "EDIT_ACCESS_REQUESTED"

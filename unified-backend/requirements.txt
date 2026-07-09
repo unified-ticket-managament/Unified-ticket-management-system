@@ -1,0 +1,33 @@
+fastapi==0.138.0
+uvicorn[standard]==0.49.0
+starlette==1.3.1
+
+sqlalchemy==2.0.51
+asyncpg==0.31.0
+psycopg2-binary==2.9.12
+alembic==1.18.4
+
+pydantic==2.13.4
+pydantic-settings==2.14.2
+email-validator==2.3.0
+python-multipart==0.0.32
+python-dotenv==1.2.2
+
+python-jose==3.3.0
+cryptography==49.0.0
+
+httpx==0.28.1
+boto3==1.43.39
+
+# rbac-only additions
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+structlog==24.4.0
+pytest==8.3.4
+pytest-asyncio==0.25.0
+
+# Local editable install — shared_models lives in this monorepo as the
+# single source of truth. unified-backend/ sits one directory shallower
+# than the two services it replaces, so this path is ../shared_models,
+# not ../../shared_models.
+-e ../shared_models

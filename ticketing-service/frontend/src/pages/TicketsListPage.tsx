@@ -285,22 +285,30 @@ export function TicketsListPage() {
             ))}
           </select>
 
-          <select
-            value={categoryFilter}
-            onChange={(e) => {
-              setCategoryFilter(e.target.value);
-              setPage(1);
-            }}
-            aria-label="Filter by category"
-            className={selectClass}
-          >
-            <option value="ALL">All Categories</option>
-            {categories.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
+          {/* Team Lead/Staff are already scoped server-side to their own
+              single category (see access_control.py's
+              CATEGORY_SCOPED_ROLE_NAMES) — this filter would only ever
+              offer one no-op option for them, so it's hidden entirely
+              rather than shown as dead UI. Account Manager/Site Lead/
+              Super Admin see every category and keep the real filter. */}
+          {currentUser?.role !== "Team Lead" && currentUser?.role !== "Staff" && (
+            <select
+              value={categoryFilter}
+              onChange={(e) => {
+                setCategoryFilter(e.target.value);
+                setPage(1);
+              }}
+              aria-label="Filter by category"
+              className={selectClass}
+            >
+              <option value="ALL">All Categories</option>
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          )}
 
           <div className="flex items-center gap-1.5">
             <input

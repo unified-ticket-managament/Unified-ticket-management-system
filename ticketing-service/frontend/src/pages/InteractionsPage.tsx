@@ -23,11 +23,6 @@ const PAGE_SIZE = 20;
 // deliberately left out of this cross-ticket activity explorer.
 const HIDDEN_INTERACTION_TYPES = new Set(["STATUS_CHANGE", "PRIORITY_CHANGE", "AGENT_TRANSFER"]);
 
-// Only email-like interactions are ever part of a thread with a
-// parent/replies — notes, attachments, status/priority/transfer rows
-// have no conversation to open.
-const THREAD_CAPABLE_TYPES = new Set(["EMAIL", "REPLY"]);
-
 interface InteractionRow {
   id: string;
   createdAt: string;
@@ -211,13 +206,14 @@ export function InteractionsPage() {
       return;
     }
 
-    // Ticket-linked EMAIL/REPLY rows are one message in a thread —
-    // fetch the full conversation so the drawer can show the parent
-    // and any other replies, not just this one row's own fields.
-    if (THREAD_CAPABLE_TYPES.has(row.type)) {
-      const thread = await runGetThread(row.id);
-      if (thread) setDrawerThread(thread);
-    }
+    // Any ticket-linked row may be part of a thread (a reply, or a
+    // root with replies already filed under it) — always fetch the
+    // full conversation so the drawer can show the parent and every
+    // other reply, not just this one row's own fields. A row with no
+    // real parent/children (a note, status change, etc.) still comes
+    // back as a valid thread of exactly one message.
+    const thread = await runGetThread(row.id);
+    if (thread) setDrawerThread(thread);
   }
 
   function closeDrawer() {

@@ -94,6 +94,47 @@ function displayValue(value: unknown): string {
   return String(value);
 }
 
+// Per-message direction/sender/body resolvers for the full-thread view —
+// distinct from resolveFromToSubject/resolveFields above, which describe
+// only the single clicked row for the no-thread fallback rendering.
+const MESSAGE_DIRECTION_LABELS: Record<string, string> = {
+  EMAIL: "Inbound · Client Email",
+  REPLY: "Outbound · Agent Reply",
+  INTERNAL_NOTE: "Internal Note",
+};
+
+function messageDirectionLabel(message: InteractionResponse): string {
+  return MESSAGE_DIRECTION_LABELS[message.interaction_type] ?? message.direction;
+}
+
+function messageSender(message: InteractionResponse): string | null {
+  const payload = message.payload ?? {};
+  switch (message.interaction_type) {
+    case "EMAIL":
+      return (payload.client_name as string) ?? (payload.from_email as string) ?? "Client";
+    case "REPLY":
+      return message.performed_by_name ?? "Agent";
+    case "INTERNAL_NOTE":
+      return message.performed_by_name ? `${message.performed_by_name} (internal note)` : null;
+    default:
+      return message.performed_by_name ?? null;
+  }
+}
+
+function messageBody(message: InteractionResponse): string {
+  const payload = message.payload ?? {};
+  switch (message.interaction_type) {
+    case "EMAIL":
+      return (payload.body as string) ?? (payload.subject as string) ?? "";
+    case "REPLY":
+      return (payload.message as string) ?? "";
+    case "INTERNAL_NOTE":
+      return (payload.note as string) ?? "";
+    default:
+      return summarize(message);
+  }
+}
+
 interface ResolvedFields {
   from: string | null;
   to: string | null;
@@ -205,6 +246,20 @@ export function InteractionDetailsDrawer({
 
   const meta = row ? metaFor(row.type) : null;
   const fields = row ? resolveFields(row, email) : null;
+  // A thread of exactly one message (no real parent/children) falls
+  // back to the plain single-item rendering below instead of the
+  // full conversation list — same information, no redundant "1
+  // message" thread box around it.
+  const hasThread = !isLoadingThread && !!thread && thread.ordered_thread.length > 1;
+
+  // Scroll the clicked message into view within the thread, keeping
+  // every earlier message above it and every later one below —
+  // never reorders the thread to put the clicked message first.
+  useEffect(() => {
+    if (!open || !row || !hasThread) return;
+    const el = document.getElementById(`thread-message-${row.id}`);
+    el?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [open, row, hasThread]);
 
   return (
     <>
@@ -284,34 +339,49 @@ export function InteractionDetailsDrawer({
                 </div>
               )}
 
-              {!isLoadingThread && thread && thread.replies.length > 0 && (
+              {hasThread && thread && (
                 <div className="mt-5 border-t border-border pt-4">
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-                    Conversation ({thread.replies.length + 1} messages)
+                    Conversation ({thread.ordered_thread.length} messages)
                   </p>
-                  <ol className="mt-2 flex flex-col gap-2">
-                    {[thread.root, ...thread.replies].map((message) => {
+                  <ol className="mt-2 flex flex-col gap-3">
+                    {thread.ordered_thread.map((message) => {
                       const isCurrent = row.id === message.interaction_id;
                       const messageMeta = metaFor(message.interaction_type);
+                      const sender = messageSender(message);
+                      const body = messageBody(message);
                       return (
                         <li
+                          id={`thread-message-${message.interaction_id}`}
                           key={message.interaction_id}
-                          className={`rounded-md2 border px-3 py-2 text-xs ${
+                          className={`rounded-md2 border px-3 py-2.5 text-xs ${
                             isCurrent
-                              ? "border-accent/40 bg-accent/5"
+                              ? "border-accent/50 bg-accent/5 ring-1 ring-accent/30"
                               : "border-border bg-canvas/60"
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="flex items-center gap-1.5 font-medium text-slate-800">
-                              <span>{messageMeta.icon}</span> {messageMeta.label}
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="flex flex-wrap items-center gap-1.5 font-medium text-slate-800">
+                              <span>{messageMeta.icon}</span>
+                              {messageMeta.label}
+                              <Badge tone={messageMeta.tone}>{messageDirectionLabel(message)}</Badge>
                               {isCurrent && <Badge tone="accent">Viewing</Badge>}
                             </span>
                             <span className="flex-none text-[10px] text-muted">
                               {formatDateTime(message.created_at)}
                             </span>
                           </div>
-                          <p className="mt-1 truncate text-slate-600">{summarize(message)}</p>
+                          {sender && (
+                            <p className="mt-1 text-[11px] font-medium text-slate-600">{sender}</p>
+                          )}
+                          {body && (
+                            <p className="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700">
+                              {body}
+                            </p>
+                          )}
+                          {message.attachments && message.attachments.length > 0 && (
+                            <AttachmentList attachments={message.attachments} className="mt-2" />
+                          )}
                         </li>
                       );
                     })}
@@ -319,7 +389,7 @@ export function InteractionDetailsDrawer({
                 </div>
               )}
 
-              {(fields.from || fields.to || fields.subject) && (
+              {!hasThread && (fields.from || fields.to || fields.subject) && (
                 <div className="mt-5 border-t border-border pt-4">
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
                     {fields.from && (
@@ -344,20 +414,22 @@ export function InteractionDetailsDrawer({
                 </div>
               )}
 
-              <div className="mt-5 border-t border-border pt-4">
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-                  Message Content
-                </p>
-                {isLoadingEmail ? (
-                  <p className="mt-2 text-[13px] text-muted">Loading…</p>
-                ) : (
-                  <p className="mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700">
-                    {fields.message ?? "—"}
+              {!hasThread && (
+                <div className="mt-5 border-t border-border pt-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+                    Message Content
                   </p>
-                )}
-              </div>
+                  {isLoadingEmail ? (
+                    <p className="mt-2 text-[13px] text-muted">Loading…</p>
+                  ) : (
+                    <p className="mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700">
+                      {fields.message ?? "—"}
+                    </p>
+                  )}
+                </div>
+              )}
 
-              {fields.attachments.length > 0 && (
+              {!hasThread && fields.attachments.length > 0 && (
                 <div className="mt-5 border-t border-border pt-4">
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
                     Attachments
@@ -366,7 +438,7 @@ export function InteractionDetailsDrawer({
                 </div>
               )}
 
-              {fields.extra.length > 0 && (
+              {!hasThread && fields.extra.length > 0 && (
                 <div className="mt-5 border-t border-border pt-4">
                   <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
                     Additional Details

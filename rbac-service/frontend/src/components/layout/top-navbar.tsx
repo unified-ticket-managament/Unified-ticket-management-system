@@ -35,6 +35,12 @@ import { Input } from "@/components/ui/input";
 import { useTranslation } from "@/hooks/use-translation";
 import { cn } from "@/lib/utils";
 import { getVisibleNavItems, NAV_ITEM_TRANSLATION_KEY, NavItemKey } from "@/lib/role-access";
+import {
+  getNotifications,
+  markAllNotificationsRead,
+  markNotificationRead,
+  type NotificationItem,
+} from "@/lib/notifications-api";
 import { authService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 
@@ -50,37 +56,18 @@ const SEARCH_INDEX: { title: NavItemKey; href: string; icon: typeof LayoutDashbo
   { title: "Settings", href: "/settings", icon: SettingsIcon },
 ];
 
-interface Notification {
-  id: string;
-  title: string;
-  description: string;
-  time: string;
-  read: boolean;
-}
+const NOTIFICATION_POLL_INTERVAL_MS = 30_000;
 
-const INITIAL_NOTIFICATIONS: Notification[] = [
-  {
-    id: "1",
-    title: "New user registered",
-    description: "Emma Watts joined the Staff role.",
-    time: "5m ago",
-    read: false,
-  },
-  {
-    id: "2",
-    title: "Role permissions updated",
-    description: "Team Lead role permissions were changed.",
-    time: "1h ago",
-    read: false,
-  },
-  {
-    id: "3",
-    title: "Audit log alert",
-    description: "Unusual login activity detected for Viewer.",
-    time: "3h ago",
-    read: true,
-  },
-];
+function timeAgo(isoString: string): string {
+  const seconds = Math.max(0, (Date.now() - new Date(isoString).getTime()) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
 
 export function TopNavbar() {
   const router = useRouter();
@@ -91,10 +78,9 @@ export function TopNavbar() {
 
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [notifications, setNotifications] = useState(INITIAL_NOTIFICATIONS);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
   const searchRef = useRef<HTMLDivElement>(null);
-
-  const unreadCount = notifications.filter((n) => !n.read).length;
 
   const visibleNavItems = useMemo(() => getVisibleNavItems(user?.role), [user?.role]);
 
@@ -116,6 +102,34 @@ export function TopNavbar() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  // Polls the real notification feed — silent on failure, same
+  // rationale as this app's other polling (the bell just keeps
+  // showing the last good state rather than flashing an error toast
+  // every tick).
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const data = await getNotifications();
+        if (!cancelled) {
+          setNotifications(data.items);
+          setUnreadCount(data.unread_count);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    load();
+    const interval = window.setInterval(load, NOTIFICATION_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
+
   const handleLogout = () => {
     authService.logout();
     logout();
@@ -128,8 +142,31 @@ export function TopNavbar() {
     setSearchOpen(false);
   };
 
-  const markAllRead = () => {
-    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+  const markAllRead = async () => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+    setUnreadCount(0);
+    try {
+      await markAllNotificationsRead();
+    } catch {
+      // ignore — next poll tick reconciles either way
+    }
+  };
+
+  const handleNotificationClick = async (notification: NotificationItem) => {
+    if (!notification.is_read) {
+      setNotifications((prev) =>
+        prev.map((n) => (n.notification_id === notification.notification_id ? { ...n, is_read: true } : n))
+      );
+      setUnreadCount((prev) => Math.max(0, prev - 1));
+      try {
+        await markNotificationRead(notification.notification_id);
+      } catch {
+        // ignore
+      }
+    }
+    if (notification.link) {
+      router.push(notification.link);
+    }
   };
 
   return (
@@ -225,28 +262,31 @@ export function TopNavbar() {
                 {t("navbar.allCaughtUp")}
               </p>
             ) : (
-              notifications.map((notification) => (
-                <DropdownMenuItem
-                  key={notification.id}
-                  className="flex-col items-start gap-0.5 py-2"
-                >
-                  <div className="flex w-full items-center gap-2">
-                    <span
-                      className={cn(
-                        "h-1.5 w-1.5 shrink-0 rounded-full",
-                        notification.read ? "bg-transparent" : "bg-primary"
-                      )}
-                    />
-                    <span className="text-sm font-medium">{notification.title}</span>
-                  </div>
-                  <p className="pl-3.5 text-xs text-muted-foreground">
-                    {notification.description}
-                  </p>
-                  <p className="pl-3.5 text-[11px] text-muted-foreground/70">
-                    {notification.time}
-                  </p>
-                </DropdownMenuItem>
-              ))
+              <div className="max-h-96 overflow-y-auto">
+                {notifications.map((notification) => (
+                  <DropdownMenuItem
+                    key={notification.notification_id}
+                    className="flex-col items-start gap-0.5 py-2"
+                    onClick={() => handleNotificationClick(notification)}
+                  >
+                    <div className="flex w-full items-center gap-2">
+                      <span
+                        className={cn(
+                          "h-1.5 w-1.5 shrink-0 rounded-full",
+                          notification.is_read ? "bg-transparent" : "bg-primary"
+                        )}
+                      />
+                      <span className="text-sm font-medium">{notification.title}</span>
+                    </div>
+                    <p className="pl-3.5 text-xs text-muted-foreground">
+                      {notification.message}
+                    </p>
+                    <p className="pl-3.5 text-[11px] text-muted-foreground/70">
+                      {timeAgo(notification.created_at)}
+                    </p>
+                  </DropdownMenuItem>
+                ))}
+              </div>
             )}
           </DropdownMenuContent>
         </DropdownMenu>

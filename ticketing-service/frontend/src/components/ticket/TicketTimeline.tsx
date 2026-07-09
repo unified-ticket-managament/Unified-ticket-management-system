@@ -122,7 +122,9 @@ export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps)
 
                   <div className="mt-2.5 flex items-center justify-between gap-2">
                     <p className="text-[11px] text-muted">
-                      {item.performed_by ? `Performed by ${shortId(item.performed_by)}` : ""}
+                      {item.performed_by
+                        ? `Performed by ${item.performed_by_name ?? shortId(item.performed_by)}`
+                        : ""}
                     </p>
                     {item.is_visible && (
                       <button

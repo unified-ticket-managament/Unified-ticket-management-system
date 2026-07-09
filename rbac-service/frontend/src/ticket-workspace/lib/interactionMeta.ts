@@ -15,6 +15,7 @@ const TYPE_META: Record<string, InteractionTypeMeta> = {
   PRIORITY_CHANGE: { icon: "🔥", label: "Priority Change", tone: "danger" },
   ATTACHMENT: { icon: "📎", label: "Attachment", tone: "default" },
   AGENT_TRANSFER: { icon: "🔁", label: "Agent Transfer", tone: "info" },
+  CLAIM: { icon: "🙌", label: "Ticket Claimed", tone: "success" },
   EDIT_ACCESS_REQUESTED: { icon: "🙏", label: "Edit Access Requested", tone: "warning" },
   EDIT_ACCESS_APPROVED: { icon: "🤝", label: "Edit Access Approved", tone: "success" },
   EDIT_ACCESS_REJECTED: { icon: "🚫", label: "Edit Access Rejected", tone: "danger" },
@@ -46,6 +47,8 @@ export function summarize(interaction: InteractionResponse): string {
     }
     case "AGENT_TRANSFER":
       return `${payload.from_agent_name ?? "Unassigned"} → ${payload.to_agent_name ?? "?"}`;
+    case "CLAIM":
+      return `Claimed by ${(payload.agent_name as string) ?? "Unknown"}`;
     case "EDIT_ACCESS_REQUESTED":
       return (payload.reason as string) ?? "Requested edit access";
     case "EDIT_ACCESS_APPROVED":

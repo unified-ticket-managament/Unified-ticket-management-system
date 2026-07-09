@@ -1,0 +1,110 @@
+from functools import lru_cache
+from typing import List
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+import json
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore"
+    )
+
+    app_name: str = "Unified Backend"
+    app_env: str = "development"
+    debug: bool = False
+    api_v1_prefix: str = "/api/v1"
+
+    # No default: fail fast at boot if the shared secret/DB URL aren't
+    # provisioned, rather than silently issuing tokens signed with a
+    # well-known placeholder value or connecting to a local throwaway DB.
+    database_url: str
+
+    jwt_secret_key: str
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 7
+
+    # Kept as a raw string (not List[str]): pydantic-settings tries to
+    # JSON-decode env vars for list-typed fields before any validator runs,
+    # which blows up on a plain comma-separated value like "http://a,http://b".
+    # Union of both original services' dev-default origin lists, so neither
+    # frontend loses a currently-allowed origin now that they share one
+    # merged default (real deployments override this via env var anyway).
+    cors_origins: str = (
+        "http://localhost:3000,"
+        "http://127.0.0.1:3000,"
+        "http://localhost:5173,"
+        "http://127.0.0.1:5173,"
+        "http://localhost:5174,"
+        "http://127.0.0.1:5174,"
+        "https://ticket-management-frontend-0t60.onrender.com"
+    )
+
+    secure_cookies: bool = False
+    log_level: str = "INFO"
+
+    # Object storage (ticketing-only). "supabase" uses Supabase Storage;
+    # "s3" uses any S3-compatible host (MinIO locally, Cloudflare R2/AWS S3
+    # in prod). All optional so the app still boots with none set.
+    storage_backend: str = "supabase"
+    storage_bucket: str = "communication-attachments"
+    storage_url_expiry_seconds: int = 3600
+
+    storage_endpoint_url: str | None = None
+    storage_access_key: str | None = None
+    storage_secret_key: str | None = None
+    storage_region: str = "us-east-1"
+    storage_use_ssl: bool = False
+
+    supabase_url: str | None = None
+    supabase_service_role_key: str | None = None
+
+    @property
+    def cors_origins_list(self) -> List[str]:
+        value = self.cors_origins.strip()
+
+        if value.startswith("["):
+            return json.loads(value)
+
+        return [origin.strip() for origin in value.split(",") if origin.strip()]
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, value):
+        """
+        Managed Postgres providers (e.g. Render, Neon) hand out URLs using
+        the `postgres://`/`postgresql://` scheme and libpq-style query
+        params (`sslmode=require`, `channel_binding=require`). asyncpg's
+        connect() raises TypeError on any keyword it doesn't recognize, so
+        rename `sslmode` to the `ssl` param it does understand and drop
+        `channel_binding`, which has no asyncpg equivalent.
+        """
+
+        if not isinstance(value, str):
+            return value
+
+        if value.startswith("postgres://"):
+            value = "postgresql+asyncpg://" + value[len("postgres://"):]
+
+        elif value.startswith("postgresql://"):
+            value = "postgresql+asyncpg://" + value[len("postgresql://"):]
+
+        parts = urlsplit(value)
+        query = [
+            ("ssl" if key == "sslmode" else key, val)
+            for key, val in parse_qsl(parts.query, keep_blank_values=True)
+            if key != "channel_binding"
+        ]
+
+        return urlunsplit(parts._replace(query=urlencode(query)))
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
