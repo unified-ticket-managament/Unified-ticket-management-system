@@ -1,4 +1,4 @@
-import { FileSpreadsheet, FileText, Image, File as FileIcon, type LucideIcon } from "lucide-react";
+import { Archive, FileSpreadsheet, FileText, Image, File as FileIcon, type LucideIcon } from "lucide-react";
 import type { AttachmentMeta } from "@tw/types";
 
 export const MAX_ATTACHMENT_FILES = 10;
@@ -10,11 +10,13 @@ export const ALLOWED_ATTACHMENT_EXTENSIONS = [
   "docx",
   "xls",
   "xlsx",
+  "csv",
   "png",
   "jpg",
   "jpeg",
   "gif",
   "txt",
+  "zip",
 ];
 
 export const ATTACHMENT_ACCEPT_ATTR = ALLOWED_ATTACHMENT_EXTENSIONS.map((ext) => `.${ext}`).join(",");
@@ -26,10 +28,12 @@ const ICON_BY_EXTENSION: Record<string, LucideIcon> = {
   txt: FileText,
   xls: FileSpreadsheet,
   xlsx: FileSpreadsheet,
+  csv: FileSpreadsheet,
   png: Image,
   jpg: Image,
   jpeg: Image,
   gif: Image,
+  zip: Archive,
 };
 
 function extensionOf(filename: string): string {

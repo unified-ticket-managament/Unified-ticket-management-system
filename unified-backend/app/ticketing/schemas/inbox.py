@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from app.ticketing.enums import InteractionDirection, InteractionStatus
+from app.ticketing.enums import InteractionDirection, InteractionStatus, TicketPriority
 
 
 class InboxItemResponse(BaseModel):
@@ -38,6 +38,13 @@ class InboxItemResponse(BaseModel):
     # ticket — populated in the "ticketed" and "all" views so those
     # rows can link straight to the ticket.
     ticket_id: UUID | None = None
+
+    # Only meaningful once ticket_id is set — a pre-ticket Interaction
+    # has neither (priority/category are chosen at ticket-creation
+    # time), same convention as OpenEmailResponse's matching fields.
+    ticket_priority: TicketPriority | None = None
+
+    ticket_category: str | None = None
 
     has_attachments: bool = False
 

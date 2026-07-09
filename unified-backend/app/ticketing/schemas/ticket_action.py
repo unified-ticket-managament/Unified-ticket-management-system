@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 from app.ticketing.enums import TicketPriority, TicketStatus
 from app.ticketing.schemas.common import ORMBase
@@ -19,6 +19,14 @@ class ReplyCreate(BaseModel):
         description="Reply visible to the client.",
     )
 
+    # Additional recipients beyond the client's original sender — the
+    # Account Manager's own Cc is still auto-added on top of these
+    # (see InteractionService._resolve_account_manager_email), not
+    # replaced by them.
+    cc: list[EmailStr] = Field(default_factory=list)
+
+    bcc: list[EmailStr] = Field(default_factory=list)
+
 
 class InteractionReplyRequest(BaseModel):
     """
@@ -33,6 +41,10 @@ class InteractionReplyRequest(BaseModel):
         max_length=5000,
         description="Reply visible to the client.",
     )
+
+    cc: list[EmailStr] = Field(default_factory=list)
+
+    bcc: list[EmailStr] = Field(default_factory=list)
 
 
 class InteractionReplyResponse(ORMBase):

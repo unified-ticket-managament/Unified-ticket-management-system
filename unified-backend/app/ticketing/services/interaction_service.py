@@ -63,12 +63,13 @@ from app.ticketing.services.access_control import (
     ensure_agent_can_act_on_ticket,
     ensure_agent_can_view_pending_interaction,
     ensure_agent_can_view_ticket,
+    ensure_can_compose_for_client,
     ensure_can_reassign_ticket,
     ensure_has_permission,
     ensure_ticket_not_closed,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
-from app.ticketing.services.email_envelope import build_reply_envelope
+from app.ticketing.services.email_envelope import build_compose_envelope, build_reply_envelope
 from app.ticketing.services.outbound_dispatcher import OutboundDispatcher
 
 from app.ticketing.enums import (
@@ -83,6 +84,7 @@ from typing import Any
 from app.ticketing.models.interaction import Interaction
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.schemas.attachment import AttachmentMetadata
+from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
 from app.ticketing.schemas.payloads import EmailPayload
 from app.ticketing.services.attachment_service import attachments_to_metadata
 from app.ticketing.storage.base import StorageService
@@ -525,6 +527,8 @@ class InteractionService:
                     body=request.message,
                     agent_name=current_user.name,
                     account_manager_email=am_email,
+                    cc=request.cc,
+                    bcc=request.bcc,
                 )
 
         payload: dict[str, Any] = {"message": request.message}
@@ -633,6 +637,8 @@ class InteractionService:
                     body=request.message,
                     agent_name=current_user.name,
                     account_manager_email=am_email,
+                    cc=request.cc,
+                    bcc=request.bcc,
                 )
 
         payload: dict[str, Any] = {"message": request.message}
@@ -685,6 +691,121 @@ class InteractionService:
             interaction_id=interaction.interaction_id,
             parent_interaction_id=root.interaction_id,
             message=request.message,
+            created_at=interaction.created_at,
+        )
+
+    # ---------------------------------------------------------
+    # Compose — brand-new outbound email, no prior thread
+    # ---------------------------------------------------------
+
+    async def compose_email(
+        self,
+        request: ComposeEmailRequest,
+        current_user: User,
+    ) -> ComposeEmailResponse:
+        """
+        Authors a brand-new outbound email to one of the platform's
+        clients — the one Mail action with no existing interaction to
+        reply onto. Creates a new thread ROOT (interaction_type=
+        "EMAIL", direction=OUTBOUND, parent_interaction_id=NULL,
+        ticket_id=NULL) rather than reusing add_interaction_reply,
+        which always requires an existing root to thread under.
+
+        Stored with the same envelope/dispatch_status shape a reply
+        gets (see build_compose_envelope) so it renders through the
+        exact same Mail UI/thread-open code path afterward — nothing
+        downstream needs to know a message started life as a Compose
+        rather than a Reply.
+        """
+
+        if self.client_repository is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Client lookup is not available.",
+            )
+
+        client = await self.client_repository.get_by_id(request.client_id)
+
+        if client is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Client not found.",
+            )
+
+        ensure_can_compose_for_client(client, current_user)
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        am_email = await self._resolve_account_manager_email(client)
+
+        envelope = build_compose_envelope(
+            client=client,
+            to_email=request.to_email,
+            subject=request.subject,
+            body=request.message,
+            cc=request.cc,
+            bcc=request.bcc,
+            agent_name=current_user.name,
+            account_manager_email=am_email,
+        )
+
+        email_payload = EmailPayload(
+            client_id=client.client_id,
+            client_name=client.name,
+            to_email=request.to_email,
+            from_email=client.inbox_email,
+            from_name=current_user.name,
+            subject=request.subject,
+            body=request.message,
+            cc=request.cc,
+            bcc=request.bcc,
+        )
+
+        interaction = await self.interaction_repository.create(
+            InteractionCreate(
+                ticket_id=None,
+                interaction_type="EMAIL",
+                direction=InteractionDirection.OUTBOUND,
+                status=InteractionStatus.ASSIGNED,
+                performed_by=actor_id,
+                payload={
+                    **email_payload.model_dump(mode="json"),
+                    "envelope": envelope.model_dump(),
+                    "dispatch_status": "QUEUED",
+                },
+                is_visible=True,
+                message_id=envelope.message_id,
+                client_id=client.client_id,
+                parent_interaction_id=None,
+                received_at=datetime.now(timezone.utc),
+            )
+        )
+
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=interaction.interaction_id,
+            # Reuses REPLY_ADDED rather than adding a new
+            # AuditEventType member — that enum is a native Postgres
+            # ENUM (see CLAUDE.md's "Postgres-enum migration gotcha"),
+            # widening it needs a standalone migration against the
+            # live DB. A Compose send is, audit-wise, the same kind of
+            # event as a reply: an outbound communication was
+            # recorded.
+            event_type=AuditEventType.REPLY_ADDED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            new_values={"client_id": client.client_id, "to_email": request.to_email},
+        )
+
+        await self.outbound_dispatcher.dispatch(interaction.interaction_id, envelope)
+
+        return ComposeEmailResponse(
+            interaction_id=interaction.interaction_id,
+            client_id=client.client_id,
             created_at=interaction.created_at,
         )
 

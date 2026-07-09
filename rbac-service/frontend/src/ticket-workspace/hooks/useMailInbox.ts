@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useDebouncedValue } from "@tw/hooks/useDebouncedValue";
 import {
+  composeEmail as composeEmailRequest,
   discardDraft,
   getDrafts,
   getInbox,
@@ -12,6 +13,7 @@ import {
   unsnoozeInteraction,
   updateInteractionFolder,
   updateInteractionTags,
+  type ComposeEmailPayload,
 } from "@tw/api/inbox";
 import { createMailFolder, deleteMailFolder, listMailFolders } from "@tw/api/mailFolder";
 import { listClients } from "@tw/api/clients";
@@ -49,6 +51,8 @@ function sentItemToInboxItem(item: SentItem): InboxItem {
     status: "ASSIGNED",
     direction: "OUTBOUND",
     ticket_id: item.ticket_id,
+    ticket_priority: null,
+    ticket_category: null,
     has_attachments: false,
     claimed_by: null,
     claimed_by_name: null,
@@ -78,6 +82,8 @@ function draftItemToInboxItem(item: DraftItem): InboxItem {
     status: "PENDING",
     direction: "OUTBOUND",
     ticket_id: null,
+    ticket_priority: null,
+    ticket_category: null,
     has_attachments: false,
     claimed_by: null,
     claimed_by_name: null,
@@ -123,10 +129,14 @@ function isWithinTimeFilter(receivedAt: string, filter: TimeFilterKey, now: Date
   }
 }
 
+// Sender, Receiver, Subject, and Message Body/preview — matches the
+// Mail spec's search requirement (search must span all four).
 const SEARCHABLE_FIELDS: Array<(item: InboxItem) => string> = [
   (item) => item.client_name,
   (item) => item.subject,
   (item) => item.from_email ?? "",
+  (item) => item.to_email ?? "",
+  (item) => item.latest_message ?? "",
 ];
 
 function matchesSearch(item: InboxItem, term: string): boolean {
@@ -188,6 +198,9 @@ export function useMailInbox() {
   const { run: runSaveDraft } = useApiAction(saveDraft);
   const { run: runSendDraft } = useApiAction(sendDraft);
   const { run: runDiscardDraft } = useApiAction(discardDraft);
+  const { run: runCompose, isLoading: isComposing } = useApiAction(composeEmailRequest, {
+    successMessage: "Email sent.",
+  });
 
   const setActiveView = useCallback((view: MailViewKey) => {
     setActiveFolderRaw(null);
@@ -405,6 +418,14 @@ export function useMailInbox() {
     return Boolean(result);
   }
 
+  async function composeEmail(payload: ComposeEmailPayload) {
+    const result = await runCompose(payload);
+    if (result) {
+      await refresh();
+    }
+    return result;
+  }
+
   async function createFolder(name: string) {
     const folder = await runCreateFolder(name);
     if (folder) {
@@ -504,5 +525,7 @@ export function useMailInbox() {
     saveDraftMessage,
     sendDraftMessage,
     discardDraftMessage,
+    composeEmail,
+    isComposing,
   };
 }

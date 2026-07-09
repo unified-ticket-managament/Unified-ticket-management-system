@@ -28,6 +28,21 @@ class TicketRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_by_ids(self, ticket_ids: list[UUID]) -> list[Ticket]:
+        """
+        Batch fetch — used by InboxService.get_inbox to enrich
+        ticketed inbox rows with priority/category in one query
+        instead of a get_by_id call per row.
+        """
+
+        if not ticket_ids:
+            return []
+
+        result = await self.db.execute(
+            select(Ticket).where(Ticket.ticket_id.in_(ticket_ids))
+        )
+        return list(result.scalars().all())
+
     async def list_all(
         self,
         agent_id: UUID | None = None,

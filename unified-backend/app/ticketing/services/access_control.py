@@ -237,6 +237,35 @@ async def ensure_agent_can_view_pending_interaction(
         )
 
 
+def ensure_can_compose_for_client(client, current_user: User) -> None:
+    """
+    Gates POST /inbox/compose — who may author a brand-new outbound
+    email (no prior inbound message) to one of the platform's
+    clients. Mirrors ensure_agent_can_view_pending_interaction's
+    ownership rule (Site Lead/Super Admin unrestricted, Account
+    Manager only their own clients), since starting a new pre-ticket
+    thread is the same kind of "own this client's mail" action as
+    claiming/archiving/snoozing one. Team Lead/Staff are deliberately
+    excluded — they only ever work already-ticketed mail, scoped by
+    category/assignment, and have no pre-ticket client-ownership
+    concept to compose into.
+    """
+
+    if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
+        return
+
+    if (
+        current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME
+        and client.account_manager_id == current_user.user_id
+    ):
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="You do not have permission to compose mail for this client.",
+    )
+
+
 def has_permission(current_user: User, permission_name: str) -> bool:
     """
     Non-raising check against the permission list threaded onto

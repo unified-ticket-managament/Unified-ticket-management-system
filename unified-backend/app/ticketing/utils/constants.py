@@ -9,9 +9,11 @@ ATTACHMENT_MIME_BY_EXTENSION: dict[str, set[str]] = {
     "docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
     "xls": {"application/vnd.ms-excel"},
     "xlsx": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    "csv": {"text/csv", "application/csv", "application/vnd.ms-excel"},
     "png": {"image/png"},
     "jpg": {"image/jpeg"},
     "jpeg": {"image/jpeg"},
     "gif": {"image/gif"},
     "txt": {"text/plain"},
+    "zip": {"application/zip", "application/x-zip-compressed", "multipart/x-zip"},
 }

@@ -29,6 +29,13 @@ class OpenEmailResponse(BaseModel):
 
     from_name: str | None
 
+    # Only ever non-empty on a Compose-authored root — an inbound
+    # email has no Cc/Bcc of its own (see EmailPayload's matching
+    # fields).
+    cc: list[str] = Field(default_factory=list)
+
+    bcc: list[str] = Field(default_factory=list)
+
     subject: str
 
     body: str

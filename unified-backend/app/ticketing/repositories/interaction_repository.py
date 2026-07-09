@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ticketing.enums import InteractionDirection, InteractionStatus
@@ -234,16 +234,26 @@ class InteractionRepository:
         Every reply the given user has sent — pre-ticket or
         ticket-level alike, both created via the same REPLY/OUTBOUND
         shape (see `InteractionService.add_interaction_reply`/
-        `add_reply`). Not root-only like `list_inbox`: a sent reply
-        is itself a thread child, so the caller resolves the
-        thread-root subject/client via `list_by_ids` on
-        `parent_interaction_id` separately.
+        `add_reply`) — plus every brand-new Compose email they've
+        authored (InteractionService.compose_email), which is itself
+        a thread ROOT rather than a child. A sent reply's subject/
+        client is resolved by the caller via `list_by_ids` on
+        `parent_interaction_id`; a sent Compose root already carries
+        its own subject/client on its own payload (see
+        InboxService.get_sent's branch on `parent_interaction_id is
+        None`).
         """
 
         result = await self.db.execute(
             select(Interaction)
             .where(
-                Interaction.interaction_type == "REPLY",
+                or_(
+                    Interaction.interaction_type == "REPLY",
+                    and_(
+                        Interaction.interaction_type == "EMAIL",
+                        Interaction.parent_interaction_id.is_(None),
+                    ),
+                ),
                 Interaction.direction == InteractionDirection.OUTBOUND,
                 Interaction.performed_by == performed_by,
                 Interaction.is_visible.is_(True),

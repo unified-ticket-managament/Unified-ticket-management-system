@@ -137,6 +137,8 @@ export interface InboxItem {
   status: InteractionStatus;
   direction: InteractionDirection;
   ticket_id: string | null;
+  ticket_priority: TicketPriority | null;
+  ticket_category: string | null;
   has_attachments: boolean;
   claimed_by: string | null;
   claimed_by_name: string | null;
@@ -176,6 +178,8 @@ export interface OpenEmailResponse {
   to_email: string | null;
   from_email: string | null;
   from_name: string | null;
+  cc: string[];
+  bcc: string[];
   subject: string;
   body: string;
   message_id: string | null;
@@ -266,6 +270,8 @@ export interface DraftDeleteResponse {
 
 export interface InteractionReplyRequest {
   message: string;
+  cc?: string[];
+  bcc?: string[];
 }
 
 export interface InteractionReplyResponse {
@@ -448,6 +454,20 @@ export interface InternalNoteResponse {
 }
 
 export interface ReplyRequest {
+  message: string;
+  cc?: string[];
+  bcc?: string[];
+}
+
+// ==========================================================
+// Compose — brand-new outbound email, no prior thread
+// ==========================================================
+
+export interface ComposeEmailResponse {
+  interaction_id: string;
+  client_id: string;
+  created_at: string;
+  attachments: AttachmentMeta[];
   message: string;
 }
 

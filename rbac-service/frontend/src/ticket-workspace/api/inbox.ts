@@ -1,5 +1,6 @@
 import { apiClient } from "./client";
 import type {
+  ComposeEmailResponse,
   DraftDeleteResponse,
   DraftListResponse,
   DraftSaveResponse,
@@ -173,6 +174,39 @@ export async function updateInteractionFolder(
   const { data } = await apiClient.patch<InteractionFolderResponse>(
     `/inbox/${interactionId}/folder`,
     { folder_id: folderId }
+  );
+  return data;
+}
+
+export interface ComposeEmailPayload {
+  clientId: string;
+  toEmail: string;
+  subject: string;
+  message: string;
+  cc?: string[];
+  bcc?: string[];
+  files?: File[];
+}
+
+// POST /inbox/compose — author a brand-new outbound email to one of
+// the platform's clients (the one Mail action with no existing
+// interaction to reply onto). Multipart so attachments can ride
+// along in the same request, same shape as uploadAttachment.
+export async function composeEmail(
+  payload: ComposeEmailPayload
+): Promise<ComposeEmailResponse> {
+  const formData = new FormData();
+  formData.append("client_id", payload.clientId);
+  formData.append("to_email", payload.toEmail);
+  formData.append("subject", payload.subject);
+  formData.append("message", payload.message);
+  if (payload.cc?.length) formData.append("cc", payload.cc.join(","));
+  if (payload.bcc?.length) formData.append("bcc", payload.bcc.join(","));
+  payload.files?.forEach((file) => formData.append("files", file));
+
+  const { data } = await apiClient.post<ComposeEmailResponse>(
+    "/inbox/compose",
+    formData
   );
   return data;
 }

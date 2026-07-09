@@ -1,61 +1,161 @@
-import { AppLayout } from "@tw/components/layout/AppLayout";
-import { AgentInbox } from "@tw/components/inbox/AgentInbox";
-import { EmailDetails } from "@tw/components/inbox/EmailDetails";
-import { InboxActionsPanel } from "@tw/components/inbox/InboxActionsPanel";
-import { MailDetailsPanel } from "@tw/components/inbox/MailDetailsPanel";
-import { MailSidebar } from "@tw/components/inbox/MailSidebar";
-import { useMailInbox } from "@tw/hooks/useMailInbox";
+"use client";
 
+import { useState } from "react";
+import { AppLayout } from "@tw/components/layout/AppLayout";
+import { ComposeView, type ComposeInitialValues } from "@tw/components/mail/ComposeView";
+import { MailSidebar } from "@tw/components/mail/MailSidebar";
+import { MessageDetailsView } from "@tw/components/mail/MessageDetailsView";
+import { MessageList } from "@tw/components/mail/MessageList";
+import { useMailInbox, type MailViewKey } from "@tw/hooks/useMailInbox";
+import { useWorkflowContext } from "@tw/context/WorkflowContext";
+
+const VIEW_LABELS: Record<MailViewKey, string> = {
+  pending: "Inbox",
+  unassigned: "Unassigned",
+  mine: "My Claims",
+  sent: "Sent",
+  drafts: "Drafts",
+  replied: "Replied",
+  ticketed: "Ticketed",
+  snoozed: "Snoozed",
+  archived: "Archived",
+  all: "All Inboxes",
+};
+
+// The entire Mail page: a fixed left folder sidebar and a dynamic
+// right content area with exactly three views (Message List, Message
+// Details, Compose), switched only via client-side state here — never
+// navigation, a modal, or a second panel. `useMailInbox` is still
+// owned exactly once, at the top of the page (see its own docstring
+// for why), and every child below is a plain, mostly-presentational
+// consumer of it.
 export function InboxPage() {
-  // Owned once here, not inside AgentInbox — MailSidebar and
-  // AgentInbox both need the same view/counts/loading state, and
-  // calling the hook in two places would mean two independent
-  // fetches and two independently-drifting activeView states.
   const mail = useMailInbox();
+  const { selectedEmail, setSelectedEmail } = useWorkflowContext();
+  const [composeOpen, setComposeOpen] = useState(false);
+  const [composeInitialValues, setComposeInitialValues] = useState<ComposeInitialValues | undefined>(undefined);
+
+  function openCompose(initial?: ComposeInitialValues) {
+    setSelectedEmail(null);
+    setComposeInitialValues(initial);
+    setComposeOpen(true);
+  }
+
+  function closeCompose() {
+    setComposeOpen(false);
+    setComposeInitialValues(undefined);
+  }
+
+  function handleSelectView(view: MailViewKey) {
+    setComposeOpen(false);
+    setSelectedEmail(null);
+    mail.setActiveView(view);
+  }
+
+  function handleSelectFolder(folderId: string | null) {
+    setComposeOpen(false);
+    setSelectedEmail(null);
+    mail.setActiveFolder(folderId);
+  }
+
+  async function handleOpen(interactionId: string) {
+    setComposeOpen(false);
+    await mail.openThread(interactionId);
+  }
+
+  function handleForward(values: { clientId: string | null; toEmail: string; subject: string; bodyHtml: string }) {
+    openCompose({
+      clientId: values.clientId ?? undefined,
+      toEmail: values.toEmail,
+      subject: values.subject,
+      bodyHtml: values.bodyHtml,
+    });
+  }
+
+  async function handleComposeSend(payload: {
+    clientId: string;
+    toEmail: string;
+    subject: string;
+    message: string;
+    cc: string[];
+    bcc: string[];
+    files: File[];
+  }) {
+    const result = await mail.composeEmail(payload);
+    if (result) closeCompose();
+    return result;
+  }
+
+  const folderLabelBase = mail.activeFolder
+    ? mail.folders.find((f) => f.folder_id === mail.activeFolder)?.name ?? "Folder"
+    : VIEW_LABELS[mail.activeView];
+  const folderCount = mail.activeFolder
+    ? mail.folderCounts[mail.activeFolder] ?? 0
+    : mail.viewCounts[mail.activeView] ?? 0;
+  const folderLabel = `${folderLabelBase} (${folderCount})`;
 
   return (
-    <AppLayout
-      title="Mail"
-      description="Emails waiting for an agent decision."
-    >
-      {/* Viewport-relative heights on mobile/tablet (rather than
-          fixed pixels) so the stacked panels scale with the actual
-          device instead of adding up to a fixed height that
-          overshoots short phone screens. */}
-      <div className="grid grid-cols-1 gap-4 lg:h-[calc(100vh-9.5rem)] lg:grid-cols-[220px_300px_1fr_300px]">
-        <div className="h-[30vh] min-h-[220px] lg:h-full">
-          <MailSidebar
-            activeView={mail.activeView}
-            onSelectView={mail.setActiveView}
-            counts={mail.viewCounts}
-            isSupervisor={mail.isSupervisor}
-            folders={mail.folders}
-            folderCounts={mail.folderCounts}
-            activeFolder={mail.activeFolder}
-            onSelectFolder={mail.setActiveFolder}
-            onCreateFolder={mail.createFolder}
-            onDeleteFolder={mail.deleteFolder}
-          />
-        </div>
-        <div className="h-[65vh] min-h-[360px] lg:h-full">
-          <AgentInbox {...mail} />
-        </div>
-        <div className="h-[50vh] min-h-[280px] lg:h-full">
-          <EmailDetails
-            onSaveDraft={mail.saveDraftMessage}
-            onSendDraft={mail.sendDraftMessage}
-            onDiscardDraft={mail.discardDraftMessage}
-          />
-        </div>
-        <div className="flex h-auto flex-col gap-4 lg:h-full lg:overflow-y-auto lg:scrollbar-thin">
-          <MailDetailsPanel
-            folders={mail.folders}
-            onUpdateTags={mail.updateTags}
-            onAssignFolder={mail.assignFolder}
-            onSnooze={mail.snoozeItem}
-            onUnsnooze={mail.unsnoozeItem}
-          />
-          <InboxActionsPanel />
+    <AppLayout title="Mail" description="Client email, organized like an inbox.">
+      <div className="flex flex-col gap-4 lg:h-[calc(100vh-9.5rem)] lg:flex-row">
+        <MailSidebar
+          activeView={mail.activeView}
+          isComposing={composeOpen}
+          onSelectView={handleSelectView}
+          onCompose={() => openCompose()}
+          counts={mail.viewCounts}
+          isSupervisor={mail.isSupervisor}
+          folders={mail.folders}
+          folderCounts={mail.folderCounts}
+          activeFolder={mail.activeFolder}
+          onSelectFolder={handleSelectFolder}
+          onCreateFolder={mail.createFolder}
+          onDeleteFolder={mail.deleteFolder}
+        />
+
+        <div className="min-h-[560px] min-w-0 flex-1">
+          {composeOpen ? (
+            <ComposeView
+              clients={mail.clients}
+              initialValues={composeInitialValues}
+              isSending={mail.isComposing}
+              onSend={handleComposeSend}
+              onDiscard={closeCompose}
+            />
+          ) : selectedEmail ? (
+            <MessageDetailsView
+              email={selectedEmail}
+              folders={mail.folders}
+              isSupervisor={mail.isSupervisor}
+              onBack={() => setSelectedEmail(null)}
+              onRefreshList={mail.refresh}
+              onForward={handleForward}
+              onSaveDraft={mail.saveDraftMessage}
+              onSendDraft={mail.sendDraftMessage}
+              onDiscardDraft={mail.discardDraftMessage}
+              onSnooze={mail.snoozeItem}
+              onUnsnooze={mail.unsnoozeItem}
+              onUpdateTags={mail.updateTags}
+              onAssignFolder={mail.assignFolder}
+            />
+          ) : (
+            <MessageList
+              folderLabel={folderLabel}
+              items={mail.filteredItems}
+              isLoading={mail.isLoading}
+              openingId={mail.openingId}
+              openedIds={mail.openedIds}
+              search={mail.search}
+              onSearchChange={mail.setSearch}
+              timeFilter={mail.timeFilter}
+              onTimeFilterChange={mail.setTimeFilter}
+              clientFilter={mail.clientFilter}
+              onClientFilterChange={mail.setClientFilter}
+              clients={mail.clients}
+              onOpen={handleOpen}
+              onCompose={() => openCompose()}
+              onRefresh={mail.refresh}
+            />
+          )}
         </div>
       </div>
     </AppLayout>

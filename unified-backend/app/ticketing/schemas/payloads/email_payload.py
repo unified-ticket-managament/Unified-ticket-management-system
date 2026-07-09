@@ -50,3 +50,12 @@ class EmailPayload(BaseModel):
     in_reply_to: str | None = None
 
     references: list[str] = Field(default_factory=list)
+
+    # Only ever populated on a Compose-authored root (an agent-
+    # originated outbound email with no prior inbound message to
+    # reply to) — an inbound email has no Cc/Bcc of its own. Optional
+    # with an empty-list default so every pre-existing stored payload
+    # (which never had these keys) still deserializes unchanged.
+    cc: list[EmailStr] = Field(default_factory=list)
+
+    bcc: list[EmailStr] = Field(default_factory=list)

@@ -19,8 +19,11 @@ class OutboundEnvelope(BaseModel):
     to_email: EmailStr
 
     # The client's Account Manager, auto-added so they see every
-    # reply in their real inbox without checking the platform.
+    # reply in their real inbox without checking the platform, plus
+    # whatever the agent themselves added via the reply/compose form.
     cc: list[EmailStr] = Field(default_factory=list)
+
+    bcc: list[EmailStr] = Field(default_factory=list)
 
     subject: str
 

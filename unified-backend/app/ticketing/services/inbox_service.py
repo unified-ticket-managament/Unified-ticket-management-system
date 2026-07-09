@@ -9,6 +9,7 @@ from app.ticketing.repositories.attachment_repository import AttachmentRepositor
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 
 from app.ticketing.schemas.inbox import (
@@ -62,10 +63,12 @@ class InboxService:
         interaction_repository: InteractionRepository,
         attachment_repository: AttachmentRepository | None = None,
         user_repository: UserRepository | None = None,
+        ticket_repository: TicketRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
         self.user_repository = user_repository
+        self.ticket_repository = ticket_repository
 
     async def get_inbox(
         self,
@@ -146,6 +149,16 @@ class InboxService:
             [i.interaction_id for i in interactions]
         )
 
+        # Priority/category only exist once a root has become a ticket
+        # — one batched lookup for every ticketed row on this page
+        # (mirrors thread_summaries/claimer_names above) rather than a
+        # get_by_id call per row.
+        tickets_by_id: dict[UUID, object] = {}
+        if self.ticket_repository is not None:
+            ticket_ids = [i.ticket_id for i in interactions if i.ticket_id is not None]
+            tickets = await self.ticket_repository.list_by_ids(ticket_ids)
+            tickets_by_id = {t.ticket_id: t for t in tickets}
+
         latest_sender_names: dict[UUID, str] = {}
         if self.user_repository is not None:
             performed_by_ids = [
@@ -211,6 +224,12 @@ class InboxService:
             )
             latest_message, latest_sender = _latest_reply_preview(latest_reply)
 
+            ticket = (
+                tickets_by_id.get(interaction.ticket_id)
+                if interaction.ticket_id is not None
+                else None
+            )
+
             inbox_items.append(
 
                 InboxItemResponse(
@@ -236,6 +255,10 @@ class InboxService:
                     direction=interaction.direction,
 
                     ticket_id=interaction.ticket_id,
+
+                    ticket_priority=ticket.current_priority if ticket is not None else None,
+
+                    ticket_category=ticket.ticket_type if ticket is not None else None,
 
                     has_attachments=(
                         interaction.interaction_id in interactions_with_attachments
@@ -282,10 +305,13 @@ class InboxService:
     async def get_sent(self, current_user: User) -> SentResponse:
         """
         Every reply `current_user` has sent, pre-ticket or
-        ticket-level alike — a separate shape from `get_inbox` since
-        a sent reply is a thread child, not a root, and carries no
-        subject/client_name of its own (borrowed from its thread
-        root here).
+        ticket-level alike, plus every brand-new Compose email they've
+        authored — a separate shape from `get_inbox` since a sent
+        reply is a thread child, not a root, and carries no subject/
+        client_name of its own (borrowed from its thread root here).
+        A Compose-authored row is itself a root (parent_interaction_id
+        is None) and its own EmailPayload already has subject/
+        client_name/body — no separate root lookup needed for those.
         """
 
         replies = await self.interaction_repository.list_sent(current_user.user_id)
@@ -301,6 +327,39 @@ class InboxService:
         items: list[SentItemResponse] = []
 
         for reply in replies:
+            if reply.parent_interaction_id is None:
+                # A Compose-authored root — subject/client_name/body
+                # live on this row's own payload, not a separate
+                # thread root (there isn't one; this row IS the root).
+                client_name = "Unknown"
+                subject = "(no subject)"
+                message = ""
+                try:
+                    own_payload = EmailPayload.model_validate(reply.payload)
+                    client_name = own_payload.client_name or "Unknown"
+                    subject = own_payload.subject
+                    message = own_payload.body
+                except ValidationError:
+                    logger.warning(
+                        "Skipping subject/client resolution for sent Compose "
+                        "email %s — its own payload doesn't match EmailPayload.",
+                        reply.interaction_id,
+                    )
+
+                items.append(
+                    SentItemResponse(
+                        interaction_id=reply.interaction_id,
+                        root_interaction_id=reply.interaction_id,
+                        ticket_id=reply.ticket_id,
+                        client_id=reply.client_id,
+                        client_name=client_name,
+                        subject=subject,
+                        message=message,
+                        sent_at=reply.created_at,
+                    )
+                )
+                continue
+
             root = roots_by_id.get(reply.parent_interaction_id)
 
             client_name = "Unknown"

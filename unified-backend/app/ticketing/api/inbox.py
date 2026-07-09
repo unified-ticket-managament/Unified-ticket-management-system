@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import User
 
@@ -14,6 +14,7 @@ from app.ticketing.repositories.interaction_repository import (
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
+from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
 from app.ticketing.schemas.inbox import DraftListResponse, InboxResponse, SentResponse
 from app.ticketing.schemas.interaction import (
     DraftDeleteResponse,
@@ -33,6 +34,7 @@ from app.ticketing.schemas.ticket_action import (
     InteractionReplyRequest,
     InteractionReplyResponse,
 )
+from app.ticketing.services.attachment_service import AttachmentService, attachments_to_metadata
 from app.ticketing.services.inbox_service import InboxService
 from app.ticketing.services.open_email_service import OpenEmailService
 from app.ticketing.services.interaction_service import InteractionService
@@ -42,6 +44,20 @@ router = APIRouter(
     prefix="/inbox",
     tags=["Inbox"],
 )
+
+
+def _split_emails(raw: str | None) -> list[str]:
+    """
+    The Compose form sends Cc/Bcc as a single comma-separated Form
+    field (a multipart request can't carry a JSON array field
+    alongside file uploads the way a plain JSON body could) — this
+    splits and drops blanks/whitespace so an empty field cleanly
+    becomes an empty list rather than `[""]`.
+    """
+
+    if not raw:
+        return []
+    return [email.strip() for email in raw.split(",") if email.strip()]
 
 
 # ---------------------------------------------------------
@@ -80,11 +96,13 @@ async def get_inbox(
     repository = InteractionRepository(db)
     attachment_repository = AttachmentRepository(db)
     user_repository = UserRepository(db)
+    ticket_repository = TicketRepository(db)
 
     service = InboxService(
         repository,
         attachment_repository=attachment_repository,
         user_repository=user_repository,
+        ticket_repository=ticket_repository,
     )
 
     return await service.get_inbox(
@@ -138,6 +156,80 @@ async def get_drafts(
     service = InboxService(repository)
 
     return await service.get_drafts(current_user)
+
+
+# ---------------------------------------------------------
+# Compose — brand-new outbound email, no prior thread
+# ---------------------------------------------------------
+#
+# Registered before "/{interaction_id}" for the same reason /sent and
+# /drafts are above — a static path segment must be matched before
+# FastAPI tries (and fails) to parse "compose" as a UUID.
+
+@router.post(
+    "/compose",
+    response_model=ComposeEmailResponse,
+    status_code=201,
+)
+async def compose_email(
+    client_id: UUID = Form(...),
+    to_email: str = Form(...),
+    subject: str = Form(...),
+    message: str = Form(...),
+    cc: str = Form(default=""),
+    bcc: str = Form(default=""),
+    files: list[UploadFile] = File(default=[]),
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Authors a brand-new outbound email to one of the platform's
+    clients — the "Compose" action, the one Mail path with no
+    existing interaction to reply onto. Multipart (rather than a
+    plain JSON body, like every other Mail endpoint) purely so
+    attachments can ride along in the same request, mirroring
+    POST /tickets/{id}/attachments.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+    attachment_repository = AttachmentRepository(db)
+    storage_service = get_storage_service()
+
+    interaction_service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    composed = await interaction_service.compose_email(
+        request=ComposeEmailRequest(
+            client_id=client_id,
+            to_email=to_email,
+            subject=subject,
+            message=message,
+            cc=_split_emails(cc),
+            bcc=_split_emails(bcc),
+        ),
+        current_user=current_user,
+    )
+
+    if files:
+        attachment_service = AttachmentService(
+            attachment_repository=attachment_repository,
+            interaction_repository=interaction_repository,
+            ticket_repository=ticket_repository,
+            storage_service=storage_service,
+        )
+        stored = await attachment_service.validate_and_store_files(
+            files, composed.interaction_id
+        )
+        composed.attachments = await attachments_to_metadata(stored, storage_service)
+
+    return composed
 
 
 # ---------------------------------------------------------
