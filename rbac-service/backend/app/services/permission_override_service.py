@@ -64,7 +64,7 @@ class PermissionOverrideService:
     # Authorization
     # --------------------------------------------------
 
-    async def _ensure_can_manage_overrides(
+    async def ensure_can_manage_overrides(
         self,
         actor: User,
         target: User,
@@ -130,7 +130,7 @@ class PermissionOverrideService:
                 detail="Permission not found.",
             )
 
-        await self._ensure_can_manage_overrides(actor, target)
+        await self.ensure_can_manage_overrides(actor, target)
 
         role_permission_names, _ = (
             await self.permission_resolver.get_effective_permissions(target)
@@ -230,7 +230,7 @@ class PermissionOverrideService:
                 detail="This permission override has already been revoked.",
             )
 
-        await self._ensure_can_manage_overrides(actor, target)
+        await self.ensure_can_manage_overrides(actor, target)
 
         permission_name = override.permission.permission_name
 
@@ -273,7 +273,7 @@ class PermissionOverrideService:
                 detail="User not found.",
             )
 
-        await self._ensure_can_manage_overrides(actor, target)
+        await self.ensure_can_manage_overrides(actor, target)
 
         overrides = await self.permission_override_repository.list_all_by_user(
             target_user_id,

@@ -12,6 +12,7 @@ from app.models.permission import Permission
 from app.models.role_permission import RolePermission
 from app.models.audit_log import AuditLog
 from app.models.permission_override import UserPermissionOverride
+from app.models.permission_request import PermissionRequest
 
 config = context.config
 settings = get_settings()
@@ -45,6 +46,7 @@ def include_object(object, name, type_, reflected, compare_to):
         "ticket_audit_logs",
         "mail_folders",
         "ticket_relations",
+        "ticket_edit_access_requests",
     }
 
     if type_ == "table" and name in ignored_tables:

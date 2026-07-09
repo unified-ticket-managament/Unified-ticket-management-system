@@ -29,6 +29,7 @@ export type NavItemKey =
   | "Interactions"
   | "Tickets"
   | "Ticket Audit Log"
+  | "Permission Requests"
   | "Profile"
   | "Settings";
 
@@ -45,6 +46,7 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   Interactions: "nav.interactions",
   Tickets: "nav.tickets",
   "Ticket Audit Log": "nav.ticketAuditLog",
+  "Permission Requests": "nav.permissionRequests",
   Profile: "nav.profile",
   Settings: "nav.settings",
 };
@@ -91,6 +93,7 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Interactions",
     "Tickets",
     "Ticket Audit Log",
+    "Permission Requests",
     "Settings",
   ],
   [ROLE_NAMES.SITE_LEAD]: [
@@ -104,12 +107,13 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Interactions",
     "Tickets",
     "Ticket Audit Log",
+    "Permission Requests",
     "Settings",
   ],
-  [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Roles", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
-  [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
-  [ROLE_NAMES.STAFF]: ["Dashboard", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Profile", "Settings"],
-  [ROLE_NAMES.VIEWER]: ["Dashboard", "Profile", "Settings"],
+  [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Roles", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Permission Requests", "Profile", "Settings"],
+  [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Permission Requests", "Profile", "Settings"],
+  [ROLE_NAMES.STAFF]: ["Dashboard", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Permission Requests", "Profile", "Settings"],
+  [ROLE_NAMES.VIEWER]: ["Dashboard", "Permission Requests", "Profile", "Settings"],
 };
 
 const DEFAULT_NAV_ITEMS: NavItemKey[] = ["Dashboard", "Profile", "Settings"];

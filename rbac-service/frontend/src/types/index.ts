@@ -62,6 +62,27 @@ export interface PermissionOverride {
   is_active: boolean;
 }
 
+export type PermissionRequestStatus = "PENDING" | "APPROVED" | "REJECTED";
+
+export interface PermissionRequest {
+  request_id: string;
+  requester_id: string;
+  requester_name: string | null;
+  permission_id: string;
+  permission_name: string;
+  requested_role: string;
+  reason: string;
+  status: PermissionRequestStatus;
+  reviewed_by: string | null;
+  reviewed_by_name: string | null;
+  reviewed_at: string | null;
+  review_comment: string | null;
+  expires_at: string | null;
+  granted_override_id: string | null;
+  revoked_at: string | null;
+  created_at: string;
+}
+
 export interface AuditLog {
   audit_log_id: string;
   user_id: string | null;

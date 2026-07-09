@@ -24,8 +24,8 @@ on the Interaction's own columns instead of `Ticket.agent_id`. Access is checked
 not `ensure_agent_can_view_ticket`. The rest of this skill (below) is written for the
 ticket-level case; adapt step 3 accordingly for a pending-interaction action.
 
-**Two further variants exist for shapes that don't fit either pattern above**, both added
-for the Mail rebuild — see `CLAUDE.md` for the full detail, summarized here:
+**Three further variants exist for shapes that don't fit either pattern above** — see
+`CLAUDE.md` for the full detail, summarized here:
 - **A thread-scoped, upsertable action** (Drafts): if the action should have "at most one
   active row per thread per agent, overwritten on repeat calls" semantics rather than
   "create a new row every time", look at `InteractionService.save_draft`/`send_draft`/
@@ -37,6 +37,15 @@ for the Mail rebuild — see `CLAUDE.md` for the full detail, summarized here:
   at creation so reads never need an `OR`-across-two-columns query, and check visibility
   (`ensure_agent_can_view_ticket`) on *both* sides before linking, not just the one the
   route was called on.
+- **A request/review workflow** (Edit Access requests): if the action is really "ask someone
+  else to let you do X, they approve or reject" rather than a direct mutation, look at
+  `EditAccessService` (`request_access`/`approve`/`reject`/`list_for_ticket`) and
+  `TicketEditAccessRequestRepository` — a dedicated status-tracked table (`PENDING`/
+  `APPROVED`/`REJECTED`, partial-unique-indexed so only one open request exists per
+  requester at a time) rather than an `Interaction`/`AuditLog` row alone, since the request
+  itself has a lifecycle to track, not just a point-in-time event. Both the request and
+  every review decision still get an `Interaction` + `AuditLog` row each, on top of the
+  dedicated table — see the next bullet on combining this with permission-based checks.
 
 Read `CLAUDE.md` first for the two-log distinction (Interaction = business timeline,
 AuditLog = immutable compliance trail), the real-JWT auth model (no more `agent_name`
@@ -67,13 +76,25 @@ action needs a new `AuditEventType` member.
    - guard against invalid transitions with `HTTPException(400, "...")` if applicable (see
      `ensure_ticket_not_closed`, or `claim_ticket`'s already-claimed guard)
    - if the action should be restricted to *specific roles* rather than just visibility
-     (a real authorization rule, not a scoping rule) — see `ensure_can_reassign_ticket`
-     for the pattern: a small helper in `access_control.py` that 403s unless
-     `current_user.role.name in SUPERVISOR_ROLE_NAMES` (or whatever role set applies), called
-     right after the closed/view checks. `transfer_agent` uses this to block Staff from
-     reassigning a ticket to a *different* named agent, while deliberately **not** applying
-     it to `claim_ticket` (self-pickup from the shared pool stays open to every agent role) —
-     know which of these two your new action actually is before copying either.
+     (a real authorization rule, not a scoping rule), you have two composable options, not
+     mutually exclusive:
+     - **Role-name check**: see `ensure_can_reassign_ticket` for the base pattern — a small
+       helper in `access_control.py` that 403s unless `current_user.role.name in
+       SUPERVISOR_ROLE_NAMES` (or whatever role set applies), called right after the
+       closed/view checks. `transfer_agent` uses this to block Staff from reassigning a
+       ticket to a *different* named agent, while deliberately **not** applying it to
+       `claim_ticket` (self-pickup from the shared pool stays open to every agent role) —
+       know which of these two your new action actually is before copying either.
+     - **Permission check** (`access_control.ensure_has_permission(current_user,
+       "ticket:<name>")`): reads the `permissions` claim RBAC embeds in the JWT — use this
+       when the restriction should be overridable per-person (via an rbac-service personal
+       permission override) rather than fixed to a role set. `change_priority` uses this
+       alone; `ensure_can_reassign_ticket` composes both — role check first, permission
+       check as the fallback for anyone the role check didn't already clear — so a specific
+       Staff member can be granted the capability without touching `SUPERVISOR_ROLE_NAMES`
+       at all. See `CLAUDE.md`'s "Permission-based enforcement" section before adding a new
+       `ticket:*` permission name — it must also exist in `rbac-service/backend/scripts/
+       seed.py`'s `DEFAULT_PERMISSIONS`/`DEFAULT_ROLES` or no one will ever hold it.
    - `actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(current_user)`
      — synchronous, no DB lookup; `current_user` is the already-verified `User` passed in
      from the route's `Depends(get_current_agent)`, not a name string

@@ -7,6 +7,7 @@ import {
   OrganizationNode,
   Permission,
   PermissionOverride,
+  PermissionRequest,
   ProfileForm,
   Role,
   RoleForm,
@@ -335,6 +336,77 @@ export const permissionOverrideService = {
 
   revoke: async (userId: string, overrideId: string): Promise<void> => {
     await api.delete(`/users/${userId}/permission-overrides/${overrideId}`);
+  },
+};
+
+/* -------------------------------------------------------------------------- */
+/*                            PERMISSION REQUESTS                             */
+/* -------------------------------------------------------------------------- */
+
+export const permissionRequestService = {
+  eligiblePermissions: async (): Promise<Permission[]> => {
+    const response = await api.get<Permission[]>(
+      "/permission-requests/eligible-permissions"
+    );
+
+    return response.data;
+  },
+
+  eligibleApproverRoles: async (permissionId: string): Promise<string[]> => {
+    const response = await api.get<{ roles: string[] }>(
+      "/permission-requests/eligible-approver-roles",
+      { params: { permission_id: permissionId } }
+    );
+
+    return response.data.roles;
+  },
+
+  create: async (data: {
+    permission_id: string;
+    requested_role: string;
+    reason: string;
+  }): Promise<PermissionRequest> => {
+    const response = await api.post<PermissionRequest>("/permission-requests", data);
+
+    return response.data;
+  },
+
+  mine: async (): Promise<PermissionRequest[]> => {
+    const response = await api.get<PermissionRequest[]>("/permission-requests/mine");
+
+    return response.data;
+  },
+
+  pendingForReview: async (): Promise<PermissionRequest[]> => {
+    const response = await api.get<PermissionRequest[]>(
+      "/permission-requests/pending-for-review"
+    );
+
+    return response.data;
+  },
+
+  approve: async (
+    requestId: string,
+    data: { expires_at?: string | null; review_comment?: string | null }
+  ): Promise<PermissionRequest> => {
+    const response = await api.post<PermissionRequest>(
+      `/permission-requests/${requestId}/approve`,
+      data
+    );
+
+    return response.data;
+  },
+
+  reject: async (
+    requestId: string,
+    data: { review_comment?: string | null }
+  ): Promise<PermissionRequest> => {
+    const response = await api.post<PermissionRequest>(
+      `/permission-requests/${requestId}/reject`,
+      data
+    );
+
+    return response.data;
   },
 };
 

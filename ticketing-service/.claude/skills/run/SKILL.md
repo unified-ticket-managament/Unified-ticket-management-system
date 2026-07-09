@@ -86,3 +86,13 @@ or `backend/.env` or the browser will get CORS-blocked requests that look like a
 6. On a ticket's detail page, use "Related Tickets" to link it to a second ticket and
    confirm the link shows up on **both** tickets' detail pages (it's written symmetrically
    — see CLAUDE.md), then unlink and confirm it disappears from both.
+7. **Edit Access** (the "Edit Access" panel on a ticket's detail page): log in as `Staff`
+   on a ticket *not* assigned to them and confirm "Request Edit Access" is the only option
+   (replying/note-adding/priority-changing 403s until access is granted). Submit a request
+   with a reason, then log in as `Team Lead`/`Account Manager`/`Site Lead`/`Super Admin`
+   (any role holding `ticket:edit_ticket` by default) and approve or reject it from the same
+   panel. Confirm an approval lets the Staff member act on the ticket (log back in as them,
+   or just re-check via Swagger with their token) and that both the ticket's own Timeline
+   and its Audit Trail show `EDIT_ACCESS_REQUESTED`/`EDIT_ACCESS_APPROVED` (or `_REJECTED`)
+   — see CLAUDE.md's "Edit access requests" section. A rejected request should leave the
+   requester exactly as restricted as before.

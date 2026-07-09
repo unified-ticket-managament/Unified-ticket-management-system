@@ -10,6 +10,7 @@ import {
   ClipboardList,
   History,
   Inbox,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   MailPlus,
@@ -103,6 +104,11 @@ const menuItems: {
     title: "Ticket Audit Log",
     href: "/dashboard/audit-logs",
     icon: History,
+  },
+  {
+    title: "Permission Requests",
+    href: "/permission-requests",
+    icon: KeyRound,
   },
   {
     title: "Profile",
