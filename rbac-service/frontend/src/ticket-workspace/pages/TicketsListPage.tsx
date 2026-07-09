@@ -81,7 +81,18 @@ export function TicketsListPage() {
     setClaimingId(ticketId);
     const result = await runClaim(ticketId);
     setClaimingId(null);
-    if (result) load();
+    // Claiming only ever sets agent_id on this one ticket (see
+    // InteractionService.claim_ticket) — patch it in place instead of
+    // refetching the entire unfiltered ticket list.
+    if (result && currentUser) {
+      setTickets((prev) =>
+        prev.map((t) =>
+          t.ticket_id === ticketId
+            ? { ...t, agent_id: currentUser.user_id, agent_name: currentUser.name }
+            : t
+        )
+      );
+    }
   }
 
   const categories = useMemo(

@@ -68,6 +68,28 @@ class InteractionRepository:
 
         return list(result.scalars().all())
 
+    async def list_by_ticket_ids(
+        self,
+        ticket_ids: list[UUID],
+    ) -> list[Interaction]:
+        """
+        Same shape as list_by_ticket_id, batched over many tickets at
+        once — lets a page that needs every visible ticket's timeline
+        (the Interactions page) run one query instead of one request
+        per ticket.
+        """
+
+        if not ticket_ids:
+            return []
+
+        result = await self.db.execute(
+            select(Interaction)
+            .where(Interaction.ticket_id.in_(ticket_ids))
+            .order_by(Interaction.created_at.asc())
+        )
+
+        return list(result.scalars().all())
+
     async def list_inbox(
         self,
         account_manager_id: UUID | None = None,

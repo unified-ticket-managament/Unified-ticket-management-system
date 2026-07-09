@@ -45,6 +45,7 @@ class Client(Base):
         UUID(as_uuid=True),
         ForeignKey("users.user_id"),
         nullable=False,
+        index=True,
     )
 
     is_active: Mapped[bool] = mapped_column(

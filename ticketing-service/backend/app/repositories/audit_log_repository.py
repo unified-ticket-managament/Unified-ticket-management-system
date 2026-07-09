@@ -86,3 +86,29 @@ class AuditLogRepository:
             .order_by(AuditLog.created_at.desc())
         )
         return list(result.scalars().all())
+
+    async def list_by_ticket_ids(self, ticket_ids: list[UUID]) -> list[AuditLog]:
+        """
+        Same shape as list_by_ticket, batched over many tickets at
+        once — lets a page that needs every visible ticket's audit
+        trail (the Audit Log page) run one query instead of one
+        request per ticket.
+        """
+
+        if not ticket_ids:
+            return []
+
+        ticket_id_strings = [str(ticket_id) for ticket_id in ticket_ids]
+
+        result = await self.db.execute(
+            select(AuditLog)
+            .where(
+                or_(
+                    (AuditLog.entity_type == AuditEntityType.TICKET)
+                    & AuditLog.entity_id.in_(ticket_ids),
+                    AuditLog.new_values["ticket_id"].astext.in_(ticket_id_strings),
+                )
+            )
+            .order_by(AuditLog.created_at.desc())
+        )
+        return list(result.scalars().all())

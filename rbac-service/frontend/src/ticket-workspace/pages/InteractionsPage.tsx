@@ -8,8 +8,7 @@ import { EmptyState } from "@tw/components/common/EmptyState";
 import { InteractionDetailsDrawer } from "@tw/components/common/InteractionDetailsDrawer";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
 import { getInbox, openInboxThread } from "@tw/api/inbox";
-import { listTickets } from "@tw/api/ticket";
-import { getTicketTimeline, hideInteractionById } from "@tw/api/interaction";
+import { getAllTicketInteractions, getInteractionThread, hideInteractionById } from "@tw/api/interaction";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useDebouncedValue } from "@tw/hooks/useDebouncedValue";
 import { useAuthContext } from "@tw/context/AuthContext";
@@ -17,13 +16,18 @@ import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { shortId, formatDateTime } from "@tw/lib/format";
 import { metaFor, summarize } from "@tw/lib/interactionMeta";
 import { isSupervisorRole } from "@/lib/role-access";
-import type { InteractionDirection, InteractionResponse, InteractionStatus, OpenEmailResponse } from "@tw/types";
+import type { InteractionDirection, InteractionResponse, InteractionStatus, OpenEmailResponse, ThreadResponse } from "@tw/types";
 
 const PAGE_SIZE = 20;
 
 // These stay on a ticket's own Timeline and in the Audit Log, but are
 // deliberately left out of this cross-ticket activity explorer.
 const HIDDEN_INTERACTION_TYPES = new Set(["STATUS_CHANGE", "PRIORITY_CHANGE", "AGENT_TRANSFER"]);
+
+// Only email-like interactions are ever part of a thread with a
+// parent/replies — notes, attachments, status/priority/transfer rows
+// have no conversation to open.
+const THREAD_CAPABLE_TYPES = new Set(["EMAIL", "REPLY"]);
 
 interface InteractionRow {
   id: string;
@@ -74,7 +78,9 @@ export function InteractionsPage() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerRow, setDrawerRow] = useState<InteractionRow | null>(null);
   const [drawerEmail, setDrawerEmail] = useState<OpenEmailResponse | null>(null);
+  const [drawerThread, setDrawerThread] = useState<ThreadResponse | null>(null);
   const { run: runOpenEmail, isLoading: isLoadingEmail } = useApiAction(openInboxThread);
+  const { run: runGetThread, isLoading: isLoadingThread } = useApiAction(getInteractionThread);
   const { run: runHide, isLoading: isHiding } = useApiAction(hideInteractionById, {
     successMessage: "Interaction hidden.",
   });
@@ -92,33 +98,31 @@ export function InteractionsPage() {
       // Scoped to tickets this agent can see (their assignments,
       // plus anything still unassigned) — matches ticket-level
       // visibility rules so interactions never leak across agents.
-      const tickets = await listTickets();
-      const ticketRows = (
-        await Promise.all(
-          tickets.map(async (ticket) => {
-            const timeline = await getTicketTimeline(ticket.ticket_id);
-            return timeline
-              .filter((item) => !HIDDEN_INTERACTION_TYPES.has(item.interaction_type))
-              .map<InteractionRow>((item: InteractionResponse) => ({
-                id: item.interaction_id,
-                createdAt: item.created_at,
-                type: item.interaction_type,
-                direction: item.direction,
-                status: item.status,
-                agent: item.performed_by
-                  ? agentNameById.get(item.performed_by) ?? shortId(item.performed_by)
-                  : "—",
-                ticketId: ticket.ticket_id,
-                ticketTitle: ticket.title,
-                clientName: ticket.client_name,
-                summaryText: summarize(item),
-                raw: item,
-              }));
-          })
-        )
-      ).flat();
+      // One request for every visible ticket's timeline, instead of
+      // GET /tickets followed by one GET /tickets/{id}/interactions
+      // per ticket (what made this page slow to load).
+      const [interactions, inbox] = await Promise.all([
+        getAllTicketInteractions(),
+        getInbox(),
+      ]);
 
-      const inbox = await getInbox();
+      const ticketRows = interactions
+        .filter((item) => !HIDDEN_INTERACTION_TYPES.has(item.interaction_type))
+        .map<InteractionRow>((item) => ({
+          id: item.interaction_id,
+          createdAt: item.created_at,
+          type: item.interaction_type,
+          direction: item.direction,
+          status: item.status,
+          agent: item.performed_by
+            ? agentNameById.get(item.performed_by) ?? shortId(item.performed_by)
+            : "—",
+          ticketId: item.ticket_id,
+          ticketTitle: item.ticket_title,
+          clientName: item.client_company_name,
+          summaryText: summarize(item),
+          raw: item,
+        }));
       const pendingRows: InteractionRow[] = inbox.items.map((item) => ({
         id: item.interaction_id,
         createdAt: item.received_at,
@@ -197,6 +201,7 @@ export function InteractionsPage() {
   async function handleRowClick(row: InteractionRow) {
     setDrawerRow(row);
     setDrawerEmail(null);
+    setDrawerThread(null);
     setDrawerOpen(true);
 
     // Pending inbox rows only carry a summary until opened — fetch
@@ -204,6 +209,15 @@ export function InteractionsPage() {
     if (!row.ticketId) {
       const detail = await runOpenEmail(row.id);
       if (detail) setDrawerEmail(detail);
+      return;
+    }
+
+    // Ticket-linked EMAIL/REPLY rows are one message in a thread —
+    // fetch the full conversation so the drawer can show the parent
+    // and any other replies, not just this one row's own fields.
+    if (THREAD_CAPABLE_TYPES.has(row.type)) {
+      const thread = await runGetThread(row.id);
+      if (thread) setDrawerThread(thread);
     }
   }
 
@@ -464,6 +478,8 @@ export function InteractionsPage() {
         row={drawerRow}
         email={drawerEmail}
         isLoadingEmail={isLoadingEmail}
+        thread={drawerThread}
+        isLoadingThread={isLoadingThread}
         onClose={closeDrawer}
         onViewTicket={handleViewTicket}
       />

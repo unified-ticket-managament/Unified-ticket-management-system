@@ -59,6 +59,19 @@ class InteractionResponse(ORMBase):
     references: list[str] = Field(default_factory=list)
 
 
+class TicketInteractionResponse(InteractionResponse):
+    """
+    Same shape as InteractionResponse, with the owning ticket's title
+    and client company name attached — used by the batched
+    GET /tickets/interactions endpoint so the Interactions page
+    doesn't have to fetch the ticket list and zip these on itself
+    after fetching each ticket's timeline one at a time.
+    """
+
+    ticket_title: str
+    client_company_name: str | None = None
+
+
 class ThreadResponse(ORMBase):
     """
     A full conversation — the root (parent) interaction plus every

@@ -428,6 +428,12 @@ export interface ThreadResponse {
   latest_reply: InteractionResponse | null;
 }
 
+// GET /tickets/interactions
+export interface TicketInteractionResponse extends InteractionResponse {
+  ticket_title: string;
+  client_company_name: string | null;
+}
+
 export interface InternalNoteRequest {
   note: string;
 }
@@ -520,4 +526,10 @@ export interface AuditLogResponse {
   old_values: Record<string, unknown> | null;
   new_values: Record<string, unknown> | null;
   created_at: string;
+}
+
+// GET /tickets/audit-logs
+export interface TicketAuditLogResponse extends AuditLogResponse {
+  ticket_id: string;
+  ticket_title: string;
 }

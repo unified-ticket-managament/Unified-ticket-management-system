@@ -10,6 +10,7 @@ import type {
   InteractionDirection,
   InteractionResponse,
   InteractionStatus,
+  ThreadResponse,
 } from "@/types";
 
 // Fields the drawer needs. Any row-like object with at least these
@@ -49,6 +50,11 @@ interface InteractionDetailsDrawerProps {
   row: InteractionDrawerRow | null;
   email?: InteractionDrawerEmail | null;
   isLoadingEmail?: boolean;
+  // The row's full conversation (parent + every reply), when the
+  // row is a ticket-linked EMAIL/REPLY — lets the drawer show the
+  // parent/prior messages instead of just the single clicked row.
+  thread?: ThreadResponse | null;
+  isLoadingThread?: boolean;
   onClose: () => void;
   onViewTicket: (ticketId: string) => void;
 }
@@ -177,6 +183,8 @@ export function InteractionDetailsDrawer({
   row,
   email,
   isLoadingEmail,
+  thread,
+  isLoadingThread,
   onClose,
   onViewTicket,
 }: InteractionDetailsDrawerProps) {
@@ -269,6 +277,47 @@ export function InteractionDetailsDrawer({
                   <dd className="mt-0.5 font-medium text-slate-800">{formatDateTime(row.createdAt)}</dd>
                 </div>
               </dl>
+
+              {isLoadingThread && (
+                <div className="mt-5 border-t border-border pt-4">
+                  <p className="text-[11px] text-muted">Loading conversation…</p>
+                </div>
+              )}
+
+              {!isLoadingThread && thread && thread.replies.length > 0 && (
+                <div className="mt-5 border-t border-border pt-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
+                    Conversation ({thread.replies.length + 1} messages)
+                  </p>
+                  <ol className="mt-2 flex flex-col gap-2">
+                    {[thread.root, ...thread.replies].map((message) => {
+                      const isCurrent = row.id === message.interaction_id;
+                      const messageMeta = metaFor(message.interaction_type);
+                      return (
+                        <li
+                          key={message.interaction_id}
+                          className={`rounded-md2 border px-3 py-2 text-xs ${
+                            isCurrent
+                              ? "border-accent/40 bg-accent/5"
+                              : "border-border bg-canvas/60"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="flex items-center gap-1.5 font-medium text-slate-800">
+                              <span>{messageMeta.icon}</span> {messageMeta.label}
+                              {isCurrent && <Badge tone="accent">Viewing</Badge>}
+                            </span>
+                            <span className="flex-none text-[10px] text-muted">
+                              {formatDateTime(message.created_at)}
+                            </span>
+                          </div>
+                          <p className="mt-1 truncate text-slate-600">{summarize(message)}</p>
+                        </li>
+                      );
+                    })}
+                  </ol>
+                </div>
+              )}
 
               {(fields.from || fields.to || fields.subject) && (
                 <div className="mt-5 border-t border-border pt-4">

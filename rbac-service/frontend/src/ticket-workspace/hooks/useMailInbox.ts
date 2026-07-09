@@ -19,7 +19,7 @@ import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
-import type { ClientResponse, DraftItem, InboxItem, InboxView, MailFolder, SentItem } from "@tw/types";
+import type { ClientResponse, DraftItem, InboxItem, InboxResponse, InboxView, MailFolder, SentItem } from "@tw/types";
 
 const SUPERVISOR_ROLES = ["Site Lead", "Super Admin"];
 
@@ -204,17 +204,25 @@ export function useMailInbox() {
       const clientId = clientFilter === "ALL" ? undefined : clientFilter;
       const scope = isSupervisor ? "all" : undefined;
 
-      const [pending, replied, ticketed, archived, snoozed, sent, drafts, clientList, folderList] = await Promise.all([
-        getInbox("pending", { clientId }),
-        getInbox("replied", { clientId }),
-        getInbox("ticketed", { clientId }),
-        getInbox("archived", { clientId }),
-        getInbox("snoozed", { clientId }),
-        getSent(),
-        getDrafts(),
-        listClients(),
-        listMailFolders(),
-      ]);
+      // The supervisor-only "all" view used to be a second sequential
+      // stage after this batch resolved — folded in here (as a no-op
+      // resolved promise for non-supervisors) so every base view is
+      // one single round-trip stage regardless of role.
+      const [pending, replied, ticketed, archived, snoozed, sent, drafts, clientList, folderList, all] =
+        await Promise.all([
+          getInbox("pending", { clientId }),
+          getInbox("replied", { clientId }),
+          getInbox("ticketed", { clientId }),
+          getInbox("archived", { clientId }),
+          getInbox("snoozed", { clientId }),
+          getSent(),
+          getDrafts(),
+          listClients(),
+          listMailFolders(),
+          isSupervisor
+            ? getInbox("all", { clientId, scope: "all" })
+            : Promise.resolve<InboxResponse>({ total: 0, items: [] }),
+        ]);
 
       setSentItems(sent.items.map(sentItemToInboxItem));
       setDraftItems(drafts.items.map(draftItemToInboxItem));
@@ -225,13 +233,8 @@ export function useMailInbox() {
         ticketed: ticketed.items,
         archived: archived.items,
         snoozed: snoozed.items,
-        all: [],
+        all: isSupervisor ? all.items : [],
       };
-
-      if (isSupervisor) {
-        const all = await getInbox("all", { clientId, scope: "all" });
-        next.all = all.items;
-      }
 
       setRowsByTab(next);
       setClients(clientList);

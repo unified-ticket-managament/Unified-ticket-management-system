@@ -1,3 +1,4 @@
+import asyncio
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -142,31 +143,24 @@ class OpenEmailService:
                 ),
             )
 
-        attachments = []
-
-        if self.attachment_repository is not None and self.storage_service is not None:
-            raw_attachments = await self.attachment_repository.list_by_interaction_id(
-                interaction_id
-            )
-            attachments = await attachments_to_metadata(raw_attachments, self.storage_service)
-
-        replies = await self.interaction_repository.list_thread(interaction_id)
-
-        claimed_by_name = None
-        if self.user_repository is not None and interaction.claimed_by is not None:
-            claimer = await self.user_repository.get_by_id(interaction.claimed_by)
-            claimed_by_name = claimer.name if claimer is not None else None
-
-        account_manager_name = None
-        if (
-            self.client_repository is not None
-            and self.user_repository is not None
-            and interaction.client_id is not None
-        ):
-            client = await self.client_repository.get_by_id(interaction.client_id)
-            if client is not None:
-                manager = await self.user_repository.get_by_id(client.account_manager_id)
-                account_manager_name = manager.name if manager is not None else None
+        # None of these five reads depend on each other's results (the
+        # one that used to run last, _recommend_ticket, needs `replies`
+        # — so it stays a separate, later await instead of joining this
+        # batch) — running them concurrently instead of one at a time
+        # cuts this endpoint's round-trip count roughly in half.
+        (
+            replies,
+            attachments,
+            claimed_by_name,
+            account_manager_name,
+            draft_message,
+        ) = await asyncio.gather(
+            self.interaction_repository.list_thread(interaction_id),
+            self._fetch_attachments(interaction_id),
+            self._fetch_claimed_by_name(interaction.claimed_by),
+            self._fetch_account_manager_name(interaction.client_id),
+            self._fetch_draft_message(interaction, current_user),
+        )
 
         ticket_priority = None
         ticket_category = None
@@ -175,14 +169,6 @@ class OpenEmailService:
             ticket_priority = ticket.current_priority.value
             ticket_category = ticket.ticket_type
             ticket_status = ticket.current_status.value
-
-        draft_message = None
-        if current_user is not None and interaction.ticket_id is None:
-            draft = await self.interaction_repository.get_draft(
-                interaction.interaction_id, current_user.user_id
-            )
-            if draft is not None and isinstance(draft.payload, dict):
-                draft_message = draft.payload.get("message")
 
         recommended_ticket_id, recommended_ticket_reason = (
             await self._recommend_ticket(interaction, replies)
@@ -216,6 +202,48 @@ class OpenEmailService:
             recommended_ticket_id=recommended_ticket_id,
             recommended_ticket_reason=recommended_ticket_reason,
         )
+
+    async def _fetch_attachments(self, interaction_id: UUID) -> list:
+        if self.attachment_repository is None or self.storage_service is None:
+            return []
+
+        raw_attachments = await self.attachment_repository.list_by_interaction_id(
+            interaction_id
+        )
+        return await attachments_to_metadata(raw_attachments, self.storage_service)
+
+    async def _fetch_claimed_by_name(self, claimed_by: UUID | None) -> str | None:
+        if self.user_repository is None or claimed_by is None:
+            return None
+
+        claimer = await self.user_repository.get_by_id(claimed_by)
+        return claimer.name if claimer is not None else None
+
+    async def _fetch_account_manager_name(self, client_id: UUID | None) -> str | None:
+        if (
+            self.client_repository is None
+            or self.user_repository is None
+            or client_id is None
+        ):
+            return None
+
+        client = await self.client_repository.get_by_id(client_id)
+        if client is None:
+            return None
+
+        manager = await self.user_repository.get_by_id(client.account_manager_id)
+        return manager.name if manager is not None else None
+
+    async def _fetch_draft_message(self, interaction, current_user: User | None) -> str | None:
+        if current_user is None or interaction.ticket_id is not None:
+            return None
+
+        draft = await self.interaction_repository.get_draft(
+            interaction.interaction_id, current_user.user_id
+        )
+        if draft is not None and isinstance(draft.payload, dict):
+            return draft.payload.get("message")
+        return None
 
     async def _recommend_ticket(
         self,

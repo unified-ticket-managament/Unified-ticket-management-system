@@ -24,3 +24,15 @@ class AuditLogResponse(ORMBase):
     old_values: dict[str, Any] | None
     new_values: dict[str, Any] | None
     created_at: datetime
+
+
+class TicketAuditLogResponse(AuditLogResponse):
+    """
+    Same shape as AuditLogResponse, with the owning ticket's id/title
+    attached — used by the batched GET /tickets/audit-logs endpoint so
+    the Audit Log page doesn't have to zip ticket titles onto rows
+    itself after fetching each ticket's trail one at a time.
+    """
+
+    ticket_id: UUID
+    ticket_title: str

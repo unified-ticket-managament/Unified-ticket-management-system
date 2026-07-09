@@ -127,14 +127,16 @@ class EditAccessService:
     async def _to_response(
         self,
         edit_request: TicketEditAccessRequest,
+        names: dict[UUID, str] | None = None,
     ) -> EditAccessRequestResponse:
-        names = await self.user_repository.get_names_by_ids(
-            [
-                uid
-                for uid in (edit_request.requested_by, edit_request.reviewed_by)
-                if uid is not None
-            ]
-        )
+        if names is None:
+            names = await self.user_repository.get_names_by_ids(
+                [
+                    uid
+                    for uid in (edit_request.requested_by, edit_request.reviewed_by)
+                    if uid is not None
+                ]
+            )
 
         return EditAccessRequestResponse(
             request_id=edit_request.request_id,
@@ -354,4 +356,12 @@ class EditAccessService:
 
         requests = await self.edit_access_repository.list_by_ticket(ticket_id)
 
-        return [await self._to_response(r) for r in requests]
+        user_ids = {
+            uid
+            for r in requests
+            for uid in (r.requested_by, r.reviewed_by)
+            if uid is not None
+        }
+        names = await self.user_repository.get_names_by_ids(list(user_ids))
+
+        return [await self._to_response(r, names) for r in requests]

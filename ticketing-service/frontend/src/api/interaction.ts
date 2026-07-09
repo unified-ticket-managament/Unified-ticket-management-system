@@ -9,7 +9,9 @@ import type {
   PriorityChangeRequest,
   ReplyRequest,
   StatusChangeRequest,
+  ThreadResponse,
   TicketActionResponse,
+  TicketInteractionResponse,
 } from "@/types";
 
 // GET /tickets/{ticket_id}/interactions
@@ -18,6 +20,24 @@ export async function getTicketTimeline(
 ): Promise<InteractionResponse[]> {
   const { data } = await apiClient.get<InteractionResponse[]>(
     `/tickets/${ticketId}/interactions`
+  );
+  return data;
+}
+
+// GET /tickets/interactions — every interaction across every ticket
+// the caller can see, in one request, instead of GET /tickets
+// followed by one GET /tickets/{id}/interactions per ticket.
+export async function getAllTicketInteractions(): Promise<TicketInteractionResponse[]> {
+  const { data } = await apiClient.get<TicketInteractionResponse[]>("/tickets/interactions");
+  return data;
+}
+
+// GET /interactions/{interaction_id}/thread — the full conversation
+// (parent + every reply) for any id within it, so a single flattened
+// timeline row can be opened in its full thread context.
+export async function getInteractionThread(interactionId: string): Promise<ThreadResponse> {
+  const { data } = await apiClient.get<ThreadResponse>(
+    `/interactions/${interactionId}/thread`
   );
   return data;
 }

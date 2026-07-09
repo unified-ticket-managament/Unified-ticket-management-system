@@ -1,6 +1,7 @@
 # ticket_service.py
 
 
+import asyncio
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -8,12 +9,19 @@ from shared_models.models import User
 
 from app.enums import AuditEntityType, AuditEventType
 from app.models.ticket import Ticket
+from app.repositories.attachment_repository import AttachmentRepository
+from app.repositories.audit_log_repository import AuditLogRepository
 from app.repositories.client_repository import ClientRepository
+from app.repositories.interaction_repository import InteractionRepository
 from app.repositories.ticket_relation_repository import TicketRelationRepository
 from app.repositories.ticket_repository import (
     TicketRepository,
 )
 from app.repositories.user_repository import UserRepository
+from app.schemas.audit_log import TicketAuditLogResponse
+from app.schemas.interaction import TicketInteractionResponse
+from app.services.attachment_service import attachments_to_metadata
+from app.storage.base import StorageService
 from app.schemas.ticket import (
     RelatedTicketSummary,
     RelateTicketRequest,
@@ -42,11 +50,19 @@ class TicketService:
         user_repository: UserRepository,
         client_repository: ClientRepository | None = None,
         ticket_relation_repository: TicketRelationRepository | None = None,
+        audit_log_repository: AuditLogRepository | None = None,
+        interaction_repository: InteractionRepository | None = None,
+        attachment_repository: AttachmentRepository | None = None,
+        storage_service: StorageService | None = None,
     ):
         self.ticket_repository = ticket_repository
         self.user_repository = user_repository
         self.client_repository = client_repository
         self.ticket_relation_repository = ticket_relation_repository
+        self.audit_log_repository = audit_log_repository
+        self.interaction_repository = interaction_repository
+        self.attachment_repository = attachment_repository
+        self.storage_service = storage_service
 
     # ---------------------------------------------------------
     # Name Enrichment
@@ -76,12 +92,10 @@ class TicketService:
 
         client_names: dict[UUID, str] = {}
         if self.client_repository is not None:
-            for company_id in {
+            company_ids = {
                 t.client_company_id for t in tickets if t.client_company_id is not None
-            }:
-                client = await self.client_repository.get_by_id(company_id)
-                if client is not None:
-                    client_names[company_id] = client.name
+            }
+            client_names = await self.client_repository.get_names_by_ids(list(company_ids))
 
         for ticket in tickets:
             ticket.client_name = (
@@ -386,6 +400,155 @@ class TicketService:
         return [
             TicketResponse.model_validate(ticket)
             for ticket in tickets
+        ]
+
+    # ---------------------------------------------------------
+    # List Audit Logs Across Every Visible Ticket
+    # ---------------------------------------------------------
+
+    async def list_all_audit_logs(
+        self,
+        current_user: User,
+    ) -> list[TicketAuditLogResponse]:
+        """
+        Same visibility scoping as list_all, but returns every audit-
+        log row for every ticket in that scope in one query — the
+        Audit Log page used to call GET /tickets then one
+        GET /tickets/{id}/audit-logs per ticket (an N+1 HTTP pattern
+        repeated on every page load and every poll tick); this
+        collapses that to two requests total.
+        """
+
+        owned_client_ids = await self._resolve_owned_client_ids(current_user)
+        ticket_types = self._resolve_category_ticket_types(current_user)
+        tickets = await self.ticket_repository.list_all(
+            client_company_ids=owned_client_ids,
+            ticket_types=ticket_types,
+        )
+
+        if not tickets or self.audit_log_repository is None:
+            return []
+
+        titles = {ticket.ticket_id: ticket.title for ticket in tickets}
+        audit_logs = await self.audit_log_repository.list_by_ticket_ids(
+            list(titles.keys())
+        )
+
+        responses = []
+        for log in audit_logs:
+            if log.entity_type == AuditEntityType.TICKET:
+                ticket_id = log.entity_id
+            else:
+                ticket_id = UUID(str(log.new_values.get("ticket_id")))
+
+            responses.append(
+                TicketAuditLogResponse(
+                    audit_id=log.audit_id,
+                    entity_type=log.entity_type,
+                    entity_id=log.entity_id,
+                    event_type=log.event_type,
+                    actor_id=log.actor_id,
+                    actor_name=log.actor_name,
+                    actor_role=log.actor_role,
+                    old_values=log.old_values,
+                    new_values=log.new_values,
+                    created_at=log.created_at,
+                    ticket_id=ticket_id,
+                    ticket_title=titles.get(ticket_id, "Unknown"),
+                )
+            )
+
+        return responses
+
+    # ---------------------------------------------------------
+    # List Interactions Across Every Visible Ticket
+    # ---------------------------------------------------------
+
+    async def list_all_interactions(
+        self,
+        current_user: User,
+    ) -> list[TicketInteractionResponse]:
+        """
+        Same visibility scoping as list_all, but returns every
+        interaction across every visible ticket's timeline in one
+        query — the Interactions page used to call GET /tickets then
+        one GET /tickets/{id}/interactions per ticket (the same N+1
+        HTTP pattern list_all_audit_logs replaced for the Audit Log
+        page), which is what made that page slow to load.
+        """
+
+        owned_client_ids = await self._resolve_owned_client_ids(current_user)
+        ticket_types = self._resolve_category_ticket_types(current_user)
+        tickets = await self.ticket_repository.list_all(
+            client_company_ids=owned_client_ids,
+            ticket_types=ticket_types,
+        )
+
+        if not tickets or self.interaction_repository is None:
+            return []
+
+        await self._attach_names(tickets)
+        titles = {ticket.ticket_id: ticket.title for ticket in tickets}
+        client_names = {
+            ticket.ticket_id: ticket.client_company_name for ticket in tickets
+        }
+
+        interactions = await self.interaction_repository.list_by_ticket_ids(
+            list(titles.keys())
+        )
+
+        attachments_by_interaction: dict[UUID, list] = {}
+        if self.attachment_repository is not None and self.storage_service is not None:
+            interaction_ids = [i.interaction_id for i in interactions]
+            attachments_map = await self.attachment_repository.list_by_interaction_ids(
+                interaction_ids
+            )
+            interaction_ids_with_files = list(attachments_map.keys())
+            metadata_lists = await asyncio.gather(
+                *(
+                    attachments_to_metadata(attachments_map[iid], self.storage_service)
+                    for iid in interaction_ids_with_files
+                )
+            )
+            attachments_by_interaction = dict(zip(interaction_ids_with_files, metadata_lists))
+
+        performer_ids = [
+            interaction.performed_by
+            for interaction in interactions
+            if interaction.performed_by is not None
+        ]
+        names_by_id = await self.user_repository.get_names_by_ids(performer_ids)
+
+        return [
+            TicketInteractionResponse(
+                interaction_id=interaction.interaction_id,
+                ticket_id=interaction.ticket_id,
+                interaction_type=interaction.interaction_type,
+                status=interaction.status,
+                direction=interaction.direction,
+                performed_by=interaction.performed_by,
+                performed_by_name=(
+                    names_by_id.get(interaction.performed_by)
+                    if interaction.performed_by is not None
+                    else None
+                ),
+                payload=interaction.payload,
+                is_visible=interaction.is_visible,
+                removed_by=interaction.removed_by,
+                removed_at=interaction.removed_at,
+                message_id=interaction.message_id,
+                client_id=interaction.client_id,
+                parent_interaction_id=interaction.parent_interaction_id,
+                received_at=interaction.received_at,
+                created_at=interaction.created_at,
+                attachments=attachments_by_interaction.get(interaction.interaction_id) or [],
+                conversation_id=interaction.conversation_id,
+                in_reply_to_message_id=interaction.in_reply_to_message_id,
+                references=interaction.references or [],
+                ticket_title=titles.get(interaction.ticket_id, "Unknown"),
+                client_company_name=client_names.get(interaction.ticket_id),
+            )
+            for interaction in interactions
         ]
 
     # ---------------------------------------------------------

@@ -111,7 +111,7 @@ def ensure_agent_can_view_ticket(
 async def ensure_agent_can_act_on_ticket(
     ticket: Ticket,
     current_user: User,
-    edit_access_repository=None,
+    edit_access_repository=None,    
 ) -> None:
     """
     Working a ticket — replying, adding an internal note, changing

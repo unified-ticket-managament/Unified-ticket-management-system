@@ -7,8 +7,7 @@ import { Badge } from "@/components/common/Badge";
 import { Button } from "@/components/common/Button";
 import { EmptyState } from "@/components/common/EmptyState";
 import { SkeletonRows } from "@/components/common/Skeleton";
-import { listTickets } from "@/api/ticket";
-import { getTicketAuditLogs } from "@/api/auditLog";
+import { getAllTicketAuditLogs } from "@/api/auditLog";
 import { useAuthContext } from "@/context/AuthContext";
 import { useWorkflowContext } from "@/context/WorkflowContext";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -84,33 +83,29 @@ export function AuditLogPage() {
       try {
         // Same visibility scoping as every other cross-ticket view in
         // this app (Interactions page, Inbox): this agent's tickets
-        // plus anything still unassigned.
-        const tickets = await listTickets();
-        const perTicket = await Promise.all(
-          tickets.map(async (ticket) => {
-            const logs = await getTicketAuditLogs(ticket.ticket_id);
-            return logs.map<AuditRow>((log) => ({
-              auditId: log.audit_id,
-              createdAt: log.created_at,
-              entityType: log.entity_type,
-              eventType: log.event_type,
-              actorName: log.actor_name,
-              actorRole: log.actor_role,
-              ticketId: ticket.ticket_id,
-              ticketTitle: ticket.title,
-              oldValues: log.old_values,
-              newValues: log.new_values,
-            }));
-          })
-        );
+        // plus anything still unassigned. One request for every
+        // visible ticket's audit trail, instead of GET /tickets
+        // followed by one GET .../audit-logs per ticket.
+        const logs = await getAllTicketAuditLogs();
 
         // A newer load already started (agent switch, manual refresh,
         // or the next poll tick) — this response is stale, drop it
         // rather than overwriting fresher data with older data.
         if (requestId !== requestIdRef.current) return;
 
-        const merged = perTicket
-          .flat()
+        const merged = logs
+          .map<AuditRow>((log) => ({
+            auditId: log.audit_id,
+            createdAt: log.created_at,
+            entityType: log.entity_type,
+            eventType: log.event_type,
+            actorName: log.actor_name,
+            actorRole: log.actor_role,
+            ticketId: log.ticket_id,
+            ticketTitle: log.ticket_title,
+            oldValues: log.old_values,
+            newValues: log.new_values,
+          }))
           .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
         setRows(merged);
         setLoadError(null);

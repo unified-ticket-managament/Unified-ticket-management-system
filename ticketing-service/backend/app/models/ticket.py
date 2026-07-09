@@ -47,12 +47,14 @@ class Ticket(Base):
         UUID(as_uuid=True),
         ForeignKey("clients.client_id"),
         nullable=True,
+        index=True,
     )
 
     agent_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.user_id"),
         nullable=True,
+        index=True,
     )
 
     created_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -69,6 +71,7 @@ class Ticket(Base):
     ticket_type: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
+        index=True,
     )
 
     current_status: Mapped[TicketStatus] = mapped_column(
@@ -78,6 +81,7 @@ class Ticket(Base):
         ),
         default=TicketStatus.OPEN,
         nullable=False,
+        index=True,
     )
 
     current_priority: Mapped[TicketPriority] = mapped_column(
@@ -110,6 +114,7 @@ class Ticket(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
+        index=True,
     )
 
     updated_at: Mapped[datetime] = mapped_column(

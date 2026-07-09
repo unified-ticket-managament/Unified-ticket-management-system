@@ -58,6 +58,21 @@ class ClientRepository:
         )
         return list(result.scalars().all())
 
+    async def get_names_by_ids(self, client_ids: list[UUID]) -> dict[UUID, str]:
+        """
+        Batch-resolves client_id -> company name in one query — used
+        by TicketService._attach_names to enrich a page of tickets
+        without a get_by_id call per distinct client_company_id.
+        """
+
+        if not client_ids:
+            return {}
+
+        result = await self.db.execute(
+            select(Client.client_id, Client.name).where(Client.client_id.in_(client_ids))
+        )
+        return dict(result.all())
+
     async def list_client_ids_by_account_manager(
         self, account_manager_id: UUID
     ) -> list[UUID]:

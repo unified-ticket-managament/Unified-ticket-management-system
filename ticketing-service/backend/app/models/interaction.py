@@ -37,11 +37,13 @@ class Interaction(Base):
         UUID(as_uuid=True),
         ForeignKey("tickets.ticket_id"),
         nullable=True,
+        index=True,
     )
 
     interaction_type: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
+        index=True,
     )
 
     status: Mapped[InteractionStatus] = mapped_column(
@@ -51,6 +53,7 @@ class Interaction(Base):
         ),
         default=InteractionStatus.PENDING,
         nullable=False,
+        index=True,
     )
 
     direction: Mapped[InteractionDirection] = mapped_column(
@@ -65,6 +68,7 @@ class Interaction(Base):
         UUID(as_uuid=True),
         ForeignKey("users.user_id"),
         nullable=True,
+        index=True,
     )
 
     payload: Mapped[dict] = mapped_column(
@@ -77,6 +81,7 @@ class Interaction(Base):
         Boolean,
         default=True,
         nullable=False,
+        index=True,
     )
 
     removed_by: Mapped[uuid.UUID | None] = mapped_column(
@@ -99,6 +104,7 @@ class Interaction(Base):
         UUID(as_uuid=True),
         ForeignKey("users.user_id"),
         nullable=True,
+        index=True,
     )
 
     claimed_at: Mapped[datetime | None] = mapped_column(
@@ -123,6 +129,7 @@ class Interaction(Base):
         UUID(as_uuid=True),
         ForeignKey("mail_folders.folder_id"),
         nullable=True,
+        index=True,
     )
 
     # Set to hide this item from the "pending" view until this time,
@@ -133,6 +140,7 @@ class Interaction(Base):
     snoozed_until: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+        index=True,
     )
 
     # A saved-but-unsent reply — a normal REPLY/OUTBOUND row
@@ -161,6 +169,7 @@ class Interaction(Base):
         UUID(as_uuid=True),
         ForeignKey("clients.client_id"),
         nullable=True,
+        index=True,
     )
 
     # Self-referencing thread link: a reply or a follow-up email
@@ -171,6 +180,7 @@ class Interaction(Base):
         UUID(as_uuid=True),
         ForeignKey("interactions.interaction_id"),
         nullable=True,
+        index=True,
     )
 
     # Mailbox arrival time reported by the transport layer for
@@ -180,6 +190,7 @@ class Interaction(Base):
     received_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+        index=True,
     )
 
     # Graph-ready threading headers — real columns (not payload-only)
@@ -212,6 +223,7 @@ class Interaction(Base):
     DateTime(timezone=True),
     default=lambda: datetime.now(timezone.utc),
     nullable=False,
+    index=True,
     )
 
     # ------------------------

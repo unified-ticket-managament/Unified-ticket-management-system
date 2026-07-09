@@ -33,7 +33,7 @@ from app.schemas.attach_interaction import (
 from app.schemas.attachment import (
     AttachmentUploadResponse,
 )
-from app.schemas.audit_log import AuditLogResponse
+from app.schemas.audit_log import AuditLogResponse, TicketAuditLogResponse
 from app.schemas.edit_access import (
     EditAccessApproveRequest,
     EditAccessRejectRequest,
@@ -44,6 +44,7 @@ from app.schemas.interaction import (
     HideInteractionRequest,
     HideInteractionResponse,
     InteractionResponse,
+    TicketInteractionResponse,
 )
 from app.schemas.note import (
     InternalNoteCreate,
@@ -670,6 +671,86 @@ async def list_tickets(
     )
 
     return await service.list_all(current_user=current_user)
+
+
+# =========================================================
+# List Audit Logs Across Every Visible Ticket
+# =========================================================
+
+# NOTE: this static route must stay registered before the bare
+# GET "/{ticket_id}" below — {ticket_id} is an untyped path segment,
+# so a request to /tickets/audit-logs registered after it would match
+# {ticket_id}="audit-logs" first and 422 on UUID coercion instead of
+# ever reaching this route.
+@router.get(
+    "/audit-logs",
+    response_model=list[TicketAuditLogResponse],
+    status_code=status.HTTP_200_OK,
+)
+async def list_all_ticket_audit_logs(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns every audit-log row for every ticket the caller can see,
+    in one query — the same visibility scoping as GET /tickets. Used
+    by the Audit Log page instead of fetching the ticket list and then
+    each ticket's own audit trail one request at a time.
+    """
+
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+    audit_log_repository = AuditLogRepository(db)
+
+    service = TicketService(
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+        audit_log_repository=audit_log_repository,
+    )
+
+    return await service.list_all_audit_logs(current_user=current_user)
+
+
+# =========================================================
+# List Interactions Across Every Visible Ticket
+# =========================================================
+
+# Same static-route-before-{ticket_id} ordering requirement as
+# /audit-logs above.
+@router.get(
+    "/interactions",
+    response_model=list[TicketInteractionResponse],
+    status_code=status.HTTP_200_OK,
+)
+async def list_all_ticket_interactions(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns every interaction across every ticket the caller can see,
+    in one query — the same visibility scoping as GET /tickets. Used
+    by the Interactions page instead of fetching the ticket list and
+    then each ticket's own timeline one request at a time.
+    """
+
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+    interaction_repository = InteractionRepository(db)
+    attachment_repository = AttachmentRepository(db)
+
+    service = TicketService(
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+        interaction_repository=interaction_repository,
+        attachment_repository=attachment_repository,
+        storage_service=get_storage_service(),
+    )
+
+    return await service.list_all_interactions(current_user=current_user)
 
 
 # =========================================================
