@@ -42,7 +42,8 @@ export type MailViewKey = InboxView | "unassigned" | "mine" | "sent" | "drafts";
 // REPLY interaction's payload doesn't match.
 function sentItemToInboxItem(item: SentItem): InboxItem {
   return {
-    interaction_id: item.root_interaction_id ?? item.interaction_id,
+    interaction_id: item.interaction_id,
+    open_interaction_id: item.root_interaction_id ?? item.interaction_id,
     client_id: item.client_id,
     client_name: item.client_name,
     from_email: null,
@@ -73,7 +74,8 @@ function sentItemToInboxItem(item: SentItem): InboxItem {
 // thread root, not the draft row itself.
 function draftItemToInboxItem(item: DraftItem): InboxItem {
   return {
-    interaction_id: item.root_interaction_id ?? item.interaction_id,
+    interaction_id: item.interaction_id,
+    open_interaction_id: item.root_interaction_id ?? item.interaction_id,
     client_id: item.client_id,
     client_name: item.client_name,
     from_email: null,
@@ -484,8 +486,16 @@ export function useMailInbox() {
   );
 
   const unassigned = rowsByTab.pending.filter((item) => !item.claimed_by);
-  const mine = [...rowsByTab.pending, ...rowsByTab.replied].filter(
-    (item) => item.claimed_by === currentUser?.user_id
+  // De-duped by interaction_id: `pending` and `replied` are two
+  // independently-fetched arrays (parallel requests in refresh()), so
+  // an item whose status flips between those two fetches could
+  // otherwise land in both and duplicate here.
+  const mine = Array.from(
+    new Map(
+      [...rowsByTab.pending, ...rowsByTab.replied]
+        .filter((item) => item.claimed_by === currentUser?.user_id)
+        .map((item) => [item.interaction_id, item])
+    ).values()
   );
 
   const rowsByView: Record<MailViewKey, InboxItem[]> = {

@@ -114,7 +114,7 @@ export function MessageList({
   const filtered = useMemo(() => {
     let rows = items;
     if (priorityFilter !== "ALL") rows = rows.filter((item) => item.ticket_priority === priorityFilter);
-    if (unreadOnly) rows = rows.filter((item) => !openedIds.has(item.interaction_id));
+    if (unreadOnly) rows = rows.filter((item) => !openedIds.has(item.open_interaction_id ?? item.interaction_id));
     if (attachmentsOnly) rows = rows.filter((item) => item.has_attachments);
     if (categoryFilter !== "ALL") rows = rows.filter((item) => item.ticket_category === categoryFilter);
 
@@ -286,15 +286,16 @@ export function MessageList({
         ) : (
           <ul className="divide-y divide-border">
             {paged.map((item) => {
-              const isUnread = !openedIds.has(item.interaction_id);
+              const openId = item.open_interaction_id ?? item.interaction_id;
+              const isUnread = !openedIds.has(openId);
               const status = statusMeta(item);
-              const isOpening = openingId === item.interaction_id;
+              const isOpening = openingId === openId;
 
               return (
                 <li key={item.interaction_id}>
                   <button
                     type="button"
-                    onClick={() => onOpen(item.interaction_id)}
+                    onClick={() => onOpen(openId)}
                     disabled={isOpening}
                     className={cn(
                       "group flex w-full items-start gap-3 px-4 py-3 text-left transition-all duration-150 hover:z-[1] hover:-translate-y-0.5 hover:bg-muted/60 hover:shadow-sm",

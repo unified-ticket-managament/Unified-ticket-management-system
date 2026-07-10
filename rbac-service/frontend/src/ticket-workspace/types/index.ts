@@ -127,6 +127,12 @@ export type InboxScope = "mine" | "all";
 
 export interface InboxItem {
   interaction_id: string;
+  // Only set for Sent/Draft-derived rows, where clicking must open the
+  // thread ROOT rather than this row's own id (see sentItemToInboxItem/
+  // draftItemToInboxItem in useMailInbox.ts). Absent for every regular
+  // inbox row, where interaction_id already IS the thread root by
+  // construction (list_inbox only ever returns roots).
+  open_interaction_id?: string;
   client_id: string | null;
   client_name: string;
   from_email: string | null;
