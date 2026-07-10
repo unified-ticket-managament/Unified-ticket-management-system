@@ -116,6 +116,7 @@ export interface CurrentUser {
   role_id: string;
   is_active: boolean;
   permissions: string[];
+  scoped_permissions?: Record<string, string[]>;
 }
 
 // ==========================================================

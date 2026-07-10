@@ -60,6 +60,12 @@ function RequestCard({ request, footer }: { request: PermissionRequest; footer?:
 
         <p className="text-sm text-muted-foreground">{request.reason}</p>
 
+        {request.scope_ticket_id && (
+          <p className="text-xs text-muted-foreground">
+            Scoped to one specific ticket only — not this person's other tickets.
+          </p>
+        )}
+
         {request.status !== "PENDING" && (
           <div className="rounded-lg border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground">
             {request.reviewed_by_name && (
@@ -87,12 +93,16 @@ function RequestCard({ request, footer }: { request: PermissionRequest; footer?:
   );
 }
 
+const TICKET_SCOPED_PERMISSION = "ticket:editother_ticket";
+
 function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [permissionId, setPermissionId] = useState("");
   const [requestedRole, setRequestedRole] = useState("");
   const [reason, setReason] = useState("");
+  const [staffId, setStaffId] = useState("");
+  const [ticketId, setTicketId] = useState("");
 
   const permissionsQuery = useQuery({
     queryKey: ["permission-requests-eligible-permissions"],
@@ -100,10 +110,28 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
     enabled: open,
   });
 
+  const eligiblePermissions = permissionsQuery.data ?? [];
+  const selectedPermissionName = eligiblePermissions.find(
+    (p) => p.permission_id === permissionId
+  )?.permission_name;
+  const needsTicketScope = selectedPermissionName === TICKET_SCOPED_PERMISSION;
+
   const rolesQuery = useQuery({
     queryKey: ["permission-requests-eligible-roles", permissionId],
     queryFn: () => permissionRequestService.eligibleApproverRoles(permissionId),
     enabled: open && !!permissionId,
+  });
+
+  const staffOptionsQuery = useQuery({
+    queryKey: ["permission-requests-staff-options"],
+    queryFn: () => permissionRequestService.staffOptions(),
+    enabled: open && needsTicketScope,
+  });
+
+  const ticketOptionsQuery = useQuery({
+    queryKey: ["permission-requests-ticket-options", staffId],
+    queryFn: () => permissionRequestService.ticketOptions(staffId),
+    enabled: open && needsTicketScope && !!staffId,
   });
 
   useEffect(() => {
@@ -111,12 +139,20 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
       setPermissionId("");
       setRequestedRole("");
       setReason("");
+      setStaffId("");
+      setTicketId("");
     }
   }, [open]);
 
   useEffect(() => {
     setRequestedRole("");
+    setStaffId("");
+    setTicketId("");
   }, [permissionId]);
+
+  useEffect(() => {
+    setTicketId("");
+  }, [staffId]);
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -124,6 +160,7 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
         permission_id: permissionId,
         requested_role: requestedRole,
         reason: reason.trim(),
+        scope_ticket_id: needsTicketScope ? ticketId : undefined,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["permission-requests-mine"] });
@@ -139,9 +176,14 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
     },
   });
 
-  const eligiblePermissions = permissionsQuery.data ?? [];
   const eligibleRoles = rolesQuery.data ?? [];
-  const canSubmit = !!permissionId && !!requestedRole && reason.trim().length > 0;
+  const staffOptions = staffOptionsQuery.data ?? [];
+  const ticketOptions = ticketOptionsQuery.data ?? [];
+  const canSubmit =
+    !!permissionId &&
+    !!requestedRole &&
+    reason.trim().length > 0 &&
+    (!needsTicketScope || (!!staffId && !!ticketId));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -216,6 +258,70 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
               </p>
             )}
           </div>
+
+          {needsTicketScope && (
+            <>
+              <div className="space-y-2">
+                <Label>Select Staff</Label>
+                <Select value={staffId} onValueChange={setStaffId}>
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={
+                        staffOptionsQuery.isLoading
+                          ? "Loading teammates..."
+                          : staffOptionsQuery.isError
+                            ? "Failed to load teammates — try again"
+                            : staffOptions.length === 0
+                              ? "No teammates found"
+                              : "Select a teammate"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {staffOptions.map((s) => (
+                      <SelectItem key={s.user_id} value={s.user_id}>
+                        {s.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Only teammates who share your Team Lead are listed.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Select Ticket</Label>
+                <Select value={ticketId} onValueChange={setTicketId} disabled={!staffId}>
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={
+                        !staffId
+                          ? "Select a teammate first"
+                          : ticketOptionsQuery.isLoading
+                            ? "Loading tickets..."
+                            : ticketOptionsQuery.isError
+                              ? "Failed to load tickets — try again"
+                              : ticketOptions.length === 0
+                                ? "This teammate has no assigned tickets"
+                                : "Select a ticket"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ticketOptions.map((t) => (
+                      <SelectItem key={t.ticket_id} value={t.ticket_id}>
+                        {t.title} — {t.current_status}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Access is granted for this one ticket only, not this teammate's other tickets.
+                </p>
+              </div>
+            </>
+          )}
 
           <div className="space-y-2">
             <Label>Reason</Label>

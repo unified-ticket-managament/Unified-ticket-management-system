@@ -27,6 +27,7 @@ class CurrentUser(BaseModel):
     is_active: bool
     permissions: list[str]
     override_permissions: list[str] = []
+    scoped_permissions: dict[str, list[str]] = {}
 
 
 class ChangePasswordRequest(BaseModel):

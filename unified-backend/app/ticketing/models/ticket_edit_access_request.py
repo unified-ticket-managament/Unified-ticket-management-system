@@ -14,9 +14,9 @@ from app.ticketing.enums import EditAccessStatus
 class TicketEditAccessRequest(Base):
     """
     A request from an agent who isn't the ticket's assigned agent (and
-    doesn't hold the blanket ticket:edit_ticket permission) to work on
+    doesn't hold the blanket ticket:editother_ticket permission) to work on
     this one specific ticket alongside whoever else already can.
-    Reviewed by anyone who already holds ticket:edit_ticket for the
+    Reviewed by anyone who already holds ticket:editother_ticket for the
     ticket's scope (see access_control.ensure_can_review_edit_access).
 
     Approving sets status=APPROVED and optionally expires_at; the

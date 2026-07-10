@@ -63,7 +63,8 @@ DEFAULT_PERMISSIONS = [
     ("ticket:change_category", "Change what type of issue a ticket is filed under"),
     ("ticket:change_sla", "Adjust the response/resolution time target on a ticket"),
     ("ticket:reply", "Reply to tickets and add internal notes"),
-    ("ticket:edit_ticket", "Edit any ticket in scope, even if not the assigned agent — lets more than one person work the same ticket"),
+    ("ticket:editown_ticket", "Edit tickets assigned to yourself"),
+    ("ticket:editother_ticket", "Edit tickets assigned to other agents — lets more than one person work the same ticket"),
     ("ticket:update_status", "Change ticket status"),
     ("ticket:reopen", "Reopen a closed ticket"),
     ("ticket:escalate", "Flag a ticket as needing attention from someone more senior"),
@@ -116,7 +117,8 @@ DEFAULT_ROLES = {
         # Ticket — everything except deep system configuration.
         "ticket:create", "ticket:view_own", "ticket:view_unassigned", "ticket:view_others",
         "ticket:assign", "ticket:transfer", "ticket:change_priority", "ticket:change_category",
-        "ticket:change_sla", "ticket:update_status", "ticket:reply", "ticket:edit_ticket",
+        "ticket:change_sla", "ticket:update_status", "ticket:reply",
+        "ticket:editown_ticket", "ticket:editother_ticket",
         "ticket:reopen", "ticket:escalate", "ticket:manage_attachments", "ticket:hide_interaction",
         "ticket:view_audit_trail", "ticket:view_global_audit_log", "ticket:view_dashboard_kpis",
         "ticket:manage_agents", "ticket:manage_roles_permissions",
@@ -130,7 +132,8 @@ DEFAULT_ROLES = {
         "communication:view_assigned", "communication:reply_internal", "communication:forward",
         "communication:view_timeline",
         "ticket:view_own", "ticket:view_unassigned", "ticket:view_others", "ticket:assign",
-        "ticket:transfer", "ticket:update_status", "ticket:reply", "ticket:edit_ticket",
+        "ticket:transfer", "ticket:update_status", "ticket:reply",
+        "ticket:editown_ticket", "ticket:editother_ticket",
         "ticket:escalate", "ticket:manage_attachments", "ticket:hide_interaction",
         "ticket:view_audit_trail", "ticket:view_global_audit_log", "ticket:view_dashboard_kpis",
         "user:view", "user:update",
@@ -139,6 +142,7 @@ DEFAULT_ROLES = {
     "Staff": [
         "communication:reply_internal",
         "ticket:view_own", "ticket:update_status", "ticket:reply", "ticket:manage_attachments",
+        "ticket:editown_ticket",
         "ticket:hide_interaction", "ticket:view_audit_trail", "ticket:view_dashboard_kpis",
         "user:view",
     ],
@@ -385,7 +389,21 @@ LEGACY_NAME_FIXES = {
 # referencing them are revoked first, then the Permission rows
 # themselves are deleted, so no orphaned role_permissions row can
 # reference a permission_id that no longer exists.
-DEPRECATED_PERMISSIONS = ["ticket:bulk_reassign", "ticket:configure_routing"]
+DEPRECATED_PERMISSIONS = [
+    "ticket:bulk_reassign",
+    "ticket:configure_routing",
+    # Replaced by ticket:editown_ticket + ticket:editother_ticket (see
+    # DEFAULT_PERMISSIONS above) — the old single permission conflated
+    # "can work my own ticket" with "can work someone else's", which
+    # made it impossible to grant a Staff member scoped access to one
+    # specific teammate's ticket without also handing them blanket
+    # access to every ticket in scope. Deleting the row cascades to any
+    # role_permissions/user_permission_overrides/permission_requests
+    # rows still referencing it (ondelete="CASCADE" on each FK) — fine
+    # for this dev database, but re-grant anything real before running
+    # this against data that matters.
+    "ticket:edit_ticket",
+]
 
 # Specific (role, permission) grants that existed under the old
 # capability matrix but were deliberately downgraded to override-only

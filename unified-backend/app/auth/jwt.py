@@ -28,6 +28,7 @@ class JWTManager:
         email: str,
         role: str,
         permissions: list[str],
+        scoped_permissions: dict[str, list[str]] | None = None,
         expires_delta: timedelta | None = None,
     ) -> str:
 
@@ -44,6 +45,14 @@ class JWTManager:
             "email": email,
             "role": role,
             "permissions": permissions,
+            # Ticket-scoped grants (e.g. editother_ticket approved for
+            # one specific ticket) — deliberately a separate claim from
+            # `permissions` rather than folded into it, so a flat
+            # membership check (has_permission) can never mistake "holds
+            # this permission for exactly one ticket" for "holds it
+            # everywhere". Optional/defaulted so a caller that hasn't
+            # been updated yet still gets a valid token.
+            "scoped_permissions": scoped_permissions or {},
             "type": "access",
             "exp": expire,
         }

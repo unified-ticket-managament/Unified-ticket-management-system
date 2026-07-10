@@ -29,12 +29,12 @@ from app.ticketing.services.access_control import (
     ensure_agent_can_view_ticket,
     ensure_can_review_edit_access,
     ensure_ticket_not_closed,
-    has_permission,
+    has_permission_for_ticket,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
 from app.notifications.service import NotificationService, NotificationType
 
-# Roles that hold ticket:edit_ticket by default (see rbac-service's
+# Roles that hold ticket:editother_ticket by default (see rbac-service's
 # seed.py DEFAULT_ROLES) — Super Admin/Site Lead/Account Manager are
 # unrestricted reviewers; Team Lead is further scoped to its own
 # category, matching ensure_can_review_edit_access's own view+permission
@@ -50,7 +50,7 @@ class EditAccessService:
     """
     Business logic for the per-ticket edit-access request/approve/
     reject workflow — letting someone who isn't the assigned agent
-    (and doesn't already hold ticket:edit_ticket) work one specific
+    (and doesn't already hold ticket:editother_ticket) work one specific
     ticket, once someone who does hold it approves. Every transition
     is recorded twice: on the ticket's own Interaction timeline (the
     "personal"/business record agents read day to day) and in the
@@ -76,7 +76,7 @@ class EditAccessService:
         """
         Every user who could approve/reject an edit-access request for
         this ticket — mirrors ensure_can_review_edit_access's own gate
-        (view access + ticket:edit_ticket) rather than re-deriving a
+        (view access + ticket:editother_ticket) rather than re-deriving a
         different notion of "reviewer".
         """
 
@@ -115,7 +115,9 @@ class EditAccessService:
         if ticket.agent_id == current_user.user_id:
             return True
 
-        if has_permission(current_user, "ticket:edit_ticket"):
+        if has_permission_for_ticket(
+            current_user, "ticket:editother_ticket", ticket.ticket_id
+        ):
             return True
 
         return await self.edit_access_repository.has_active_grant(

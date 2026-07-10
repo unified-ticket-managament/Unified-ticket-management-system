@@ -28,13 +28,17 @@ class PermissionResolverService:
     async def get_effective_permissions(
         self,
         user: User,
-    ) -> tuple[list[str], list[str]]:
+    ) -> tuple[list[str], list[str], dict[str, list[str]]]:
         """
-        Returns (all_effective_permission_names, override_only_names),
-        both sorted. override_only_names is always a subset of
-        all_effective_permission_names — it exists so callers can tell
-        which of a user's permissions came from a personal grant rather
-        than their role, without a second query.
+        Returns (all_effective_permission_names, override_only_names,
+        scoped_permissions). The first two are sorted lists, same as
+        before scoped overrides existed; override_only_names is always
+        a subset of all_effective_permission_names. scoped_permissions
+        maps a permission name to the list of ticket ids (as strings)
+        it's been granted for — these are deliberately excluded from
+        the first two return values, since a ticket-scoped override
+        must never read as "holds this permission everywhere" to a
+        flat membership check like has_permission.
         """
 
         role_permissions = (
@@ -49,11 +53,22 @@ class PermissionResolverService:
                 user.user_id
             )
         )
-        override_names = {
-            o.permission.permission_name for o in active_overrides
+
+        global_override_names = {
+            o.permission.permission_name
+            for o in active_overrides
+            if o.scope_ticket_id is None
         }
 
-        override_only_names = sorted(override_names - role_names)
-        all_names = sorted(role_names | override_names)
+        scoped_permissions: dict[str, list[str]] = {}
+        for o in active_overrides:
+            if o.scope_ticket_id is None:
+                continue
+            scoped_permissions.setdefault(o.permission.permission_name, []).append(
+                str(o.scope_ticket_id)
+            )
 
-        return all_names, override_only_names
+        override_only_names = sorted(global_override_names - role_names)
+        all_names = sorted(role_names | global_override_names)
+
+        return all_names, override_only_names, scoped_permissions

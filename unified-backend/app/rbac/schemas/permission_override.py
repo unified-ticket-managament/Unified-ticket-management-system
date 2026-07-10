@@ -8,6 +8,7 @@ class GrantOverrideRequest(BaseModel):
     permission_id: UUID
     reason: str | None = None
     expires_at: datetime | None = None
+    scope_ticket_id: UUID | None = None
 
     @field_validator("expires_at")
     @classmethod
@@ -28,6 +29,7 @@ class PermissionOverrideResponse(BaseModel):
     expires_at: datetime | None
     revoked_at: datetime | None
     revoked_by: UUID | None
+    scope_ticket_id: UUID | None = None
     is_active: bool
 
     model_config = ConfigDict(from_attributes=True)

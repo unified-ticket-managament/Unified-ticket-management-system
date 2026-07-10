@@ -55,12 +55,20 @@ class PermissionOverrideRepository(BaseRepository):
         self,
         user_id: UUID,
         permission_id: UUID,
+        scope_ticket_id: UUID | None = None,
     ) -> UserPermissionOverride | None:
+        """
+        `scope_ticket_id=None` matches an active *global* grant only —
+        matches the active-override-uniqueness index, which treats a
+        global grant and a per-ticket grant for the same user+
+        permission as distinct rows.
+        """
 
         result = await self.db.execute(
             select(UserPermissionOverride).where(
                 UserPermissionOverride.user_id == user_id,
                 UserPermissionOverride.permission_id == permission_id,
+                UserPermissionOverride.scope_ticket_id == scope_ticket_id,
                 UserPermissionOverride.revoked_at.is_(None),
             )
         )

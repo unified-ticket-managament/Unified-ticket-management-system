@@ -20,10 +20,15 @@ import {
   uploadAttachment,
 } from "@tw/api/interaction";
 import { listAgents } from "@tw/api/agent";
-import { transferTicketAgent } from "@tw/api/ticket";
+import { listEditAccessRequests, transferTicketAgent } from "@tw/api/ticket";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
-import type { AgentSummary, TicketPriority, TicketStatus } from "@tw/types";
+import type {
+  AgentSummary,
+  EditAccessRequestResponse,
+  TicketPriority,
+  TicketStatus,
+} from "@tw/types";
 import type { ComposerMode } from "@tw/components/ticket/TicketComposer";
 
 const STATUSES: TicketStatus[] = [
@@ -94,6 +99,7 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [newAgentId, setNewAgentId] = useState("");
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [editAccessRequests, setEditAccessRequests] = useState<EditAccessRequestResponse[]>([]);
 
   const { run: runStatus, isLoading: isStatusLoading } = useApiAction(changeTicketStatus, {
     successMessage: "Ticket status changed.",
@@ -110,6 +116,7 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
     successMessage: (res) =>
       `${res.attachments.length} file${res.attachments.length === 1 ? "" : "s"} uploaded.`,
   });
+  const { run: runListEditAccess } = useApiAction(listEditAccessRequests);
 
   useEffect(() => {
     if (!activeTicket) return;
@@ -120,6 +127,14 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
       .then(setAgents)
       .catch(() => setAgents([]));
   }, [activeTicket?.ticket_id, activeTicket?.ticket_type]);
+
+  useEffect(() => {
+    if (!activeTicket) return;
+    runListEditAccess(activeTicket.ticket_id).then((result) => {
+      if (result) setEditAccessRequests(result);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTicket?.ticket_id]);
 
   if (!activeTicket) return null;
 
@@ -135,6 +150,30 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   // Closed is terminal for every action except Change Status itself —
   // that's the only way to reopen a closed ticket, so it stays enabled.
   const isTicketClosed = activeTicket.current_status === "CLOSED";
+
+  // Mirrors the backend's ensure_agent_can_act_on_ticket: the assigned
+  // agent, anyone holding ticket:editother_ticket (globally or scoped to
+  // this specific ticket via scoped_permissions), or anyone with an
+  // active, approved Edit Access grant on this ticket. Reply/Internal
+  // Note/Change Status/Upload Attachment all disable-in-place (not hide)
+  // when none of these hold, so a user without access sees why rather
+  // than discovering it via a rejected request after typing a reply.
+  const isOwnTicket = activeTicket.agent_id === currentUser?.user_id;
+  const hasEditOther =
+    (currentUser?.permissions ?? []).includes("ticket:editother_ticket") ||
+    (currentUser?.scoped_permissions?.["ticket:editother_ticket"] ?? []).includes(
+      activeTicket.ticket_id
+    );
+  const hasActiveEditAccessGrant = editAccessRequests.some(
+    (r) =>
+      r.requested_by === currentUser?.user_id &&
+      r.status === "APPROVED" &&
+      (!r.expires_at || new Date(r.expires_at) > new Date())
+  );
+  const canActOnTicket = isOwnTicket || hasEditOther || hasActiveEditAccessGrant;
+  const noAccessTitle = canActOnTicket
+    ? undefined
+    : "You don't have access to work on this ticket";
 
   function closeModal() {
     setModal(null);
@@ -187,20 +226,24 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
             icon={<Send size={16} />}
             label="Reply"
             tone="accent"
-            disabled={isTicketClosed}
+            disabled={isTicketClosed || !canActOnTicket}
+            title={noAccessTitle}
             onClick={() => onOpenComposer("reply")}
           />
           <ActionTile
             icon={<MessageSquareText size={16} />}
             label="Internal Note"
             tone="warning"
-            disabled={isTicketClosed}
+            disabled={isTicketClosed || !canActOnTicket}
+            title={noAccessTitle}
             onClick={() => onOpenComposer("note")}
           />
           <ActionTile
             icon={<Settings2 size={16} />}
             label="Change Status"
             tone="info"
+            disabled={!canActOnTicket}
+            title={noAccessTitle}
             onClick={() => setModal("status")}
           />
           <ActionTile
@@ -224,7 +267,8 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
             icon={<Paperclip size={16} />}
             label="Upload Attachment"
             tone="default"
-            disabled={isTicketClosed}
+            disabled={isTicketClosed || !canActOnTicket}
+            title={noAccessTitle}
             onClick={() => setModal("attachment")}
           />
         </div>

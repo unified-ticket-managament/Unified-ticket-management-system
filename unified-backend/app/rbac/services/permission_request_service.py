@@ -64,6 +64,7 @@ class PermissionRequestService:
         permission_resolver: PermissionResolverService,
         audit_log_service: AuditLogService,
         notification_service: NotificationService | None = None,
+        ticket_repository=None,
     ):
         self.user_repository = user_repository
         self.role_repository = role_repository
@@ -74,6 +75,64 @@ class PermissionRequestService:
         self.permission_resolver = permission_resolver
         self.audit_log_service = audit_log_service
         self.notification_service = notification_service
+        # Optional: only needed for the ticket-scoped editother_ticket
+        # flow (validating/looking up a teammate's ticket) — a plain
+        # attribute rather than a typed import so this rbac-domain
+        # service doesn't have to hard-depend on ticketing's module at
+        # import time; the router wires the real TicketRepository in.
+        self.ticket_repository = ticket_repository
+
+    # --------------------------------------------------
+    # Ticket-scoped editother_ticket helpers
+    # --------------------------------------------------
+
+    async def _is_teammate(self, requester: User, other_user_id: UUID) -> bool:
+        """
+        "Teammate" = another Staff member reporting to the same Team
+        Lead — mirrors the org-chart's own teamlead_id grouping rather
+        than inventing a new notion of team.
+        """
+
+        if requester.teamlead_id is None or other_user_id == requester.user_id:
+            return False
+
+        other = await self.user_repository.get_by_id(other_user_id)
+
+        return other is not None and other.teamlead_id == requester.teamlead_id
+
+    async def list_teammate_staff(self, current_user: User) -> list[User]:
+        """Other Staff sharing current_user's Team Lead — populates the
+        "Select Staff" dropdown for a ticket-scoped editother_ticket
+        request. Empty for anyone with no teamlead_id (including
+        anyone who isn't Staff)."""
+
+        if current_user.teamlead_id is None:
+            return []
+
+        teammates = await self.user_repository.get_by_teamlead(current_user.teamlead_id)
+
+        return [u for u in teammates if u.user_id != current_user.user_id]
+
+    async def list_teammate_tickets(self, current_user: User, staff_id: UUID) -> list:
+        """Tickets assigned to a specific teammate — populates the
+        "Select Ticket" dropdown, once a teammate is chosen. Raises if
+        staff_id isn't actually a teammate, so this can't be used to
+        probe an arbitrary user's ticket list."""
+
+        if not await self._is_teammate(current_user, staff_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only see tickets for your own teammates.",
+            )
+
+        if self.ticket_repository is None:
+            return []
+
+        # list_all(agent_id=...) deliberately also returns unassigned
+        # tickets (shared-pool visibility) — not wanted here, so filter
+        # to tickets actually assigned to this teammate.
+        tickets = await self.ticket_repository.list_all(agent_id=staff_id)
+        return [t for t in tickets if t.agent_id == staff_id]
 
     async def _resolve_approver_ids(
         self, requester_id: UUID, eligible_roles: list[str]
@@ -117,7 +176,7 @@ class PermissionRequestService:
         all_permissions, _ = await self.permission_repository.get_all(
             page=1, page_size=1000
         )
-        effective, _ = await self.permission_resolver.get_effective_permissions(
+        effective, _, _ = await self.permission_resolver.get_effective_permissions(
             current_user
         )
         effective_set = set(effective)
@@ -180,7 +239,7 @@ class PermissionRequestService:
                 detail="Permission not found.",
             )
 
-        effective, _ = await self.permission_resolver.get_effective_permissions(
+        effective, _, _ = await self.permission_resolver.get_effective_permissions(
             current_user
         )
 
@@ -189,6 +248,21 @@ class PermissionRequestService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="You already have this permission.",
             )
+
+        if request.scope_ticket_id is not None:
+            ticket = await self.ticket_repository.get_by_id(request.scope_ticket_id)
+            if ticket is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Ticket not found.",
+                )
+            if ticket.agent_id is None or not await self._is_teammate(
+                current_user, ticket.agent_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="You can only request access to a teammate's ticket.",
+                )
 
         eligible_roles = await self.list_eligible_approver_roles(request.permission_id)
 
@@ -217,6 +291,7 @@ class PermissionRequestService:
                 permission_id=request.permission_id,
                 requested_role=request.requested_role,
                 reason=request.reason,
+                scope_ticket_id=request.scope_ticket_id,
             )
         )
 
@@ -231,6 +306,11 @@ class PermissionRequestService:
                         "permission_name": permission.permission_name,
                         "requested_role": request.requested_role,
                         "reason": request.reason,
+                        "scope_ticket_id": (
+                            str(request.scope_ticket_id)
+                            if request.scope_ticket_id
+                            else None
+                        ),
                     }
                 ),
             )
@@ -354,6 +434,7 @@ class PermissionRequestService:
                 permission_id=permission_request.permission_id,
                 reason=permission_request.reason,
                 expires_at=request.expires_at,
+                scope_ticket_id=permission_request.scope_ticket_id,
             ),
         )
 
@@ -505,6 +586,7 @@ class PermissionRequestService:
             permission_name=permission_request.permission.permission_name,
             requested_role=permission_request.requested_role,
             reason=permission_request.reason,
+            scope_ticket_id=permission_request.scope_ticket_id,
             status=permission_request.status,
             reviewed_by=permission_request.reviewed_by,
             reviewed_by_name=reviewer.name if reviewer is not None else None,

@@ -821,7 +821,7 @@ async def request_edit_access(
 ):
     """
     Asks to work a ticket you're not the assigned agent on and don't
-    already hold ticket:edit_ticket for. Reviewed by anyone who does.
+    already hold ticket:editother_ticket for. Reviewed by anyone who does.
     """
 
     service = _get_edit_access_service(db)
@@ -863,7 +863,7 @@ async def approve_edit_access(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Approves a pending edit-access request. Requires ticket:edit_ticket
+    Approves a pending edit-access request. Requires ticket:editother_ticket
     yourself — the same permission this grants the requester.
     """
 

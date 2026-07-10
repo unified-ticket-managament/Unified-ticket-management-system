@@ -5,13 +5,20 @@ description: Add a new value to one of this repo's Python enums that map to a na
 
 # Add a value to a Postgres-backed enum
 
-Several enums in `backend/app/enums/` are mapped via SQLAlchemy's `SQLEnum(EnumClass, name="...")`,
+**Path note**: this repo's own `backend/` is now an empty shell — the real code lives at
+`unified-backend/app/ticketing/`, and this domain's migrations at
+`unified-backend/alembic_ticketing/` (run `alembic -c alembic_ticketing/alembic.ini ...` from
+`unified-backend/`, not `alembic ...` from `backend/`). See the root `CLAUDE.md`'s "Backend
+unification" section.
+
+Several enums in `app/enums/` are mapped via SQLAlchemy's `SQLEnum(EnumClass, name="...")`,
 which creates (and constrains column values to) a **native Postgres ENUM type** — not just a
 CHECK constraint on a string column. Editing the Python `Enum` class is necessary but not
 sufficient: the deployed database's enum type must be widened too, or the first `INSERT`/`UPDATE`
 using the new value crashes with `InvalidTextRepresentationError`.
 
-Enums that need this treatment (grep `SQLEnum(` under `backend/app/models/` to confirm the
+Enums that need this treatment (grep `SQLEnum(` under `app/models/` — i.e.
+`unified-backend/app/ticketing/models/` — to confirm the
 current list): `AuditEventType` → `audit_event_type_enum`, `AuditEntityType` →
 `audit_entity_type_enum`, `ActorRole` → `audit_actor_role_enum`, `TicketStatus` →
 `ticket_status_enum`, `TicketPriority` → `ticket_priority_enum`, `InteractionStatus` →
@@ -25,11 +32,14 @@ that would turn a migration-free constant list into one that needs this skill ev
 
 ## Steps
 
-1. Add the new member to the Python enum class in `backend/app/enums/*.py`.
+1. Add the new member to the Python enum class in `app/enums/*.py` (i.e.
+   `unified-backend/app/ticketing/enums/*.py`).
 2. Find the enum's Postgres type name from its model's `SQLEnum(..., name="...")` call.
-3. Create a new Alembic migration in `backend/alembic/versions/` with `down_revision` set to
-   the current head (check via `alembic history` or `alembic heads`). Copy
-   `backend/alembic/versions/7a2d4e9f1c3b_add_email_received_audit_event_type.py` verbatim as
+3. Create a new Alembic migration in `alembic_ticketing/versions/` (i.e.
+   `unified-backend/alembic_ticketing/versions/`) with `down_revision` set to
+   the current head (check via `alembic -c alembic_ticketing/alembic.ini history` or `heads`,
+   run from `unified-backend/`). Copy
+   `alembic_ticketing/versions/7a2d4e9f1c3b_add_email_received_audit_event_type.py` verbatim as
    the template:
 
    ```python

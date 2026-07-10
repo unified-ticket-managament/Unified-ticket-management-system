@@ -81,6 +81,11 @@ async def get_current_user(
     # issued before this claim existed still decodes safely.
     user.permissions = payload.get("permissions") or []
 
+    # Ticket-scoped grants (permission_name -> list of ticket id
+    # strings) — see app/auth/jwt.py's create_access_token. Same
+    # degrade-safe default as .permissions above.
+    user.scoped_permissions = payload.get("scoped_permissions") or {}
+
     return user
 
 

@@ -74,8 +74,8 @@ class AuthService:
                 detail="Invalid email or password.",
             )
 
-        permissions, _ = await self.permission_resolver.get_effective_permissions(
-            user
+        permissions, _, scoped_permissions = (
+            await self.permission_resolver.get_effective_permissions(user)
         )
 
         access_token = create_access_token(
@@ -83,6 +83,7 @@ class AuthService:
             email=user.email,
             role=user.role.name,
             permissions=permissions,
+            scoped_permissions=scoped_permissions,
         )
 
         refresh_token = create_refresh_token(
@@ -144,8 +145,8 @@ class AuthService:
                 detail="User account is inactive.",
             )
 
-        permissions, _ = await self.permission_resolver.get_effective_permissions(
-            user
+        permissions, _, scoped_permissions = (
+            await self.permission_resolver.get_effective_permissions(user)
         )
 
         access_token = create_access_token(
@@ -153,6 +154,7 @@ class AuthService:
             email=user.email,
             role=user.role.name,
             permissions=permissions,
+            scoped_permissions=scoped_permissions,
         )
 
         refresh_token = create_refresh_token(
@@ -173,7 +175,7 @@ class AuthService:
         user: User,
     ) -> CurrentUser:
 
-        permissions, override_permissions = (
+        permissions, override_permissions, scoped_permissions = (
             await self.permission_resolver.get_effective_permissions(user)
         )
 
@@ -186,6 +188,7 @@ class AuthService:
             is_active=user.is_active,
             permissions=permissions,
             override_permissions=override_permissions,
+            scoped_permissions=scoped_permissions,
         )
     
     # --------------------------------------------------

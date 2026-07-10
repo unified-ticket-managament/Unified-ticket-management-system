@@ -77,6 +77,16 @@ class PermissionRequest(Base):
         nullable=False,
     )
 
+    # Set only for a request that should grant the permission for one
+    # specific ticket rather than everywhere (see the matching column
+    # on UserPermissionOverride) — carried through to the resulting
+    # override unchanged at approval time. Plain UUID, no FK, for the
+    # same cross-domain-migration reason documented there.
+    scope_ticket_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
+    )
+
     status: Mapped[str] = mapped_column(
         String(20),
         default=PermissionRequestStatus.PENDING,

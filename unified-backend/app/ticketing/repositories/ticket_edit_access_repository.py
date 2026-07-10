@@ -53,7 +53,7 @@ class TicketEditAccessRequestRepository:
         True if this user has an approved, not-yet-expired edit-access
         grant on this ticket — the bypass check
         ensure_agent_can_act_on_ticket consults for anyone who isn't
-        the assigned agent and doesn't hold ticket:edit_ticket outright.
+        the assigned agent and doesn't hold ticket:editother_ticket outright.
         """
 
         now = utc_now()
