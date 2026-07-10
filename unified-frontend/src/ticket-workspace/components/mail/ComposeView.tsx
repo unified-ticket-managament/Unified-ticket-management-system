@@ -139,7 +139,7 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card">
+    <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card">
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-card px-5 py-4">
         <h2 className="text-[16px] font-semibold text-foreground">New Message</h2>
         <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" onClick={handleDiscard}>
@@ -148,7 +148,7 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-5 py-4">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {!canCompose ? (
           <div className="rounded-lg border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
             {currentUser

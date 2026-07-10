@@ -492,7 +492,7 @@ export function MessageDetailsView({
   const claimDisabled = isTicketed || Boolean(email.claimed_by) || email.status !== "PENDING" || isClaiming;
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card">
+    <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card">
       {/* Message Header — subject, priority/category badges, received date/time */}
       <div className="border-b border-border px-5 py-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -509,7 +509,7 @@ export function MessageDetailsView({
       </div>
 
       {/* Sender Information / Attachments / Tags / Message Body — the only scrolling region */}
-      <div className="flex-1 overflow-y-auto px-5 py-4">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <div className="flex flex-col gap-5">
           <section>
             <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">

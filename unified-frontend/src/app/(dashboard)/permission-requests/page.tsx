@@ -484,7 +484,13 @@ export default function PermissionRequestsPage() {
 
   return (
     <div className="space-y-6">
-      <Breadcrumbs items={[{ label: "Dashboard", href: "/dashboard" }, { label: "Permission Requests" }]} />
+      <Breadcrumbs
+        items={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "Users", href: "/users" },
+          { label: "Permission Requests" },
+        ]}
+      />
 
       <PageHeader
         title="Permission Requests"

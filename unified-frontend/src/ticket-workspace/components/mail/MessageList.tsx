@@ -143,7 +143,7 @@ export function MessageList({
   ].filter(Boolean).length;
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card">
+    <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card lg:h-[calc(100vh-7rem)]">
       <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-card px-4 py-3.5">
         <div className="min-w-0">
           <h2 className="truncate text-[15px] font-semibold text-foreground">{folderLabel}</h2>
@@ -272,7 +272,7 @@ export function MessageList({
         </DropdownMenu>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading && paged.length === 0 ? (
           <div className="flex flex-col gap-2 p-4">
             {Array.from({ length: 6 }).map((_, i) => (

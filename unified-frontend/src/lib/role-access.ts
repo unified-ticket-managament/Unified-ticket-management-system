@@ -82,24 +82,40 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
 // "Audit Logs" (the RBAC-level log, distinct from "Ticket Audit Log")
 // is included for Super Admin and Site Lead, the two roles with the
 // `audit:view` permission by default.
+// "Roles" was removed from every role's sidebar (moved to a button on the
+// Users page instead — see ROLES_BUTTON_VISIBLE_ROLES in
+// app/(dashboard)/users/page.tsx, which intentionally mirrors the same
+// three roles that used to have this nav item).
+//
+// "Permission Requests" was removed from the sidebar for every role that
+// has Users-page access (Super Admin/Site Lead/Account Manager/Team
+// Lead/Staff — exactly USERS_PAGE_ALLOWED_ROLES in
+// app/(dashboard)/users/page.tsx) and replaced with a button on that page
+// instead (visible unconditionally there, since the page itself already
+// gates who can reach it). Viewer deliberately KEEPS this nav item — it
+// has no Users-page access at all, so removing its only entry point would
+// strand it with no way to reach a page that's still meant to be usable
+// (the module/page/backend are otherwise completely untouched).
+//
+// "Profile" and "Settings" were removed from every role's sidebar — both
+// pages/routes are untouched and still reachable from the navbar's own
+// avatar dropdown (top-navbar.tsx's "My Account" menu links to
+// /profile and /settings directly), this only removes the duplicate
+// sidebar entry point.
 const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
   [ROLE_NAMES.SUPER_ADMIN]: [
     "Dashboard",
     "Users",
-    "Roles",
     "Audit Logs",
     "Reports",
     "Inbox",
     "Interactions",
     "Tickets",
     "Ticket Audit Log",
-    "Permission Requests",
-    "Settings",
   ],
   [ROLE_NAMES.SITE_LEAD]: [
     "Dashboard",
     "Users",
-    "Roles",
     "Audit Logs",
     "Reports",
     "Create Dummy Mail",
@@ -107,13 +123,11 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Interactions",
     "Tickets",
     "Ticket Audit Log",
-    "Permission Requests",
-    "Settings",
   ],
-  [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Roles", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Permission Requests", "Profile", "Settings"],
-  [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Permission Requests", "Profile", "Settings"],
-  [ROLE_NAMES.STAFF]: ["Dashboard", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Permission Requests", "Profile", "Settings"],
-  [ROLE_NAMES.VIEWER]: ["Dashboard", "Permission Requests", "Profile", "Settings"],
+  [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
+  [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
+  [ROLE_NAMES.STAFF]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
+  [ROLE_NAMES.VIEWER]: ["Dashboard", "Permission Requests"],
 };
 
 const DEFAULT_NAV_ITEMS: NavItemKey[] = ["Dashboard", "Profile", "Settings"];

@@ -94,7 +94,7 @@ export function MailSidebar({
   }
 
   return (
-    <aside className="flex h-full w-full flex-col gap-4 overflow-y-auto rounded-xl border border-border bg-card p-3 shadow-card lg:w-[248px] lg:flex-none">
+    <aside className="flex w-full flex-col gap-4 overflow-y-auto rounded-xl border border-border bg-card p-3 shadow-card lg:sticky lg:top-0 lg:h-[calc(100vh-7rem)] lg:w-[248px] lg:flex-none">
       <Button
         onClick={onCompose}
         data-active={isComposing}

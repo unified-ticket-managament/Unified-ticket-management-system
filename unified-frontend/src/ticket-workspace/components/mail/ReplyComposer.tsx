@@ -214,9 +214,7 @@ export function ReplyComposer({
           <Input value={toEmail ?? ""} readOnly className="h-8 flex-1 bg-muted/30 text-xs" />
         </div>
         <div className="flex items-center gap-2 text-xs">
-          <span className="w-10 flex-none text-muted-foreground">
-            Cc<span className="text-destructive">*</span>
-          </span>
+          <span className="w-10 flex-none text-muted-foreground">Cc</span>
           <Input
             value={cc}
             onChange={(e) => setCc(e.target.value)}

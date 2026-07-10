@@ -97,11 +97,18 @@ export function InboxPage() {
   return (
     <AppLayout>
       {/* No title passed above (per Mail spec: no page header) — the
-          top navbar (h-16) + main's own p-6 padding (3rem) are the
-          only other chrome, so the panel fills the rest of the
-          viewport exactly instead of leaving a gap where the removed
-          header used to be. */}
-      <div className="flex flex-col gap-4 lg:h-[calc(100vh-7rem)] lg:flex-row">
+          top navbar (h-16) + main's own p-6 padding are the only other
+          chrome, so no gap is left where the removed header used to be.
+          Scrolling model: MailSidebar and MessageList each own a fixed,
+          viewport-relative height (calc(100vh-7rem), matching that
+          chrome) with their own internal scrollbar — the sidebar via
+          `sticky` so it stays put as the page scrolls, the list via a
+          plain bounded height. MessageDetailsView/ComposeView are
+          deliberately left auto-height (no clamp) so a long thread or a
+          tall reply composer just grows the page instead of being
+          clipped — `main`'s own overflow-y-auto (shared with every
+          other page) is what scrolls in that case. */}
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
         <MailSidebar
           activeView={mail.activeView}
           isComposing={composeOpen}

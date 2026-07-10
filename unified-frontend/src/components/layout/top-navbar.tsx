@@ -1,24 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import {
-  BarChart3,
-  Bell,
-  ClipboardList,
-  History,
-  LayoutDashboard,
-  LogOut,
-  Search,
-  Settings as SettingsIcon,
-  Shield,
-  Ticket,
-  User,
-  UserCircle,
-  Users,
-} from "lucide-react";
+import { Bell, LogOut, Settings as SettingsIcon, User, X } from "lucide-react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -31,10 +17,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
 import { useTranslation } from "@/hooks/use-translation";
 import { cn } from "@/lib/utils";
-import { getVisibleNavItems, NAV_ITEM_TRANSLATION_KEY, NavItemKey } from "@/lib/role-access";
 import {
   getNotifications,
   markAllNotificationsRead,
@@ -43,18 +27,6 @@ import {
 } from "@/lib/notifications-api";
 import { authService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
-
-const SEARCH_INDEX: { title: NavItemKey; href: string; icon: typeof LayoutDashboard }[] = [
-  { title: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-  { title: "All Tickets", href: "/all-tickets", icon: Ticket },
-  { title: "My Tickets", href: "/my-tickets", icon: ClipboardList },
-  { title: "Users", href: "/users", icon: Users },
-  { title: "Roles", href: "/roles", icon: Shield },
-  { title: "Audit Logs", href: "/audit-logs", icon: History },
-  { title: "Reports", href: "/reports", icon: BarChart3 },
-  { title: "Profile", href: "/profile", icon: UserCircle },
-  { title: "Settings", href: "/settings", icon: SettingsIcon },
-];
 
 const NOTIFICATION_POLL_INTERVAL_MS = 30_000;
 
@@ -76,31 +48,15 @@ export function TopNavbar() {
   const user = useAuthStore((state) => state.user);
   const logout = useAuthStore((state) => state.logout);
 
-  const [query, setQuery] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
-  const searchRef = useRef<HTMLDivElement>(null);
 
-  const visibleNavItems = useMemo(() => getVisibleNavItems(user?.role), [user?.role]);
-
-  const results = useMemo(() => {
-    if (!query.trim()) return [];
-    const q = query.toLowerCase();
-    return SEARCH_INDEX.filter(
-      (item) => visibleNavItems.includes(item.title) && item.title.toLowerCase().includes(q)
-    );
-  }, [query, visibleNavItems]);
-
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
-        setSearchOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+  // The backend has no delete/dismiss endpoint for notifications, so
+  // "Clear All" / removing a single notification is a client-side-only
+  // dismissal — ids the user has removed are tracked here and filtered
+  // back out of every subsequent poll, otherwise a dismissed
+  // notification would silently reappear on the next 30s refresh.
+  const dismissedIdsRef = useRef<Set<string>>(new Set());
 
   // Polls the real notification feed — silent on failure, same
   // rationale as this app's other polling (the bell just keeps
@@ -113,8 +69,11 @@ export function TopNavbar() {
       try {
         const data = await getNotifications();
         if (!cancelled) {
-          setNotifications(data.items);
-          setUnreadCount(data.unread_count);
+          const visible = data.items.filter(
+            (n) => !dismissedIdsRef.current.has(n.notification_id)
+          );
+          setNotifications(visible);
+          setUnreadCount(visible.filter((n) => !n.is_read).length);
         }
       } catch {
         // ignore
@@ -134,12 +93,6 @@ export function TopNavbar() {
     authService.logout();
     logout();
     router.push("/login");
-  };
-
-  const handleSelectResult = (href: string) => {
-    router.push(href);
-    setQuery("");
-    setSearchOpen(false);
   };
 
   const markAllRead = async () => {
@@ -169,66 +122,23 @@ export function TopNavbar() {
     }
   };
 
+  const removeNotification = (notificationId: string) => {
+    dismissedIdsRef.current.add(notificationId);
+    const target = notifications.find((n) => n.notification_id === notificationId);
+    setNotifications((prev) => prev.filter((n) => n.notification_id !== notificationId));
+    if (target && !target.is_read) {
+      setUnreadCount((count) => Math.max(0, count - 1));
+    }
+  };
+
+  const clearAllNotifications = () => {
+    notifications.forEach((n) => dismissedIdsRef.current.add(n.notification_id));
+    setNotifications([]);
+    setUnreadCount(0);
+  };
+
   return (
-    <header className="sticky top-0 z-30 hidden h-16 items-center justify-between border-b border-border bg-background/95 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:flex print:hidden">
-      {/* Left Section */}
-      <div className="flex items-center gap-4">
-        <div ref={searchRef} className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-
-          <Input
-            placeholder={t("navbar.searchPlaceholder")}
-            className="w-72 pl-9"
-            value={query}
-            onFocus={() => setSearchOpen(true)}
-            onChange={(e) => {
-              setQuery(e.target.value);
-              setSearchOpen(true);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && results.length > 0) {
-                handleSelectResult(results[0].href);
-              }
-              if (e.key === "Escape") {
-                setSearchOpen(false);
-              }
-            }}
-          />
-
-          <AnimatePresence>
-            {searchOpen && query.trim() && (
-              <motion.div
-                initial={{ opacity: 0, y: -4 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -4 }}
-                transition={{ duration: 0.15 }}
-                className="absolute left-0 top-full z-40 mt-2 w-72 overflow-hidden rounded-xl border border-border bg-popover p-1.5 shadow-lg"
-              >
-                {results.length === 0 ? (
-                  <p className="px-3 py-4 text-center text-sm text-muted-foreground">
-                    {t("navbar.noResults", { query })}
-                  </p>
-                ) : (
-                  results.map((item) => {
-                    const Icon = item.icon;
-                    return (
-                      <button
-                        key={item.href}
-                        onClick={() => handleSelectResult(item.href)}
-                        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-accent hover:text-accent-foreground"
-                      >
-                        <Icon className="h-4 w-4 text-muted-foreground" />
-                        {t(NAV_ITEM_TRANSLATION_KEY[item.title])}
-                      </button>
-                    );
-                  })
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </div>
-
+    <header className="sticky top-0 z-30 hidden h-16 items-center justify-end border-b border-border bg-background/95 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/80 lg:flex print:hidden">
       {/* Right Section */}
       <div className="flex items-center gap-2">
         <DropdownMenu>
@@ -246,46 +156,79 @@ export function TopNavbar() {
           <DropdownMenuContent align="end" className="w-80">
             <div className="flex items-center justify-between px-2 py-1.5">
               <DropdownMenuLabel className="p-0 text-sm">{t("navbar.notifications")}</DropdownMenuLabel>
-              {unreadCount > 0 && (
-                <button
-                  onClick={markAllRead}
-                  className="text-xs font-medium text-primary hover:underline"
-                >
-                  {t("navbar.markAllRead")}
-                </button>
-              )}
+              <div className="flex items-center gap-3">
+                {unreadCount > 0 && (
+                  <button
+                    onClick={markAllRead}
+                    className="text-xs font-medium text-primary hover:underline"
+                  >
+                    {t("navbar.markAllRead")}
+                  </button>
+                )}
+                {notifications.length > 0 && (
+                  <button
+                    onClick={clearAllNotifications}
+                    className="text-xs font-medium text-muted-foreground hover:text-destructive hover:underline"
+                  >
+                    {t("navbar.clearAll")}
+                  </button>
+                )}
+              </div>
             </div>
             <DropdownMenuSeparator />
 
             {notifications.length === 0 ? (
               <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-                {t("navbar.allCaughtUp")}
+                {t("navbar.noNotifications")}
               </p>
             ) : (
               <div className="max-h-96 overflow-y-auto">
-                {notifications.map((notification) => (
-                  <DropdownMenuItem
-                    key={notification.notification_id}
-                    className="flex-col items-start gap-0.5 py-2"
-                    onClick={() => handleNotificationClick(notification)}
-                  >
-                    <div className="flex w-full items-center gap-2">
-                      <span
-                        className={cn(
-                          "h-1.5 w-1.5 shrink-0 rounded-full",
-                          notification.is_read ? "bg-transparent" : "bg-primary"
-                        )}
-                      />
-                      <span className="text-sm font-medium">{notification.title}</span>
-                    </div>
-                    <p className="pl-3.5 text-xs text-muted-foreground">
-                      {notification.message}
-                    </p>
-                    <p className="pl-3.5 text-[11px] text-muted-foreground/70">
-                      {timeAgo(notification.created_at)}
-                    </p>
-                  </DropdownMenuItem>
-                ))}
+                <AnimatePresence initial={false}>
+                  {notifications.map((notification) => (
+                    <motion.div
+                      key={notification.notification_id}
+                      layout
+                      initial={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0, marginTop: 0, marginBottom: 0 }}
+                      transition={{ duration: 0.2, ease: "easeInOut" }}
+                      className="overflow-hidden"
+                    >
+                      <DropdownMenuItem
+                        className="relative flex-col items-start gap-0.5 py-2 pr-8"
+                        onClick={() => handleNotificationClick(notification)}
+                      >
+                        <button
+                          type="button"
+                          aria-label="Remove notification"
+                          onPointerDown={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            removeNotification(notification.notification_id);
+                          }}
+                          className="absolute right-2 top-2 rounded p-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-destructive"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                        <div className="flex w-full items-center gap-2">
+                          <span
+                            className={cn(
+                              "h-1.5 w-1.5 shrink-0 rounded-full",
+                              notification.is_read ? "bg-transparent" : "bg-primary"
+                            )}
+                          />
+                          <span className="text-sm font-medium">{notification.title}</span>
+                        </div>
+                        <p className="pl-3.5 text-xs text-muted-foreground">
+                          {notification.message}
+                        </p>
+                        <p className="pl-3.5 text-[11px] text-muted-foreground/70">
+                          {timeAgo(notification.created_at)}
+                        </p>
+                      </DropdownMenuItem>
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
               </div>
             )}
           </DropdownMenuContent>

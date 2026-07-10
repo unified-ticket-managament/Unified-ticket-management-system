@@ -15,12 +15,15 @@ import {
   CheckCircle2,
   Download,
   Eye,
+  KeyRound,
   Pencil,
   Plus,
   Search,
+  Shield,
   Trash2,
   UserCog,
 } from "lucide-react";
+import Link from "next/link";
 import { useMemo, useState } from "react";
 
 import {
@@ -68,6 +71,16 @@ const USERS_PAGE_ALLOWED_ROLES: string[] = [
   ROLE_NAMES.SITE_LEAD,
   ROLE_NAMES.ACCOUNT_MANAGER,
   ROLE_NAMES.TEAM_LEAD,
+  ROLE_NAMES.STAFF,
+];
+
+// Same three roles that used to see "Roles" as its own sidebar item (see
+// NAV_ITEMS_BY_ROLE in lib/role-access.ts) — the entry point moved to this
+// button, but who can reach it is unchanged.
+const ROLES_BUTTON_VISIBLE_ROLES: string[] = [
+  ROLE_NAMES.SUPER_ADMIN,
+  ROLE_NAMES.SITE_LEAD,
+  ROLE_NAMES.ACCOUNT_MANAGER,
 ];
 
 export default function UsersPage() {
@@ -139,6 +152,8 @@ export default function UsersPage() {
         return rows.filter((user) => user.manager_id === currentUser.user_id);
       case ROLE_NAMES.TEAM_LEAD:
         return rows.filter((user) => user.teamlead_id === currentUser.user_id);
+      case ROLE_NAMES.STAFF:
+        return rows.filter((user) => user.user_id === currentUser.user_id);
       default:
         return [];
     }
@@ -389,18 +404,34 @@ export default function UsersPage() {
         title={t("users.title")}
         description={`${t("users.description")}${usersQuery.data ? ` — ${hierarchyRows.length} ${t("common.total")}` : ""}.`}
         action={
-          <PermissionGuard permission="user:create">
-            <Button
-              className="gap-2"
-              onClick={() => {
-                setEditingUser(null);
-                setFormOpen(true);
-              }}
-            >
-              <Plus className="h-4 w-4" />
-              {t("users.createButton")}
+          <div className="flex items-center gap-2">
+            <Button variant="outline" className="gap-2" asChild>
+              <Link href="/permission-requests">
+                <KeyRound className="h-4 w-4" />
+                Permission Requests
+              </Link>
             </Button>
-          </PermissionGuard>
+            {currentUser && ROLES_BUTTON_VISIBLE_ROLES.includes(currentUser.role) && (
+              <Button variant="outline" className="gap-2" asChild>
+                <Link href="/roles">
+                  <Shield className="h-4 w-4" />
+                  Roles
+                </Link>
+              </Button>
+            )}
+            <PermissionGuard permission="user:create">
+              <Button
+                className="gap-2"
+                onClick={() => {
+                  setEditingUser(null);
+                  setFormOpen(true);
+                }}
+              >
+                <Plus className="h-4 w-4" />
+                {t("users.createButton")}
+              </Button>
+            </PermissionGuard>
+          </div>
         }
       />
 

@@ -31,7 +31,9 @@ const en = {
   "navbar.noResults": 'No pages match "{query}"',
   "navbar.notifications": "Notifications",
   "navbar.markAllRead": "Mark all as read",
+  "navbar.clearAll": "Clear All",
   "navbar.allCaughtUp": "You're all caught up.",
+  "navbar.noNotifications": "No Notifications",
   "navbar.myAccount": "My Account",
 
   "dashboard.welcome": "Welcome, {name}",
@@ -126,7 +128,9 @@ const es: Record<keyof typeof en, string> = {
   "navbar.noResults": 'Ninguna página coincide con "{query}"',
   "navbar.notifications": "Notificaciones",
   "navbar.markAllRead": "Marcar todo como leído",
+  "navbar.clearAll": "Borrar todo",
   "navbar.allCaughtUp": "Ya estás al día.",
+  "navbar.noNotifications": "Sin notificaciones",
   "navbar.myAccount": "Mi cuenta",
 
   "dashboard.welcome": "Bienvenido, {name}",
@@ -221,7 +225,9 @@ const fr: Record<keyof typeof en, string> = {
   "navbar.noResults": 'Aucune page ne correspond à "{query}"',
   "navbar.notifications": "Notifications",
   "navbar.markAllRead": "Tout marquer comme lu",
+  "navbar.clearAll": "Tout effacer",
   "navbar.allCaughtUp": "Vous êtes à jour.",
+  "navbar.noNotifications": "Aucune notification",
   "navbar.myAccount": "Mon compte",
 
   "dashboard.welcome": "Bienvenue, {name}",
@@ -316,7 +322,9 @@ const de: Record<keyof typeof en, string> = {
   "navbar.noResults": 'Keine Seiten entsprechen "{query}"',
   "navbar.notifications": "Benachrichtigungen",
   "navbar.markAllRead": "Alle als gelesen markieren",
+  "navbar.clearAll": "Alle löschen",
   "navbar.allCaughtUp": "Sie sind auf dem neuesten Stand.",
+  "navbar.noNotifications": "Keine Benachrichtigungen",
   "navbar.myAccount": "Mein Konto",
 
   "dashboard.welcome": "Willkommen, {name}",

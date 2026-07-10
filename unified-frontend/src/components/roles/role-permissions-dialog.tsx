@@ -9,6 +9,7 @@ import {
   ClipboardList,
   KeyRound,
   Loader2,
+  Mail,
   Shield,
   Ticket,
   Users as UsersIcon,
@@ -34,30 +35,48 @@ import { permissionService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 import { Permission, Role } from "@/types";
 
-const GROUP_LABELS: Record<string, string> = {
+// Exported so any other read-only display of the same permission catalog
+// (e.g. the Roles page's master-detail Permissions panel) groups and
+// labels modules identically instead of re-deriving its own mapping.
+export const GROUP_LABELS: Record<string, string> = {
   user: "Users",
   role: "Roles",
   permission: "Permissions",
   audit: "Audit Logs",
   dashboard: "Dashboard",
   ticket: "Ticket Management",
+  communication: "Mail",
 };
 
-const GROUP_ICONS: Record<string, typeof Shield> = {
+export const GROUP_ICONS: Record<string, typeof Shield> = {
   user: UsersIcon,
   role: Shield,
   permission: KeyRound,
   audit: ClipboardList,
   dashboard: Briefcase,
   ticket: Ticket,
+  communication: Mail,
 };
 
-function groupLabel(key: string) {
+export function groupLabel(key: string) {
   return GROUP_LABELS[key] ?? key.charAt(0).toUpperCase() + key.slice(1);
 }
 
-function groupIcon(key: string) {
+export function groupIcon(key: string) {
   return GROUP_ICONS[key] ?? KeyRound;
+}
+
+// Same module-grouping rule used to build the editable checklist below —
+// exported so a read-only consumer never has to re-implement it.
+export function groupPermissionsByModule(permissions: Permission[]): Array<[string, Permission[]]> {
+  const map = new Map<string, Permission[]>();
+  permissions.forEach((permission) => {
+    const [moduleKey] = permission.permission_name.split(":");
+    const key = moduleKey || "other";
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(permission);
+  });
+  return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
 }
 
 interface RolePermissionsDialogProps {
@@ -114,16 +133,7 @@ export function RolePermissionsDialog({ role, open, onOpenChange }: RolePermissi
 
   const allPermissions: Permission[] = permissionsQuery.data?.permissions ?? [];
 
-  const groups = useMemo(() => {
-    const map = new Map<string, Permission[]>();
-    allPermissions.forEach((permission) => {
-      const [moduleKey] = permission.permission_name.split(":");
-      const key = moduleKey || "other";
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(permission);
-    });
-    return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [allPermissions]);
+  const groups = useMemo(() => groupPermissionsByModule(allPermissions), [allPermissions]);
 
   const isDirty = useMemo(() => {
     if (selectedPermissionIds.size !== initialPermissionIds.size) return true;
