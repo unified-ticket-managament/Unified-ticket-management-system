@@ -15,6 +15,8 @@ This service is one half of a two-service monorepo (`Unified-ticket-management-s
 
 **This frontend has a second, embedded copy.** The entire `frontend/` tree (adapted, not just linked — not a build artifact) also lives at `rbac-service/frontend/src/ticket-workspace/` (imported via a `@tw/*` alias instead of `@/*`), mounted inside RBAC's own Next.js app as the landing experience for Staff/Team Lead/Account Manager (Super Admin, Site Lead, and Viewer instead see RBAC's own admin dashboards — see `rbac-service/CLAUDE.md`). The two copies are **not** kept in sync automatically — a change to a ticket page/component/API wrapper here (this standalone app) needs to be manually ported to the `rbac-service/frontend/src/ticket-workspace/` copy if it should also appear in the embedded experience, and vice versa. This is the single most common way to introduce a "works in one app, broken in the other" bug in this codebase — always grep the other tree for the same filename before considering a frontend change done.
 
+**A real, currently-standing example of this divergence**: the Mail rich-text composer (`components/mail/RichTextEditor.tsx`, built on `@tiptap/react`) exists **only** in the RBAC-embedded copy (`rbac-service/frontend/src/ticket-workspace/components/mail/`) — this standalone app has no `components/mail/` directory at all. Don't assume feature parity between the two copies without checking; this one was never ported back (or was embedded-only from the start) and hasn't been reconciled.
+
 ## The domain model (client → interaction → ticket)
 
 - **Clients** (`app/models/client.py`) are companies, not individual people — each one is onboarded with a dedicated shared inbox address (`inbox_email`, e.g. `abc@probeps.com`) and an owning **Account Manager** (`account_manager_id`, FK → `users`, `nullable=False`, validated at creation by `ClientService.create` to be an active Account Manager). Inbound email is resolved by matching `to_email` against `clients.inbox_email`, never by who sent it, and routing is always this 1:1 mapping — **never round-robin or least-busy-agent**, in the seed data or at runtime. `ClientResponse.account_manager_active` (computed in `ClientService`, backed by `UserRepository.get_active_account_manager_ids`) flags a "soft-orphaned" client — the FK still points at a real user, but that user's role changed (or they were deactivated) *after* the client was onboarded, and nothing revalidates that automatically. `EmailService.receive_email` logs a `logger.warning` when this happens but still ingests the email normally — never drop/bounce real customer mail over a stale mapping.
@@ -40,7 +42,6 @@ RBAC's actual roles are **Super Admin, Site Lead, Account Manager, Team Lead, St
 
 ## Commands
 
-<<<<<<< Updated upstream
 **Backend** (run from `../unified-backend/`, not `backend/` — see above):
 ```bash
 python -m venv .venv && .venv\Scripts\activate                            # Windows, at the monorepo root
@@ -50,7 +51,6 @@ uvicorn app.main:app --reload --port 8000                                 # http
 alembic -c alembic_ticketing/alembic.ini revision --autogenerate -m "message"   # new migration after an app/ticketing model change
 ```
 Or `bash scripts/start.sh` from `unified-backend/`, which runs both Alembic chains then starts uvicorn in one step. Requires `unified-backend/.env`: `DATABASE_URL` (async) + `ALEMBIC_DATABASE_URL` (sync, for Alembic), plus `JWT_SECRET_KEY`/`JWT_ALGORITHM` — see "Access control" below. `JWT_SECRET_KEY` has no default; the app fails fast at boot if it's unset. Before the backend merge this needed to be byte-identical to a *separate* RBAC `.env`'s value — now there's only one `.env` to get right.
-=======
 **Backend — this repo's `backend/` directory no longer runs on its own.** Its code was merged into the monorepo-root `unified-backend/` (as `app/ticketing/`, alongside RBAC's own `app/rbac/`) — see the root `CLAUDE.md`'s "Backend consolidation" section. Run it from there instead:
 ```bash
 cd ../unified-backend                                            # or unified-backend/ from the repo root
@@ -61,7 +61,6 @@ uvicorn app.main:app --reload                                     # http://127.0
 alembic -c alembic_ticketing/alembic.ini revision --autogenerate -m "message"
 ```
 Every route path is byte-identical to the old standalone `:8001` service (unprefixed, exactly as before) — only the port and process changed. Requires a single `.env` in `unified-backend/`: `DATABASE_URL` (async) + `ALEMBIC_DATABASE_URL` (sync, for Alembic), plus `JWT_SECRET_KEY`/`JWT_ALGORITHM` — no longer needs to match a *separate* RBAC `.env`, since there's only one file now. `JWT_SECRET_KEY` has no default; the app fails fast at boot if it's unset.
->>>>>>> Stashed changes
 
 **Settings are cached for the process lifetime** (`app/core/config.py`, `get_settings()` is `@lru_cache`d) and `uvicorn --reload` only restarts on Python file changes — editing `.env` while the server is already running does nothing until you kill and restart the process. If a config-dependent error (missing storage credentials, wrong JWT secret, etc.) persists after editing `.env`, restart the server before debugging further; don't assume the code is wrong.
 
@@ -74,11 +73,7 @@ npm run dev       # vite --host, http://localhost:5173
 npm run build     # tsc -b && vite build — this IS the type-check step, there's no separate `tsc --noEmit` script
 npm run preview
 ```
-<<<<<<< Updated upstream
-Requires `VITE_API_BASE_URL` and `VITE_RBAC_API_BASE_URL` in `frontend/.env` — see `frontend/.env.example`. Since the backend merge, both point at the **same** `unified-backend` process on the **same** port (e.g. both `http://localhost:8000`, one with `/api/v1` and one without — see root CLAUDE.md's "Backend unification" for which routes live where), not two different backends on two different ports like before. Login/refresh/`me` still go through the RBAC-prefixed base regardless; this frontend calls the unprefixed base for everything else.
-=======
 Requires `VITE_API_BASE_URL` (this service's routes — now `:8000`, unprefixed; **not** `:8001`, which hasn't existed since the backend merge — see the root `CLAUDE.md`) and `VITE_RBAC_API_BASE_URL` (RBAC's `/api/v1`, also `:8000/api/v1` now — same process) in `frontend/.env` — see `frontend/.env.example`. Login/refresh/`me` are RBAC's alone; this frontend calls RBAC directly for those and this backend for everything else.
->>>>>>> Stashed changes
 
 **Tests**: `backend/tests/*.py` exist but are currently empty placeholders, and `pytest` is not in `requirements.txt` — there is no working automated test suite yet. `backend/test_db.py` is a standalone manual DB-connectivity check (`python test_db.py`), not a pytest test. Verify changes by running the app and exercising the relevant endpoint/page (Swagger UI at `/docs`, or the frontend dev server) rather than assuming a test command exists.
 
