@@ -304,10 +304,17 @@ class InteractionRepository:
         self,
         interaction: Interaction,
         message: str,
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
     ) -> Interaction:
-        """Overwrites a draft's saved text in place — upsert's "update" half."""
+        """Overwrites a draft's saved text (and Cc/Bcc) in place — upsert's "update" half."""
 
-        interaction.payload = {**interaction.payload, "message": message}
+        interaction.payload = {
+            **interaction.payload,
+            "message": message,
+            "cc": cc if cc is not None else interaction.payload.get("cc", []),
+            "bcc": bcc if bcc is not None else interaction.payload.get("bcc", []),
+        }
 
         await self.db.flush()
         await self.db.refresh(interaction)

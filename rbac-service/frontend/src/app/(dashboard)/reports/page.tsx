@@ -27,9 +27,14 @@ import {
   getReportMetrics,
   getStaffPerformance,
   getTeamPerformance,
+  getTicketsForAccountManager,
+  getTicketsForStaff,
+  getTicketsForTeamLead,
   MONTHLY_TICKET_TREND,
 } from "@/lib/mock-tickets";
+import { ROLE_NAMES } from "@/lib/role-access";
 import { useMockTicketsStore } from "@/store/mock-tickets-store";
+import { useAuthStore } from "@/store/auth-store";
 
 function downloadBlob(content: string, filename: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType });
@@ -43,7 +48,27 @@ function downloadBlob(content: string, filename: string, mimeType: string) {
 
 export default function ReportsPage() {
   const { toast } = useToast();
-  const tickets = useMockTicketsStore((s) => s.tickets);
+  const currentUser = useAuthStore((s) => s.user);
+  const allTickets = useMockTicketsStore((s) => s.tickets);
+
+  // Same report layout for every role (per spec) — only which
+  // tickets feed it differs: Account Manager/Team Lead/Staff each see
+  // reports scoped to their own data (see the matching
+  // getTicketsForXxx helpers in lib/mock-tickets.ts); Super Admin/
+  // Site Lead/anyone else keep the unscoped, organization-wide set.
+  const tickets = useMemo(() => {
+    if (!currentUser) return allTickets;
+    switch (currentUser.role) {
+      case ROLE_NAMES.ACCOUNT_MANAGER:
+        return getTicketsForAccountManager(currentUser.user_id, allTickets);
+      case ROLE_NAMES.TEAM_LEAD:
+        return getTicketsForTeamLead(currentUser.user_id, allTickets);
+      case ROLE_NAMES.STAFF:
+        return getTicketsForStaff(currentUser.user_id, allTickets);
+      default:
+        return allTickets;
+    }
+  }, [allTickets, currentUser]);
 
   const metrics = useMemo(() => getReportMetrics(tickets), [tickets]);
   const byStatus = useMemo(() => getCountsByStatus(tickets), [tickets]);

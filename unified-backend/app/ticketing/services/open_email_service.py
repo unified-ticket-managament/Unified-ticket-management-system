@@ -153,13 +153,13 @@ class OpenEmailService:
             attachments,
             claimed_by_name,
             account_manager_name,
-            draft_message,
+            draft,
         ) = await asyncio.gather(
             self.interaction_repository.list_thread(interaction_id),
             self._fetch_attachments(interaction_id),
             self._fetch_claimed_by_name(interaction.claimed_by),
             self._fetch_account_manager_name(interaction.client_id),
-            self._fetch_draft_message(interaction, current_user),
+            self._fetch_draft(interaction, current_user),
         )
 
         ticket_priority = None
@@ -198,7 +198,10 @@ class OpenEmailService:
             tags=interaction.tags,
             folder_id=interaction.folder_id,
             snoozed_until=interaction.snoozed_until,
-            draft_message=draft_message,
+            draft_message=draft["message"],
+            draft_cc=draft["cc"],
+            draft_bcc=draft["bcc"],
+            draft_attachments=draft["attachments"],
             attachments=attachments,
             replies=[_reply_to_response(reply) for reply in replies],
             recommended_ticket_id=recommended_ticket_id,
@@ -236,16 +239,33 @@ class OpenEmailService:
         manager = await self.user_repository.get_by_id(client.account_manager_id)
         return manager.name if manager is not None else None
 
-    async def _fetch_draft_message(self, interaction, current_user: User | None) -> str | None:
+    async def _fetch_draft(self, interaction, current_user: User | None) -> dict:
+        """
+        The requesting user's own saved-but-unsent draft on this
+        thread, if any — message/Cc/Bcc plus any files already
+        uploaded against it, so the reply composer can fully resume
+        an in-progress draft (not just its text) when the thread is
+        reopened. Empty shape (never None) so the caller never needs
+        a null-check branch for "no draft" vs. "has a draft".
+        """
+
+        empty = {"message": None, "cc": [], "bcc": [], "attachments": []}
+
         if current_user is None or interaction.ticket_id is not None:
-            return None
+            return empty
 
         draft = await self.interaction_repository.get_draft(
             interaction.interaction_id, current_user.user_id
         )
-        if draft is not None and isinstance(draft.payload, dict):
-            return draft.payload.get("message")
-        return None
+        if draft is None or not isinstance(draft.payload, dict):
+            return empty
+
+        return {
+            "message": draft.payload.get("message"),
+            "cc": draft.payload.get("cc") or [],
+            "bcc": draft.payload.get("bcc") or [],
+            "attachments": await self._fetch_attachments(draft.interaction_id),
+        }
 
     async def _recommend_ticket(
         self,

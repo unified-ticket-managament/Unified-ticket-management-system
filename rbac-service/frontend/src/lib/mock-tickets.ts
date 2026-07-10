@@ -172,18 +172,21 @@ function buildTicket(index: number): MockTicket {
 
 export const MOCK_TICKETS: MockTicket[] = Array.from({ length: 54 }, (_, i) => buildTicket(i));
 
+// `bar` drives only the Dashboard/Reports chart fill (a monochrome blue
+// scale, per design) — `badge` is the semantic color still shown on the
+// Ticket pages (destructive/warning/etc.) and is deliberately untouched.
 export const PRIORITY_COLOR: Record<TicketPriority, { bar: string; badge: "destructive" | "warning" | "default" | "secondary" }> = {
-  Critical: { bar: "bg-destructive", badge: "destructive" },
-  High: { bar: "bg-warning", badge: "warning" },
-  Medium: { bar: "bg-primary", badge: "default" },
-  Low: { bar: "bg-slate-400", badge: "secondary" },
+  Critical: { bar: "bg-blue-600", badge: "destructive" },
+  High: { bar: "bg-blue-500", badge: "warning" },
+  Medium: { bar: "bg-blue-400", badge: "default" },
+  Low: { bar: "bg-blue-200", badge: "secondary" },
 };
 
 export const STATUS_COLOR: Record<TicketStatus, { bar: string; badge: "default" | "warning" | "success" | "secondary" }> = {
-  Open: { bar: "bg-primary", badge: "default" },
-  "In Progress": { bar: "bg-warning", badge: "warning" },
-  Resolved: { bar: "bg-success", badge: "success" },
-  Closed: { bar: "bg-slate-400", badge: "secondary" },
+  Open: { bar: "bg-blue-500", badge: "default" },
+  "In Progress": { bar: "bg-blue-400", badge: "warning" },
+  Resolved: { bar: "bg-blue-600", badge: "success" },
+  Closed: { bar: "bg-blue-200", badge: "secondary" },
 };
 
 export function getDashboardKpis(tickets: MockTicket[] = MOCK_TICKETS) {
@@ -215,12 +218,12 @@ export function getCountsByStatus(tickets: MockTicket[] = MOCK_TICKETS) {
 }
 
 const CATEGORY_CHART_COLORS = [
-  "bg-primary",
-  "bg-success",
-  "bg-warning",
-  "bg-destructive",
-  "bg-teal",
-  "bg-slate-400",
+  "bg-blue-600",
+  "bg-blue-500",
+  "bg-blue-400",
+  "bg-blue-300",
+  "bg-blue-200",
+  "bg-blue-100",
 ];
 
 export function getCountsByCategory(tickets: MockTicket[] = MOCK_TICKETS) {
@@ -278,6 +281,64 @@ export function getTeamPerformance(tickets: MockTicket[] = MOCK_TICKETS) {
       }).length,
     }))
     .sort((a, b) => b.value - a.value);
+}
+
+// Deterministic (not random) hash — same user always lands on the
+// same slice of the mock data, across reloads/sessions.
+function stableIndex(seed: string, modulo: number): number {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  return hash % modulo;
+}
+
+// Role-scoped views over the mock dataset for Account Manager/Team
+// Lead/Staff dashboards & reports.
+//
+// There's no real id-based link between a logged-in user and this
+// mock dataset — MockTicket only has free-text names (assignedTo/
+// client) drawn from its own fictional roster (AGENTS/CLIENTS above),
+// which never matches a real seeded/created user's actual name. Doing
+// an exact-name match against `currentUser.name` would show an empty
+// dashboard for literally every real account. Instead, each real
+// user is deterministically bucketed (by their own user_id) onto one
+// slice of the fictional data — stable per user, never empty, and
+// scoped the same shape their real permissions are (Staff -> one
+// agent's tickets, Team Lead -> one team, Account Manager -> a fixed
+// subset of clients) until real ticket ownership data exists to
+// filter on instead.
+export function getTicketsForStaff(
+  userId: string,
+  tickets: MockTicket[] = MOCK_TICKETS
+): MockTicket[] {
+  const agent = AGENTS[stableIndex(userId, AGENTS.length)];
+  return tickets.filter((t) => t.assignedTo === agent);
+}
+
+export function getTicketsForTeamLead(
+  userId: string,
+  tickets: MockTicket[] = MOCK_TICKETS
+): MockTicket[] {
+  const teams = Array.from(new Set(Object.values(AGENT_TEAM)));
+  const team = teams[stableIndex(userId, teams.length)];
+  return tickets.filter((t) => AGENT_TEAM[t.assignedTo] === team);
+}
+
+const CLIENTS_PER_ACCOUNT_MANAGER = 3;
+
+export function getTicketsForAccountManager(
+  userId: string,
+  tickets: MockTicket[] = MOCK_TICKETS
+): MockTicket[] {
+  const startIndex = stableIndex(userId, CLIENTS.length);
+  const ownedClients = new Set(
+    Array.from(
+      { length: CLIENTS_PER_ACCOUNT_MANAGER },
+      (_, i) => CLIENTS[(startIndex + i) % CLIENTS.length]
+    )
+  );
+  return tickets.filter((t) => ownedClients.has(t.client));
 }
 
 export function getReportMetrics(tickets: MockTicket[] = MOCK_TICKETS) {

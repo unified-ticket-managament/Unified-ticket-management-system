@@ -2,7 +2,10 @@
 
 import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
+import { AccountManagerDashboard } from "@/components/dashboard/account-manager-dashboard";
+import { StaffDashboard } from "@/components/dashboard/staff-dashboard";
 import { SuperAdminDashboard } from "@/components/dashboard/super-admin-dashboard";
+import { TeamLeadDashboard } from "@/components/dashboard/team-lead-dashboard";
 import { ViewerDashboard } from "@/components/dashboard/viewer-dashboard";
 import { ROLE_NAMES } from "@/lib/role-access";
 import { useAuthStore } from "@/store/auth-store";
@@ -52,6 +55,22 @@ export default function DashboardCatchAllPage() {
 
   if (role === ROLE_NAMES.VIEWER) {
     return <ViewerDashboard />;
+  }
+
+  // Account Manager/Team Lead/Staff land on the same dashboard layout
+  // Super Admin uses (per spec) for the bare /dashboard root, scoped
+  // to their own data — any deeper slug still mounts the real
+  // TicketWorkspaceApp exactly as before.
+  if (role === ROLE_NAMES.ACCOUNT_MANAGER && slug.length === 0) {
+    return <AccountManagerDashboard />;
+  }
+
+  if (role === ROLE_NAMES.TEAM_LEAD && slug.length === 0) {
+    return <TeamLeadDashboard />;
+  }
+
+  if (role === ROLE_NAMES.STAFF && slug.length === 0) {
+    return <StaffDashboard />;
   }
 
   return <TicketWorkspaceApp />;

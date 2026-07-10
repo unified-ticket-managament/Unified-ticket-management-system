@@ -2,18 +2,18 @@ import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
 import rbacApi, { clearTokens, setTokens } from "@/lib/api";
 
 // ==========================================================
-// Axios instance pointed at the Ticketing FastAPI backend.
-//
-// This is a *different* backend from RBAC's own `@/lib/api` instance
-// (different base URL), but both live in the same Next.js app/origin
-// now, so they share the same localStorage tokens — no separate login
-// or token storage needed here. `rbacApi` (RBAC's own axios instance,
-// already pointed at the RBAC backend) is reused only for the actual
-// refresh call below.
+// Axios instance pointed at the Ticketing routes, which since the
+// RBAC/Ticketing backend merge are served by the same unified FastAPI
+// app as RBAC's own `@/lib/api` instance — just mounted unprefixed
+// instead of under /api/v1 (see unified-backend/app/main.py). Kept as
+// a separate axios instance (rather than reusing `rbacApi`) because
+// the base URL and interceptor behavior still differ; both share the
+// same localStorage tokens since they're the same origin/app.
+// `rbacApi` is reused only for the actual refresh call below.
 // ==========================================================
 
 const TICKETING_API_URL =
-  process.env.NEXT_PUBLIC_TICKETING_API_URL || "http://localhost:8001";
+  process.env.NEXT_PUBLIC_TICKETING_API_URL || "http://localhost:8000";
 
 export const apiClient = axios.create({
   baseURL: TICKETING_API_URL,

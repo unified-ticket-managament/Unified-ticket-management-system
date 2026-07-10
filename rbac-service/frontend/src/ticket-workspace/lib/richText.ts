@@ -31,6 +31,26 @@ export function htmlToPlainText(html: string): string {
     .trim();
 }
 
+// Message bodies are stored as plain text (see note above), so reading
+// them back needs its own light HTML-ification — escape first, then
+// wrap recognizable URLs/email addresses in real anchors, so links in
+// a received email are actually clickable instead of inert text. Single
+// combined pattern (not two separate escape+replace passes) so a URL
+// containing "@" can't get double-wrapped by a second, narrower email
+// match run over its own (already-anchored) output.
+const LINK_PATTERN = /(https?:\/\/[^\s<]+[^\s<.,:;!?'")\]]|[\w.+-]+@[\w-]+\.[\w.-]+)/g;
+
+export function linkifyPlainText(text: string): string {
+  const escaped = escapeHtml(text);
+  return escaped
+    .replace(LINK_PATTERN, (match) =>
+      /^https?:\/\//i.test(match)
+        ? `<a href="${match}" target="_blank" rel="noreferrer" class="break-all text-primary underline">${match}</a>`
+        : `<a href="mailto:${match}" class="break-all text-primary underline">${match}</a>`
+    )
+    .replace(/\n/g, "<br/>");
+}
+
 export function plainTextToHtml(text: string): string {
   if (!text) return "";
   return text

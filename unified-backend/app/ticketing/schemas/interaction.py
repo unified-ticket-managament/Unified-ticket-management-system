@@ -175,6 +175,8 @@ class InteractionSnoozeResponse(ORMBase):
 
 class DraftSaveRequest(BaseModel):
     message: str = Field(..., min_length=1)
+    cc: list[str] = Field(default_factory=list)
+    bcc: list[str] = Field(default_factory=list)
 
 
 class DraftResponse(ORMBase):
@@ -187,6 +189,9 @@ class DraftResponse(ORMBase):
     interaction_id: UUID
     root_interaction_id: UUID
     message: str
+    cc: list[str] = Field(default_factory=list)
+    bcc: list[str] = Field(default_factory=list)
+    attachments: list[AttachmentMetadata] = Field(default_factory=list)
     created_at: datetime
 
 

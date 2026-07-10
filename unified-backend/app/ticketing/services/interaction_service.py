@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
 
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from fastapi import status as http_status
 
 from shared_models.models import User
@@ -86,7 +86,7 @@ from app.ticketing.repositories.attachment_repository import AttachmentRepositor
 from app.ticketing.schemas.attachment import AttachmentMetadata
 from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
 from app.ticketing.schemas.payloads import EmailPayload
-from app.ticketing.services.attachment_service import attachments_to_metadata
+from app.ticketing.services.attachment_service import AttachmentService, attachments_to_metadata
 from app.ticketing.storage.base import StorageService
 
 
@@ -1538,6 +1538,56 @@ class InteractionService:
 
         return root
 
+    async def _get_or_create_draft(
+        self,
+        root: Interaction,
+        current_user: User,
+        message: str = "",
+        cc: list[str] | None = None,
+        bcc: list[str] | None = None,
+    ) -> Interaction:
+        """
+        Fetches current_user's existing draft on this thread, or
+        creates an empty one — shared by save_draft (always has real
+        text to save) and upload_draft_attachment (may run before the
+        user has typed anything yet, e.g. attaching a file first).
+        """
+
+        existing = await self.interaction_repository.get_draft(
+            root.interaction_id, current_user.user_id
+        )
+        if existing is not None:
+            return existing
+
+        return await self.interaction_repository.create(
+            InteractionCreate(
+                ticket_id=None,
+                interaction_type="REPLY",
+                direction=InteractionDirection.OUTBOUND,
+                status=InteractionStatus.PENDING,
+                performed_by=current_user.user_id,
+                payload={
+                    "message": message,
+                    "cc": cc or [],
+                    "bcc": bcc or [],
+                    "dispatch_status": "DRAFT",
+                },
+                is_visible=True,
+                client_id=root.client_id,
+                parent_interaction_id=root.interaction_id,
+                is_draft=True,
+            )
+        )
+
+    async def _fetch_draft_attachments(
+        self, interaction_id: UUID
+    ) -> list[AttachmentMetadata]:
+        if self.attachment_repository is None or self.storage_service is None:
+            return []
+
+        raw = await self.attachment_repository.list_by_interaction_id(interaction_id)
+        return await attachments_to_metadata(raw, self.storage_service)
+
     async def save_draft(
         self,
         interaction_id: UUID,
@@ -1547,7 +1597,9 @@ class InteractionService:
         """
         Upserts current_user's draft reply on this thread — one
         active draft per thread per agent, overwritten (not
-        versioned) on every save.
+        versioned) on every save. Called continuously (debounced) by
+        the frontend as the user edits To/Cc/Bcc/Subject/Body, so the
+        draft never falls behind what's on screen.
         """
 
         root = await self._resolve_pending_thread_root(interaction_id)
@@ -1559,30 +1611,76 @@ class InteractionService:
 
         if existing is not None:
             draft = await self.interaction_repository.update_draft_message(
-                existing, request.message
+                existing, request.message, cc=request.cc, bcc=request.bcc
             )
         else:
-            draft = await self.interaction_repository.create(
-                InteractionCreate(
-                    ticket_id=None,
-                    interaction_type="REPLY",
-                    direction=InteractionDirection.OUTBOUND,
-                    status=InteractionStatus.PENDING,
-                    performed_by=current_user.user_id,
-                    payload={"message": request.message, "dispatch_status": "DRAFT"},
-                    is_visible=True,
-                    client_id=root.client_id,
-                    parent_interaction_id=root.interaction_id,
-                    is_draft=True,
-                )
+            draft = await self._get_or_create_draft(
+                root,
+                current_user,
+                message=request.message,
+                cc=request.cc,
+                bcc=request.bcc,
             )
+
+        attachments = await self._fetch_draft_attachments(draft.interaction_id)
 
         return DraftResponse(
             interaction_id=draft.interaction_id,
             root_interaction_id=root.interaction_id,
             message=request.message,
+            cc=request.cc,
+            bcc=request.bcc,
+            attachments=attachments,
             created_at=draft.created_at,
         )
+
+    async def upload_draft_attachment(
+        self,
+        interaction_id: UUID,
+        files: list[UploadFile],
+        current_user: User,
+    ) -> list[AttachmentMetadata]:
+        """
+        Attaches files directly to current_user's in-progress draft
+        on this thread. Works before the thread is ever a ticket —
+        like every other attachment in this codebase (inbound email
+        intake, Compose), storage is keyed on `interaction_id` alone,
+        never `ticket_id` (see AttachmentService.validate_and_store_
+        files) — so this needed no new storage capability, only a
+        route/service seam exposing the existing one for a draft.
+        Creates an empty draft row first if the user attaches a file
+        before typing/saving any text yet.
+        """
+
+        if not files:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="At least one file is required.",
+            )
+
+        if self.attachment_repository is None or self.storage_service is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Attachment storage is not configured.",
+            )
+
+        root = await self._resolve_pending_thread_root(interaction_id)
+        await self._ensure_can_act_on_pending_interaction(root, current_user)
+
+        draft = await self._get_or_create_draft(root, current_user)
+
+        attachment_service = AttachmentService(
+            attachment_repository=self.attachment_repository,
+            interaction_repository=self.interaction_repository,
+            ticket_repository=self.ticket_repository,
+            storage_service=self.storage_service,
+        )
+
+        stored = await attachment_service.validate_and_store_files(
+            files, draft.interaction_id
+        )
+
+        return await attachments_to_metadata(stored, self.storage_service)
 
     async def send_draft(
         self,
@@ -1590,12 +1688,15 @@ class InteractionService:
         current_user: User,
     ) -> InteractionReplyResponse:
         """
-        Sends current_user's draft on this thread — converts it into
-        a real reply by deleting the draft row and handing its saved
-        text to `add_interaction_reply`, which builds the same
-        envelope/dispatch/audit trail a normal reply would get. There
+        Sends current_user's draft on this thread — hands its saved
+        text/Cc/Bcc to `add_interaction_reply`, which builds the same
+        envelope/dispatch/audit trail a normal reply would get (there
         is deliberately no separate "draft becomes a reply" code path
-        to keep that logic in exactly one place.
+        to keep that logic in exactly one place), then repoints any
+        files already uploaded against the draft onto the newly
+        created reply before deleting the now-obsolete draft row —
+        otherwise those attachments would be left pointing at a
+        deleted interaction.
         """
 
         root = await self._resolve_pending_thread_root(interaction_id)
@@ -1611,22 +1712,38 @@ class InteractionService:
                 detail="No draft found on this thread.",
             )
 
-        message = draft.payload.get("message", "") if isinstance(draft.payload, dict) else ""
+        payload = draft.payload if isinstance(draft.payload, dict) else {}
+        message = payload.get("message", "")
+        cc = payload.get("cc") or []
+        bcc = payload.get("bcc") or []
+        draft_interaction_id = draft.interaction_id
+
+        reply = await self.add_interaction_reply(
+            interaction_id=root.interaction_id,
+            request=InteractionReplyRequest(message=message, cc=cc, bcc=bcc),
+            current_user=current_user,
+        )
+
+        if self.attachment_repository is not None:
+            await self.attachment_repository.reassign_interaction(
+                draft_interaction_id, reply.interaction_id
+            )
 
         await self.interaction_repository.delete_draft(draft)
 
-        return await self.add_interaction_reply(
-            interaction_id=root.interaction_id,
-            request=InteractionReplyRequest(message=message),
-            current_user=current_user,
-        )
+        return reply
 
     async def discard_draft(
         self,
         interaction_id: UUID,
         current_user: User,
     ) -> DraftDeleteResponse:
-        """Deletes current_user's draft on this thread without sending it."""
+        """
+        Deletes current_user's draft on this thread without sending
+        it — including any files already uploaded against it, since a
+        discarded draft's attachments would otherwise linger in
+        storage with no reachable row/UI to ever clean them up.
+        """
 
         root = await self._resolve_pending_thread_root(interaction_id)
         await self._ensure_can_act_on_pending_interaction(root, current_user)
@@ -1640,6 +1757,14 @@ class InteractionService:
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail="No draft found on this thread.",
             )
+
+        if self.attachment_repository is not None and self.storage_service is not None:
+            draft_attachments = await self.attachment_repository.list_by_interaction_id(
+                draft.interaction_id
+            )
+            for attachment in draft_attachments:
+                await self.storage_service.delete(object_key=attachment.storage_key)
+                await self.attachment_repository.delete(attachment)
 
         await self.interaction_repository.delete_draft(draft)
 

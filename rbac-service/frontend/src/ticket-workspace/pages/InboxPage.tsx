@@ -95,8 +95,13 @@ export function InboxPage() {
   const folderLabel = `${folderLabelBase} (${folderCount})`;
 
   return (
-    <AppLayout title="Mail" description="Client email, organized like an inbox.">
-      <div className="flex flex-col gap-4 lg:h-[calc(100vh-9.5rem)] lg:flex-row">
+    <AppLayout>
+      {/* No title passed above (per Mail spec: no page header) — the
+          top navbar (h-16) + main's own p-6 padding (3rem) are the
+          only other chrome, so the panel fills the rest of the
+          viewport exactly instead of leaving a gap where the removed
+          header used to be. */}
+      <div className="flex flex-col gap-4 lg:h-[calc(100vh-7rem)] lg:flex-row">
         <MailSidebar
           activeView={mail.activeView}
           isComposing={composeOpen}
@@ -132,6 +137,8 @@ export function InboxPage() {
               onSaveDraft={mail.saveDraftMessage}
               onSendDraft={mail.sendDraftMessage}
               onDiscardDraft={mail.discardDraftMessage}
+              onUploadDraftAttachment={mail.uploadDraftAttachment}
+              onRemoveDraftAttachment={mail.removeDraftAttachment}
               onSnooze={mail.snoozeItem}
               onUnsnooze={mail.unsnoozeItem}
               onUpdateTags={mail.updateTags}

@@ -32,7 +32,7 @@ import { MailEmptyState } from "@tw/components/mail/MailEmptyState";
 type SortKey = "newest" | "oldest" | "sender";
 type PriorityFilter = "ALL" | TicketPriority;
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE = 10;
 
 const STATUS_META: Record<string, { label: string; variant: "warning" | "success" | "secondary" }> = {
   PENDING: { label: "Pending", variant: "warning" },

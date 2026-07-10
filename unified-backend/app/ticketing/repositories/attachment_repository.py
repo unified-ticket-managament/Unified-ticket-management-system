@@ -2,7 +2,7 @@
 from collections import defaultdict
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ticketing.models.attachment import Attachment
@@ -78,4 +78,24 @@ class AttachmentRepository:
 
     async def delete(self, attachment: Attachment) -> None:
         await self.db.delete(attachment)
+        await self.db.flush()
+
+    async def reassign_interaction(
+        self,
+        old_interaction_id: UUID,
+        new_interaction_id: UUID,
+    ) -> None:
+        """
+        Re-points every attachment from one interaction to another —
+        used when a draft is sent: the draft's own interaction row is
+        deleted, but files already uploaded against it must keep
+        pointing at a live row (the newly-created sent reply) rather
+        than being orphaned.
+        """
+
+        await self.db.execute(
+            update(Attachment)
+            .where(Attachment.interaction_id == old_interaction_id)
+            .values(interaction_id=new_interaction_id)
+        )
         await self.db.flush()

@@ -13,8 +13,10 @@ import {
   unsnoozeInteraction,
   updateInteractionFolder,
   updateInteractionTags,
+  uploadDraftAttachment as uploadDraftAttachmentRequest,
   type ComposeEmailPayload,
 } from "@tw/api/inbox";
+import { deleteAttachment } from "@tw/api/interaction";
 import { createMailFolder, deleteMailFolder, listMailFolders } from "@tw/api/mailFolder";
 import { listClients } from "@tw/api/clients";
 import { useApiAction } from "@tw/hooks/useApiAction";
@@ -198,6 +200,8 @@ export function useMailInbox() {
   const { run: runSaveDraft } = useApiAction(saveDraft);
   const { run: runSendDraft } = useApiAction(sendDraft);
   const { run: runDiscardDraft } = useApiAction(discardDraft);
+  const { run: runUploadDraftAttachment } = useApiAction(uploadDraftAttachmentRequest);
+  const { run: runDeleteAttachment } = useApiAction(deleteAttachment);
   const { run: runCompose, isLoading: isComposing } = useApiAction(composeEmailRequest, {
     successMessage: "Email sent.",
   });
@@ -363,47 +367,36 @@ export function useMailInbox() {
     return Boolean(result);
   }
 
-  async function saveDraftMessage(interactionId: string, message: string) {
-    const result = await runSaveDraft(interactionId, message);
-    if (result) {
-      if (selectedEmail?.interaction_id === interactionId) {
-        setSelectedEmail({ ...selectedEmail, draft_message: result.message });
-      }
-      await refresh();
+  async function saveDraftMessage(
+    interactionId: string,
+    message: string,
+    cc: string[] = [],
+    bcc: string[] = []
+  ) {
+    const result = await runSaveDraft(interactionId, message, cc, bcc);
+    if (result && selectedEmail?.interaction_id === interactionId) {
+      setSelectedEmail({
+        ...selectedEmail,
+        draft_message: result.message,
+        draft_cc: result.cc,
+        draft_bcc: result.bcc,
+        draft_attachments: result.attachments,
+      });
     }
-    return Boolean(result);
+    return result;
   }
 
+  // Re-fetches the full thread (rather than hand-building the new
+  // reply locally) so the sent reply's attachments — reassigned
+  // server-side from the now-deleted draft onto it — actually show
+  // up immediately, instead of only after the thread is reopened.
   async function sendDraftMessage(interactionId: string) {
     const result = await runSendDraft(interactionId);
-    if (result) {
-      if (selectedEmail?.interaction_id === interactionId) {
-        setSelectedEmail({
-          ...selectedEmail,
-          status: "ASSIGNED",
-          draft_message: null,
-          replies: [
-            ...selectedEmail.replies,
-            {
-              interaction_id: result.interaction_id,
-              ticket_id: null,
-              interaction_type: "REPLY",
-              status: "ASSIGNED",
-              direction: "OUTBOUND",
-              performed_by: null,
-              payload: { message: result.message },
-              is_visible: true,
-              removed_by: null,
-              removed_at: null,
-              message_id: null,
-              parent_interaction_id: result.parent_interaction_id,
-              created_at: result.created_at,
-            },
-          ],
-        });
-      }
-      await refresh();
+    if (result && selectedEmail?.interaction_id === interactionId) {
+      const fresh = await openInboxThread(interactionId);
+      setSelectedEmail(fresh);
     }
+    if (result) await refresh();
     return result;
   }
 
@@ -411,11 +404,39 @@ export function useMailInbox() {
     const result = await runDiscardDraft(interactionId);
     if (result) {
       if (selectedEmail?.interaction_id === interactionId) {
-        setSelectedEmail({ ...selectedEmail, draft_message: null });
+        setSelectedEmail({
+          ...selectedEmail,
+          draft_message: null,
+          draft_cc: [],
+          draft_bcc: [],
+          draft_attachments: [],
+        });
       }
       await refresh();
     }
     return Boolean(result);
+  }
+
+  async function uploadDraftAttachment(interactionId: string, files: File[]) {
+    const result = await runUploadDraftAttachment(interactionId, files);
+    if (result && selectedEmail?.interaction_id === interactionId) {
+      setSelectedEmail({
+        ...selectedEmail,
+        draft_attachments: [...selectedEmail.draft_attachments, ...result],
+      });
+    }
+    return result;
+  }
+
+  async function removeDraftAttachment(interactionId: string, attachmentId: string) {
+    const result = await runDeleteAttachment(attachmentId);
+    if (result !== null && selectedEmail?.interaction_id === interactionId) {
+      setSelectedEmail({
+        ...selectedEmail,
+        draft_attachments: selectedEmail.draft_attachments.filter((a) => a.id !== attachmentId),
+      });
+    }
+    return result !== null;
   }
 
   async function composeEmail(payload: ComposeEmailPayload) {
@@ -525,6 +546,8 @@ export function useMailInbox() {
     saveDraftMessage,
     sendDraftMessage,
     discardDraftMessage,
+    uploadDraftAttachment,
+    removeDraftAttachment,
     composeEmail,
     isComposing,
   };

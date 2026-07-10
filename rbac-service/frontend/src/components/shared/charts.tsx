@@ -153,12 +153,17 @@ interface CategoryBarListProps {
   className?: string;
 }
 
+// Fallback palette (different shades of blue) for callers that don't
+// pass their own per-item `color` — cycled by index so an unstyled list
+// still reads as distinct bars instead of one flat color.
+const DEFAULT_BAR_SHADES = ["bg-blue-600", "bg-blue-500", "bg-blue-400", "bg-blue-300"];
+
 export function CategoryBarList({ data, className }: CategoryBarListProps) {
   const max = Math.max(...data.map((d) => d.value), 1);
 
   return (
     <div className={cn("space-y-4", className)}>
-      {data.map((d) => {
+      {data.map((d, i) => {
         const pct = max > 0 ? Math.round((d.value / max) * 100) : 0;
 
         return (
@@ -170,8 +175,8 @@ export function CategoryBarList({ data, className }: CategoryBarListProps) {
             <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
               <div
                 className={cn(
-                  "h-full rounded-r-full transition-all duration-500 ease-out",
-                  d.color ?? "bg-blue-500 group-hover:bg-blue-400"
+                  "h-full rounded-r-full transition-all duration-300 ease-out group-hover:brightness-110",
+                  d.color ?? DEFAULT_BAR_SHADES[i % DEFAULT_BAR_SHADES.length]
                 )}
                 style={{ width: `${pct}%` }}
               />

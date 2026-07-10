@@ -8,6 +8,7 @@ from app.database.session import get_db
 from app.dependencies.auth import get_current_agent
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.repositories.client_repository import ClientRepository
+from app.ticketing.schemas.attachment import AttachmentMetadata
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
@@ -467,23 +468,66 @@ async def save_draft(
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
-    """Upserts the current user's draft reply on this thread."""
+    """Upserts the current user's draft reply (message + Cc/Bcc) on this thread."""
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     client_repository = ClientRepository(db)
+    attachment_repository = AttachmentRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         client_repository=client_repository,
+        attachment_repository=attachment_repository,
+        storage_service=get_storage_service(),
     )
 
     return await service.save_draft(
         interaction_id=interaction_id,
         request=request,
+        current_user=current_user,
+    )
+
+
+@router.post(
+    "/{interaction_id}/draft/attachments",
+    response_model=list[AttachmentMetadata],
+    status_code=201,
+)
+async def upload_draft_attachment(
+    interaction_id: UUID,
+    files: list[UploadFile] = File(...),
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Attaches files to the current user's in-progress draft on this
+    thread — works pre-ticket, unlike POST /tickets/{id}/attachments,
+    since attachments are always stored against an interaction_id
+    (never a ticket_id) at the data-model level.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+    attachment_repository = AttachmentRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+        attachment_repository=attachment_repository,
+        storage_service=get_storage_service(),
+    )
+
+    return await service.upload_draft_attachment(
+        interaction_id=interaction_id,
+        files=files,
         current_user=current_user,
     )
 
@@ -504,12 +548,15 @@ async def send_draft(
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     client_repository = ClientRepository(db)
+    attachment_repository = AttachmentRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         client_repository=client_repository,
+        attachment_repository=attachment_repository,
+        storage_service=get_storage_service(),
     )
 
     return await service.send_draft(
@@ -528,18 +575,21 @@ async def discard_draft(
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
-    """Deletes the current user's draft on this thread without sending it."""
+    """Deletes the current user's draft (and any of its attachments) without sending it."""
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     client_repository = ClientRepository(db)
+    attachment_repository = AttachmentRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         client_repository=client_repository,
+        attachment_repository=attachment_repository,
+        storage_service=get_storage_service(),
     )
 
     return await service.discard_draft(

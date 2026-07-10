@@ -105,6 +105,14 @@ export async function uploadAttachment(
   return data;
 }
 
+// DELETE /attachments/{attachment_id} — remove an attachment (a
+// ticket's or a draft's, both resolve through the same
+// interaction-scoped authorization) before sending/regardless of
+// ticket state.
+export async function deleteAttachment(attachmentId: string): Promise<void> {
+  await apiClient.delete(`/attachments/${attachmentId}`);
+}
+
 // POST /tickets/{ticket_id}/interactions/{interaction_id}/hide
 export async function hideInteraction(
   ticketId: string,

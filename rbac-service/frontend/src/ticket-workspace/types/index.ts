@@ -195,6 +195,9 @@ export interface OpenEmailResponse {
   folder_id: string | null;
   snoozed_until: string | null;
   draft_message: string | null;
+  draft_cc: string[];
+  draft_bcc: string[];
+  draft_attachments: AttachmentMeta[];
   attachments?: AttachmentMeta[];
   replies: InteractionResponse[];
   recommended_ticket_id: string | null;
@@ -261,6 +264,9 @@ export interface DraftSaveResponse {
   interaction_id: string;
   root_interaction_id: string;
   message: string;
+  cc: string[];
+  bcc: string[];
+  attachments: AttachmentMeta[];
   created_at: string;
 }
 

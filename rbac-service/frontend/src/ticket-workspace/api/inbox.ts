@@ -1,5 +1,6 @@
 import { apiClient } from "./client";
 import type {
+  AttachmentMeta,
   ComposeEmailResponse,
   DraftDeleteResponse,
   DraftListResponse,
@@ -50,14 +51,35 @@ export async function getDrafts(): Promise<DraftListResponse> {
 }
 
 // PUT /inbox/{interaction_id}/draft — upsert the current user's
-// draft reply on this thread.
+// draft reply (message + Cc/Bcc) on this thread.
 export async function saveDraft(
   interactionId: string,
-  message: string
+  message: string,
+  cc: string[] = [],
+  bcc: string[] = []
 ): Promise<DraftSaveResponse> {
   const { data } = await apiClient.put<DraftSaveResponse>(
     `/inbox/${interactionId}/draft`,
-    { message }
+    { message, cc, bcc }
+  );
+  return data;
+}
+
+// POST /inbox/{interaction_id}/draft/attachments — attach files to
+// the current user's in-progress draft on this thread. Works
+// pre-ticket (unlike uploadAttachment in api/interaction.ts, which
+// requires a real ticket_id) since attachments are always stored
+// against an interaction_id at the data-model level.
+export async function uploadDraftAttachment(
+  interactionId: string,
+  files: File[]
+): Promise<AttachmentMeta[]> {
+  const formData = new FormData();
+  files.forEach((file) => formData.append("files", file));
+
+  const { data } = await apiClient.post<AttachmentMeta[]>(
+    `/inbox/${interactionId}/draft/attachments`,
+    formData
   );
   return data;
 }

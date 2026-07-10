@@ -6,6 +6,7 @@ import {
   Archive,
   ArrowLeft,
   Clock3,
+  Download,
   ExternalLink,
   FilePlus,
   Forward as ForwardIcon,
@@ -52,11 +53,15 @@ import {
   transferTicketAgent,
 } from "@tw/api/ticket";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import { formatBytes, iconForFilename } from "@tw/lib/attachmentMeta";
 import { formatDateTime } from "@tw/lib/format";
-import { buildForwardHtml } from "@tw/lib/richText";
+import { buildForwardHtml, linkifyPlainText } from "@tw/lib/richText";
 import type {
   AgentSummary,
+  AttachmentMeta,
   CategoryResponse,
+  DraftSaveResponse,
+  InteractionReplyResponse,
   InteractionResponse,
   MailFolder,
   OpenEmailResponse,
@@ -114,7 +119,8 @@ function rootBubble(email: OpenEmailResponse): BubbleData {
     timestamp: email.received_at,
     body: email.body,
     isClient: true,
-    attachments: email.attachments,
+    // Attachments render once, in the dedicated Attachments section
+    // above the thread — not repeated again inline on the root bubble.
   };
 }
 
@@ -166,7 +172,10 @@ function Bubble({ data }: { data: BubbleData }) {
           <p className="text-[11px] text-muted-foreground">{formatDateTime(data.timestamp)}</p>
         </div>
         {data.toLabel && <p className="mt-0.5 text-[11px] text-muted-foreground">To: {data.toLabel}</p>}
-        <p className="mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90">{data.body}</p>
+        <div
+          className="mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90 [&_a]:break-all [&_a]:underline"
+          dangerouslySetInnerHTML={{ __html: linkifyPlainText(data.body) }}
+        />
         {data.attachments && data.attachments.length > 0 && (
           <div className="mt-3 flex flex-col gap-1.5">
             {data.attachments.map((a) => (
@@ -195,9 +204,16 @@ interface MessageDetailsViewProps {
   onBack: () => void;
   onRefreshList: () => void;
   onForward: (values: { clientId: string | null; toEmail: string; subject: string; bodyHtml: string }) => void;
-  onSaveDraft: (interactionId: string, message: string) => Promise<boolean>;
-  onSendDraft: (interactionId: string) => Promise<{ interaction_id: string; message: string; created_at: string } | null>;
+  onSaveDraft: (
+    interactionId: string,
+    message: string,
+    cc: string[],
+    bcc: string[]
+  ) => Promise<DraftSaveResponse | null>;
+  onSendDraft: (interactionId: string) => Promise<InteractionReplyResponse | null>;
   onDiscardDraft: (interactionId: string) => Promise<boolean>;
+  onUploadDraftAttachment: (interactionId: string, files: File[]) => Promise<AttachmentMeta[] | null>;
+  onRemoveDraftAttachment: (interactionId: string, attachmentId: string) => Promise<boolean>;
   onSnooze: (interactionId: string, snoozeUntil: string) => Promise<boolean>;
   onUnsnooze: (interactionId: string) => Promise<boolean>;
   onUpdateTags: (interactionId: string, tags: string[]) => Promise<boolean>;
@@ -214,6 +230,8 @@ export function MessageDetailsView({
   onSaveDraft,
   onSendDraft,
   onDiscardDraft,
+  onUploadDraftAttachment,
+  onRemoveDraftAttachment,
   onSnooze,
   onUnsnooze,
   onUpdateTags,
@@ -240,7 +258,10 @@ export function MessageDetailsView({
   const isSnoozed = Boolean(email.snoozed_until && new Date(email.snoozed_until) > new Date());
 
   useEffect(() => {
-    setReplyMode(null);
+    // Opening a thread that already has a saved draft goes straight
+    // into edit mode — the user shouldn't have to click Reply first
+    // to see (and resume) work they already started.
+    setReplyMode(hasDraft ? (email.draft_cc.length > 0 || email.draft_bcc.length > 0 ? "replyAll" : "reply") : null);
     if (email.ticket_id) {
       getTicket(email.ticket_id)
         .then(setTicketDetail)
@@ -248,6 +269,7 @@ export function MessageDetailsView({
     } else {
       setTicketDetail(null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email.interaction_id, email.ticket_id]);
 
   useEffect(() => {
@@ -338,8 +360,31 @@ export function MessageDetailsView({
     }
   }
 
-  async function handleSaveDraft(message: string) {
-    await onSaveDraft(email.interaction_id, message);
+  async function handleSaveDraft(message: string, cc: string[], bcc: string[]) {
+    return onSaveDraft(email.interaction_id, message, cc, bcc);
+  }
+
+  async function handleSendDraft() {
+    const result = await onSendDraft(email.interaction_id);
+    if (result) {
+      setReplyMode(null);
+      onRefreshList();
+    }
+    return result;
+  }
+
+  async function handleDiscardDraft() {
+    const result = await onDiscardDraft(email.interaction_id);
+    if (result) onRefreshList();
+    return result;
+  }
+
+  async function handleUploadDraftAttachment(files: File[]) {
+    return onUploadDraftAttachment(email.interaction_id, files);
+  }
+
+  async function handleRemoveDraftAttachment(attachmentId: string) {
+    return onRemoveDraftAttachment(email.interaction_id, attachmentId);
   }
 
   function handleForwardClick() {
@@ -448,28 +493,10 @@ export function MessageDetailsView({
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card">
+      {/* Message Header — subject, priority/category badges, received date/time */}
       <div className="border-b border-border px-5 py-4">
-        <button
-          onClick={onBack}
-          className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-        >
-          <ArrowLeft className="h-3.5 w-3.5" />
-          Back to Message List
-        </button>
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="truncate text-[16px] font-semibold text-foreground">{email.subject}</h2>
-            <div className="mt-1 flex flex-col gap-0.5 text-[12px] text-muted-foreground sm:flex-row sm:flex-wrap sm:gap-x-4">
-              <span>
-                From <span className="font-medium text-foreground">{email.from_name || email.client_name}</span>
-                {email.from_email && <span className="text-muted-foreground"> &lt;{email.from_email}&gt;</span>}
-              </span>
-              <span>
-                To <span className="font-medium text-foreground">{email.to_email ?? "—"}</span>
-              </span>
-              <span>{formatDateTime(email.received_at)}</span>
-            </div>
-          </div>
+          <h2 className="min-w-0 truncate text-[16px] font-semibold text-foreground">{email.subject}</h2>
           <div className="flex flex-none flex-wrap items-center gap-1.5">
             <Badge variant={status.variant}>{status.label}</Badge>
             {email.ticket_priority && (
@@ -478,9 +505,142 @@ export function MessageDetailsView({
             {email.ticket_category && <Badge variant="secondary">{email.ticket_category}</Badge>}
           </div>
         </div>
+        <p className="mt-1.5 text-[12px] text-muted-foreground">{formatDateTime(email.received_at)}</p>
       </div>
 
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-border bg-muted/20 px-5 py-2.5">
+      {/* Sender Information / Attachments / Tags / Message Body — the only scrolling region */}
+      <div className="flex-1 overflow-y-auto px-5 py-4">
+        <div className="flex flex-col gap-5">
+          <section>
+            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Sender Information
+            </h3>
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-muted/20 p-3 text-[12.5px]">
+              <div className="flex gap-2">
+                <span className="w-12 flex-none font-medium text-muted-foreground">From</span>
+                <span className="min-w-0 flex-1 truncate text-foreground">
+                  {email.from_name || email.client_name}
+                  {email.from_email && <span className="text-muted-foreground"> &lt;{email.from_email}&gt;</span>}
+                </span>
+              </div>
+              <div className="flex gap-2">
+                <span className="w-12 flex-none font-medium text-muted-foreground">To</span>
+                <span className="min-w-0 flex-1 truncate text-foreground">{email.to_email ?? "—"}</span>
+              </div>
+              {email.cc.length > 0 && (
+                <div className="flex gap-2">
+                  <span className="w-12 flex-none font-medium text-muted-foreground">Cc</span>
+                  <span className="min-w-0 flex-1 truncate text-foreground">{email.cc.join(", ")}</span>
+                </div>
+              )}
+              {email.bcc.length > 0 && (
+                <div className="flex gap-2">
+                  <span className="w-12 flex-none font-medium text-muted-foreground">Bcc</span>
+                  <span className="min-w-0 flex-1 truncate text-foreground">{email.bcc.join(", ")}</span>
+                </div>
+              )}
+            </div>
+          </section>
+
+          {email.attachments && email.attachments.length > 0 && (
+            <section>
+              <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Attachments ({email.attachments.length})
+              </h3>
+              <ul className="flex flex-col gap-1.5">
+                {email.attachments.map((attachment) => {
+                  const Icon = iconForFilename(attachment.filename);
+                  return (
+                    <li
+                      key={attachment.id}
+                      className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2"
+                    >
+                      <Icon className="h-4 w-4 flex-none text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
+                        {attachment.filename}
+                      </span>
+                      <span className="flex-none text-[11px] text-muted-foreground">
+                        {formatBytes(attachment.size)}
+                      </span>
+                      <a
+                        href={attachment.download_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        aria-label={`Download ${attachment.filename}`}
+                        className="flex-none rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-primary"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          )}
+
+          <section className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Tags</span>
+            {email.tags.map((tag) => (
+              <span
+                key={tag}
+                className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground/80"
+              >
+                {tag}
+                <button
+                  onClick={() => onUpdateTags(email.interaction_id, email.tags.filter((t) => t !== tag))}
+                  className="text-muted-foreground hover:text-destructive"
+                >
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              </span>
+            ))}
+            <Input
+              value={newTag}
+              onChange={(e) => setNewTag(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleAddTag();
+                }
+              }}
+              placeholder="Add a tag..."
+              className="h-6 w-28 px-2 text-[11px]"
+            />
+
+            {!isTicketed && folders.length > 0 && (
+              <Select
+                value={email.folder_id ?? "__none__"}
+                onValueChange={(v) => onAssignFolder(email.interaction_id, v === "__none__" ? null : v)}
+              >
+                <SelectTrigger className="ml-auto h-7 w-36 text-[11px]">
+                  <SelectValue placeholder="Folder" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none__">No folder</SelectItem>
+                  {folders.map((folder) => (
+                    <SelectItem key={folder.folder_id} value={folder.folder_id}>
+                      {folder.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </section>
+
+          <section>
+            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Message</h3>
+            <div className="flex flex-col gap-3">
+              <Bubble data={rootBubble(email)} />
+              {email.replies.map((reply) => (
+                <Bubble key={reply.interaction_id} data={replyBubble(reply)} />
+              ))}
+            </div>
+          </section>
+        </div>
+      </div>
+
+      {/* Action Toolbar — pinned below the scrolling content, never scrolls out of view */}
+      <div className="flex flex-wrap items-center gap-1.5 border-t border-border bg-muted/20 px-5 py-2.5">
         <Button size="sm" className="gap-1.5" disabled={isClosed} onClick={() => setReplyMode("reply")}>
           <ReplyIcon className="h-3.5 w-3.5" />
           Reply
@@ -570,71 +730,19 @@ export function MessageDetailsView({
           </DropdownMenu>
         )}
 
-        {email.ticket_id && (
-          <Button asChild size="sm" variant="ghost" className="ml-auto gap-1.5 text-primary">
-            <Link to={`/tickets/${email.ticket_id}`}>
-              View full ticket
-              <ExternalLink className="h-3.5 w-3.5" />
-            </Link>
-          </Button>
-        )}
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-5 py-4">
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Tags</span>
-          {email.tags.map((tag) => (
-            <span
-              key={tag}
-              className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground/80"
-            >
-              {tag}
-              <button
-                onClick={() => onUpdateTags(email.interaction_id, email.tags.filter((t) => t !== tag))}
-                className="text-muted-foreground hover:text-destructive"
-              >
-                <X className="h-2.5 w-2.5" />
-              </button>
-            </span>
-          ))}
-          <Input
-            value={newTag}
-            onChange={(e) => setNewTag(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                handleAddTag();
-              }
-            }}
-            placeholder="Add a tag..."
-            className="h-6 w-28 px-2 text-[11px]"
-          />
-
-          {!isTicketed && folders.length > 0 && (
-            <Select
-              value={email.folder_id ?? "__none__"}
-              onValueChange={(v) => onAssignFolder(email.interaction_id, v === "__none__" ? null : v)}
-            >
-              <SelectTrigger className="ml-auto h-7 w-36 text-[11px]">
-                <SelectValue placeholder="Folder" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="__none__">No folder</SelectItem>
-                {folders.map((folder) => (
-                  <SelectItem key={folder.folder_id} value={folder.folder_id}>
-                    {folder.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+        <div className="ml-auto flex items-center gap-1.5">
+          {email.ticket_id && (
+            <Button asChild size="sm" variant="ghost" className="gap-1.5 text-primary">
+              <Link to={`/tickets/${email.ticket_id}`}>
+                View full ticket
+                <ExternalLink className="h-3.5 w-3.5" />
+              </Link>
+            </Button>
           )}
-        </div>
-
-        <div className="flex flex-col gap-3">
-          <Bubble data={rootBubble(email)} />
-          {email.replies.map((reply) => (
-            <Bubble key={reply.interaction_id} data={replyBubble(reply)} />
-          ))}
+          <Button size="sm" variant="ghost" className="gap-1.5" onClick={onBack}>
+            <ArrowLeft className="h-3.5 w-3.5" />
+            Back to Message List
+          </Button>
         </div>
       </div>
 
@@ -649,15 +757,19 @@ export function MessageDetailsView({
           mode={replyMode}
           toEmail={email.from_email}
           subject={email.subject}
-          initialCc={replyMode === "replyAll" ? email.cc : []}
+          initialCc={hasDraft ? email.draft_cc : replyMode === "replyAll" ? email.cc : []}
+          initialBcc={hasDraft ? email.draft_bcc : []}
           initialMessage={hasDraft ? email.draft_message ?? "" : ""}
-          canAttach={isTicketed}
-          canSaveDraft={!isTicketed}
+          isTicketed={isTicketed}
+          draftAttachments={email.draft_attachments}
           isSending={isReplying || isReplyingTicket}
-          isSavingDraft={false}
           onCancel={() => setReplyMode(null)}
           onSend={handleSend}
           onSaveDraft={handleSaveDraft}
+          onSendDraft={handleSendDraft}
+          onDiscardDraft={handleDiscardDraft}
+          onUploadDraftAttachment={handleUploadDraftAttachment}
+          onRemoveDraftAttachment={handleRemoveDraftAttachment}
         />
       )}
 

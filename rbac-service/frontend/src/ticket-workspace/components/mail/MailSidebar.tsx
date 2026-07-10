@@ -8,7 +8,7 @@ import {
   Folder,
   FolderPlus,
   Inbox as InboxIcon,
-  Plus,
+  Pencil,
   Reply,
   Send,
   Ticket as TicketIcon,
@@ -98,9 +98,10 @@ export function MailSidebar({
       <Button
         onClick={onCompose}
         data-active={isComposing}
-        className="h-11 justify-start gap-2.5 rounded-xl text-[13.5px] font-semibold shadow-sm"
+        size="sm"
+        className="h-9 w-fit self-start gap-2 rounded-lg px-4 text-[13px] font-semibold shadow-sm"
       >
-        <Plus className="h-4 w-4" />
+        <Pencil className="h-3.5 w-3.5" />
         Compose
       </Button>
 

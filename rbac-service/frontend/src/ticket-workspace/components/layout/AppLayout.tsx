@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { PageHeader } from "@/components/layout/dashboard-shell";
 
 interface AppLayoutProps {
-  title: string;
+  title?: string;
   description?: string;
   children: ReactNode;
 }
@@ -20,10 +20,14 @@ interface AppLayoutProps {
 // inner element, which (per normal CSS cascade) always wins over an
 // inherited value from an ancestor — silently overriding the
 // `.tm-unified-theme` remap on every single page.
+// `title` is optional so a page (e.g. Mail) can opt out of the title
+// bar entirely — omitting it renders no PageHeader at all, not one
+// with an empty heading, so no leftover margin/whitespace is left
+// behind where the header used to be.
 export function AppLayout({ title, description, children }: AppLayoutProps) {
   return (
     <div>
-      <PageHeader title={title} description={description} />
+      {title && <PageHeader title={title} description={description} />}
       {children}
     </div>
   );

@@ -163,8 +163,8 @@ export function SidebarContent({ collapsed = false, onNavigate }: SidebarContent
 
           {!collapsed && (
             <div className="min-w-0">
-              <h1 className="truncate text-lg font-bold tracking-tight">RBAC</h1>
-              <p className="truncate text-xs text-muted-foreground">Enterprise Platform</p>
+              <h1 className="truncate text-lg font-bold tracking-tight">UTMS</h1>
+              <p className="truncate text-xs text-muted-foreground">Unified Ticket Management System</p>
             </div>
           )}
         </div>

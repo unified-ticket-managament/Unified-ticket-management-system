@@ -80,6 +80,15 @@ class OpenEmailResponse(BaseModel):
     # ticketed (drafts are pre-ticket only).
     draft_message: str | None = None
 
+    draft_cc: list[str] = Field(default_factory=list)
+
+    draft_bcc: list[str] = Field(default_factory=list)
+
+    # Already-uploaded attachments on the draft itself (a separate
+    # interaction row from this root) — distinct from `attachments`
+    # below, which is the root email's own attachments.
+    draft_attachments: list[AttachmentMetadata] = Field(default_factory=list)
+
     attachments: list[AttachmentMetadata] = Field(default_factory=list)
 
     replies: list[InteractionResponse] = Field(default_factory=list)

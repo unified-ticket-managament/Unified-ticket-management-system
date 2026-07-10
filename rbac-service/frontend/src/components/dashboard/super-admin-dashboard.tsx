@@ -35,6 +35,19 @@ import {
 } from "@/lib/mock-tickets";
 import { formatRelativeTime } from "@/lib/utils";
 import { useAuthStore } from "@/store/auth-store";
+import type { MockTicket } from "@/lib/mock-tickets";
+
+interface SuperAdminDashboardProps {
+  // Defaults to the full mock dataset (Super Admin's own view).
+  // Account Manager/Team Lead/Staff dashboards reuse this exact same
+  // component/layout, passing in their own role-scoped subset (see
+  // getTicketsForAccountManager/getTicketsForTeamLead/getTicketsForStaff
+  // in lib/mock-tickets.ts) — every KPI/chart/list below is already a
+  // pure derivation of `tickets`, so no other change was needed to
+  // make this reusable per role.
+  tickets?: MockTicket[];
+  description?: string;
+}
 
 // Super Admin's ticket-operations dashboard — replaces the generic
 // ViewerDashboard for this role only (see dashboard/[[...slug]]/page.tsx).
@@ -42,19 +55,19 @@ import { useAuthStore } from "@/store/auth-store";
 // backend has no aggregation endpoints for these yet; swap the source
 // here for a real query once it does — the shape (six KPIs + two
 // breakdowns + two recent lists) is meant to stay stable across that swap.
-export function SuperAdminDashboard() {
+export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: SuperAdminDashboardProps) {
   const currentUser = useAuthStore((state) => state.user);
 
-  const kpis = useMemo(() => getDashboardKpis(MOCK_TICKETS), []);
-  const priorityBreakdown = useMemo(() => getCountsByPriority(MOCK_TICKETS), []);
-  const statusBreakdown = useMemo(() => getCountsByStatus(MOCK_TICKETS), []);
+  const kpis = useMemo(() => getDashboardKpis(tickets), [tickets]);
+  const priorityBreakdown = useMemo(() => getCountsByPriority(tickets), [tickets]);
+  const statusBreakdown = useMemo(() => getCountsByStatus(tickets), [tickets]);
 
   const recentAssigned = useMemo(
     () =>
-      [...MOCK_TICKETS]
+      [...tickets]
         .sort((a, b) => new Date(b.updatedDate).getTime() - new Date(a.updatedDate).getTime())
         .slice(0, 5),
-    []
+    [tickets]
   );
 
   const quickActions = [
@@ -88,7 +101,7 @@ export function SuperAdminDashboard() {
     <div className="space-y-8">
       <PageHeader
         title={`Welcome back, ${currentUser?.name ?? "there"}`}
-        description="Ticket operations overview across the organization."
+        description={description ?? "Ticket operations overview across the organization."}
       />
 
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">

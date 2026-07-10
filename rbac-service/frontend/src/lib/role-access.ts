@@ -110,9 +110,9 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Permission Requests",
     "Settings",
   ],
-  [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Roles", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Permission Requests", "Profile", "Settings"],
-  [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Permission Requests", "Profile", "Settings"],
-  [ROLE_NAMES.STAFF]: ["Dashboard", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Permission Requests", "Profile", "Settings"],
+  [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Roles", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Permission Requests", "Profile", "Settings"],
+  [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Permission Requests", "Profile", "Settings"],
+  [ROLE_NAMES.STAFF]: ["Dashboard", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log", "Permission Requests", "Profile", "Settings"],
   [ROLE_NAMES.VIEWER]: ["Dashboard", "Permission Requests", "Profile", "Settings"],
 };
 

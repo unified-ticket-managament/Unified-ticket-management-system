@@ -13,7 +13,7 @@ const poppins = Poppins({
 });
 
 export const metadata: Metadata = {
-  title: "Enterprise RBAC Platform",
+  title: "UTMS - Unified Ticket Management System",
   description: "Authentication, User Management & Role-Based Access Control",
 };
 
