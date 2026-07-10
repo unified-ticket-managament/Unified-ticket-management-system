@@ -5,10 +5,16 @@ description: Scaffold a new ticket-mutating action (like status change, resolve,
 
 # Add a ticket-mutating action
 
+**Path note**: this repo's own `backend/` is now an empty shell — `rbac-service/backend` and
+`ticketing-service/backend` were merged into one process, `unified-backend/` (sibling
+directory at the monorepo root). Every `backend/app/...` path in this skill means
+`unified-backend/app/ticketing/...` in practice; run backend commands from `unified-backend/`,
+not from here. See the root `CLAUDE.md`'s "Backend unification" section.
+
 This repo has one repeated recipe for any action that changes a **ticket** and must be
 traceable (timeline + audit trail + UI). Follow it exactly rather than inventing a new
 shape — copy the closest existing action (`change_status` / `change_priority` /
-`transfer_agent` / `claim_ticket` in `backend/app/services/interaction_service.py` are the
+`transfer_agent` / `claim_ticket` in `app/services/interaction_service.py` are the
 best templates) and adapt.
 
 **If the action instead applies to a pending, pre-ticket `Interaction`** (the shared inbox
@@ -93,8 +99,12 @@ action needs a new `AuditEventType` member.
        check as the fallback for anyone the role check didn't already clear — so a specific
        Staff member can be granted the capability without touching `SUPERVISOR_ROLE_NAMES`
        at all. See `CLAUDE.md`'s "Permission-based enforcement" section before adding a new
-       `ticket:*` permission name — it must also exist in `rbac-service/backend/scripts/
-       seed.py`'s `DEFAULT_PERMISSIONS`/`DEFAULT_ROLES` or no one will ever hold it.
+       `ticket:*` permission name — it must also exist in `unified-backend/scripts/rbac_seed/
+       seed.py`'s `DEFAULT_PERMISSIONS`/`DEFAULT_ROLES` or no one will ever hold it. If the new
+       permission should be grantable scoped to one specific ticket (not just a blanket
+       role/override grant), see `ticket:editother_ticket`'s `scope_ticket_id` pattern in
+       `rbac-service/CLAUDE.md`'s "Per-user permission overrides" section rather than
+       inventing a new scoping mechanism.
    - `actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(current_user)`
      — synchronous, no DB lookup; `current_user` is the already-verified `User` passed in
      from the route's `Depends(get_current_agent)`, not a name string

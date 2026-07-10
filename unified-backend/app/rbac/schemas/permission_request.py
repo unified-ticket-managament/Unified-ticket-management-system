@@ -8,6 +8,7 @@ class PermissionRequestCreate(BaseModel):
     permission_id: UUID
     requested_role: str
     reason: str
+    scope_ticket_id: UUID | None = None
 
 
 class PermissionRequestApprove(BaseModel):
@@ -34,6 +35,7 @@ class PermissionRequestResponse(BaseModel):
     permission_name: str
     requested_role: str
     reason: str
+    scope_ticket_id: UUID | None = None
     status: str
     reviewed_by: UUID | None
     reviewed_by_name: str | None = None
@@ -47,3 +49,14 @@ class PermissionRequestResponse(BaseModel):
 
 class EligibleApproverRolesResponse(BaseModel):
     roles: list[str]
+
+
+class TeammateStaffOption(BaseModel):
+    user_id: UUID
+    name: str
+
+
+class TeammateTicketOption(BaseModel):
+    ticket_id: UUID
+    title: str
+    current_status: str

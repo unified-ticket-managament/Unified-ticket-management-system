@@ -21,6 +21,8 @@ from app.rbac.schemas.permission_request import (
     PermissionRequestCreate,
     PermissionRequestReject,
     PermissionRequestResponse,
+    TeammateStaffOption,
+    TeammateTicketOption,
 )
 from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.organization_service import OrganizationService
@@ -29,6 +31,11 @@ from app.rbac.services.permission_request_service import PermissionRequestServic
 from app.rbac.services.permission_resolver import PermissionResolverService
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
+# Reused directly rather than re-implemented — this merged app has
+# both domains in one process now, so the ticket-scoped editother_ticket
+# flow can read ticketing's own repository instead of duplicating its
+# query. Read-only usage only (list_all), never a write.
+from app.ticketing.repositories.ticket_repository import TicketRepository
 
 router = APIRouter(
     prefix="/permission-requests",
@@ -89,6 +96,7 @@ def get_permission_request_service(
         permission_resolver=permission_resolver,
         audit_log_service=audit_log_service,
         notification_service=NotificationService(NotificationRepository(db)),
+        ticket_repository=TicketRepository(db),
     )
 
 
@@ -128,6 +136,47 @@ async def list_eligible_approver_roles(
 ):
     roles = await service.list_eligible_approver_roles(permission_id)
     return EligibleApproverRolesResponse(roles=roles)
+
+
+# --------------------------------------------------
+# Ticket-scope options (editother_ticket dynamic form fields)
+# --------------------------------------------------
+
+
+@router.get(
+    "/scope/staff-options",
+    response_model=list[TeammateStaffOption],
+    status_code=status.HTTP_200_OK,
+    summary="List teammates (same Team Lead) for a ticket-scoped request",
+)
+async def list_staff_options(
+    service: PermissionRequestService = Depends(get_permission_request_service),
+    current_user=Depends(get_current_active_user),
+):
+    teammates = await service.list_teammate_staff(current_user)
+    return [
+        TeammateStaffOption(user_id=u.user_id, name=u.name) for u in teammates
+    ]
+
+
+@router.get(
+    "/scope/ticket-options",
+    response_model=list[TeammateTicketOption],
+    status_code=status.HTTP_200_OK,
+    summary="List a teammate's assigned tickets for a ticket-scoped request",
+)
+async def list_ticket_options(
+    staff_id: UUID = Query(...),
+    service: PermissionRequestService = Depends(get_permission_request_service),
+    current_user=Depends(get_current_active_user),
+):
+    tickets = await service.list_teammate_tickets(current_user, staff_id)
+    return [
+        TeammateTicketOption(
+            ticket_id=t.ticket_id, title=t.title, current_status=t.current_status
+        )
+        for t in tickets
+    ]
 
 
 # --------------------------------------------------

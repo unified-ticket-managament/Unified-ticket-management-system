@@ -5,56 +5,65 @@ description: Launch this project's backend (FastAPI/uvicorn) and frontend (Vite)
 
 # Running the Ticket Management app locally
 
-This app needs **three** processes running, not two: this service's backend and frontend,
-plus the **RBAC service's backend**, since RBAC is the sole issuer of the login tokens this
-app's frontend needs. There is no local login without it — Ticketing's own backend only
-verifies tokens, it never issues them.
+**This repo's own `backend/` is now an empty shell** — `rbac-service/backend` and
+`ticketing-service/backend` were merged into one FastAPI process, `unified-backend/`
+(sibling directory at the monorepo root), with `app/rbac/` and `app/ticketing/` as its two
+subpackages. Every `backend/...` path below should be read as `unified-backend/app/ticketing/...`
+(or `unified-backend/alembic_ticketing/...` for migrations) — see the root `CLAUDE.md`'s
+"Backend unification" section for the full story. This app needs **two** processes now, not
+three: the one unified backend, and this frontend.
 
 ## Prerequisites (check once, skip if already satisfied)
 
-- `backend/.env` exists with at least `DATABASE_URL` (async, `postgresql+asyncpg://...`) and
-  `ALEMBIC_DATABASE_URL` (sync, `postgresql+psycopg2://...`) — see `backend/.env.example`.
-- `frontend/.env` exists with `VITE_API_BASE_URL` (typically `http://localhost:8001`).
-- Backend Python deps installed (`pip install -r requirements.txt` from `backend/`, into a
-  venv — check for `.venv` at repo root first, this repo already has one).
+- `unified-backend/.env` exists with at least `DATABASE_URL` (async, `postgresql+asyncpg://...`),
+  `ALEMBIC_DATABASE_URL` (sync, `postgresql+psycopg2://...`), and `JWT_SECRET_KEY`/`JWT_ALGORITHM`
+  — this is the one shared config for both domains now, not a separate `.env` per backend.
+- `frontend/.env` exists with `VITE_API_BASE_URL` and `VITE_RBAC_API_BASE_URL` **both pointed at
+  the same unified backend** (e.g. both `http://localhost:8000`, one with `/api/v1` and one
+  without) — not two different ports like before the merge.
+- Backend Python deps installed (`pip install -r requirements.txt` from `unified-backend/`, into
+  a venv — check for `.venv` at the monorepo root first, it already exists).
 - Frontend deps installed (`npm install` from `frontend/` — check `frontend/node_modules`
   exists first).
-- Database migrations applied (`alembic upgrade head` from `backend/`). Skipping this is a
-  common source of confusing 500s if a migration landed after the DB was last provisioned.
+- Database migrations applied for **both** chains: `alembic -c alembic_rbac/alembic.ini upgrade head`
+  and `alembic -c alembic_ticketing/alembic.ini upgrade head`, both from `unified-backend/`.
+  Skipping this is a common source of confusing 500s if a migration landed after the DB was
+  last provisioned.
 - At least one `clients` row exists with a real Account-Manager-role user as its owner, or
-  inbound mail has nowhere to route. Seed with `python scripts/seed_clients.py` (from
-  `backend/`) — idempotent, safe to re-run.
+  inbound mail has nowhere to route. Seed with `python -m scripts.ticketing_seed.seed_clients`
+  (from `unified-backend/`) — idempotent, safe to re-run.
 
 ## Launch
 
-**Port conflict**: this backend and RBAC's backend both default to `:8000`. Running both
-at once (the normal case) means putting one of them on `:8001` — the established
-convention in this repo is to move *this* service to `:8001` and leave RBAC on `:8000`.
-
 ```bash
-cd backend && uvicorn app.main:app --reload --port 8001
+cd unified-backend && bash scripts/start.sh
 ```
+(or, run the pieces individually: both `alembic upgrade head` invocations above, then
+`uvicorn app.main:app --reload --port 8000` from `unified-backend/`)
 ```bash
 cd frontend && npm run dev
 ```
 
-Backend: `http://127.0.0.1:8001` — must run on 8001, not uvicorn's default 8000, since the
-RBAC service's own backend (a separate app in this monorepo, `rbac-service/backend`) already
-defaults to 8000 and both are commonly run side by side (Swagger UI at `/docs`, ReDoc at
-`/redoc`).
+Backend: `http://127.0.0.1:8000` — one port now, serving both RBAC (`/api/v1/...`) and
+Ticketing (unprefixed — `/tickets`, `/inbox`, ...) routes from the same process. There is no
+more `:8001` — if you still have `VITE_API_BASE_URL`/`NEXT_PUBLIC_TICKETING_API_URL` pointed at
+8001 anywhere, that's a stale pre-merge config (see the matching Known Issues entry in
+`rbac-service/CLAUDE.md`), not a real second backend.
 Frontend: `http://localhost:5173` (Vite auto-increments to 5174+ if taken — check the actual
-port it prints, and if it's not 5173/5174, add it to `CORS_ORIGINS` in `backend/app/core/config.py`
-or `backend/.env` or the browser will get CORS-blocked requests that look like a generic
+port it prints, and if it's not 5173/5174, add it to `CORS_ORIGINS` in `unified-backend/app/core/config.py`
+or `unified-backend/.env` or the browser will get CORS-blocked requests that look like a generic
 "Network Error").
 
 ## Verifying it's actually up
 
-- `curl http://127.0.0.1:8001/health` should return `{"status": "healthy"}`.
-- Hitting `http://127.0.0.1:8001/docs` in a browser (or `curl -s -o /dev/null -w '%{http_code}'`)
-  should return 200 once uvicorn has finished starting.
+- `curl http://127.0.0.1:8000/health` should return `{"status": "healthy"}`.
+- Hitting `http://127.0.0.1:8000/docs` in a browser (or `curl -s -o /dev/null -w '%{http_code}'`)
+  should return 200 once uvicorn has finished starting — this one Swagger UI now covers both
+  RBAC and Ticketing routes.
 - The frontend dev server prints its bound URL to stdout once ready; a blank page or console
-  network errors usually mean one of the backends isn't reachable at `VITE_API_BASE_URL`/
-  `VITE_RBAC_API_BASE_URL`, or CORS is blocking it (see above).
+  network errors usually mean the backend isn't reachable at `VITE_API_BASE_URL`/
+  `VITE_RBAC_API_BASE_URL` (double-check both really point at the same unified backend), or
+  CORS is blocking it (see above).
 
 ## Driving a real workflow to verify a change
 
@@ -89,10 +98,14 @@ or `backend/.env` or the browser will get CORS-blocked requests that look like a
 7. **Edit Access** (the "Edit Access" panel on a ticket's detail page): log in as `Staff`
    on a ticket *not* assigned to them and confirm "Request Edit Access" is the only option
    (replying/note-adding/priority-changing 403s until access is granted). Submit a request
-   with a reason, then log in as `Team Lead`/`Account Manager`/`Site Lead`/`Super Admin`
-   (any role holding `ticket:edit_ticket` by default) and approve or reject it from the same
-   panel. Confirm an approval lets the Staff member act on the ticket (log back in as them,
-   or just re-check via Swagger with their token) and that both the ticket's own Timeline
-   and its Audit Trail show `EDIT_ACCESS_REQUESTED`/`EDIT_ACCESS_APPROVED` (or `_REJECTED`)
-   — see CLAUDE.md's "Edit access requests" section. A rejected request should leave the
-   requester exactly as restricted as before.
+   with a reason, then log in as `Account Manager`/`Site Lead`/`Super Admin` (any role
+   holding `ticket:editother_ticket` by default — Team Lead too, if its own category matches
+   the ticket's) and approve or reject it from the same panel. Confirm an approval lets the
+   Staff member act on the ticket (log back in as them, or just re-check via Swagger with
+   their token) and that both the ticket's own Timeline and its Audit Trail show
+   `EDIT_ACCESS_REQUESTED`/`EDIT_ACCESS_APPROVED` (or `_REJECTED`) — see CLAUDE.md's "Edit
+   access requests" section. A rejected request should leave the requester exactly as
+   restricted as before. This is a different, deliberately separate mechanism from
+   `rbac-service`'s ticket-*scoped* Permission Request flow (`ticket:editother_ticket`
+   granted for one specific ticket via an rbac-owned override) — see CLAUDE.md's note on how
+   the two coexist.

@@ -13,6 +13,7 @@ export interface AuthUser {
   is_active: boolean;
   permissions: string[];
   override_permissions?: string[];
+  scoped_permissions?: Record<string, string[]>;
 }
 
 export interface User {
@@ -72,6 +73,7 @@ export interface PermissionRequest {
   permission_name: string;
   requested_role: string;
   reason: string;
+  scope_ticket_id: string | null;
   status: PermissionRequestStatus;
   reviewed_by: string | null;
   reviewed_by_name: string | null;
@@ -81,6 +83,17 @@ export interface PermissionRequest {
   granted_override_id: string | null;
   revoked_at: string | null;
   created_at: string;
+}
+
+export interface TeammateStaffOption {
+  user_id: string;
+  name: string;
+}
+
+export interface TeammateTicketOption {
+  ticket_id: string;
+  title: string;
+  current_status: string;
 }
 
 export interface AuditLog {

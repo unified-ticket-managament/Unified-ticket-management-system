@@ -54,7 +54,7 @@ export function EditAccessPanel() {
 
   if (!activeTicket || !currentUser) return null;
 
-  const canReview = currentUser.permissions.includes("ticket:edit_ticket");
+  const canReview = currentUser.permissions.includes("ticket:editother_ticket");
   const myPendingRequest = requests.find(
     (r) => r.requested_by === currentUser.user_id && r.status === "PENDING"
   );

@@ -114,7 +114,7 @@ export async function removeRelatedTicket(
 
 // POST /tickets/{ticket_id}/edit-access/request — ask to work a
 // ticket you're not the assigned agent on and don't already hold
-// ticket:edit_ticket for.
+// ticket:editother_ticket for.
 export async function requestEditAccess(
   ticketId: string,
   payload: EditAccessRequestCreate

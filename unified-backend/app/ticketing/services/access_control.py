@@ -124,17 +124,26 @@ async def ensure_agent_can_act_on_ticket(
     this, same as they bypass ownership scoping everywhere else in
     this file.
 
-    Two further ways to act on a ticket you're not assigned to, both
-    letting more than one person work the same ticket at once (see
-    ticket:edit_ticket in seed.py's DEFAULT_ROLES): holding
-    ticket:edit_ticket outright (by role default or a personal
-    override — see rbac-service's permission_overrides), or having an
-    approved, not-yet-expired per-ticket edit-access grant (see
+    Own-ticket access is gated by ticket:editown_ticket (default for
+    every role, so this is normally a formality, but it's now a real,
+    named, revocable-at-the-role-level permission rather than a bare
+    hardcoded bypass). Acting on someone else's ticket needs one of:
+    holding ticket:editother_ticket outright (by role default — Super
+    Admin/Site Lead/Account Manager/Team Lead — or an unscoped
+    personal override), or a ticket:editother_ticket override scoped
+    to this one ticket_id specifically (see has_permission_for_ticket
+    and rbac-service's scope_ticket_id on UserPermissionOverride —
+    this is how a Staff member gets approved to work exactly one
+    teammate's ticket, via the Permission Request workflow, without
+    touching every other ticket in scope). A third, unrelated way to
+    act on a ticket you're not assigned to is a ticketing-native,
+    per-ticket edit-access grant (see
     TicketEditAccessRequestRepository.has_active_grant) requested and
-    reviewed via the edit-access endpoints. `edit_access_repository`
-    is optional so callers that don't pass one simply skip the
-    per-ticket-grant check (still get the permission-based bypass,
-    which needs no repository).
+    reviewed via the edit-access endpoints — a separate mechanism from
+    the rbac-service permission-request one above, deliberately left
+    untouched. `edit_access_repository` is optional so callers that
+    don't pass one simply skip that check (still get the two
+    permission-based bypasses, which need no repository).
 
     Deliberately NOT applied to claim_ticket (picking up an unclaimed
     ticket is how you become its assigned agent in the first place)
@@ -148,9 +157,11 @@ async def ensure_agent_can_act_on_ticket(
         return
 
     if ticket.agent_id == current_user.user_id:
-        return
-
-    if has_permission(current_user, "ticket:edit_ticket"):
+        if has_permission(current_user, "ticket:editown_ticket"):
+            return
+    elif has_permission_for_ticket(
+        current_user, "ticket:editother_ticket", ticket.ticket_id
+    ):
         return
 
     if edit_access_repository is not None and await edit_access_repository.has_active_grant(
@@ -282,6 +293,29 @@ def has_permission(current_user: User, permission_name: str) -> bool:
     return permission_name in permissions
 
 
+def has_permission_for_ticket(
+    current_user: User,
+    permission_name: str,
+    ticket_id,
+) -> bool:
+    """
+    Like has_permission, but also true if the permission was granted
+    scoped to this one specific ticket (see rbac-service's
+    scope_ticket_id on UserPermissionOverride/PermissionRequest and
+    the JWT's separate `scoped_permissions` claim) — a Staff member
+    approved for ticket:editother_ticket on exactly one teammate's
+    ticket never reads as holding it everywhere via has_permission,
+    only as holding it for that ticket_id here.
+    """
+
+    if has_permission(current_user, permission_name):
+        return True
+
+    scoped = getattr(current_user, "scoped_permissions", None) or {}
+
+    return str(ticket_id) in scoped.get(permission_name, [])
+
+
 def ensure_has_permission(current_user: User, permission_name: str) -> None:
     """Raising wrapper around has_permission — 403s if it's missing."""
 
@@ -300,14 +334,17 @@ def ensure_can_review_edit_access(
     Gates approving/rejecting a per-ticket edit-access request:
     reviewer must be able to see the ticket at all (the same category
     gate every other ticket action uses) and must hold
-    ticket:edit_ticket themselves — the same permission that lets
-    someone bypass ensure_agent_can_act_on_ticket's ownership check,
-    so only someone who could already act on any ticket in scope can
-    decide to let someone else in too.
+    ticket:editother_ticket themselves — the same permission that lets
+    someone bypass ensure_agent_can_act_on_ticket's non-owner check,
+    so only someone who could already act on any other ticket in scope
+    can decide to let someone else in too. Deliberately the unscoped
+    check (has_permission, not has_permission_for_ticket) — a Staff
+    member holding a one-ticket-scoped grant on ticket A can't use
+    that to start reviewing edit-access requests on ticket B.
     """
 
     ensure_agent_can_view_ticket(ticket, current_user)
-    ensure_has_permission(current_user, "ticket:edit_ticket")
+    ensure_has_permission(current_user, "ticket:editother_ticket")
 
 
 def ensure_can_reassign_ticket(current_user: User) -> None:

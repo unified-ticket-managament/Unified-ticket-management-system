@@ -11,6 +11,8 @@ import {
   ProfileForm,
   Role,
   RoleForm,
+  TeammateStaffOption,
+  TeammateTicketOption,
   TokenResponse,
   User,
   UserForm,
@@ -42,6 +44,7 @@ export const authService = {
     return {
       ...response.data,
       permissions: response.data.permissions ?? [],
+      scoped_permissions: response.data.scoped_permissions ?? {},
     };
   },
 
@@ -365,8 +368,26 @@ export const permissionRequestService = {
     permission_id: string;
     requested_role: string;
     reason: string;
+    scope_ticket_id?: string | null;
   }): Promise<PermissionRequest> => {
     const response = await api.post<PermissionRequest>("/permission-requests", data);
+
+    return response.data;
+  },
+
+  staffOptions: async (): Promise<TeammateStaffOption[]> => {
+    const response = await api.get<TeammateStaffOption[]>(
+      "/permission-requests/scope/staff-options"
+    );
+
+    return response.data;
+  },
+
+  ticketOptions: async (staffId: string): Promise<TeammateTicketOption[]> => {
+    const response = await api.get<TeammateTicketOption[]>(
+      "/permission-requests/scope/ticket-options",
+      { params: { staff_id: staffId } }
+    );
 
     return response.data;
   },

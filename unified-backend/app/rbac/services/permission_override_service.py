@@ -70,7 +70,7 @@ class PermissionOverrideService:
         target: User,
     ) -> None:
 
-        actor_permissions, _ = (
+        actor_permissions, _, _ = (
             await self.permission_resolver.get_effective_permissions(actor)
         )
 
@@ -132,7 +132,7 @@ class PermissionOverrideService:
 
         await self.ensure_can_manage_overrides(actor, target)
 
-        role_permission_names, _ = (
+        role_permission_names, _, _ = (
             await self.permission_resolver.get_effective_permissions(target)
         )
 
@@ -149,6 +149,7 @@ class PermissionOverrideService:
             await self.permission_override_repository.get_active_by_user_and_permission(
                 target_user_id,
                 request.permission_id,
+                scope_ticket_id=request.scope_ticket_id,
             )
         )
 
@@ -156,8 +157,13 @@ class PermissionOverrideService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "This permission is already granted to this user. "
-                    "Revoke the existing grant first if you want to change "
+                    "This permission is already granted to this user"
+                    + (
+                        " for this ticket"
+                        if request.scope_ticket_id is not None
+                        else ""
+                    )
+                    + ". Revoke the existing grant first if you want to change "
                     "its expiry or reason."
                 ),
             )
@@ -168,6 +174,7 @@ class PermissionOverrideService:
             granted_by=actor.user_id,
             reason=request.reason,
             expires_at=request.expires_at,
+            scope_ticket_id=request.scope_ticket_id,
         )
 
         override = await self.permission_override_repository.create(override)
@@ -188,6 +195,11 @@ class PermissionOverrideService:
                             else None
                         ),
                         "reason": request.reason,
+                        "scope_ticket_id": (
+                            str(request.scope_ticket_id)
+                            if request.scope_ticket_id
+                            else None
+                        ),
                     }
                 ),
             )
@@ -306,5 +318,6 @@ class PermissionOverrideService:
             expires_at=override.expires_at,
             revoked_at=override.revoked_at,
             revoked_by=override.revoked_by,
+            scope_ticket_id=override.scope_ticket_id,
             is_active=is_active,
         )
