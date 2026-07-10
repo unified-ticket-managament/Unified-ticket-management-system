@@ -48,7 +48,7 @@ Backend: `http://127.0.0.1:8000` — one port now, serving both RBAC (`/api/v1/.
 Ticketing (unprefixed — `/tickets`, `/inbox`, ...) routes from the same process. There is no
 more `:8001` — if you still have `VITE_API_BASE_URL`/`NEXT_PUBLIC_TICKETING_API_URL` pointed at
 8001 anywhere, that's a stale pre-merge config (see the matching Known Issues entry in
-`rbac-service/CLAUDE.md`), not a real second backend.
+`unified-frontend/CLAUDE.md`), not a real second backend.
 Frontend: `http://localhost:5173` (Vite auto-increments to 5174+ if taken — check the actual
 port it prints, and if it's not 5173/5174, add it to `CORS_ORIGINS` in `unified-backend/app/core/config.py`
 or `unified-backend/.env` or the browser will get CORS-blocked requests that look like a generic

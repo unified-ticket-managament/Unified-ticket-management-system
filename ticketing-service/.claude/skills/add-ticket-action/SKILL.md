@@ -103,7 +103,7 @@ action needs a new `AuditEventType` member.
        seed.py`'s `DEFAULT_PERMISSIONS`/`DEFAULT_ROLES` or no one will ever hold it. If the new
        permission should be grantable scoped to one specific ticket (not just a blanket
        role/override grant), see `ticket:editother_ticket`'s `scope_ticket_id` pattern in
-       `rbac-service/CLAUDE.md`'s "Per-user permission overrides" section rather than
+       `unified-frontend/CLAUDE.md`'s "Per-user permission overrides" section rather than
        inventing a new scoping mechanism.
    - `actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(current_user)`
      — synchronous, no DB lookup; `current_user` is the already-verified `User` passed in
@@ -125,8 +125,8 @@ action needs a new `AuditEventType` member.
 ## Frontend steps
 
 This frontend has a second, embedded copy at
-`../rbac-service/frontend/src/ticket-workspace/` (mounted inside RBAC's Next.js app —
-see that repo's CLAUDE.md). It is **not** kept in sync automatically. Do the steps
+`../unified-frontend/src/ticket-workspace/` (formerly `rbac-service/frontend/src/ticket-workspace/`
+— mounted inside the shell's Next.js app, see that repo's CLAUDE.md). It is **not** kept in sync automatically. Do the steps
 below in this app first, verify the action end-to-end here, then decide whether the
 same change needs porting into the embedded copy (same relative paths, but under
 `ticket-workspace/` and importing via the `@tw/*` alias instead of `@/*`).

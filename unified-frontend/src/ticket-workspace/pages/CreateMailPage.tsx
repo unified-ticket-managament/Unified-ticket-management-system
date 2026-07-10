@@ -19,7 +19,7 @@ function randomMessageId() {
 }
 
 // Only Site Lead gets the dummy-mail simulator (see
-// rbac-service/frontend/src/lib/role-access.ts's NAV_ITEMS_BY_ROLE
+// ../../lib/role-access.ts's NAV_ITEMS_BY_ROLE
 // and the dashboard catch-all page's slug carve-out) — this is the
 // defense-in-depth check for anyone who navigates here directly. The
 // backend enforces the same rule on POST /emails/dummy (403s for any

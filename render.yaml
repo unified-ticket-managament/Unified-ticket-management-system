@@ -81,7 +81,12 @@ services:
     name: rbac-frontend
     runtime: node
     plan: free
-    rootDir: rbac-service/frontend
+    # Directory renamed to unified-frontend/ (formerly rbac-service/frontend)
+    # once it was confirmed to already be a strict superset of
+    # ticketing-service/frontend — see the root CLAUDE.md's frontend-
+    # consolidation note. Service `name` deliberately left as `rbac-frontend`
+    # to avoid changing this service's URL/hostname on Render.
+    rootDir: unified-frontend
     buildCommand: npm ci && npm run build
     startCommand: npm run start
     envVars:
@@ -128,34 +133,6 @@ services:
       # SECOND PASS: same unified-backend URL, WITH /api/v1 — used for
       # the unified login flow (this frontend authenticates against the
       # backend's RBAC half directly).
-      - key: VITE_RBAC_API_BASE_URL
-        sync: false
-      # SECOND PASS: real rbac-frontend URL — sidebar's "RBAC Admin" link.
-      - key: VITE_RBAC_FRONTEND_URL
-        sync: false
-
-  - type: web
-    name: ticketing-frontend
-    runtime: static
-    # No `plan` field here — static sites have no compute dyno/tier (Render
-    # serves them free off a CDN), and Render rejects `plan: free` for
-    # runtime: static specifically (it's valid on the other 3 services above).
-    rootDir: ticketing-service/frontend
-    buildCommand: npm ci && npm run build
-    staticPublishPath: ./dist
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-    envVars:
-      - key: NODE_VERSION
-        value: 20.18.0
-      # SECOND PASS: real ticketing-backend URL. Vite bakes VITE_* vars in
-      # at build time — trigger a manual rebuild after setting this.
-      - key: VITE_API_BASE_URL
-        sync: false
-      # SECOND PASS: real rbac-backend URL + /api/v1 — used for the unified
-      # login flow (this frontend authenticates against RBAC directly).
       - key: VITE_RBAC_API_BASE_URL
         sync: false
       # SECOND PASS: real rbac-frontend URL — sidebar's "RBAC Admin" link.
