@@ -6,6 +6,7 @@ import {
   MessageSquareText,
   Send,
   Settings2,
+  UserPlus,
 } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
@@ -20,7 +21,7 @@ import {
   uploadAttachment,
 } from "@tw/api/interaction";
 import { listAgents } from "@tw/api/agent";
-import { listEditAccessRequests, transferTicketAgent } from "@tw/api/ticket";
+import { claimTicket, listEditAccessRequests, transferTicketAgent } from "@tw/api/ticket";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import type {
@@ -108,6 +109,9 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
     changeTicketPriority,
     { successMessage: "Ticket priority changed." }
   );
+  const { run: runClaim, isLoading: isClaimLoading } = useApiAction(claimTicket, {
+    successMessage: "Ticket claimed.",
+  });
   const { run: runTransfer, isLoading: isTransferLoading } = useApiAction(
     transferTicketAgent,
     { successMessage: (res) => res.message }
@@ -146,7 +150,14 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
     ? (currentUser?.permissions ?? []).includes("ticket:transfer")
     : true;
   const isUnclaimed = activeTicket.agent_id == null;
-  const transferCandidates = agents.filter((a) => a.user_id !== activeTicket.agent_id);
+  // Excludes the caller themselves — self-assignment goes through the
+  // dedicated Claim tile (POST /tickets/{id}/claim) so it's recorded as
+  // a CLAIM interaction/TICKET_CLAIMED audit event, not an
+  // AGENT_TRANSFER — picking yourself here would otherwise call
+  // transferTicketAgent and misrecord a claim as a transfer.
+  const transferCandidates = agents.filter(
+    (a) => a.user_id !== activeTicket.agent_id && a.user_id !== currentUser?.user_id
+  );
   // Closed is terminal for every action except Change Status itself —
   // that's the only way to reopen a closed ticket, so it stays enabled.
   const isTicketClosed = activeTicket.current_status === "CLOSED";
@@ -196,6 +207,13 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
     const result = await runPriority(activeTicket!.ticket_id, { new_priority: newPriority });
     if (result) {
       closeModal();
+      onActionComplete();
+    }
+  }
+
+  async function handleClaim() {
+    const result = await runClaim(activeTicket!.ticket_id);
+    if (result) {
       onActionComplete();
     }
   }
@@ -254,6 +272,15 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
             title={canChangePriority ? undefined : "Requires the Change Priority permission"}
             onClick={() => setModal("priority")}
           />
+          {isUnclaimed && (
+            <ActionTile
+              icon={<UserPlus size={16} />}
+              label="Claim Ticket"
+              tone="accent"
+              disabled={isTicketClosed || isClaimLoading}
+              onClick={handleClaim}
+            />
+          )}
           {(!isStaff || canTransfer) && (
             <ActionTile
               icon={<ArrowLeftRight size={16} />}

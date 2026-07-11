@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Loader2, Paperclip, Send, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
 import {
@@ -15,7 +16,7 @@ import {
   validateFiles,
 } from "@tw/lib/attachmentMeta";
 import { escapeHtml, htmlToPlainText } from "@tw/lib/richText";
-import type { AttachmentMeta } from "@tw/types";
+import type { AttachmentMeta, ClientContact } from "@tw/types";
 
 function parseEmails(value: string): string[] {
   return value
@@ -27,6 +28,11 @@ function parseEmails(value: string): string[] {
 interface ReplyComposerProps {
   mode: "reply" | "replyAll";
   toEmail: string | null;
+  // Every personal address this client has previously contacted the
+  // shared inbox from — backs the "To" dropdown so an agent can
+  // redirect a reply to a different contact instead of always the
+  // sender of this particular thread.
+  contacts: ClientContact[];
   subject: string;
   initialCc?: string[];
   initialBcc?: string[];
@@ -36,7 +42,7 @@ interface ReplyComposerProps {
   // Ticketed-thread send — files are local (`File[]`) and only
   // actually upload once the reply is sent, via the existing
   // ticket-scoped attachment endpoint (unchanged from before).
-  onSend: (payload: { message: string; cc: string[]; bcc: string[]; files: File[] }) => void;
+  onSend: (payload: { message: string; cc: string[]; bcc: string[]; files: File[]; to: string | null }) => void;
   // Pre-ticket path: every field is continuously auto-saved as a
   // real server-side Draft (interaction-scoped, so it works with no
   // ticket at all — see the backend's AttachmentService), which is
@@ -44,7 +50,11 @@ interface ReplyComposerProps {
   isTicketed: boolean;
   draftAttachments: AttachmentMeta[];
   onSaveDraft: (message: string, cc: string[], bcc: string[]) => Promise<unknown>;
-  onSendDraft: () => Promise<unknown>;
+  // `toEmail` overrides the default recipient for this send only —
+  // deliberately not part of the auto-saved draft (see ReplyComposer's
+  // own "To" dropdown, chosen at send time, and InteractionService.
+  // send_draft on the backend).
+  onSendDraft: (toEmail?: string | null) => Promise<unknown>;
   onDiscardDraft: () => Promise<unknown>;
   onUploadDraftAttachment: (files: File[]) => Promise<AttachmentMeta[] | null>;
   onRemoveDraftAttachment: (attachmentId: string) => Promise<boolean>;
@@ -68,6 +78,7 @@ type DraftSaveStatus = "idle" | "saving" | "saved";
 export function ReplyComposer({
   mode,
   toEmail,
+  contacts,
   subject,
   initialCc = [],
   initialBcc = [],
@@ -86,6 +97,7 @@ export function ReplyComposer({
   const [bodyHtml, setBodyHtml] = useState(() =>
     initialMessage ? `<p>${escapeHtml(initialMessage).replace(/\n/g, "<br/>")}</p>` : ""
   );
+  const [selectedTo, setSelectedTo] = useState(toEmail ?? "");
   const [cc, setCc] = useState(initialCc.join(", "));
   const [bcc, setBcc] = useState(initialBcc.join(", "));
   const [showBcc, setShowBcc] = useState(initialBcc.length > 0);
@@ -103,6 +115,17 @@ export function ReplyComposer({
 
   const isEmpty = isRichTextEmpty(bodyHtml);
   const displaySubject = /^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`;
+
+  const toOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const options: ClientContact[] = [];
+    for (const contact of [...(toEmail ? [{ email: toEmail, name: null }] : []), ...contacts]) {
+      if (seen.has(contact.email)) continue;
+      seen.add(contact.email);
+      options.push(contact);
+    }
+    return options;
+  }, [contacts, toEmail]);
 
   async function persistDraft() {
     setDraftStatus("saving");
@@ -148,6 +171,7 @@ export function ReplyComposer({
         cc: parseEmails(cc),
         bcc: parseEmails(bcc),
         files,
+        to: selectedTo || null,
       });
       return;
     }
@@ -157,7 +181,7 @@ export function ReplyComposer({
     // yet if the user clicks Send quickly after typing.
     setIsSendingDraft(true);
     await persistDraft();
-    await onSendDraft();
+    await onSendDraft(selectedTo || null);
     setIsSendingDraft(false);
   }
 
@@ -211,7 +235,22 @@ export function ReplyComposer({
       <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
         <div className="flex items-center gap-2 text-xs">
           <span className="w-10 flex-none text-muted-foreground">To</span>
-          <Input value={toEmail ?? ""} readOnly className="h-8 flex-1 bg-muted/30 text-xs" />
+          {toOptions.length > 1 ? (
+            <Select value={selectedTo} onValueChange={setSelectedTo}>
+              <SelectTrigger className="h-8 flex-1 text-xs">
+                <SelectValue placeholder="Select a recipient" />
+              </SelectTrigger>
+              <SelectContent>
+                {toOptions.map((contact) => (
+                  <SelectItem key={contact.email} value={contact.email}>
+                    {contact.name ? `${contact.name} <${contact.email}>` : contact.email}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Input value={selectedTo} readOnly className="h-8 flex-1 bg-muted/30 text-xs" />
+          )}
         </div>
         <div className="flex items-center gap-2 text-xs">
           <span className="w-10 flex-none text-muted-foreground">Cc</span>

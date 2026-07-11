@@ -5,8 +5,10 @@ from shared_models.models import User
 
 from app.ticketing.enums import AuditEntityType, AuditEventType
 from app.ticketing.repositories.client_repository import ClientRepository
+from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.user_repository import UserRepository
-from app.ticketing.schemas.client import ClientCreate, ClientResponse
+from app.ticketing.schemas.client import ClientContactResponse, ClientCreate, ClientResponse
+from app.ticketing.schemas.payloads.email_payload import EmailPayload
 from app.ticketing.services.access_control import ACCOUNT_MANAGER_ROLE_NAME
 from app.ticketing.services.audit_log_service import AuditLogService
 
@@ -22,9 +24,11 @@ class ClientService:
         self,
         client_repository: ClientRepository,
         user_repository: UserRepository,
+        interaction_repository: InteractionRepository | None = None,
     ):
         self.client_repository = client_repository
         self.user_repository = user_repository
+        self.interaction_repository = interaction_repository
 
     async def create(
         self,
@@ -105,3 +109,38 @@ class ClientService:
             )
             for client in clients
         ]
+
+    async def list_contacts(self, client_id) -> list[ClientContactResponse]:
+        """
+        Every distinct personal address this client company has ever
+        emailed our shared inbox from, most-recently-used first —
+        backs the reply composer's "To" picker so an agent can
+        address a reply to any contact who has actually written in,
+        not only whoever happened to send the one thread being
+        replied to.
+        """
+
+        if self.interaction_repository is None:
+            return []
+
+        emails = await self.interaction_repository.list_inbound_emails_for_client(
+            client_id
+        )
+
+        seen: set[str] = set()
+        contacts: list[ClientContactResponse] = []
+        for interaction in emails:
+            try:
+                payload = EmailPayload.model_validate(interaction.payload)
+            except Exception:
+                continue
+
+            if not payload.from_email or payload.from_email in seen:
+                continue
+
+            seen.add(payload.from_email)
+            contacts.append(
+                ClientContactResponse(email=payload.from_email, name=payload.from_name)
+            )
+
+        return contacts

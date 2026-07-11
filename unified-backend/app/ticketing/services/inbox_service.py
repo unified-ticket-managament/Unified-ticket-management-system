@@ -9,6 +9,9 @@ from app.ticketing.repositories.attachment_repository import AttachmentRepositor
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.ticketing.repositories.ticket_edit_access_repository import (
+    TicketEditAccessRequestRepository,
+)
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 
@@ -48,9 +51,11 @@ class InboxService:
       exists). A Team Lead with no category assigned sees nothing,
       matching ensure_agent_can_view_ticket's own safe-failure
       convention.
-    - Staff: only threads whose ticket is currently assigned to them
-      — same "ticketed only" restriction as Team Lead, scoped by
-      agent_id instead of category.
+    - Staff: only threads whose ticket is currently assigned to them,
+      plus any ticket they hold an approved, not-yet-expired edit-
+      access grant on — same "ticketed only" restriction as Team
+      Lead, scoped by agent_id (or an edit-access grant) instead of
+      category.
 
     Because a reply is stored once on the shared thread row (never
     duplicated per viewer), this same scoped query automatically
@@ -64,11 +69,13 @@ class InboxService:
         attachment_repository: AttachmentRepository | None = None,
         user_repository: UserRepository | None = None,
         ticket_repository: TicketRepository | None = None,
+        edit_access_repository: TicketEditAccessRequestRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
         self.user_repository = user_repository
         self.ticket_repository = ticket_repository
+        self.edit_access_repository = edit_access_repository
 
     async def get_inbox(
         self,
@@ -93,6 +100,7 @@ class InboxService:
         account_manager_id: UUID | None = None
         ticket_type: str | None = None
         assigned_agent_id: UUID | None = None
+        extra_ticket_ids: list[UUID] | None = None
 
         if role_name in GLOBAL_INBOX_ROLE_NAMES:
             # No filter at all when they've asked to see everything;
@@ -109,6 +117,16 @@ class InboxService:
             )
         elif role_name == "Staff":
             assigned_agent_id = current_user.user_id
+            # An approved edit-access grant is exactly what lets this
+            # Staff member act on a ticket they aren't assigned to
+            # (ensure_agent_can_act_on_ticket) — without this, the
+            # ticket's mail thread would never surface in their own
+            # inbox even after approval, only reachable by navigating
+            # to the ticket directly.
+            if self.edit_access_repository is not None:
+                extra_ticket_ids = await self.edit_access_repository.list_active_ticket_ids_for_user(
+                    current_user.user_id
+                )
         else:
             # Shouldn't happen — get_current_agent already blocks
             # Viewer, and every other AGENT_ROLE_NAMES member is
@@ -123,6 +141,7 @@ class InboxService:
             folder_id=folder_id,
             ticket_type=ticket_type,
             assigned_agent_id=assigned_agent_id,
+            extra_ticket_ids=extra_ticket_ids,
         )
 
         interactions_with_attachments: set = set()

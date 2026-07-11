@@ -8,8 +8,6 @@ import {
   openInboxThread,
   saveDraft,
   sendDraft,
-  snoozeInteraction,
-  unsnoozeInteraction,
   updateInteractionFolder,
   updateInteractionTags,
 } from "@/api/inbox";
@@ -134,14 +132,14 @@ function matchesSearch(item: InboxItem, term: string): boolean {
   return SEARCHABLE_FIELDS.some((getField) => getField(item).toLowerCase().includes(term));
 }
 
-type BaseTabKey = "pending" | "replied" | "ticketed" | "archived" | "snoozed" | "all";
+type BaseTabKey = "pending" | "replied" | "ticketed" | "archived" | "all";
 
 /**
  * Owns all Mail-page state: fetching every base view in parallel,
  * deriving the "unassigned"/"mine" client-side views from "pending",
  * search/client/time filtering, custom-folder browsing (orthogonal to
  * `activeView` — composes as `view=all&folder_id=X`), and the
- * open-thread/snooze/tag/folder actions. Extracted from what used to
+ * open-thread/tag/folder actions. Extracted from what used to
  * be AgentInbox.tsx's internal state so the new MailSidebar
  * (counts/view switching) and the message list can share one source
  * of truth without prop-drilling through a rewritten AgentInbox.
@@ -158,7 +156,6 @@ export function useMailInbox() {
     replied: [],
     ticketed: [],
     archived: [],
-    snoozed: [],
     all: [],
   });
   const [sentItems, setSentItems] = useState<InboxItem[]>([]);
@@ -179,8 +176,6 @@ export function useMailInbox() {
   const [isFolderLoading, setIsFolderLoading] = useState(false);
 
   const { run: runOpen } = useApiAction(openInboxThread);
-  const { run: runSnooze } = useApiAction(snoozeInteraction);
-  const { run: runUnsnooze } = useApiAction(unsnoozeInteraction);
   const { run: runUpdateTags } = useApiAction(updateInteractionTags);
   const { run: runUpdateFolder } = useApiAction(updateInteractionFolder);
   const { run: runCreateFolder } = useApiAction(createMailFolder);
@@ -208,13 +203,12 @@ export function useMailInbox() {
       // stage after this batch resolved — folded in here (as a no-op
       // resolved promise for non-supervisors) so every base view is
       // one single round-trip stage regardless of role.
-      const [pending, replied, ticketed, archived, snoozed, sent, drafts, clientList, folderList, all] =
+      const [pending, replied, ticketed, archived, sent, drafts, clientList, folderList, all] =
         await Promise.all([
           getInbox("pending", { clientId }),
           getInbox("replied", { clientId }),
           getInbox("ticketed", { clientId }),
           getInbox("archived", { clientId }),
-          getInbox("snoozed", { clientId }),
           getSent(),
           getDrafts(),
           listClients(),
@@ -232,7 +226,6 @@ export function useMailInbox() {
         replied: replied.items,
         ticketed: ticketed.items,
         archived: archived.items,
-        snoozed: snoozed.items,
         all: isSupervisor ? all.items : [],
       };
 
@@ -301,28 +294,6 @@ export function useMailInbox() {
         return next;
       });
     }
-  }
-
-  async function snoozeItem(interactionId: string, snoozeUntil: string) {
-    const result = await runSnooze(interactionId, snoozeUntil);
-    if (result) {
-      if (selectedEmail?.interaction_id === interactionId) {
-        setSelectedEmail({ ...selectedEmail, snoozed_until: result.snoozed_until });
-      }
-      await refresh();
-    }
-    return Boolean(result);
-  }
-
-  async function unsnoozeItem(interactionId: string) {
-    const result = await runUnsnooze(interactionId);
-    if (result) {
-      if (selectedEmail?.interaction_id === interactionId) {
-        setSelectedEmail({ ...selectedEmail, snoozed_until: result.snoozed_until });
-      }
-      await refresh();
-    }
-    return Boolean(result);
   }
 
   async function updateTags(interactionId: string, tags: string[]) {
@@ -451,7 +422,6 @@ export function useMailInbox() {
     replied: rowsByTab.replied,
     ticketed: rowsByTab.ticketed,
     archived: rowsByTab.archived,
-    snoozed: rowsByTab.snoozed,
     all: rowsByTab.all,
     unassigned,
     mine,
@@ -497,8 +467,6 @@ export function useMailInbox() {
     setActiveFolder,
     createFolder,
     deleteFolder,
-    snoozeItem,
-    unsnoozeItem,
     updateTags,
     assignFolder,
     saveDraftMessage,

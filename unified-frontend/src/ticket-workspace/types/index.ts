@@ -80,6 +80,13 @@ export interface ClientResponse {
   account_manager_active: boolean;
 }
 
+// One personal address this client company has contacted our shared
+// inbox from — backs the reply composers' "To" dropdown.
+export interface ClientContact {
+  email: string;
+  name: string | null;
+}
+
 // ==========================================================
 // Attachments
 // ==========================================================
@@ -123,7 +130,7 @@ export interface CurrentUser {
 // Account Manager Inbox
 // ==========================================================
 
-export type InboxView = "pending" | "replied" | "ticketed" | "archived" | "snoozed" | "all";
+export type InboxView = "pending" | "replied" | "ticketed" | "archived" | "all";
 export type InboxScope = "mine" | "all";
 
 export interface InboxItem {
@@ -211,12 +218,6 @@ export interface OpenEmailResponse {
   recommended_ticket_reason: string | null;
 }
 
-export interface InteractionSnoozeResponse {
-  interaction_id: string;
-  snoozed_until: string | null;
-  message: string;
-}
-
 export interface InteractionTagsResponse {
   interaction_id: string;
   tags: string[];
@@ -285,6 +286,7 @@ export interface InteractionReplyRequest {
   message: string;
   cc?: string[];
   bcc?: string[];
+  to_email?: string | null;
 }
 
 export interface InteractionReplyResponse {
@@ -470,6 +472,7 @@ export interface ReplyRequest {
   message: string;
   cc?: string[];
   bcc?: string[];
+  to_email?: string | null;
 }
 
 // ==========================================================

@@ -17,7 +17,6 @@ const VIEW_LABELS: Record<MailViewKey, string> = {
   drafts: "Drafts",
   replied: "Replied",
   ticketed: "Ticketed",
-  snoozed: "Snoozed",
   archived: "Archived",
   all: "All Inboxes",
 };
@@ -58,6 +57,12 @@ export function InboxPage() {
     mail.setActiveFolder(folderId);
   }
 
+  function handleSelectCategory(category: string | null) {
+    setComposeOpen(false);
+    setSelectedEmail(null);
+    mail.setActiveCategory(category);
+  }
+
   async function handleOpen(interactionId: string) {
     setComposeOpen(false);
     await mail.openThread(interactionId);
@@ -86,12 +91,16 @@ export function InboxPage() {
     return result;
   }
 
-  const folderLabelBase = mail.activeFolder
-    ? mail.folders.find((f) => f.folder_id === mail.activeFolder)?.name ?? "Folder"
-    : VIEW_LABELS[mail.activeView];
-  const folderCount = mail.activeFolder
-    ? mail.folderCounts[mail.activeFolder] ?? 0
-    : mail.viewCounts[mail.activeView] ?? 0;
+  const folderLabelBase = mail.activeCategory
+    ? mail.activeCategory
+    : mail.activeFolder
+      ? mail.folders.find((f) => f.folder_id === mail.activeFolder)?.name ?? "Folder"
+      : VIEW_LABELS[mail.activeView];
+  const folderCount = mail.activeCategory
+    ? mail.categoryCounts[mail.activeCategory] ?? 0
+    : mail.activeFolder
+      ? mail.folderCounts[mail.activeFolder] ?? 0
+      : mail.viewCounts[mail.activeView] ?? 0;
   const folderLabel = `${folderLabelBase} (${folderCount})`;
 
   return (
@@ -122,6 +131,10 @@ export function InboxPage() {
           onSelectFolder={handleSelectFolder}
           onCreateFolder={mail.createFolder}
           onDeleteFolder={mail.deleteFolder}
+          categories={mail.categories}
+          categoryCounts={mail.categoryCounts}
+          activeCategory={mail.activeCategory}
+          onSelectCategory={handleSelectCategory}
         />
 
         <div className="min-h-[560px] min-w-0 flex-1">
@@ -146,8 +159,6 @@ export function InboxPage() {
               onDiscardDraft={mail.discardDraftMessage}
               onUploadDraftAttachment={mail.uploadDraftAttachment}
               onRemoveDraftAttachment={mail.removeDraftAttachment}
-              onSnooze={mail.snoozeItem}
-              onUnsnooze={mail.unsnoozeItem}
               onUpdateTags={mail.updateTags}
               onAssignFolder={mail.assignFolder}
             />

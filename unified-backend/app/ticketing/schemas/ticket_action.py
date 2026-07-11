@@ -27,6 +27,14 @@ class ReplyCreate(BaseModel):
 
     bcc: list[EmailStr] = Field(default_factory=list)
 
+    # Overrides the recipient the envelope would otherwise default to
+    # (the ticket's latest inbound sender) — lets an agent pick any
+    # personal address this client has previously contacted the
+    # shared inbox from, via the "To" dropdown, instead of always
+    # replying to whoever happened to send the most recent message.
+    # None means "use the default".
+    to_email: EmailStr | None = None
+
 
 class InteractionReplyRequest(BaseModel):
     """
@@ -45,6 +53,9 @@ class InteractionReplyRequest(BaseModel):
     cc: list[EmailStr] = Field(default_factory=list)
 
     bcc: list[EmailStr] = Field(default_factory=list)
+
+    # See ReplyCreate.to_email above — same override, same reason.
+    to_email: EmailStr | None = None
 
 
 class InteractionReplyResponse(ORMBase):

@@ -9,8 +9,6 @@ import {
   openInboxThread,
   saveDraft,
   sendDraft,
-  snoozeInteraction,
-  unsnoozeInteraction,
   updateInteractionFolder,
   updateInteractionTags,
   uploadDraftAttachment as uploadDraftAttachmentRequest,
@@ -19,11 +17,21 @@ import {
 import { deleteAttachment } from "@tw/api/interaction";
 import { createMailFolder, deleteMailFolder, listMailFolders } from "@tw/api/mailFolder";
 import { listClients } from "@tw/api/clients";
+import { listCategories } from "@tw/api/categories";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
-import type { ClientResponse, DraftItem, InboxItem, InboxResponse, InboxView, MailFolder, SentItem } from "@tw/types";
+import type {
+  CategoryResponse,
+  ClientResponse,
+  DraftItem,
+  InboxItem,
+  InboxResponse,
+  InboxView,
+  MailFolder,
+  SentItem,
+} from "@tw/types";
 
 const SUPERVISOR_ROLES = ["Site Lead", "Super Admin"];
 
@@ -148,14 +156,14 @@ function matchesSearch(item: InboxItem, term: string): boolean {
   return SEARCHABLE_FIELDS.some((getField) => getField(item).toLowerCase().includes(term));
 }
 
-type BaseTabKey = "pending" | "replied" | "ticketed" | "archived" | "snoozed" | "all";
+type BaseTabKey = "pending" | "replied" | "ticketed" | "archived" | "all";
 
 /**
  * Owns all Mail-page state: fetching every base view in parallel,
  * deriving the "unassigned"/"mine" client-side views from "pending",
  * search/client/time filtering, custom-folder browsing (orthogonal to
  * `activeView` — composes as `view=all&folder_id=X`), and the
- * open-thread/snooze/tag/folder actions. Extracted from what used to
+ * open-thread/tag/folder actions. Extracted from what used to
  * be AgentInbox.tsx's internal state so the new MailSidebar
  * (counts/view switching) and the message list can share one source
  * of truth without prop-drilling through a rewritten AgentInbox.
@@ -172,7 +180,6 @@ export function useMailInbox() {
     replied: [],
     ticketed: [],
     archived: [],
-    snoozed: [],
     all: [],
   });
   const [sentItems, setSentItems] = useState<InboxItem[]>([]);
@@ -192,9 +199,15 @@ export function useMailInbox() {
   const [folderItems, setFolderItems] = useState<InboxItem[]>([]);
   const [isFolderLoading, setIsFolderLoading] = useState(false);
 
+  // Category "folders" (Eligibility, Claims, AR, ...) are a fixed,
+  // backend-known set — not a custom mail_folders row. Sliced
+  // client-side from the already-fetched "ticketed" set (same
+  // no-extra-request pattern as unassigned/mine below), keyed by
+  // Ticket.ticket_type via InboxItem.ticket_category.
+  const [categories, setCategories] = useState<CategoryResponse[]>([]);
+  const [activeCategory, setActiveCategoryRaw] = useState<string | null>(null);
+
   const { run: runOpen } = useApiAction(openInboxThread);
-  const { run: runSnooze } = useApiAction(snoozeInteraction);
-  const { run: runUnsnooze } = useApiAction(unsnoozeInteraction);
   const { run: runUpdateTags } = useApiAction(updateInteractionTags);
   const { run: runUpdateFolder } = useApiAction(updateInteractionFolder);
   const { run: runCreateFolder } = useApiAction(createMailFolder);
@@ -210,11 +223,18 @@ export function useMailInbox() {
 
   const setActiveView = useCallback((view: MailViewKey) => {
     setActiveFolderRaw(null);
+    setActiveCategoryRaw(null);
     setActiveViewRaw(view);
   }, []);
 
   const setActiveFolder = useCallback((folderId: string | null) => {
+    setActiveCategoryRaw(null);
     setActiveFolderRaw(folderId);
+  }, []);
+
+  const setActiveCategory = useCallback((category: string | null) => {
+    setActiveFolderRaw(null);
+    setActiveCategoryRaw(category);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -227,17 +247,17 @@ export function useMailInbox() {
       // stage after this batch resolved — folded in here (as a no-op
       // resolved promise for non-supervisors) so every base view is
       // one single round-trip stage regardless of role.
-      const [pending, replied, ticketed, archived, snoozed, sent, drafts, clientList, folderList, all] =
+      const [pending, replied, ticketed, archived, sent, drafts, clientList, folderList, categoryList, all] =
         await Promise.all([
           getInbox("pending", { clientId }),
           getInbox("replied", { clientId }),
           getInbox("ticketed", { clientId }),
           getInbox("archived", { clientId }),
-          getInbox("snoozed", { clientId }),
           getSent(),
           getDrafts(),
           listClients(),
           listMailFolders(),
+          listCategories(),
           isSupervisor
             ? getInbox("all", { clientId, scope: "all" })
             : Promise.resolve<InboxResponse>({ total: 0, items: [] }),
@@ -251,13 +271,19 @@ export function useMailInbox() {
         replied: replied.items,
         ticketed: ticketed.items,
         archived: archived.items,
-        snoozed: snoozed.items,
         all: isSupervisor ? all.items : [],
       };
 
       setRowsByTab(next);
       setClients(clientList);
       setFolders(folderList);
+      // Team Lead/Staff are already category-scoped to their own
+      // single category everywhere else (ensure_agent_can_view_ticket) —
+      // a category filter is redundant (and would just show one
+      // enabled entry) for them. Only roles that see across multiple
+      // categories (Account Manager, Site Lead, Super Admin) get it.
+      const isCategoryScopedRole = currentUser?.role === "Team Lead" || currentUser?.role === "Staff";
+      setCategories(isCategoryScopedRole ? [] : categoryList);
 
       const counts = await Promise.all(
         folderList.map((folder) => getInbox("all", { clientId, scope, folderId: folder.folder_id }))
@@ -322,28 +348,6 @@ export function useMailInbox() {
     }
   }
 
-  async function snoozeItem(interactionId: string, snoozeUntil: string) {
-    const result = await runSnooze(interactionId, snoozeUntil);
-    if (result) {
-      if (selectedEmail?.interaction_id === interactionId) {
-        setSelectedEmail({ ...selectedEmail, snoozed_until: result.snoozed_until });
-      }
-      await refresh();
-    }
-    return Boolean(result);
-  }
-
-  async function unsnoozeItem(interactionId: string) {
-    const result = await runUnsnooze(interactionId);
-    if (result) {
-      if (selectedEmail?.interaction_id === interactionId) {
-        setSelectedEmail({ ...selectedEmail, snoozed_until: result.snoozed_until });
-      }
-      await refresh();
-    }
-    return Boolean(result);
-  }
-
   async function updateTags(interactionId: string, tags: string[]) {
     const result = await runUpdateTags(interactionId, tags);
     if (result) {
@@ -392,8 +396,8 @@ export function useMailInbox() {
   // reply locally) so the sent reply's attachments — reassigned
   // server-side from the now-deleted draft onto it — actually show
   // up immediately, instead of only after the thread is reopened.
-  async function sendDraftMessage(interactionId: string) {
-    const result = await runSendDraft(interactionId);
+  async function sendDraftMessage(interactionId: string, toEmail?: string | null) {
+    const result = await runSendDraft(interactionId, toEmail);
     if (result && selectedEmail?.interaction_id === interactionId) {
       const fresh = await openInboxThread(interactionId);
       setSelectedEmail(fresh);
@@ -498,12 +502,24 @@ export function useMailInbox() {
     ).values()
   );
 
+  // Category counts/items, derived from the already-fetched "ticketed"
+  // set — only ticketed rows carry a real ticket_category, so this
+  // is naturally a slice of Ticketed, not a separate mail state.
+  const categoryCounts: Record<string, number> = {};
+  for (const item of rowsByTab.ticketed) {
+    if (item.ticket_category) {
+      categoryCounts[item.ticket_category] = (categoryCounts[item.ticket_category] ?? 0) + 1;
+    }
+  }
+  const categoryItems = activeCategory
+    ? rowsByTab.ticketed.filter((item) => item.ticket_category === activeCategory)
+    : [];
+
   const rowsByView: Record<MailViewKey, InboxItem[]> = {
     pending: rowsByTab.pending,
     replied: rowsByTab.replied,
     ticketed: rowsByTab.ticketed,
     archived: rowsByTab.archived,
-    snoozed: rowsByTab.snoozed,
     all: rowsByTab.all,
     unassigned,
     mine,
@@ -515,9 +531,11 @@ export function useMailInbox() {
     Object.entries(rowsByView).map(([key, rows]) => [key, rows.length])
   ) as Record<MailViewKey, number>;
 
-  const filteredItems = activeFolder
-    ? applyFilters(folderItems)
-    : applyFilters(rowsByView[activeViewRaw]);
+  const filteredItems = activeCategory
+    ? applyFilters(categoryItems)
+    : activeFolder
+      ? applyFilters(folderItems)
+      : applyFilters(rowsByView[activeViewRaw]);
 
   const managedClientCount = currentUser
     ? clients.filter((c) => c.account_manager_id === currentUser.user_id).length
@@ -549,8 +567,10 @@ export function useMailInbox() {
     setActiveFolder,
     createFolder,
     deleteFolder,
-    snoozeItem,
-    unsnoozeItem,
+    categories,
+    categoryCounts,
+    activeCategory,
+    setActiveCategory,
     updateTags,
     assignFolder,
     saveDraftMessage,

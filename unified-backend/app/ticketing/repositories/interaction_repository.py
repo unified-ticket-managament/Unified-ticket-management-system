@@ -98,6 +98,7 @@ class InteractionRepository:
         folder_id: UUID | None = None,
         ticket_type: str | None = None,
         assigned_agent_id: UUID | None = None,
+        extra_ticket_ids: list[UUID] | None = None,
     ) -> list[Interaction]:
         """
         The role-scoped inbox query — always over thread ROOTS
@@ -122,18 +123,19 @@ class InteractionRepository:
           Team Lead never sees a still-pending, pre-ticket item —
           see the role propagation rules in InboxService.get_inbox).
         - `assigned_agent_id` set: Staff scoping — only threads whose
-          ticket is currently assigned to (claimed by) this agent.
+          ticket is currently assigned to (claimed by) this agent, or
+          (if `extra_ticket_ids` is also given) one this Staff member
+          holds an approved edit-access grant on — otherwise an
+          approved request never surfaces the ticket's mail thread in
+          Staff's own inbox, only reachable via the Tickets page.
           Same inner-join-implies-ticketed-only reasoning as above.
         - `view`:
-          - "pending": not yet replied to or ticketed, and not
-            currently snoozed — the triage queue.
+          - "pending": not yet replied to or ticketed — the triage
+            queue.
           - "replied": answered directly, never became a ticket.
           - "ticketed": promoted to (or attached onto) a ticket.
           - "archived": marked Informational/Archive — stored, no
             ticket, no work assignment, still searchable here.
-          - "snoozed": pending, but hidden from "pending" until
-            `snoozed_until` — resurfaces automatically, no background
-            job needed since this is just a `now()` comparison on read.
           - "all": every root email regardless of state — the "All
             Inboxes" overview, normally paired with no account_manager
             scoping.
@@ -157,7 +159,15 @@ class InteractionRepository:
             query = query.where(Ticket.ticket_type == ticket_type)
 
         if assigned_agent_id is not None:
-            query = query.where(Ticket.agent_id == assigned_agent_id)
+            if extra_ticket_ids:
+                query = query.where(
+                    or_(
+                        Ticket.agent_id == assigned_agent_id,
+                        Ticket.ticket_id.in_(extra_ticket_ids),
+                    )
+                )
+            else:
+                query = query.where(Ticket.agent_id == assigned_agent_id)
 
         if folder_id is not None:
             query = query.where(Interaction.folder_id == folder_id)
@@ -168,23 +178,10 @@ class InteractionRepository:
             Interaction.parent_interaction_id.is_(None),
         )
 
-        now = datetime.now(timezone.utc)
-
         if view == "pending":
             query = query.where(
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.PENDING,
-                or_(
-                    Interaction.snoozed_until.is_(None),
-                    Interaction.snoozed_until <= now,
-                ),
-            )
-        elif view == "snoozed":
-            query = query.where(
-                Interaction.ticket_id.is_(None),
-                Interaction.status == InteractionStatus.PENDING,
-                Interaction.snoozed_until.isnot(None),
-                Interaction.snoozed_until > now,
             )
         elif view == "replied":
             query = query.where(
@@ -259,6 +256,32 @@ class InteractionRepository:
                 Interaction.is_visible.is_(True),
             )
             .order_by(Interaction.created_at.desc())
+        )
+
+        return list(result.scalars().all())
+
+    async def list_inbound_emails_for_client(
+        self,
+        client_id: UUID,
+    ) -> list[Interaction]:
+        """
+        Every inbound EMAIL interaction ever received from this
+        client company, most recent first — the raw material for
+        deriving "every personal address this client has contacted
+        our shared inbox from" (see ClientService.list_contacts).
+        Deduping by from_email is left to the caller since that's a
+        display concern, not a query one.
+        """
+
+        result = await self.db.execute(
+            select(Interaction)
+            .where(
+                Interaction.client_id == client_id,
+                Interaction.interaction_type == "EMAIL",
+                Interaction.direction == InteractionDirection.INBOUND,
+                Interaction.is_visible.is_(True),
+            )
+            .order_by(Interaction.received_at.desc())
         )
 
         return list(result.scalars().all())
@@ -598,64 +621,6 @@ class InteractionRepository:
 
         return interaction
 
-    async def snooze(
-        self,
-        interaction: Interaction,
-        snooze_until: datetime,
-    ) -> Interaction | None:
-        """
-        Atomically hides a pending, unticketed interaction from the
-        "pending" view until `snooze_until` — same conditional-UPDATE
-        race guard as claim/archive, so a snooze racing a concurrent
-        claim/convert-to-ticket can't silently win.
-        """
-
-        result = await self.db.execute(
-            update(Interaction)
-            .where(
-                Interaction.interaction_id == interaction.interaction_id,
-                Interaction.ticket_id.is_(None),
-                Interaction.status == InteractionStatus.PENDING,
-            )
-            .values(snoozed_until=snooze_until)
-        )
-
-        if result.rowcount == 0:
-            return None
-
-        await self.db.flush()
-        await self.db.refresh(interaction)
-
-        return interaction
-
-    async def unsnooze(
-        self,
-        interaction: Interaction,
-    ) -> Interaction | None:
-        """
-        Clears an active snooze early, returning the item to
-        "pending" immediately. Guarded on `snoozed_until IS NOT NULL`
-        so calling this on an item that was never snoozed (or whose
-        snooze already lapsed and was cleared) is a clean no-op 409,
-        not a silent success.
-        """
-
-        result = await self.db.execute(
-            update(Interaction)
-            .where(
-                Interaction.interaction_id == interaction.interaction_id,
-                Interaction.snoozed_until.isnot(None),
-            )
-            .values(snoozed_until=None)
-        )
-
-        if result.rowcount == 0:
-            return None
-
-        await self.db.flush()
-        await self.db.refresh(interaction)
-
-        return interaction
 
     async def set_tags(
         self,

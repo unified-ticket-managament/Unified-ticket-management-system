@@ -12,7 +12,7 @@ const EVENT_META: Record<AuditEventType, AuditEventMeta> = {
   TICKET_RESOLVED: { icon: "✅", label: "Ticket Resolved", tone: "success" },
   STATUS_CHANGED: { icon: "⚙", label: "Status Changed", tone: "info" },
   PRIORITY_CHANGED: { icon: "🔥", label: "Priority Changed", tone: "danger" },
-  AGENT_TRANSFERRED: { icon: "🔁", label: "Agent Transferred", tone: "accent" },
+  AGENT_TRANSFERRED: { icon: "🔁", label: "Agent Assigned", tone: "accent" },
   INTERACTION_HIDDEN: { icon: "🙈", label: "Interaction Hidden", tone: "warning" },
   ATTACHMENT_UPLOADED: { icon: "📎", label: "Attachment Uploaded", tone: "default" },
   NOTE_ADDED: { icon: "📝", label: "Note Added", tone: "warning" },

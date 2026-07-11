@@ -3,7 +3,6 @@
 import { useState, type ReactNode } from "react";
 import {
   Archive,
-  Clock3,
   FileEdit,
   Folder,
   FolderPlus,
@@ -14,6 +13,7 @@ import {
   Ticket as TicketIcon,
   Trash2,
   UserCheck,
+  Users,
   UserX,
   type LucideIcon,
 } from "lucide-react";
@@ -23,10 +23,10 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import type { MailViewKey } from "@tw/hooks/useMailInbox";
-import type { MailFolder } from "@tw/types";
+import type { CategoryResponse, MailFolder } from "@tw/types";
 
 // Exact order required by the Mail spec: Compose, Inbox, Unassigned,
-// My Claims, Sent, Drafts, Replied, Ticketed, Snoozed, Archived.
+// My Claims, Sent, Drafts, Replied, Ticketed, Archived.
 // Compose is rendered separately above this list (it's an action,
 // not a folder view).
 const VIEW_ITEMS: Array<{ key: MailViewKey; label: string; icon: LucideIcon }> = [
@@ -37,7 +37,6 @@ const VIEW_ITEMS: Array<{ key: MailViewKey; label: string; icon: LucideIcon }> =
   { key: "drafts", label: "Drafts", icon: FileEdit },
   { key: "replied", label: "Replied", icon: Reply },
   { key: "ticketed", label: "Ticketed", icon: TicketIcon },
-  { key: "snoozed", label: "Snoozed", icon: Clock3 },
   { key: "archived", label: "Archived", icon: Archive },
 ];
 
@@ -54,6 +53,10 @@ interface MailSidebarProps {
   onSelectFolder: (folderId: string | null) => void;
   onCreateFolder: (name: string) => Promise<unknown>;
   onDeleteFolder: (folderId: string) => Promise<void>;
+  categories: CategoryResponse[];
+  categoryCounts: Record<string, number>;
+  activeCategory: string | null;
+  onSelectCategory: (category: string | null) => void;
 }
 
 function CountBadge({ count }: { count: number }): ReactNode {
@@ -78,6 +81,10 @@ export function MailSidebar({
   onSelectFolder,
   onCreateFolder,
   onDeleteFolder,
+  categories,
+  categoryCounts,
+  activeCategory,
+  onSelectCategory,
 }: MailSidebarProps) {
   const [isAddingFolder, setIsAddingFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState("");
@@ -108,7 +115,7 @@ export function MailSidebar({
       <nav className="flex flex-col gap-0.5">
         {VIEW_ITEMS.map((item) => {
           const Icon = item.icon;
-          const isActive = !isComposing && !activeFolder && activeView === item.key;
+          const isActive = !isComposing && !activeFolder && !activeCategory && activeView === item.key;
           return (
             <button
               key={item.key}
@@ -133,11 +140,11 @@ export function MailSidebar({
       {isSupervisor && (
         <button
           type="button"
-          data-active={!isComposing && !activeFolder && activeView === "all"}
+          data-active={!isComposing && !activeFolder && !activeCategory && activeView === "all"}
           onClick={() => onSelectView("all")}
           className={cn(
             "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] font-medium transition-all duration-150",
-            !isComposing && !activeFolder && activeView === "all"
+            !isComposing && !activeFolder && !activeCategory && activeView === "all"
               ? "bg-primary/10 text-primary"
               : "text-foreground/80 hover:translate-x-0.5 hover:bg-muted hover:text-foreground"
           )}
@@ -219,6 +226,38 @@ export function MailSidebar({
           );
         })}
       </div>
+
+      {categories.length > 0 && (
+        <>
+          <Separator />
+          <div className="flex flex-col gap-0.5">
+            <span className="px-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Categories
+            </span>
+            {categories.map((category) => {
+              const isActive = !isComposing && activeCategory === category.category_name;
+              return (
+                <button
+                  key={category.category_id}
+                  type="button"
+                  data-active={isActive}
+                  onClick={() => onSelectCategory(isActive ? null : category.category_name)}
+                  className={cn(
+                    "group flex items-center gap-2.5 rounded-lg px-3 py-1.5 text-left text-[13px] font-medium transition-all duration-150",
+                    isActive
+                      ? "bg-primary/10 text-primary"
+                      : "text-foreground/80 hover:bg-muted hover:text-foreground"
+                  )}
+                >
+                  <Users className={cn("h-3.5 w-3.5 flex-none", isActive ? "text-primary" : "text-muted-foreground")} />
+                  <span className="truncate">{category.category_name}</span>
+                  <CountBadge count={categoryCounts[category.category_name] ?? 0} />
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
     </aside>
   );
 }

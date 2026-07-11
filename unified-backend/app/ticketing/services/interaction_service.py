@@ -35,10 +35,8 @@ from app.ticketing.schemas.interaction import (
     InteractionCreate,
     InteractionFolderResponse,
     InteractionResponse,
-    InteractionSnoozeResponse,
     InteractionTagsResponse,
     InteractionUpdate,
-    SnoozeRequest,
     TagsUpdateRequest,
     ThreadResponse,
 )
@@ -529,6 +527,7 @@ class InteractionService:
                     account_manager_email=am_email,
                     cc=request.cc,
                     bcc=request.bcc,
+                    to_email_override=request.to_email,
                 )
 
         payload: dict[str, Any] = {"message": request.message}
@@ -639,6 +638,7 @@ class InteractionService:
                     account_manager_email=am_email,
                     cc=request.cc,
                     bcc=request.bcc,
+                    to_email_override=request.to_email,
                 )
 
         payload: dict[str, Any] = {"message": request.message}
@@ -1272,116 +1272,6 @@ class InteractionService:
             message="Archived.",
         )
 
-    async def snooze_interaction(
-        self,
-        interaction_id: UUID,
-        request: SnoozeRequest,
-        current_user: User,
-    ) -> InteractionSnoozeResponse:
-        """
-        Hides a pending, unticketed inbox item from the "pending"
-        view until `request.snooze_until` — it resurfaces on its own,
-        no background job needed, since every read just compares
-        against `now()`.
-        """
-
-        snooze_until = request.snooze_until
-        interaction = await self.interaction_repository.get_by_id(interaction_id)
-
-        if interaction is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Interaction not found.",
-            )
-
-        if interaction.ticket_id is not None:
-            raise HTTPException(
-                status_code=http_status.HTTP_400_BAD_REQUEST,
-                detail="This item has already become a ticket.",
-            )
-
-        await self._ensure_can_act_on_pending_interaction(interaction, current_user)
-
-        snoozed = await self.interaction_repository.snooze(interaction, snooze_until)
-
-        if snoozed is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_409_CONFLICT,
-                detail="This item is no longer pending.",
-            )
-
-        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
-            current_user
-        )
-
-        await AuditLogService.log_event(
-            self.interaction_repository.db,
-            entity_type=AuditEntityType.INTERACTION,
-            entity_id=snoozed.interaction_id,
-            event_type=AuditEventType.INTERACTION_SNOOZED,
-            actor_id=actor_id,
-            actor_name=actor_name,
-            actor_role=actor_role,
-            old_values={"snoozed_until": None},
-            new_values={"snoozed_until": snooze_until.isoformat()},
-        )
-
-        return InteractionSnoozeResponse(
-            interaction_id=snoozed.interaction_id,
-            snoozed_until=snoozed.snoozed_until,
-            message=f"Snoozed until {snooze_until.isoformat()}.",
-        )
-
-    async def unsnooze_interaction(
-        self,
-        interaction_id: UUID,
-        current_user: User,
-    ) -> InteractionSnoozeResponse:
-        """
-        Clears an active snooze early, returning the item to
-        "pending" immediately.
-        """
-
-        interaction = await self.interaction_repository.get_by_id(interaction_id)
-
-        if interaction is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Interaction not found.",
-            )
-
-        await self._ensure_can_act_on_pending_interaction(interaction, current_user)
-
-        unsnoozed = await self.interaction_repository.unsnooze(interaction)
-
-        if unsnoozed is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_409_CONFLICT,
-                detail="This item isn't currently snoozed.",
-            )
-
-        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
-            current_user
-        )
-
-        await AuditLogService.log_event(
-            self.interaction_repository.db,
-            entity_type=AuditEntityType.INTERACTION,
-            entity_id=unsnoozed.interaction_id,
-            event_type=AuditEventType.INTERACTION_UNSNOOZED,
-            actor_id=actor_id,
-            actor_name=actor_name,
-            actor_role=actor_role,
-            old_values={"snoozed_until": "..."},
-            new_values={"snoozed_until": None},
-        )
-
-        return InteractionSnoozeResponse(
-            interaction_id=unsnoozed.interaction_id,
-            snoozed_until=None,
-            message="Unsnoozed.",
-        )
-
     async def set_interaction_tags(
         self,
         interaction_id: UUID,
@@ -1686,6 +1576,7 @@ class InteractionService:
         self,
         interaction_id: UUID,
         current_user: User,
+        to_email: str | None = None,
     ) -> InteractionReplyResponse:
         """
         Sends current_user's draft on this thread — hands its saved
@@ -1697,6 +1588,12 @@ class InteractionService:
         created reply before deleting the now-obsolete draft row —
         otherwise those attachments would be left pointing at a
         deleted interaction.
+
+        `to_email`, when the agent picked a contact from the "To"
+        dropdown at send time, overrides the default recipient — it's
+        deliberately not part of the auto-saved draft payload (unlike
+        message/cc/bcc), since it's only meaningful at the moment of
+        sending, not while still drafting.
         """
 
         root = await self._resolve_pending_thread_root(interaction_id)
@@ -1720,7 +1617,9 @@ class InteractionService:
 
         reply = await self.add_interaction_reply(
             interaction_id=root.interaction_id,
-            request=InteractionReplyRequest(message=message, cc=cc, bcc=bcc),
+            request=InteractionReplyRequest(
+                message=message, cc=cc, bcc=bcc, to_email=to_email
+            ),
             current_user=current_user,
         )
 
@@ -1826,12 +1725,35 @@ class InteractionService:
         replies = await self.interaction_repository.list_thread(root.interaction_id)
         ordered = [root, *replies]
 
+        # Batch-fetch attachments for every message in the thread, same
+        # batching shape as get_ticket_interactions — each message
+        # renders its own attachments, not one bucket for the root only.
+        attachments_by_interaction: dict[UUID, list[AttachmentMetadata]] = {}
+        if self.attachment_repository is not None and self.storage_service is not None:
+            interaction_ids = [item.interaction_id for item in ordered]
+            attachments_map = await self.attachment_repository.list_by_interaction_ids(
+                interaction_ids
+            )
+            interaction_ids_with_files = list(attachments_map.keys())
+            metadata_lists = await asyncio.gather(
+                *(
+                    attachments_to_metadata(attachments_map[iid], self.storage_service)
+                    for iid in interaction_ids_with_files
+                )
+            )
+            attachments_by_interaction = dict(zip(interaction_ids_with_files, metadata_lists))
+
+        def _with_attachments(item):
+            return _to_response(
+                item, attachments_by_interaction.get(item.interaction_id)
+            )
+
         return ThreadResponse(
-            parent_interaction=_to_response(root),
-            child_interactions=[_to_response(reply) for reply in replies],
-            ordered_thread=[_to_response(item) for item in ordered],
+            parent_interaction=_with_attachments(root),
+            child_interactions=[_with_attachments(reply) for reply in replies],
+            ordered_thread=[_with_attachments(item) for item in ordered],
             reply_count=len(replies),
-            latest_interaction=_to_response(ordered[-1]),
+            latest_interaction=_with_attachments(ordered[-1]),
         )
 
     async def hide_interaction(

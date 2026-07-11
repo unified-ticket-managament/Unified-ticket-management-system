@@ -14,7 +14,7 @@ const TYPE_META: Record<string, InteractionTypeMeta> = {
   RESOLVED: { icon: "✅", label: "Ticket Resolved", tone: "success" },
   PRIORITY_CHANGE: { icon: "🔥", label: "Priority Change", tone: "danger" },
   ATTACHMENT: { icon: "📎", label: "Attachment", tone: "default" },
-  AGENT_TRANSFER: { icon: "🔁", label: "Agent Transfer", tone: "info" },
+  AGENT_TRANSFER: { icon: "🔁", label: "Agent Assigned", tone: "info" },
   CLAIM: { icon: "🙌", label: "Ticket Claimed", tone: "success" },
   EDIT_ACCESS_REQUESTED: { icon: "🙏", label: "Edit Access Requested", tone: "warning" },
   EDIT_ACCESS_APPROVED: { icon: "🤝", label: "Edit Access Approved", tone: "success" },

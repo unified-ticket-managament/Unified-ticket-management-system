@@ -11,7 +11,6 @@ import type {
   InteractionFolderResponse,
   InteractionReplyRequest,
   InteractionReplyResponse,
-  InteractionSnoozeResponse,
   InteractionTagsResponse,
   OpenEmailResponse,
   SentResponse,
@@ -125,29 +124,6 @@ export async function archiveInteraction(
 ): Promise<InteractionArchiveResponse> {
   const { data } = await apiClient.post<InteractionArchiveResponse>(
     `/inbox/${interactionId}/archive`
-  );
-  return data;
-}
-
-// POST /inbox/{interaction_id}/snooze — hide from "pending" until
-// snoozeUntil; resurfaces there automatically once that time passes.
-export async function snoozeInteraction(
-  interactionId: string,
-  snoozeUntil: string
-): Promise<InteractionSnoozeResponse> {
-  const { data } = await apiClient.post<InteractionSnoozeResponse>(
-    `/inbox/${interactionId}/snooze`,
-    { snooze_until: snoozeUntil }
-  );
-  return data;
-}
-
-// POST /inbox/{interaction_id}/unsnooze — clear an active snooze early.
-export async function unsnoozeInteraction(
-  interactionId: string
-): Promise<InteractionSnoozeResponse> {
-  const { data } = await apiClient.post<InteractionSnoozeResponse>(
-    `/inbox/${interactionId}/unsnooze`
   );
   return data;
 }

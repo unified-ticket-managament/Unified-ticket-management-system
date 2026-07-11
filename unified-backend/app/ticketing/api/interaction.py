@@ -21,6 +21,7 @@ from app.ticketing.schemas.interaction import (
     ThreadResponse,
 )
 from app.ticketing.services.interaction_service import InteractionService
+from app.ticketing.storage import get_storage_service
 
 router = APIRouter(
     prefix="/interactions",
@@ -60,6 +61,7 @@ async def get_thread(
         user_repository=user_repository,
         client_repository=client_repository,
         attachment_repository=attachment_repository,
+        storage_service=get_storage_service(),
     )
 
     return await service.get_thread(

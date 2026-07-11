@@ -23,13 +23,16 @@ from app.ticketing.services.attachment_service import attachments_to_metadata
 from app.ticketing.storage.base import StorageService
 
 
-def _reply_to_response(interaction) -> InteractionResponse:
+def _reply_to_response(
+    interaction, attachments: list | None = None
+) -> InteractionResponse:
     """
     Builds an InteractionResponse for a thread reply without
     touching `interaction.attachments` — that relationship is lazy
     and unloaded here, so letting pydantic's from_attributes
     machinery read it directly would trigger an unawaited lazy load
     (same reasoning as interaction_service.py's `_to_response`).
+    Real attachments are batch-fetched by the caller and passed in.
     """
 
     return InteractionResponse(
@@ -48,7 +51,7 @@ def _reply_to_response(interaction) -> InteractionResponse:
         parent_interaction_id=interaction.parent_interaction_id,
         received_at=interaction.received_at,
         created_at=interaction.created_at,
-        attachments=[],
+        attachments=attachments or [],
         conversation_id=interaction.conversation_id,
         in_reply_to_message_id=interaction.in_reply_to_message_id,
         references=interaction.references or [],
@@ -150,17 +153,25 @@ class OpenEmailService:
         # cuts this endpoint's round-trip count roughly in half.
         (
             replies,
-            attachments,
             claimed_by_name,
             account_manager_name,
             draft,
         ) = await asyncio.gather(
             self.interaction_repository.list_thread(interaction_id),
-            self._fetch_attachments(interaction_id),
             self._fetch_claimed_by_name(interaction.claimed_by),
             self._fetch_account_manager_name(interaction.client_id),
             self._fetch_draft(interaction, current_user),
         )
+
+        # Batch-fetch attachments for the root plus every reply in one
+        # query — each bubble in the thread (Mail view) and each
+        # message (Interactions page thread drawer) renders its own
+        # attachments inline, not one attachment bucket for the whole
+        # conversation.
+        attachments_by_interaction = await self._fetch_attachments_batch(
+            [interaction_id, *(reply.interaction_id for reply in replies)]
+        )
+        attachments = attachments_by_interaction.get(interaction_id, [])
 
         ticket_priority = None
         ticket_category = None
@@ -203,7 +214,12 @@ class OpenEmailService:
             draft_bcc=draft["bcc"],
             draft_attachments=draft["attachments"],
             attachments=attachments,
-            replies=[_reply_to_response(reply) for reply in replies],
+            replies=[
+                _reply_to_response(
+                    reply, attachments_by_interaction.get(reply.interaction_id, [])
+                )
+                for reply in replies
+            ],
             recommended_ticket_id=recommended_ticket_id,
             recommended_ticket_reason=recommended_ticket_reason,
         )
@@ -216,6 +232,24 @@ class OpenEmailService:
             interaction_id
         )
         return await attachments_to_metadata(raw_attachments, self.storage_service)
+
+    async def _fetch_attachments_batch(
+        self, interaction_ids: list[UUID]
+    ) -> dict[UUID, list]:
+        if self.attachment_repository is None or self.storage_service is None:
+            return {}
+
+        attachments_map = await self.attachment_repository.list_by_interaction_ids(
+            interaction_ids
+        )
+        ids_with_files = list(attachments_map.keys())
+        metadata_lists = await asyncio.gather(
+            *(
+                attachments_to_metadata(attachments_map[iid], self.storage_service)
+                for iid in ids_with_files
+            )
+        )
+        return dict(zip(ids_with_files, metadata_lists))
 
     async def _fetch_claimed_by_name(self, claimed_by: UUID | None) -> str | None:
         if self.user_repository is None or claimed_by is None:

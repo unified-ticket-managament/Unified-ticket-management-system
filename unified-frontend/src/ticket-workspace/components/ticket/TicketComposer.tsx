@@ -1,13 +1,15 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
 import { EnvelopePreview } from "@tw/components/common/EnvelopePreview";
-import { TextArea } from "@tw/components/common/FormField";
+import { SelectInput, TextArea } from "@tw/components/common/FormField";
 import { useApiAction } from "@tw/hooks/useApiAction";
+import { listClientContacts } from "@tw/api/clients";
 import { addInternalNote, replyToClient } from "@tw/api/interaction";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import type { ClientContact } from "@tw/types";
 
 export type ComposerMode = "reply" | "note";
 
@@ -22,6 +24,8 @@ export function TicketComposer({ mode, onClose, onSent }: TicketComposerProps) {
   const { currentUser } = useAuthContext();
   const [activeMode, setActiveMode] = useState<ComposerMode>(mode);
   const [message, setMessage] = useState("");
+  const [contacts, setContacts] = useState<ClientContact[]>([]);
+  const [selectedTo, setSelectedTo] = useState("");
 
   const { run: runReply, isLoading: isReplyLoading } = useApiAction(replyToClient, {
     successMessage: "Reply sent to client.",
@@ -40,19 +44,55 @@ export function TicketComposer({ mode, onClose, onSent }: TicketComposerProps) {
       .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
   }, [timeline]);
 
+  const toEmail = latestEmail?.payload.to_email as string | undefined;
+  const fromEmail = latestEmail?.payload.from_email as string | undefined;
+  const subject = latestEmail?.payload.subject as string | undefined;
+
+  // Every personal address this client has ever emailed the shared
+  // inbox from — lets the agent redirect a reply to a different
+  // contact at the same client company instead of always the sender
+  // of whichever email happens to be most recent.
+  useEffect(() => {
+    if (!activeTicket?.client_company_id) {
+      setContacts([]);
+      return;
+    }
+    listClientContacts(activeTicket.client_company_id)
+      .then(setContacts)
+      .catch(() => setContacts([]));
+  }, [activeTicket?.client_company_id]);
+
+  // Defaults to the latest inbound email's sender whenever the open
+  // ticket changes — the agent can still override it below.
+  useEffect(() => {
+    setSelectedTo(fromEmail ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTicket?.ticket_id]);
+
+  const toOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const options: ClientContact[] = [];
+    for (const contact of [
+      ...(fromEmail ? [{ email: fromEmail, name: null }] : []),
+      ...contacts,
+    ]) {
+      if (seen.has(contact.email)) continue;
+      seen.add(contact.email);
+      options.push(contact);
+    }
+    return options;
+  }, [contacts, fromEmail]);
+
   if (!activeTicket) return null;
 
   const isReply = activeMode === "reply";
   const isLoading = isReply ? isReplyLoading : isNoteLoading;
-  const toEmail = latestEmail?.payload.to_email as string | undefined;
-  const fromEmail = latestEmail?.payload.from_email as string | undefined;
-  const subject = latestEmail?.payload.subject as string | undefined;
 
   async function handleSend() {
     if (!activeTicket || !message.trim()) return;
 
     const result = isReply
-      ? await runReply(activeTicket.ticket_id, { message })
+      ? await runReply(activeTicket.ticket_id, { message, to_email: selectedTo || undefined })
       : await runNote(activeTicket.ticket_id, { note: message });
 
     if (result) {
@@ -98,12 +138,27 @@ export function TicketComposer({ mode, onClose, onSent }: TicketComposerProps) {
         </div>
 
         {isReply && (
-          <EnvelopePreview
-            senderName={currentUser?.name ?? "you"}
-            viaEmail={toEmail}
-            toEmail={fromEmail}
-            subject={subject}
-          />
+          <>
+            {toOptions.length > 1 && (
+              <SelectInput
+                label="To"
+                value={selectedTo}
+                onChange={(e) => setSelectedTo(e.target.value)}
+              >
+                {toOptions.map((contact) => (
+                  <option key={contact.email} value={contact.email}>
+                    {contact.name ? `${contact.name} <${contact.email}>` : contact.email}
+                  </option>
+                ))}
+              </SelectInput>
+            )}
+            <EnvelopePreview
+              senderName={currentUser?.name ?? "you"}
+              viaEmail={toEmail}
+              toEmail={selectedTo || fromEmail}
+              subject={subject}
+            />
+          </>
         )}
 
         <TextArea

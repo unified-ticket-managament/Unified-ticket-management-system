@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Archive,
-  Clock,
   FileText,
   Folder,
   Inbox,
@@ -28,7 +27,6 @@ const VIEW_ITEMS: Array<{ key: MailViewKey; label: string; icon: LucideIcon }> =
   { key: "drafts", label: "Drafts", icon: FileText },
   { key: "replied", label: "Replied", icon: MailPlus },
   { key: "ticketed", label: "Ticketed", icon: Ticket },
-  { key: "snoozed", label: "Snoozed", icon: Clock },
   { key: "archived", label: "Archived", icon: Archive },
 ];
 

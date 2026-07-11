@@ -52,8 +52,6 @@ export function InboxPage() {
             folders={mail.folders}
             onUpdateTags={mail.updateTags}
             onAssignFolder={mail.assignFolder}
-            onSnooze={mail.snoozeItem}
-            onUnsnooze={mail.unsnoozeItem}
           />
           <InboxActionsPanel />
         </div>

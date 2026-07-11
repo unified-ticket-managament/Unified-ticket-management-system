@@ -5,8 +5,6 @@ import { Link } from "react-router-dom";
 import {
   Archive,
   ArrowLeft,
-  Clock3,
-  Download,
   ExternalLink,
   FilePlus,
   Forward as ForwardIcon,
@@ -44,6 +42,7 @@ import { useApiAction } from "@tw/hooks/useApiAction";
 import { archiveInteraction, claimInteraction, replyToInteraction } from "@tw/api/inbox";
 import { listAgents } from "@tw/api/agent";
 import { listCategories } from "@tw/api/categories";
+import { listClientContacts } from "@tw/api/clients";
 import { replyToClient, uploadAttachment } from "@tw/api/interaction";
 import {
   attachInteractionToTicket,
@@ -53,13 +52,13 @@ import {
   transferTicketAgent,
 } from "@tw/api/ticket";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
-import { formatBytes, iconForFilename } from "@tw/lib/attachmentMeta";
 import { formatDateTime } from "@tw/lib/format";
 import { buildForwardHtml, linkifyPlainText } from "@tw/lib/richText";
 import type {
   AgentSummary,
   AttachmentMeta,
   CategoryResponse,
+  ClientContact,
   DraftSaveResponse,
   InteractionReplyResponse,
   InteractionResponse,
@@ -85,20 +84,6 @@ const STATUS_META: Record<string, { label: string; variant: "warning" | "success
 
 const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
 
-const SNOOZE_PRESETS: Array<{ label: string; getDate: () => Date }> = [
-  { label: "1 hour", getDate: () => new Date(Date.now() + 60 * 60 * 1000) },
-  {
-    label: "Tomorrow, 9am",
-    getDate: () => {
-      const d = new Date();
-      d.setDate(d.getDate() + 1);
-      d.setHours(9, 0, 0, 0);
-      return d;
-    },
-  },
-  { label: "1 week", getDate: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
-];
-
 interface BubbleData {
   key: string;
   senderName: string;
@@ -119,8 +104,9 @@ function rootBubble(email: OpenEmailResponse): BubbleData {
     timestamp: email.received_at,
     body: email.body,
     isClient: true,
-    // Attachments render once, in the dedicated Attachments section
-    // above the thread — not repeated again inline on the root bubble.
+    // Each message renders its own attachments inline, right where it
+    // was sent — not deduplicated into one bucket for the whole thread.
+    attachments: email.attachments,
   };
 }
 
@@ -135,6 +121,7 @@ function replyBubble(reply: InteractionResponse): BubbleData {
       timestamp: reply.created_at,
       body: payload.body ?? "",
       isClient: true,
+      attachments: reply.attachments,
     };
   }
   const payload = reply.payload as {
@@ -149,6 +136,7 @@ function replyBubble(reply: InteractionResponse): BubbleData {
     timestamp: reply.created_at,
     body: payload.message ?? "",
     isClient: false,
+    attachments: reply.attachments,
   };
 }
 
@@ -210,12 +198,13 @@ interface MessageDetailsViewProps {
     cc: string[],
     bcc: string[]
   ) => Promise<DraftSaveResponse | null>;
-  onSendDraft: (interactionId: string) => Promise<InteractionReplyResponse | null>;
+  onSendDraft: (
+    interactionId: string,
+    toEmail?: string | null
+  ) => Promise<InteractionReplyResponse | null>;
   onDiscardDraft: (interactionId: string) => Promise<boolean>;
   onUploadDraftAttachment: (interactionId: string, files: File[]) => Promise<AttachmentMeta[] | null>;
   onRemoveDraftAttachment: (interactionId: string, attachmentId: string) => Promise<boolean>;
-  onSnooze: (interactionId: string, snoozeUntil: string) => Promise<boolean>;
-  onUnsnooze: (interactionId: string) => Promise<boolean>;
   onUpdateTags: (interactionId: string, tags: string[]) => Promise<boolean>;
   onAssignFolder: (interactionId: string, folderId: string | null) => Promise<boolean>;
 }
@@ -232,8 +221,6 @@ export function MessageDetailsView({
   onDiscardDraft,
   onUploadDraftAttachment,
   onRemoveDraftAttachment,
-  onSnooze,
-  onUnsnooze,
   onUpdateTags,
   onAssignFolder,
 }: MessageDetailsViewProps) {
@@ -250,12 +237,12 @@ export function MessageDetailsView({
   const [existingTicketId, setExistingTicketId] = useState("");
   const [clientTickets, setClientTickets] = useState<TicketResponse[]>([]);
   const [assignAgents, setAssignAgents] = useState<AgentSummary[]>([]);
+  const [contacts, setContacts] = useState<ClientContact[]>([]);
 
   const isTicketed = Boolean(email.ticket_id);
   const isClosed = email.ticket_status === "CLOSED";
   const hasDraft = Boolean(email.draft_message);
   const status = STATUS_META[email.status] ?? { label: email.status, variant: "secondary" as const };
-  const isSnoozed = Boolean(email.snoozed_until && new Date(email.snoozed_until) > new Date());
 
   useEffect(() => {
     // Opening a thread that already has a saved draft goes straight
@@ -281,6 +268,18 @@ export function MessageDetailsView({
       .catch(() => {});
   }, []);
 
+  // Every personal address this client has ever emailed the shared
+  // inbox from — backs the reply composer's "To" dropdown.
+  useEffect(() => {
+    if (!email.client_id) {
+      setContacts([]);
+      return;
+    }
+    listClientContacts(email.client_id)
+      .then(setContacts)
+      .catch(() => setContacts([]));
+  }, [email.client_id]);
+
   const { run: runReply, isLoading: isReplying } = useApiAction(replyToInteraction);
   const { run: runTicketReply, isLoading: isReplyingTicket } = useApiAction(replyToClient);
   const { run: runUploadAttachment } = useApiAction(uploadAttachment);
@@ -294,9 +293,20 @@ export function MessageDetailsView({
     successMessage: (res) => res.message,
   });
 
-  async function handleSend(payload: { message: string; cc: string[]; bcc: string[]; files: File[] }) {
+  async function handleSend(payload: {
+    message: string;
+    cc: string[];
+    bcc: string[];
+    files: File[];
+    to: string | null;
+  }) {
     if (isTicketed && email.ticket_id) {
-      const result = await runTicketReply(email.ticket_id, { message: payload.message, cc: payload.cc, bcc: payload.bcc });
+      const result = await runTicketReply(email.ticket_id, {
+        message: payload.message,
+        cc: payload.cc,
+        bcc: payload.bcc,
+        to_email: payload.to,
+      });
       if (result) {
         if (payload.files.length > 0) {
           await runUploadAttachment(email.ticket_id, payload.files);
@@ -330,7 +340,12 @@ export function MessageDetailsView({
       return;
     }
 
-    const result = await runReply(email.interaction_id, { message: payload.message, cc: payload.cc, bcc: payload.bcc });
+    const result = await runReply(email.interaction_id, {
+      message: payload.message,
+      cc: payload.cc,
+      bcc: payload.bcc,
+      to_email: payload.to,
+    });
     if (result) {
       setReplyMode(null);
       onRefreshList();
@@ -364,8 +379,8 @@ export function MessageDetailsView({
     return onSaveDraft(email.interaction_id, message, cc, bcc);
   }
 
-  async function handleSendDraft() {
-    const result = await onSendDraft(email.interaction_id);
+  async function handleSendDraft(toEmail?: string | null) {
+    const result = await onSendDraft(email.interaction_id, toEmail);
     if (result) {
       setReplyMode(null);
       onRefreshList();
@@ -542,42 +557,6 @@ export function MessageDetailsView({
             </div>
           </section>
 
-          {email.attachments && email.attachments.length > 0 && (
-            <section>
-              <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                Attachments ({email.attachments.length})
-              </h3>
-              <ul className="flex flex-col gap-1.5">
-                {email.attachments.map((attachment) => {
-                  const Icon = iconForFilename(attachment.filename);
-                  return (
-                    <li
-                      key={attachment.id}
-                      className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2"
-                    >
-                      <Icon className="h-4 w-4 flex-none text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
-                        {attachment.filename}
-                      </span>
-                      <span className="flex-none text-[11px] text-muted-foreground">
-                        {formatBytes(attachment.size)}
-                      </span>
-                      <a
-                        href={attachment.download_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        aria-label={`Download ${attachment.filename}`}
-                        className="flex-none rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-primary"
-                      >
-                        <Download className="h-3.5 w-3.5" />
-                      </a>
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          )}
-
           <section className="flex flex-wrap items-center gap-2">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Tags</span>
             {email.tags.map((tag) => (
@@ -702,34 +681,6 @@ export function MessageDetailsView({
           Archive
         </Button>
 
-        {!isTicketed && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="sm" variant="outline" className="gap-1.5">
-                <Clock3 className="h-3.5 w-3.5" />
-                {isSnoozed ? "Snoozed" : "Snooze"}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start">
-              {isSnoozed ? (
-                <DropdownMenuItem onClick={() => onUnsnooze(email.interaction_id)} className="text-xs">
-                  Unsnooze
-                </DropdownMenuItem>
-              ) : (
-                SNOOZE_PRESETS.map((preset) => (
-                  <DropdownMenuItem
-                    key={preset.label}
-                    onClick={() => onSnooze(email.interaction_id, preset.getDate().toISOString())}
-                    className="text-xs"
-                  >
-                    {preset.label}
-                  </DropdownMenuItem>
-                ))
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-
         <div className="ml-auto flex items-center gap-1.5">
           {email.ticket_id && (
             <Button asChild size="sm" variant="ghost" className="gap-1.5 text-primary">
@@ -756,6 +707,7 @@ export function MessageDetailsView({
         <ReplyComposer
           mode={replyMode}
           toEmail={email.from_email}
+          contacts={contacts}
           subject={email.subject}
           initialCc={hasDraft ? email.draft_cc : replyMode === "replyAll" ? email.cc : []}
           initialBcc={hasDraft ? email.draft_bcc : []}

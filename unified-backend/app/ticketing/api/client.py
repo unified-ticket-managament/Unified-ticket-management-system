@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import User
@@ -5,8 +7,9 @@ from shared_models.models import User
 from app.database.session import get_db
 from app.dependencies.auth import get_current_agent, get_current_user
 from app.ticketing.repositories.client_repository import ClientRepository
+from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.user_repository import UserRepository
-from app.ticketing.schemas.client import ClientCreate, ClientResponse
+from app.ticketing.schemas.client import ClientContactResponse, ClientCreate, ClientResponse
 from app.ticketing.services.client_service import ClientService
 
 router = APIRouter(
@@ -57,3 +60,28 @@ async def list_clients(
     )
 
     return await service.list_all()
+
+
+@router.get(
+    "/{client_id}/contacts",
+    response_model=list[ClientContactResponse],
+)
+async def list_client_contacts(
+    client_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Every distinct personal email address this client company has
+    contacted our shared inbox from, most-recently-used first — used
+    by the reply composer's "To" dropdown so an agent isn't limited
+    to whichever contact happened to send the thread being replied to.
+    """
+
+    service = ClientService(
+        client_repository=ClientRepository(db),
+        user_repository=UserRepository(db),
+        interaction_repository=InteractionRepository(db),
+    )
+
+    return await service.list_contacts(client_id)

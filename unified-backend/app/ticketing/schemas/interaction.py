@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 from app.ticketing.enums import InteractionDirection, InteractionStatus
 from app.ticketing.schemas.attachment import AttachmentMetadata
@@ -163,20 +163,21 @@ class InteractionFolderResponse(ORMBase):
     message: str
 
 
-class SnoozeRequest(BaseModel):
-    snooze_until: datetime
-
-
-class InteractionSnoozeResponse(ORMBase):
-    interaction_id: UUID
-    snoozed_until: datetime | None
-    message: str
-
-
 class DraftSaveRequest(BaseModel):
     message: str = Field(..., min_length=1)
     cc: list[str] = Field(default_factory=list)
     bcc: list[str] = Field(default_factory=list)
+
+
+class DraftSendRequest(BaseModel):
+    """
+    Optional body for sending a draft — lets the agent pick a
+    recipient from the "To" dropdown at send time without that choice
+    being part of the auto-saved draft itself (see
+    InteractionService.send_draft).
+    """
+
+    to_email: EmailStr | None = None
 
 
 class DraftResponse(ORMBase):
