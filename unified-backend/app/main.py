@@ -15,6 +15,7 @@ from app.ticketing.api.email import router as ticketing_email_router
 from app.ticketing.api.inbox import router as ticketing_inbox_router
 from app.ticketing.api.interaction import router as ticketing_interaction_router
 from app.ticketing.api.mail_folder import router as ticketing_mail_folder_router
+from app.ticketing.api.mail_integration import router as ticketing_mail_integration_router
 from app.ticketing.api.ticket import router as ticketing_ticket_router
 from app.ticketing.storage.base import StorageConfigurationError
 
@@ -69,6 +70,7 @@ app.include_router(ticketing_client_router)
 app.include_router(ticketing_category_router)
 app.include_router(ticketing_inbox_router)
 app.include_router(ticketing_mail_folder_router)
+app.include_router(ticketing_mail_integration_router)
 app.include_router(ticketing_ticket_router)
 app.include_router(ticketing_interaction_router)
 app.include_router(ticketing_attachment_router)
