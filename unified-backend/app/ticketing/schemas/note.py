@@ -12,6 +12,13 @@ class InternalNoteCreate(BaseModel):
     to an existing ticket.
     """
 
+    subject: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description="Short summary shown on the ticket timeline.",
+    )
+
     note: str = Field(
         ...,
         min_length=1,

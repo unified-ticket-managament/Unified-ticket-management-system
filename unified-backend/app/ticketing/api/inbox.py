@@ -119,6 +119,60 @@ async def get_inbox(
     )
 
 
+@router.get(
+    "/folder-counts",
+    response_model=dict[UUID, int],
+)
+async def get_folder_counts(
+    client_id: UUID | None = Query(default=None),
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Every custom folder's item count in one query, under the same
+    role scoping as GET /inbox — backs the Mail sidebar's per-folder
+    badges without calling GET /inbox once per folder just to read
+    `.total`.
+    """
+
+    repository = InteractionRepository(db)
+    edit_access_repository = TicketEditAccessRequestRepository(db)
+
+    service = InboxService(
+        repository,
+        edit_access_repository=edit_access_repository,
+    )
+
+    return await service.get_folder_counts(current_user, client_id=client_id)
+
+
+@router.get(
+    "/view-counts",
+    response_model=dict[str, int],
+)
+async def get_view_counts(
+    client_id: UUID | None = Query(default=None),
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Pending/Replied/Ticketed/Archived/All badge counts in one query,
+    under the same role scoping as GET /inbox — lets the Mail
+    sidebar show accurate tab counts without fetching each tab's
+    actual row data until it's opened.
+    """
+
+    repository = InteractionRepository(db)
+    edit_access_repository = TicketEditAccessRequestRepository(db)
+
+    service = InboxService(
+        repository,
+        edit_access_repository=edit_access_repository,
+    )
+
+    return await service.get_view_counts(current_user, client_id=client_id)
+
+
 # ---------------------------------------------------------
 # Sent / Drafts (list views)
 # ---------------------------------------------------------

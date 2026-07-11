@@ -267,6 +267,8 @@ class EmailService:
     in_reply_to_message_id=email.in_reply_to,
 
     references=email.references or None,
+
+    subject=email.subject,
 )
 
         created = (

@@ -320,7 +320,11 @@ export function MessageDetailsView({
           replies: [
             ...email.replies,
             {
-              interaction_id: result.interaction_id,
+              // TicketActionResponse.interaction_id is nullable now
+              // that status/priority/transfer/claim no longer create
+              // one — a reply itself (this call) still always does,
+              // so it's safe to assert here.
+              interaction_id: result.interaction_id!,
               ticket_id: email.ticket_id,
               interaction_type: "REPLY",
               status: "ASSIGNED",

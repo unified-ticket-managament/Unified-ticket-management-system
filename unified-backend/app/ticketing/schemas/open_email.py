@@ -72,8 +72,6 @@ class OpenEmailResponse(BaseModel):
 
     folder_id: UUID | None = None
 
-    snoozed_until: datetime | None = None
-
     # The requesting user's own saved-but-unsent draft reply on this
     # thread, if any — lets the reply composer prefill/resume it.
     # None both when there's no draft and when the thread is already

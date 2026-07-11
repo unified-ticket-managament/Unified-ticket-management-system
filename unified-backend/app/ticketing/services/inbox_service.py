@@ -77,22 +77,15 @@ class InboxService:
         self.ticket_repository = ticket_repository
         self.edit_access_repository = edit_access_repository
 
-    async def get_inbox(
-        self,
-        current_user: User,
-        client_id: UUID | None = None,
-        view: str = "pending",
-        scope: str = "mine",
-        folder_id: UUID | None = None,
-    ) -> InboxResponse:
+    async def _resolve_scope(self, current_user: User) -> tuple[
+        UUID | None, str | None, UUID | None, list[UUID] | None
+    ]:
         """
-        Returns the role-scoped inbox for the current user.
-
-        `scope`/`view="all"` only ever widens anything for Site Lead/
-        Super Admin (the global-inbox roles) — for every other role
-        it's ignored and their fixed scope (own clients / own
-        category / own assignments) always applies, so a crafted
-        request can't peek at another user's mail.
+        Resolves the same role-based scoping tuple
+        (account_manager_id, ticket_type, assigned_agent_id,
+        extra_ticket_ids) `get_inbox` and `get_folder_counts` both
+        need, so the two can never drift into applying different
+        visibility rules for the same user.
         """
 
         role_name = current_user.role.name
@@ -133,6 +126,30 @@ class InboxService:
             # handled above. Safe fallback: scope to "owns nothing",
             # same as an Account Manager with no clients.
             account_manager_id = current_user.user_id
+
+        return account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids
+
+    async def get_inbox(
+        self,
+        current_user: User,
+        client_id: UUID | None = None,
+        view: str = "pending",
+        scope: str = "mine",
+        folder_id: UUID | None = None,
+    ) -> InboxResponse:
+        """
+        Returns the role-scoped inbox for the current user.
+
+        `scope`/`view="all"` only ever widens anything for Site Lead/
+        Super Admin (the global-inbox roles) — for every other role
+        it's ignored and their fixed scope (own clients / own
+        category / own assignments) always applies, so a crafted
+        request can't peek at another user's mail.
+        """
+
+        account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids = (
+            await self._resolve_scope(current_user)
+        )
 
         interactions = await self.interaction_repository.list_inbox(
             account_manager_id=account_manager_id,
@@ -295,8 +312,6 @@ class InboxService:
 
                     folder_id=interaction.folder_id,
 
-                    snoozed_until=interaction.snoozed_until,
-
                     reply_count=reply_count,
 
                     latest_message=latest_message,
@@ -319,6 +334,57 @@ class InboxService:
 
             items=inbox_items,
 
+        )
+
+    async def get_folder_counts(
+        self,
+        current_user: User,
+        client_id: UUID | None = None,
+    ) -> dict[UUID, int]:
+        """
+        One grouped-COUNT query for every custom folder's badge count,
+        under the same role scoping as get_inbox(view="all") — used
+        instead of calling get_inbox once per folder just to read
+        `.total`, which used to mean N full list-and-serialize round
+        trips (each re-running the thread-summary/claimer-name/ticket
+        lookups) purely to display a number.
+        """
+
+        account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids = (
+            await self._resolve_scope(current_user)
+        )
+
+        return await self.interaction_repository.count_by_folder(
+            account_manager_id=account_manager_id,
+            client_id=client_id,
+            ticket_type=ticket_type,
+            assigned_agent_id=assigned_agent_id,
+            extra_ticket_ids=extra_ticket_ids,
+        )
+
+    async def get_view_counts(
+        self,
+        current_user: User,
+        client_id: UUID | None = None,
+    ) -> dict[str, int]:
+        """
+        Pending/Replied/Ticketed/Archived/All badge counts in one
+        query, under the same role scoping as get_inbox — lets the
+        Mail sidebar show accurate counts for every tab immediately,
+        even though each tab's actual row data is now only fetched
+        once the agent actually opens it.
+        """
+
+        account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids = (
+            await self._resolve_scope(current_user)
+        )
+
+        return await self.interaction_repository.count_by_view(
+            account_manager_id=account_manager_id,
+            client_id=client_id,
+            ticket_type=ticket_type,
+            assigned_agent_id=assigned_agent_id,
+            extra_ticket_ids=extra_ticket_ids,
         )
 
     async def get_sent(self, current_user: User) -> SentResponse:

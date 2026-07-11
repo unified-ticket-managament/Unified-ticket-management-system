@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
 import { EnvelopePreview } from "@tw/components/common/EnvelopePreview";
-import { SelectInput, TextArea } from "@tw/components/common/FormField";
+import { SelectInput, TextArea, TextInput } from "@tw/components/common/FormField";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { listClientContacts } from "@tw/api/clients";
 import { addInternalNote, replyToClient } from "@tw/api/interaction";
@@ -24,6 +24,7 @@ export function TicketComposer({ mode, onClose, onSent }: TicketComposerProps) {
   const { currentUser } = useAuthContext();
   const [activeMode, setActiveMode] = useState<ComposerMode>(mode);
   const [message, setMessage] = useState("");
+  const [noteSubject, setNoteSubject] = useState("");
   const [contacts, setContacts] = useState<ClientContact[]>([]);
   const [selectedTo, setSelectedTo] = useState("");
 
@@ -90,13 +91,15 @@ export function TicketComposer({ mode, onClose, onSent }: TicketComposerProps) {
 
   async function handleSend() {
     if (!activeTicket || !message.trim()) return;
+    if (!isReply && !noteSubject.trim()) return;
 
     const result = isReply
       ? await runReply(activeTicket.ticket_id, { message, to_email: selectedTo || undefined })
-      : await runNote(activeTicket.ticket_id, { note: message });
+      : await runNote(activeTicket.ticket_id, { note: message, subject: noteSubject });
 
     if (result) {
       setMessage("");
+      setNoteSubject("");
       onSent();
     }
   }
@@ -161,6 +164,16 @@ export function TicketComposer({ mode, onClose, onSent }: TicketComposerProps) {
           </>
         )}
 
+        {!isReply && (
+          <TextInput
+            label="Subject"
+            value={noteSubject}
+            onChange={(e) => setNoteSubject(e.target.value)}
+            placeholder="Short summary shown on the timeline…"
+            autoFocus
+          />
+        )}
+
         <TextArea
           label={isReply ? "Message to client" : "Note (visible to agents only)"}
           value={message}
@@ -168,7 +181,7 @@ export function TicketComposer({ mode, onClose, onSent }: TicketComposerProps) {
           placeholder={
             isReply ? "Type a reply the client will see…" : "Type a note only agents can see…"
           }
-          autoFocus
+          autoFocus={isReply}
         />
 
         <div className="flex justify-end gap-2">
@@ -179,7 +192,7 @@ export function TicketComposer({ mode, onClose, onSent }: TicketComposerProps) {
             variant="primary"
             size="sm"
             isLoading={isLoading}
-            disabled={!message.trim()}
+            disabled={!message.trim() || (!isReply && !noteSubject.trim())}
             onClick={handleSend}
           >
             {isReply ? "Send Reply" : "Add Note"}

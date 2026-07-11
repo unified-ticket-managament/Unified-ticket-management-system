@@ -208,7 +208,6 @@ class OpenEmailService:
             ticket_status=ticket_status,
             tags=interaction.tags,
             folder_id=interaction.folder_id,
-            snoozed_until=interaction.snoozed_until,
             draft_message=draft["message"],
             draft_cc=draft["cc"],
             draft_bcc=draft["bcc"],

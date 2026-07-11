@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDebouncedValue } from "@tw/hooks/useDebouncedValue";
 import {
   composeEmail as composeEmailRequest,
   discardDraft,
   getDrafts,
+  getFolderCounts,
   getInbox,
   getSent,
+  getViewCounts,
   openInboxThread,
   saveDraft,
   sendDraft,
@@ -27,7 +29,6 @@ import type {
   ClientResponse,
   DraftItem,
   InboxItem,
-  InboxResponse,
   InboxView,
   MailFolder,
   SentItem,
@@ -69,7 +70,6 @@ function sentItemToInboxItem(item: SentItem): InboxItem {
     claimed_by_name: null,
     tags: [],
     folder_id: null,
-    snoozed_until: null,
     reply_count: 0,
     latest_message: null,
     latest_sender: null,
@@ -101,7 +101,6 @@ function draftItemToInboxItem(item: DraftItem): InboxItem {
     claimed_by_name: null,
     tags: [],
     folder_id: null,
-    snoozed_until: null,
     reply_count: 0,
     latest_message: null,
     latest_sender: null,
@@ -157,6 +156,23 @@ function matchesSearch(item: InboxItem, term: string): boolean {
 }
 
 type BaseTabKey = "pending" | "replied" | "ticketed" | "archived" | "all";
+type LoadKey = BaseTabKey | "sent" | "drafts";
+
+// Maps a view the agent is looking at to the underlying fetch(es) it
+// actually needs — "unassigned"/"mine" are client-derived slices of
+// "pending"(/"replied"), not separate backend views, so opening them
+// only ever needs to load their source tab(s), never a request of
+// their own.
+function baseKeysForView(view: MailViewKey): LoadKey[] {
+  switch (view) {
+    case "unassigned":
+      return ["pending"];
+    case "mine":
+      return ["pending", "replied"];
+    default:
+      return [view];
+  }
+}
 
 /**
  * Owns all Mail-page state: fetching every base view in parallel,
@@ -184,6 +200,25 @@ export function useMailInbox() {
   });
   const [sentItems, setSentItems] = useState<InboxItem[]>([]);
   const [draftItems, setDraftItems] = useState<InboxItem[]>([]);
+  // Real Pending/Replied/Ticketed/Archived/All counts, fetched
+  // eagerly via one cheap aggregate query — kept separate from
+  // rowsByTab so the sidebar badges stay accurate even for a tab
+  // whose actual row data hasn't been fetched yet (see loadedKeysRef
+  // below).
+  const [baseViewCounts, setBaseViewCounts] = useState<Record<BaseTabKey, number>>({
+    pending: 0,
+    replied: 0,
+    ticketed: 0,
+    archived: 0,
+    all: 0,
+  });
+  // Which views/tabs have actually been fetched at least once — a
+  // ref, not state, since it's pure bookkeeping read by refresh()/
+  // ensureLoaded() and must never itself trigger a re-render or be a
+  // useCallback dependency (both of those would set up a feedback
+  // loop, since refresh() is what populates it).
+  const loadedKeysRef = useRef<Set<LoadKey>>(new Set());
+  const prevClientFilterRef = useRef<string>("ALL");
   const [clients, setClients] = useState<ClientResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [openingId, setOpeningId] = useState<string | null>(null);
@@ -237,44 +272,84 @@ export function useMailInbox() {
     setActiveCategoryRaw(category);
   }, []);
 
+  // Fetches one base tab's actual row data — the thing that used to
+  // happen eagerly for every tab on every load/refresh, regardless of
+  // which one the agent was actually looking at.
+  const fetchBaseTab = useCallback(
+    async (key: BaseTabKey) => {
+      if (key === "all" && !isSupervisor) {
+        setRowsByTab((prev) => ({ ...prev, all: [] }));
+        return;
+      }
+      const clientId = clientFilter === "ALL" ? undefined : clientFilter;
+      const result = await getInbox(key, { clientId, scope: key === "all" ? "all" : undefined });
+      setRowsByTab((prev) => ({ ...prev, [key]: result.items }));
+    },
+    [clientFilter, isSupervisor]
+  );
+
+  const fetchSent = useCallback(async () => {
+    const result = await getSent();
+    setSentItems(result.items.map(sentItemToInboxItem));
+  }, []);
+
+  const fetchDrafts = useCallback(async () => {
+    const result = await getDrafts();
+    setDraftItems(result.items.map(draftItemToInboxItem));
+  }, []);
+
+  const fetchKey = useCallback(
+    (key: LoadKey) => {
+      if (key === "sent") return fetchSent();
+      if (key === "drafts") return fetchDrafts();
+      return fetchBaseTab(key);
+    },
+    [fetchBaseTab, fetchSent, fetchDrafts]
+  );
+
+  // Fetches only whichever of `keys` haven't been loaded yet — used
+  // when the agent switches to a view/tab for the first time. Once
+  // loaded, a tab's data stays cached in rowsByTab/sentItems/draftItems
+  // (re-switching back to it is instant, no re-fetch) until the next
+  // refresh() call actually re-pulls it.
+  const ensureLoaded = useCallback(
+    async (keys: LoadKey[]) => {
+      const missing = keys.filter((key) => !loadedKeysRef.current.has(key));
+      if (missing.length === 0) return;
+      missing.forEach((key) => loadedKeysRef.current.add(key));
+      await Promise.all(missing.map((key) => fetchKey(key)));
+    },
+    [fetchKey]
+  );
+
   const refresh = useCallback(async () => {
     setIsLoading(true);
     try {
       const clientId = clientFilter === "ALL" ? undefined : clientFilter;
-      const scope = isSupervisor ? "all" : undefined;
 
-      // The supervisor-only "all" view used to be a second sequential
-      // stage after this batch resolved — folded in here (as a no-op
-      // resolved promise for non-supervisors) so every base view is
-      // one single round-trip stage regardless of role.
-      const [pending, replied, ticketed, archived, sent, drafts, clientList, folderList, categoryList, all] =
+      // A client-filter change invalidates every previously-loaded
+      // tab's cached data (it was scoped to the old filter) — start
+      // this refresh as if nothing had been fetched yet, same as the
+      // very first load.
+      if (prevClientFilterRef.current !== clientFilter) {
+        loadedKeysRef.current = new Set();
+        prevClientFilterRef.current = clientFilter;
+      }
+
+      // Sidebar chrome (client list, folders, categories) plus real
+      // Pending/Replied/Ticketed/Archived/All counts and per-folder
+      // counts — both via one cheap aggregate query each, regardless
+      // of which tabs have actually been opened — stay eager so the
+      // sidebar never shows a misleadingly-zero badge.
+      const [clientList, folderList, categoryList, viewCounts, folderCountsResult] =
         await Promise.all([
-          getInbox("pending", { clientId }),
-          getInbox("replied", { clientId }),
-          getInbox("ticketed", { clientId }),
-          getInbox("archived", { clientId }),
-          getSent(),
-          getDrafts(),
           listClients(),
           listMailFolders(),
           listCategories(),
-          isSupervisor
-            ? getInbox("all", { clientId, scope: "all" })
-            : Promise.resolve<InboxResponse>({ total: 0, items: [] }),
+          getViewCounts(clientId),
+          getFolderCounts(clientId),
         ]);
 
-      setSentItems(sent.items.map(sentItemToInboxItem));
-      setDraftItems(drafts.items.map(draftItemToInboxItem));
-
-      const next: Record<BaseTabKey, InboxItem[]> = {
-        pending: pending.items,
-        replied: replied.items,
-        ticketed: ticketed.items,
-        archived: archived.items,
-        all: isSupervisor ? all.items : [],
-      };
-
-      setRowsByTab(next);
       setClients(clientList);
       setFolders(folderList);
       // Team Lead/Staff are already category-scoped to their own
@@ -284,13 +359,17 @@ export function useMailInbox() {
       // categories (Account Manager, Site Lead, Super Admin) get it.
       const isCategoryScopedRole = currentUser?.role === "Team Lead" || currentUser?.role === "Staff";
       setCategories(isCategoryScopedRole ? [] : categoryList);
+      setBaseViewCounts(viewCounts);
+      setFolderCounts(folderCountsResult);
 
-      const counts = await Promise.all(
-        folderList.map((folder) => getInbox("all", { clientId, scope, folderId: folder.folder_id }))
-      );
-      setFolderCounts(
-        Object.fromEntries(folderList.map((folder, index) => [folder.folder_id, counts[index].total]))
-      );
+      // Re-fetch every tab already visited (so previously-seen data
+      // stays fresh after a mutation), plus whichever tab is active
+      // right now (covers the very first load, before anything's
+      // been marked loaded).
+      const keysToRefresh = new Set(loadedKeysRef.current);
+      baseKeysForView(activeViewRaw).forEach((key) => keysToRefresh.add(key));
+      keysToRefresh.forEach((key) => loadedKeysRef.current.add(key));
+      await Promise.all(Array.from(keysToRefresh).map((key) => fetchKey(key)));
     } catch (error) {
       pushToast(
         error instanceof Error ? error.message : "Failed to load inbox.",
@@ -299,11 +378,26 @@ export function useMailInbox() {
     } finally {
       setIsLoading(false);
     }
-  }, [pushToast, clientFilter, isSupervisor]);
+  }, [pushToast, clientFilter, activeViewRaw, fetchKey, currentUser]);
 
   useEffect(() => {
     refresh();
-  }, [refresh]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientFilter]);
+
+  // Lazy-load a view/tab's data the first time the agent actually
+  // switches to it.
+  useEffect(() => {
+    ensureLoaded(baseKeysForView(activeViewRaw));
+  }, [activeViewRaw, ensureLoaded]);
+
+  // Category filtering slices the already-fetched "ticketed" set —
+  // make sure that data actually exists once a category is selected.
+  useEffect(() => {
+    if (activeCategory) {
+      ensureLoaded(["ticketed"]);
+    }
+  }, [activeCategory, ensureLoaded]);
 
   useEffect(() => {
     if (!activeFolder) {
@@ -527,9 +621,18 @@ export function useMailInbox() {
     drafts: draftItems,
   };
 
-  const viewCounts: Record<MailViewKey, number> = Object.fromEntries(
-    Object.entries(rowsByView).map(([key, rows]) => [key, rows.length])
-  ) as Record<MailViewKey, number>;
+  // Pending/Replied/Ticketed/Archived/All come from the eager
+  // aggregate query (accurate even before that tab's row data has
+  // been fetched); Unassigned/Mine/Sent/Drafts are narrower derived
+  // views with no aggregate of their own, so their badge counts
+  // reflect whatever's actually been loaded so far.
+  const viewCounts: Record<MailViewKey, number> = {
+    ...baseViewCounts,
+    unassigned: unassigned.length,
+    mine: mine.length,
+    sent: sentItems.length,
+    drafts: draftItems.length,
+  };
 
   const filteredItems = activeCategory
     ? applyFilters(categoryItems)

@@ -36,6 +36,36 @@ export async function getInbox(
   return data;
 }
 
+// GET /inbox/folder-counts — every custom folder's item count in
+// one query, under the same role scoping as GET /inbox. Replaces
+// calling getInbox("all", {folderId}) once per folder just to read
+// `.total`.
+export async function getFolderCounts(
+  clientId?: string
+): Promise<Record<string, number>> {
+  const { data } = await apiClient.get<Record<string, number>>("/inbox/folder-counts", {
+    params: { client_id: clientId },
+  });
+  return data;
+}
+
+// GET /inbox/view-counts — Pending/Replied/Ticketed/Archived/All
+// badge counts in one query, under the same role scoping as
+// GET /inbox. Lets the sidebar show accurate tab counts without
+// fetching each tab's actual row data until it's opened.
+export async function getViewCounts(
+  clientId?: string
+): Promise<{ pending: number; replied: number; ticketed: number; archived: number; all: number }> {
+  const { data } = await apiClient.get<{
+    pending: number;
+    replied: number;
+    ticketed: number;
+    archived: number;
+    all: number;
+  }>("/inbox/view-counts", { params: { client_id: clientId } });
+  return data;
+}
+
 // GET /inbox/sent — every reply the current user has sent, pre-
 // ticket or ticket-level alike.
 export async function getSent(): Promise<SentResponse> {

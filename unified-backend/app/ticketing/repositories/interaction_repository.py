@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ticketing.enums import InteractionDirection, InteractionStatus
@@ -202,6 +202,139 @@ class InteractionRepository:
         result = await self.db.execute(query)
 
         return list(result.scalars().all())
+
+    async def count_by_folder(
+        self,
+        account_manager_id: UUID | None = None,
+        client_id: UUID | None = None,
+        ticket_type: str | None = None,
+        assigned_agent_id: UUID | None = None,
+        extra_ticket_ids: list[UUID] | None = None,
+    ) -> dict[UUID, int]:
+        """
+        One grouped COUNT per custom folder, under the exact same
+        role-scoping `list_inbox` applies for `view="all"` — backs
+        the Mail sidebar's per-folder badges without the N full
+        list-and-serialize round trips (one per folder) that used to
+        require.
+        """
+
+        query = select(Interaction.folder_id, func.count(Interaction.interaction_id))
+
+        if account_manager_id is not None or client_id is not None:
+            query = query.join(Client, Client.client_id == Interaction.client_id)
+
+        if account_manager_id is not None:
+            query = query.where(Client.account_manager_id == account_manager_id)
+
+        if client_id is not None:
+            query = query.where(Interaction.client_id == client_id)
+
+        if ticket_type is not None or assigned_agent_id is not None:
+            query = query.join(Ticket, Ticket.ticket_id == Interaction.ticket_id)
+
+        if ticket_type is not None:
+            query = query.where(Ticket.ticket_type == ticket_type)
+
+        if assigned_agent_id is not None:
+            if extra_ticket_ids:
+                query = query.where(
+                    or_(
+                        Ticket.agent_id == assigned_agent_id,
+                        Ticket.ticket_id.in_(extra_ticket_ids),
+                    )
+                )
+            else:
+                query = query.where(Ticket.agent_id == assigned_agent_id)
+
+        query = query.where(
+            Interaction.is_visible.is_(True),
+            Interaction.interaction_type == "EMAIL",
+            Interaction.parent_interaction_id.is_(None),
+            Interaction.folder_id.isnot(None),
+        ).group_by(Interaction.folder_id)
+
+        result = await self.db.execute(query)
+
+        return {folder_id: count for folder_id, count in result.all()}
+
+    async def count_by_view(
+        self,
+        account_manager_id: UUID | None = None,
+        client_id: UUID | None = None,
+        ticket_type: str | None = None,
+        assigned_agent_id: UUID | None = None,
+        extra_ticket_ids: list[UUID] | None = None,
+    ) -> dict[str, int]:
+        """
+        One query, five conditional counts (Postgres FILTER) — the
+        Mail sidebar's view badges (Pending/Replied/Ticketed/Archived/
+        All) under the same role scoping as list_inbox, without
+        fetching a single row of actual mail. Row *data* per view is
+        now fetched lazily (only once a tab is actually opened); this
+        keeps the badge counts accurate regardless of which tabs have
+        been visited yet.
+        """
+
+        query = select(
+            func.count().filter(
+                Interaction.ticket_id.is_(None),
+                Interaction.status == InteractionStatus.PENDING,
+            ),
+            func.count().filter(
+                Interaction.ticket_id.is_(None),
+                Interaction.status == InteractionStatus.ASSIGNED,
+            ),
+            func.count().filter(Interaction.ticket_id.isnot(None)),
+            func.count().filter(
+                Interaction.ticket_id.is_(None),
+                Interaction.status == InteractionStatus.IGNORED,
+            ),
+            func.count(),
+        )
+
+        if account_manager_id is not None or client_id is not None:
+            query = query.join(Client, Client.client_id == Interaction.client_id)
+
+        if account_manager_id is not None:
+            query = query.where(Client.account_manager_id == account_manager_id)
+
+        if client_id is not None:
+            query = query.where(Interaction.client_id == client_id)
+
+        if ticket_type is not None or assigned_agent_id is not None:
+            query = query.join(Ticket, Ticket.ticket_id == Interaction.ticket_id)
+
+        if ticket_type is not None:
+            query = query.where(Ticket.ticket_type == ticket_type)
+
+        if assigned_agent_id is not None:
+            if extra_ticket_ids:
+                query = query.where(
+                    or_(
+                        Ticket.agent_id == assigned_agent_id,
+                        Ticket.ticket_id.in_(extra_ticket_ids),
+                    )
+                )
+            else:
+                query = query.where(Ticket.agent_id == assigned_agent_id)
+
+        query = query.where(
+            Interaction.is_visible.is_(True),
+            Interaction.interaction_type == "EMAIL",
+            Interaction.parent_interaction_id.is_(None),
+        )
+
+        result = await self.db.execute(query)
+        pending, replied, ticketed, archived, all_count = result.one()
+
+        return {
+            "pending": pending,
+            "replied": replied,
+            "ticketed": ticketed,
+            "archived": archived,
+            "all": all_count,
+        }
 
     async def list_thread(
         self,

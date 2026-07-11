@@ -96,12 +96,14 @@ class TransferAgentRequest(BaseModel):
 
 class TicketActionResponse(ORMBase):
     """
-    Generic response returned after an action
-    (reply, status change, priority change) creates
-    a new interaction on a ticket.
+    Generic response returned after a ticket-mutating action. Reply
+    still creates a real Interaction row, so `interaction_id` is
+    populated there — status/priority/transfer/claim no longer create
+    one (see services/audit_to_interaction.py), so it's `None` for
+    those.
     """
 
-    interaction_id: UUID
+    interaction_id: UUID | None
     ticket_id: UUID
     message: str
     created_at: datetime

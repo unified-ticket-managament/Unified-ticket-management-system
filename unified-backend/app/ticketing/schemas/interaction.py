@@ -15,6 +15,7 @@ class InteractionCreate(BaseModel):
     status: InteractionStatus = InteractionStatus.PENDING
     direction: InteractionDirection
     performed_by: UUID | None = None
+    subject: str | None = Field(default=None, max_length=500)
     payload: dict[str, Any] = Field(default_factory=dict)
     is_visible: bool = True
     message_id: str | None = Field(default=None, max_length=255)
@@ -44,6 +45,7 @@ class InteractionResponse(ORMBase):
     direction: InteractionDirection
     performed_by: UUID | None
     performed_by_name: str | None = None
+    subject: str | None = None
     payload: dict[str, Any]
     is_visible: bool
     removed_by: UUID | None

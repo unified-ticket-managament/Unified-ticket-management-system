@@ -167,6 +167,7 @@ async def get_ticket_interactions(
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     attachment_repository = AttachmentRepository(db)
+    audit_log_repository = AuditLogRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
@@ -174,6 +175,7 @@ async def get_ticket_interactions(
         user_repository=user_repository,
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
+        audit_log_repository=audit_log_repository,
     )
 
     return await service.get_ticket_interactions(ticket_id, current_user=current_user)
@@ -743,6 +745,7 @@ async def list_all_ticket_interactions(
     client_repository = ClientRepository(db)
     interaction_repository = InteractionRepository(db)
     attachment_repository = AttachmentRepository(db)
+    audit_log_repository = AuditLogRepository(db)
 
     service = TicketService(
         ticket_repository=ticket_repository,
@@ -751,6 +754,7 @@ async def list_all_ticket_interactions(
         interaction_repository=interaction_repository,
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
+        audit_log_repository=audit_log_repository,
     )
 
     return await service.list_all_interactions(current_user=current_user)

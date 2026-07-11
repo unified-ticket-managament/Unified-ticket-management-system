@@ -58,8 +58,6 @@ class InboxItemResponse(BaseModel):
 
     folder_id: UUID | None = None
 
-    snoozed_until: datetime | None = None
-
     # Outlook-style thread summary — how many replies (agent or
     # client) are filed under this root, and a snippet of the most
     # recent one, so the inbox row updates without opening the
