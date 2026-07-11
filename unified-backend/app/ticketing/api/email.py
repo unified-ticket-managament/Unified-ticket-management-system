@@ -31,6 +31,7 @@ from app.ticketing.services.attachment_service import AttachmentService
 from app.ticketing.services.email_service import (
     EmailService,
 )
+from app.ticketing.services.sla_service import build_sla_service
 from app.ticketing.storage import get_storage_service
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
@@ -57,13 +58,16 @@ def _build_email_service(db: AsyncSession) -> tuple[EmailService, InteractionRep
         storage_service=get_storage_service(),
     )
 
+    notification_service = NotificationService(NotificationRepository(db))
+
     service = EmailService(
         interaction_repository=interaction_repository,
         client_repository=client_repository,
         attachment_service=attachment_service,
         user_repository=user_repository,
         ticket_repository=TicketRepository(db),
-        notification_service=NotificationService(NotificationRepository(db)),
+        notification_service=notification_service,
+        sla_service=build_sla_service(db, notification_service=notification_service),
     )
 
     return service, interaction_repository

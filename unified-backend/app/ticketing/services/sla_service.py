@@ -1,0 +1,579 @@
+import logging
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from uuid import UUID
+
+from fastapi import HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from shared_models.models import User
+
+from app.notifications.service import NotificationService
+from app.ticketing.enums import (
+    AuditEntityType,
+    AuditEventType,
+    InteractionDirection,
+    SLAClockStatus,
+    TicketPriority,
+)
+from app.ticketing.models.first_response_sla import FirstResponseSLA
+from app.ticketing.models.interaction import Interaction
+from app.ticketing.models.resolution_sla import ResolutionSLA
+from app.ticketing.models.sla_policy import SLAPolicy
+from app.ticketing.repositories.first_response_sla_repository import (
+    FirstResponseSLARepository,
+)
+from app.ticketing.repositories.interaction_repository import InteractionRepository
+from app.ticketing.repositories.resolution_sla_repository import (
+    ResolutionSLARepository,
+)
+from app.ticketing.repositories.sla_policy_repository import SLAPolicyRepository
+from app.ticketing.repositories.ticket_repository import TicketRepository
+from app.ticketing.schemas.interaction import InteractionCreate
+from app.ticketing.schemas.sla import (
+    FirstResponseSLAState,
+    ResolutionSLAState,
+    SLAPauseRequest,
+    SLAPolicyResponse,
+    SLAPolicyUpdate,
+    TicketSLAResponse,
+)
+from app.ticketing.schemas.ticket_action import TicketActionResponse
+from app.ticketing.services.access_control import (
+    ensure_can_manage_sla_policies,
+    ensure_can_override_sla,
+)
+from app.ticketing.services.audit_log_service import AuditLogService
+
+logger = logging.getLogger(__name__)
+
+# Default priority used to look up a First Response policy for a
+# still-pending inbox item, which has no priority field of its own —
+# see FirstResponseSLA's own docstring for why this is an accepted v1
+# limitation rather than a correctness bug.
+DEFAULT_FIRST_RESPONSE_PRIORITY = TicketPriority.MEDIUM
+
+
+def compute_elapsed_fraction(
+    *, due_at: datetime, target_minutes: int, at: datetime
+) -> float:
+    """
+    Pure fraction-of-target-consumed math, shared by the read-state
+    endpoint and the breach sweep. Derived directly from `due_at` and
+    the target — never touches `started_at` or pause history — which
+    is the whole payoff of shifting `due_at` on every resume (see the
+    plan doc's §0): 1.0 means "exactly at the target", regardless of
+    how many pause/resume cycles it took to get there.
+    """
+
+    target_seconds = target_minutes * 60
+    if target_seconds <= 0:
+        return 1.0
+
+    remaining_seconds = (due_at - at).total_seconds()
+    return 1.0 - (remaining_seconds / target_seconds)
+
+
+class SLAService:
+    """
+    Orchestrates both SLA clocks: creation/completion hooks called
+    from EmailService/InteractionService/InboxTicketService, the
+    read-state endpoint, admin policy CRUD, and the manual pause/
+    resume override action. Every clock-mutating method here is
+    best-effort/no-op-tolerant on the "hook" side (SLA bookkeeping
+    must never block or fail the underlying business action it's
+    attached to) — only the manual override and policy-CRUD methods,
+    which are the SLA feature's own direct actions, raise on failure.
+    """
+
+    def __init__(
+        self,
+        sla_policy_repository: SLAPolicyRepository,
+        first_response_sla_repository: FirstResponseSLARepository,
+        resolution_sla_repository: ResolutionSLARepository,
+        ticket_repository: TicketRepository | None = None,
+        interaction_repository: InteractionRepository | None = None,
+        notification_service: NotificationService | None = None,
+    ):
+        self.sla_policy_repository = sla_policy_repository
+        self.first_response_sla_repository = first_response_sla_repository
+        self.resolution_sla_repository = resolution_sla_repository
+        self.ticket_repository = ticket_repository
+        self.interaction_repository = interaction_repository
+        self.notification_service = notification_service
+
+    # ---------------------------------------------------------
+    # Policy lookup
+    # ---------------------------------------------------------
+
+    async def _get_policy(self, priority: TicketPriority) -> SLAPolicy | None:
+        policy = await self.sla_policy_repository.get_by_priority(priority)
+
+        if policy is None:
+            # Policies are seeded 1:1 with TicketPriority at migration
+            # time — a missing one means that seed hasn't run yet.
+            # Never let missing SLA config block the underlying
+            # business action (sending an email, creating a ticket).
+            logger.warning(
+                "No active SLAPolicy found for priority %s — skipping SLA clock.",
+                priority,
+            )
+
+        return policy
+
+    # ---------------------------------------------------------
+    # First Response clock
+    # ---------------------------------------------------------
+
+    async def start_first_response_clock(
+        self,
+        *,
+        interaction: Interaction,
+    ) -> FirstResponseSLA | None:
+        """
+        Called from EmailService.receive_email, only for a genuinely
+        new thread root (never a reply threading onto an existing
+        pending item or ticket) — see the plan doc's gap #7.
+        """
+
+        policy = await self._get_policy(DEFAULT_FIRST_RESPONSE_PRIORITY)
+        if policy is None:
+            return None
+
+        started_at = interaction.received_at or datetime.now(timezone.utc)
+        due_at = started_at + timedelta(minutes=policy.first_response_target_minutes)
+
+        return await self.first_response_sla_repository.create(
+            interaction_id=interaction.interaction_id,
+            client_id=interaction.client_id,
+            priority=DEFAULT_FIRST_RESPONSE_PRIORITY,
+            started_at=started_at,
+            due_at=due_at,
+        )
+
+    async def complete_first_response_clock(
+        self,
+        *,
+        interaction_id: UUID,
+        completion_reason: str,
+        resulting_ticket_id: UUID | None = None,
+    ) -> None:
+        """
+        Called from each of the four triage actions (archive, reply,
+        attach-to-ticket, create-ticket). Silently no-ops if no clock
+        exists for this interaction (predates this feature's rollout —
+        see the backfill script) or it's already completed — SLA
+        bookkeeping must never block triage.
+        """
+
+        clock = await self.first_response_sla_repository.get_by_interaction_id(
+            interaction_id
+        )
+        if clock is None:
+            return
+
+        await self.first_response_sla_repository.complete(
+            clock,
+            completed_at=datetime.now(timezone.utc),
+            completion_reason=completion_reason,
+            resulting_ticket_id=resulting_ticket_id,
+        )
+
+    # ---------------------------------------------------------
+    # Resolution clock
+    # ---------------------------------------------------------
+
+    async def start_resolution_clock(
+        self,
+        *,
+        ticket_id: UUID,
+        client_id: UUID | None,
+        priority: TicketPriority,
+    ) -> ResolutionSLA | None:
+        """Called from InboxTicketService.create_ticket_from_interaction."""
+
+        policy = await self._get_policy(priority)
+        if policy is None:
+            return None
+
+        started_at = datetime.now(timezone.utc)
+        due_at = started_at + timedelta(minutes=policy.resolution_target_minutes)
+
+        return await self.resolution_sla_repository.create(
+            ticket_id=ticket_id,
+            client_id=client_id,
+            priority=priority,
+            started_at=started_at,
+            due_at=due_at,
+        )
+
+    async def create_or_resume_resolution_clock(
+        self,
+        *,
+        ticket_id: UUID,
+        client_id: UUID | None,
+        priority: TicketPriority,
+    ) -> None:
+        """
+        Called from InboxTicketService.attach_to_existing_ticket — see
+        the plan doc's §2.2 for the four sub-cases: no clock yet
+        (create fresh), PAUSED (resume), RUNNING (no-op), COMPLETED
+        (no-op — never resurrect a clock on a closed ticket).
+        """
+
+        clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
+
+        if clock is None:
+            await self.start_resolution_clock(
+                ticket_id=ticket_id, client_id=client_id, priority=priority
+            )
+            return
+
+        if clock.status == SLAClockStatus.PAUSED:
+            await self.resolution_sla_repository.resume(
+                clock, resumed_at=datetime.now(timezone.utc)
+            )
+
+        # RUNNING / COMPLETED: no-op.
+
+    async def pause_resolution_clock(
+        self,
+        *,
+        ticket_id: UUID,
+        reason: str,
+        triggering_interaction_id: UUID | None = None,
+    ) -> None:
+        """Called from InteractionService.change_status on entry into WAITING_FOR_CLIENT."""
+
+        clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
+        if clock is None:
+            return
+
+        await self.resolution_sla_repository.pause(
+            clock,
+            paused_at=datetime.now(timezone.utc),
+            reason=reason,
+            triggering_interaction_id=triggering_interaction_id,
+        )
+
+    async def resume_resolution_clock(
+        self,
+        *,
+        ticket_id: UUID,
+        triggering_interaction_id: UUID | None = None,
+    ) -> None:
+        """
+        Called from two independent trigger points (see the plan
+        doc's gap #4): InteractionService.change_status on exit from
+        WAITING_FOR_CLIENT (agent-driven), and EmailService.
+        receive_email's threaded-onto-existing-ticket branch
+        (customer-driven, independent of whether the ticket's status
+        label has been changed yet).
+        """
+
+        clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
+        if clock is None:
+            return
+
+        await self.resolution_sla_repository.resume(
+            clock,
+            resumed_at=datetime.now(timezone.utc),
+            triggering_interaction_id=triggering_interaction_id,
+        )
+
+    async def complete_resolution_clock(self, *, ticket_id: UUID) -> None:
+        """Called from InteractionService.change_status on entry into CLOSED."""
+
+        clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
+        if clock is None:
+            return
+
+        await self.resolution_sla_repository.complete(
+            clock, completed_at=datetime.now(timezone.utc)
+        )
+
+    async def reshift_resolution_clock_for_priority_change(
+        self,
+        *,
+        ticket_id: UUID,
+        new_priority: TicketPriority,
+    ) -> None:
+        """Called from InteractionService.change_priority."""
+
+        clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
+        if clock is None:
+            return
+
+        policy = await self._get_policy(new_priority)
+        if policy is None:
+            return
+
+        await self.resolution_sla_repository.reshift_due_at_for_priority_change(
+            clock,
+            new_priority=new_priority,
+            new_target_minutes=policy.resolution_target_minutes,
+            now=datetime.now(timezone.utc),
+        )
+
+    # ---------------------------------------------------------
+    # Read state
+    # ---------------------------------------------------------
+
+    async def get_ticket_sla_state(self, *, ticket_id: UUID) -> TicketSLAResponse:
+        """
+        `first_response` is always None here — a ticket's First
+        Response clock lives on its originating pre-ticket Interaction,
+        not the Ticket row itself, so resolving it would require
+        walking back to that interaction (not all callers of this
+        ticket-level endpoint need it). Use
+        get_first_response_sla_state(interaction_id) directly against
+        the originating interaction when that's needed.
+        """
+
+        resolution_clock = await self.resolution_sla_repository.get_by_ticket_id(
+            ticket_id
+        )
+
+        resolution_state = None
+        if resolution_clock is not None:
+            policy = await self._get_policy(resolution_clock.priority)
+            target_minutes = (
+                policy.resolution_target_minutes if policy is not None else 0
+            )
+            at = resolution_clock.completed_at or datetime.now(timezone.utc)
+            resolution_state = ResolutionSLAState(
+                status=resolution_clock.status,
+                started_at=resolution_clock.started_at,
+                due_at=resolution_clock.due_at,
+                paused_at=resolution_clock.paused_at,
+                total_paused_seconds=resolution_clock.total_paused_seconds,
+                completed_at=resolution_clock.completed_at,
+                elapsed_fraction=compute_elapsed_fraction(
+                    due_at=resolution_clock.due_at,
+                    target_minutes=target_minutes,
+                    at=at,
+                ),
+            )
+
+        return TicketSLAResponse(
+            ticket_id=ticket_id,
+            first_response=None,
+            resolution=resolution_state,
+        )
+
+    async def get_first_response_sla_state(
+        self, *, interaction_id: UUID
+    ) -> FirstResponseSLAState | None:
+        clock = await self.first_response_sla_repository.get_by_interaction_id(
+            interaction_id
+        )
+        if clock is None:
+            return None
+
+        policy = await self._get_policy(clock.priority)
+        target_minutes = policy.first_response_target_minutes if policy is not None else 0
+        at = clock.completed_at or datetime.now(timezone.utc)
+
+        return FirstResponseSLAState(
+            status=clock.status,
+            started_at=clock.started_at,
+            due_at=clock.due_at,
+            completed_at=clock.completed_at,
+            completion_reason=clock.completion_reason,
+            elapsed_fraction=compute_elapsed_fraction(
+                due_at=clock.due_at, target_minutes=target_minutes, at=at
+            ),
+        )
+
+    # ---------------------------------------------------------
+    # Admin policy CRUD
+    # ---------------------------------------------------------
+
+    async def list_policies(self, current_user: User) -> list[SLAPolicyResponse]:
+        policies = await self.sla_policy_repository.list_all()
+        return [SLAPolicyResponse.model_validate(p) for p in policies]
+
+    async def update_policy(
+        self,
+        policy_id: UUID,
+        request: SLAPolicyUpdate,
+        current_user: User,
+    ) -> SLAPolicyResponse:
+        ensure_can_manage_sla_policies(current_user)
+
+        policy = await self.sla_policy_repository.get_by_id(policy_id)
+        if policy is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="SLA policy not found.",
+            )
+
+        updated = await self.sla_policy_repository.update(
+            policy,
+            first_response_target_minutes=request.first_response_target_minutes,
+            resolution_target_minutes=request.resolution_target_minutes,
+            is_active=request.is_active,
+        )
+
+        return SLAPolicyResponse.model_validate(updated)
+
+    # ---------------------------------------------------------
+    # Manual pause / resume override
+    #
+    # Follows this repo's add-ticket-action recipe: fetch-or-404 ->
+    # access-control gate -> resolve actor -> mutate -> write an
+    # Interaction -> write an AuditLog row.
+    # ---------------------------------------------------------
+
+    async def _get_ticket_or_404(self, ticket_id: UUID):
+        ticket = await self.ticket_repository.get_by_id(ticket_id)
+        if ticket is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Ticket not found.",
+            )
+        return ticket
+
+    async def _create_sla_interaction(
+        self,
+        *,
+        ticket_id: UUID,
+        interaction_type: str,
+        payload: dict[str, Any],
+        performed_by: UUID | None,
+    ) -> Interaction:
+        return await self.interaction_repository.create(
+            InteractionCreate(
+                ticket_id=ticket_id,
+                interaction_type=interaction_type,
+                direction=InteractionDirection.INTERNAL,
+                performed_by=performed_by,
+                payload=payload,
+                is_visible=True,
+            )
+        )
+
+    async def manual_pause(
+        self,
+        ticket_id: UUID,
+        request: SLAPauseRequest,
+        current_user: User,
+    ) -> TicketActionResponse:
+        ticket = await self._get_ticket_or_404(ticket_id)
+        ensure_can_override_sla(current_user)
+
+        clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
+        if clock is None or clock.status != SLAClockStatus.RUNNING:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This ticket's Resolution SLA is not currently running.",
+            )
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        interaction = await self._create_sla_interaction(
+            ticket_id=ticket_id,
+            interaction_type="SLA_PAUSED",
+            payload={"reason": request.reason},
+            performed_by=actor_id,
+        )
+
+        await self.resolution_sla_repository.pause(
+            clock,
+            paused_at=datetime.now(timezone.utc),
+            reason="MANUAL_OVERRIDE",
+            triggering_interaction_id=interaction.interaction_id,
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.SLA_MANUALLY_PAUSED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            new_values={"reason": request.reason, "interaction_id": interaction.interaction_id},
+        )
+
+        return TicketActionResponse(
+            interaction_id=interaction.interaction_id,
+            ticket_id=ticket_id,
+            message="Resolution SLA paused.",
+            created_at=interaction.created_at,
+        )
+
+    async def manual_resume(
+        self,
+        ticket_id: UUID,
+        current_user: User,
+    ) -> TicketActionResponse:
+        ticket = await self._get_ticket_or_404(ticket_id)
+        ensure_can_override_sla(current_user)
+
+        clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
+        if clock is None or clock.status != SLAClockStatus.PAUSED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This ticket's Resolution SLA is not currently paused.",
+            )
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        interaction = await self._create_sla_interaction(
+            ticket_id=ticket_id,
+            interaction_type="SLA_RESUMED",
+            payload={},
+            performed_by=actor_id,
+        )
+
+        await self.resolution_sla_repository.resume(
+            clock,
+            resumed_at=datetime.now(timezone.utc),
+            triggering_interaction_id=interaction.interaction_id,
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.SLA_MANUALLY_RESUMED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            new_values={"interaction_id": interaction.interaction_id},
+        )
+
+        return TicketActionResponse(
+            interaction_id=interaction.interaction_id,
+            ticket_id=ticket_id,
+            message="Resolution SLA resumed.",
+            created_at=interaction.created_at,
+        )
+
+
+def build_sla_service(
+    db: AsyncSession,
+    *,
+    notification_service: NotificationService | None = None,
+) -> SLAService:
+    """
+    Convenience factory wiring up every repository SLAService can use —
+    every route that touches SLA clocks (directly, or indirectly via
+    EmailService/InteractionService/InboxTicketService) constructs one
+    of these rather than hand-assembling four repositories inline at
+    each of the ~8 call sites.
+    """
+
+    return SLAService(
+        sla_policy_repository=SLAPolicyRepository(db),
+        first_response_sla_repository=FirstResponseSLARepository(db),
+        resolution_sla_repository=ResolutionSLARepository(db),
+        ticket_repository=TicketRepository(db),
+        interaction_repository=InteractionRepository(db),
+        notification_service=notification_service,
+    )
+

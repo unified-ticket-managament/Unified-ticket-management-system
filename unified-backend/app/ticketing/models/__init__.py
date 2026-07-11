@@ -8,6 +8,11 @@ from .audit_log import AuditLog
 from .mail_folder import MailFolder
 from .ticket_relation import TicketRelation
 from .ticket_edit_access_request import TicketEditAccessRequest
+from .sla_policy import SLAPolicy
+from .first_response_sla import FirstResponseSLA
+from .resolution_sla import ResolutionSLA
+from .resolution_sla_pause_interval import ResolutionSLAPauseInterval
+from .sla_breach_notification import SLABreachNotification
 
 __all__ = [
     "Base",
@@ -19,4 +24,9 @@ __all__ = [
     "MailFolder",
     "TicketRelation",
     "TicketEditAccessRequest",
+    "SLAPolicy",
+    "FirstResponseSLA",
+    "ResolutionSLA",
+    "ResolutionSLAPauseInterval",
+    "SLABreachNotification",
 ]

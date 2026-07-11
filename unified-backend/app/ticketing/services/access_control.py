@@ -347,6 +347,51 @@ def ensure_can_review_edit_access(
     ensure_has_permission(current_user, "ticket:editother_ticket")
 
 
+def ensure_can_close_ticket(current_user: User) -> None:
+    """
+    Only a supervisor may move a ticket into CLOSED
+    (InteractionService.change_status) — added specifically so the
+    Resolution SLA's "ends only when a Manager verifies and closes"
+    requirement is actually true rather than aspirational: without
+    this gate, an agent's own status change to CLOSED would silently
+    end the SLA clock with no manager involved at all. Moving to
+    RESOLVED (an agent's own proposed fix) is unaffected by this gate
+    and remains open to whoever could already change status.
+    """
+
+    if current_user.role.name not in SUPERVISOR_ROLE_NAMES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only a supervisor can close a ticket.",
+        )
+
+
+def ensure_can_override_sla(current_user: User) -> None:
+    """
+    Gates the manual SLA pause/resume override action — a business
+    exception (holding a ticket outside the normal customer-wait
+    model), not routine agent work, so it's restricted the same way
+    ensure_can_close_ticket is.
+    """
+
+    if current_user.role.name not in SUPERVISOR_ROLE_NAMES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only a supervisor can override a ticket's SLA.",
+        )
+
+
+def ensure_can_manage_sla_policies(current_user: User) -> None:
+    """
+    SLA targets are company-wide contractual/operational settings, not
+    per-team — restricted to Site Lead/Super Admin specifically
+    (narrower than SUPERVISOR_ROLE_NAMES, which also includes Team
+    Lead/Account Manager) via the sla:manage_policies permission.
+    """
+
+    ensure_has_permission(current_user, "sla:manage_policies")
+
+
 def ensure_can_reassign_ticket(current_user: User) -> None:
     """
     Only Team Lead/Account Manager/Site Lead/Super Admin may move a

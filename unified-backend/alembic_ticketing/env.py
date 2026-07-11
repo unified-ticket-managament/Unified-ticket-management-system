@@ -51,6 +51,11 @@ OWNED_TABLES = {
     "mail_folders",
     "ticket_relations",
     "ticket_edit_access_requests",
+    "sla_policies",
+    "first_response_slas",
+    "resolution_slas",
+    "resolution_sla_pause_intervals",
+    "sla_breach_notifications",
 }
 
 

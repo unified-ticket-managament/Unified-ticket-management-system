@@ -41,6 +41,7 @@ from app.ticketing.services.attachment_service import AttachmentService, attachm
 from app.ticketing.services.inbox_service import InboxService
 from app.ticketing.services.open_email_service import OpenEmailService
 from app.ticketing.services.interaction_service import InteractionService
+from app.ticketing.services.sla_service import build_sla_service
 from app.ticketing.storage import get_storage_service
 
 router = APIRouter(
@@ -359,6 +360,7 @@ async def archive_interaction(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         client_repository=client_repository,
+        sla_service=build_sla_service(db),
     )
 
     return await service.archive_interaction(
@@ -658,6 +660,7 @@ async def reply_to_interaction(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         client_repository=client_repository,
+        sla_service=build_sla_service(db),
     )
 
     return await service.add_interaction_reply(

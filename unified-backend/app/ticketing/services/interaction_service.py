@@ -61,6 +61,7 @@ from app.ticketing.services.access_control import (
     ensure_agent_can_act_on_ticket,
     ensure_agent_can_view_pending_interaction,
     ensure_agent_can_view_ticket,
+    ensure_can_close_ticket,
     ensure_can_compose_for_client,
     ensure_can_reassign_ticket,
     ensure_has_permission,
@@ -74,6 +75,7 @@ from app.ticketing.services.audit_to_interaction import (
 from app.ticketing.services.email_envelope import build_compose_envelope, build_reply_envelope
 from app.ticketing.services.interaction_summary import trim_payload_for_list
 from app.ticketing.services.outbound_dispatcher import OutboundDispatcher
+from app.ticketing.services.sla_service import SLAService
 
 from app.ticketing.enums import (
     AuditEntityType,
@@ -157,6 +159,7 @@ class InteractionService:
         mail_folder_repository: MailFolderRepository | None = None,
         edit_access_repository: TicketEditAccessRequestRepository | None = None,
         notification_service: NotificationService | None = None,
+        sla_service: SLAService | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
@@ -169,6 +172,7 @@ class InteractionService:
         self.mail_folder_repository = mail_folder_repository
         self.edit_access_repository = edit_access_repository
         self.notification_service = notification_service
+        self.sla_service = sla_service
 
     # ---------------------------------------------------------
     # Create Interaction
@@ -712,6 +716,12 @@ class InteractionService:
                 root, InteractionUpdate(status=InteractionStatus.ASSIGNED)
             )
 
+        if self.sla_service is not None:
+            await self.sla_service.complete_first_response_clock(
+                interaction_id=root.interaction_id,
+                completion_reason="REPLIED",
+            )
+
         return InteractionReplyResponse(
             interaction_id=interaction.interaction_id,
             parent_interaction_id=root.interaction_id,
@@ -857,6 +867,14 @@ class InteractionService:
         old_closed_at = ticket.closed_at
         new_status = request.new_status
 
+        # Only a supervisor may close a ticket — added specifically so
+        # the Resolution SLA's "ends only when a Manager verifies and
+        # closes" requirement is actually enforced, not just
+        # aspirational (see access_control.ensure_can_close_ticket's
+        # own docstring). Moving to RESOLVED is unaffected.
+        if new_status == TicketStatus.CLOSED:
+            ensure_can_close_ticket(current_user)
+
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
         )
@@ -903,6 +921,40 @@ class InteractionService:
             old_values=old_values,
             new_values=new_values,
         )
+
+        # ---------------------------------------------------------
+        # Resolution SLA — pause/resume/complete all key off this
+        # single chokepoint, matching this repo's existing "change_status
+        # is the one place status transitions happen" principle.
+        # Entering RESOLVED deliberately never completes the clock —
+        # only a supervisor-gated transition into CLOSED does (see the
+        # gate above and ResolutionSLA's own docstring).
+        # ---------------------------------------------------------
+
+        if self.sla_service is not None:
+            if (
+                new_status == TicketStatus.WAITING_FOR_CLIENT
+                and old_status != TicketStatus.WAITING_FOR_CLIENT
+            ):
+                # STATUS_CHANGE no longer creates an Interaction row
+                # (see the AuditLog-only note above) — there's nothing
+                # to point triggering_interaction_id at anymore.
+                await self.sla_service.pause_resolution_clock(
+                    ticket_id=ticket_id,
+                    reason="WAITING_FOR_CLIENT_STATUS",
+                    triggering_interaction_id=None,
+                )
+            elif (
+                old_status == TicketStatus.WAITING_FOR_CLIENT
+                and new_status != TicketStatus.WAITING_FOR_CLIENT
+            ):
+                await self.sla_service.resume_resolution_clock(
+                    ticket_id=ticket_id,
+                    triggering_interaction_id=None,
+                )
+
+            if new_status == TicketStatus.CLOSED and old_status != TicketStatus.CLOSED:
+                await self.sla_service.complete_resolution_clock(ticket_id=ticket_id)
 
         return TicketActionResponse(
             interaction_id=None,
@@ -956,6 +1008,12 @@ class InteractionService:
             old_values={"current_priority": old_priority},
             new_values={"current_priority": request.new_priority},
         )
+
+        if self.sla_service is not None:
+            await self.sla_service.reshift_resolution_clock_for_priority_change(
+                ticket_id=ticket_id,
+                new_priority=request.new_priority,
+            )
 
         return TicketActionResponse(
             interaction_id=None,
@@ -1264,6 +1322,12 @@ class InteractionService:
             old_values={"status": InteractionStatus.PENDING},
             new_values={"status": InteractionStatus.IGNORED},
         )
+
+        if self.sla_service is not None:
+            await self.sla_service.complete_first_response_clock(
+                interaction_id=archived.interaction_id,
+                completion_reason="ARCHIVED",
+            )
 
         return InteractionArchiveResponse(
             interaction_id=archived.interaction_id,

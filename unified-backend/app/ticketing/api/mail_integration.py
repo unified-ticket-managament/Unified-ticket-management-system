@@ -42,6 +42,7 @@ from app.ticketing.services.email_service import EmailService
 from app.ticketing.services.mail_mapping_service import map_external_email_to_interaction
 from app.ticketing.services.mail_provider import get_mail_provider_client
 from app.ticketing.services.outgoing_mail_service import OutgoingMailService
+from app.ticketing.services.sla_service import build_sla_service
 from app.ticketing.storage import get_storage_service
 
 router = APIRouter(
@@ -80,13 +81,16 @@ def _build_email_service(db: AsyncSession) -> EmailService:
         storage_service=get_storage_service(),
     )
 
+    notification_service = NotificationService(NotificationRepository(db))
+
     return EmailService(
         interaction_repository=interaction_repository,
         client_repository=client_repository,
         attachment_service=attachment_service,
         user_repository=user_repository,
         ticket_repository=TicketRepository(db),
-        notification_service=NotificationService(NotificationRepository(db)),
+        notification_service=notification_service,
+        sla_service=build_sla_service(db, notification_service=notification_service),
     )
 
 

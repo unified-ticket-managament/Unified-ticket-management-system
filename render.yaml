@@ -76,6 +76,37 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+      # Shared secret POST /internal/sla/sweep checks against — must be
+      # byte-identical to the sla-sweep cron job's own copy of the same
+      # value below (paste the same generated value into both when
+      # applying this Blueprint).
+      - key: SLA_SWEEP_SHARED_SECRET
+        sync: false
+
+  # ---------------------------------------------------------------------
+  # SLA breach-detection sweep — runs on its own schedule, independent
+  # of the web service's request-handling process, so it can't double-
+  # fire if unified-backend is ever scaled to more than one instance
+  # (an in-process scheduler inside the web service would). Hits the
+  # shared-secret-protected POST /internal/sla/sweep on unified-backend.
+  # ---------------------------------------------------------------------
+  - type: cron
+    name: sla-sweep
+    runtime: python
+    plan: free
+    rootDir: unified-backend
+    schedule: "*/2 * * * *"
+    buildCommand: pip install requests
+    startCommand: python scripts/sla_sweep_ping.py
+    envVars:
+      # SECOND PASS: real unified-backend URL + /internal/sla/sweep,
+      # once that's known after the first deploy.
+      - key: SLA_SWEEP_URL
+        sync: false
+      # Must be byte-identical to unified-backend's own
+      # SLA_SWEEP_SHARED_SECRET above.
+      - key: SLA_SWEEP_SHARED_SECRET
+        sync: false
 
   - type: web
     name: rbac-frontend
