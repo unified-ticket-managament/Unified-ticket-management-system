@@ -61,7 +61,7 @@ services:
         value: "30"
       - key: REFRESH_TOKEN_EXPIRE_DAYS
         value: "7"
-      # SECOND PASS: after first deploy, set to the real rbac-frontend URL
+      # SECOND PASS: after first deploy, set to the real unified-frontend URL
       # PLUS the real ticketing-frontend URL (comma-separated, no trailing
       # slash) — both frontends call this one backend cross-origin.
       - key: CORS_ORIGINS
@@ -109,14 +109,19 @@ services:
         sync: false
 
   - type: web
-    name: rbac-frontend
+    name: unified-frontend
     runtime: node
     plan: free
     # Directory renamed to unified-frontend/ (formerly rbac-service/frontend)
     # once it was confirmed to already be a strict superset of
     # ticketing-service/frontend — see the root CLAUDE.md's frontend-
-    # consolidation note. Service `name` deliberately left as `rbac-frontend`
-    # to avoid changing this service's URL/hostname on Render.
+    # consolidation note. Service `name` was originally kept as `rbac-frontend`
+    # to avoid a URL/hostname change on Render, but was deliberately renamed
+    # to `unified-frontend` while still pre-launch (no external users/links
+    # depending on the old URL yet) — renaming a Render service's name here
+    # mints a fresh service/URL on next Blueprint sync rather than renaming
+    # in place, so the old `rbac-frontend` service becomes unmanaged and
+    # should be suspended/deleted once the new one is verified working.
     rootDir: unified-frontend
     buildCommand: npm ci && npm run build
     startCommand: npm run start
@@ -166,6 +171,6 @@ services:
       # backend's RBAC half directly).
       - key: VITE_RBAC_API_BASE_URL
         sync: false
-      # SECOND PASS: real rbac-frontend URL — sidebar's "RBAC Admin" link.
+      # SECOND PASS: real unified-frontend URL — sidebar's "RBAC Admin" link.
       - key: VITE_RBAC_FRONTEND_URL
         sync: false
