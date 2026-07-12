@@ -93,7 +93,6 @@ services:
   - type: cron
     name: sla-sweep
     runtime: python
-    plan: free
     rootDir: unified-backend
     schedule: "*/2 * * * *"
     buildCommand: pip install requests
