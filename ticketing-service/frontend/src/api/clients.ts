@@ -1,5 +1,5 @@
 import { apiClient } from "./client";
-import type { ClientCreateRequest, ClientResponse } from "@/types";
+import type { ClientContact, ClientCreateRequest, ClientResponse } from "@/types";
 
 // GET /clients
 export async function listClients(): Promise<ClientResponse[]> {
@@ -12,5 +12,14 @@ export async function createClient(
   payload: ClientCreateRequest
 ): Promise<ClientResponse> {
   const { data } = await apiClient.post<ClientResponse>("/clients", payload);
+  return data;
+}
+
+// GET /clients/{client_id}/contacts — every personal address this
+// client has previously contacted the shared inbox from, most-
+// recently-used first. Backs the "To" dropdown on the ticket
+// composer's reply-to-client form.
+export async function listClientContacts(clientId: string): Promise<ClientContact[]> {
+  const { data } = await apiClient.get<ClientContact[]>(`/clients/${clientId}/contacts`);
   return data;
 }

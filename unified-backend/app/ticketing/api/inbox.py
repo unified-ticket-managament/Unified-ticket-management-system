@@ -13,6 +13,9 @@ from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
+from app.ticketing.repositories.ticket_edit_access_repository import (
+    TicketEditAccessRequestRepository,
+)
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
@@ -21,13 +24,12 @@ from app.ticketing.schemas.interaction import (
     DraftDeleteResponse,
     DraftResponse,
     DraftSaveRequest,
+    DraftSendRequest,
     FolderAssignRequest,
     InteractionArchiveResponse,
     InteractionClaimResponse,
     InteractionFolderResponse,
-    InteractionSnoozeResponse,
     InteractionTagsResponse,
-    SnoozeRequest,
     TagsUpdateRequest,
 )
 from app.ticketing.schemas.open_email import OpenEmailResponse
@@ -39,6 +41,7 @@ from app.ticketing.services.attachment_service import AttachmentService, attachm
 from app.ticketing.services.inbox_service import InboxService
 from app.ticketing.services.open_email_service import OpenEmailService
 from app.ticketing.services.interaction_service import InteractionService
+from app.ticketing.services.sla_service import build_sla_service
 from app.ticketing.storage import get_storage_service
 
 router = APIRouter(
@@ -72,7 +75,7 @@ def _split_emails(raw: str | None) -> list[str]:
 async def get_inbox(
     client_id: UUID | None = Query(default=None),
     folder_id: UUID | None = Query(default=None),
-    view: str = Query(default="pending", pattern="^(pending|replied|ticketed|archived|snoozed|all)$"),
+    view: str = Query(default="pending", pattern="^(pending|replied|ticketed|archived|all)$"),
     scope: str = Query(default="mine", pattern="^(mine|all)$"),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
@@ -83,8 +86,8 @@ async def get_inbox(
 
     `view` selects which root emails: not-yet-actioned ("pending"),
     replied-but-never-ticketed ("replied"), promoted-to-a-ticket
-    ("ticketed"), marked Informational/Archive ("archived"), hidden
-    until a future time ("snoozed"), or every one of them ("all").
+    ("ticketed"), marked Informational/Archive ("archived"), or every
+    one of them ("all").
 
     `folder_id` further narrows to one custom folder — orthogonal to
     `view`, composes with any of the above.
@@ -98,12 +101,14 @@ async def get_inbox(
     attachment_repository = AttachmentRepository(db)
     user_repository = UserRepository(db)
     ticket_repository = TicketRepository(db)
+    edit_access_repository = TicketEditAccessRequestRepository(db)
 
     service = InboxService(
         repository,
         attachment_repository=attachment_repository,
         user_repository=user_repository,
         ticket_repository=ticket_repository,
+        edit_access_repository=edit_access_repository,
     )
 
     return await service.get_inbox(
@@ -113,6 +118,60 @@ async def get_inbox(
         scope=scope,
         folder_id=folder_id,
     )
+
+
+@router.get(
+    "/folder-counts",
+    response_model=dict[UUID, int],
+)
+async def get_folder_counts(
+    client_id: UUID | None = Query(default=None),
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Every custom folder's item count in one query, under the same
+    role scoping as GET /inbox — backs the Mail sidebar's per-folder
+    badges without calling GET /inbox once per folder just to read
+    `.total`.
+    """
+
+    repository = InteractionRepository(db)
+    edit_access_repository = TicketEditAccessRequestRepository(db)
+
+    service = InboxService(
+        repository,
+        edit_access_repository=edit_access_repository,
+    )
+
+    return await service.get_folder_counts(current_user, client_id=client_id)
+
+
+@router.get(
+    "/view-counts",
+    response_model=dict[str, int],
+)
+async def get_view_counts(
+    client_id: UUID | None = Query(default=None),
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Pending/Replied/Ticketed/Archived/All badge counts in one query,
+    under the same role scoping as GET /inbox — lets the Mail
+    sidebar show accurate tab counts without fetching each tab's
+    actual row data until it's opened.
+    """
+
+    repository = InteractionRepository(db)
+    edit_access_repository = TicketEditAccessRequestRepository(db)
+
+    service = InboxService(
+        repository,
+        edit_access_repository=edit_access_repository,
+    )
+
+    return await service.get_view_counts(current_user, client_id=client_id)
 
 
 # ---------------------------------------------------------
@@ -301,79 +360,10 @@ async def archive_interaction(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         client_repository=client_repository,
+        sla_service=build_sla_service(db),
     )
 
     return await service.archive_interaction(
-        interaction_id=interaction_id,
-        current_user=current_user,
-    )
-
-
-# ---------------------------------------------------------
-# Snooze / Unsnooze
-# ---------------------------------------------------------
-
-@router.post(
-    "/{interaction_id}/snooze",
-    response_model=InteractionSnoozeResponse,
-    status_code=200,
-)
-async def snooze_interaction(
-    interaction_id: UUID,
-    request: SnoozeRequest,
-    current_user: User = Depends(get_current_agent),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Hides a pending, unticketed inbox item from the "pending" view
-    until `snooze_until` — it resurfaces there automatically once
-    that time passes, no background job needed.
-    """
-
-    interaction_repository = InteractionRepository(db)
-    ticket_repository = TicketRepository(db)
-    user_repository = UserRepository(db)
-    client_repository = ClientRepository(db)
-
-    service = InteractionService(
-        interaction_repository=interaction_repository,
-        ticket_repository=ticket_repository,
-        user_repository=user_repository,
-        client_repository=client_repository,
-    )
-
-    return await service.snooze_interaction(
-        interaction_id=interaction_id,
-        request=request,
-        current_user=current_user,
-    )
-
-
-@router.post(
-    "/{interaction_id}/unsnooze",
-    response_model=InteractionSnoozeResponse,
-    status_code=200,
-)
-async def unsnooze_interaction(
-    interaction_id: UUID,
-    current_user: User = Depends(get_current_agent),
-    db: AsyncSession = Depends(get_db),
-):
-    """Clears an active snooze early, returning the item to "pending" immediately."""
-
-    interaction_repository = InteractionRepository(db)
-    ticket_repository = TicketRepository(db)
-    user_repository = UserRepository(db)
-    client_repository = ClientRepository(db)
-
-    service = InteractionService(
-        interaction_repository=interaction_repository,
-        ticket_repository=ticket_repository,
-        user_repository=user_repository,
-        client_repository=client_repository,
-    )
-
-    return await service.unsnooze_interaction(
         interaction_id=interaction_id,
         current_user=current_user,
     )
@@ -539,6 +529,7 @@ async def upload_draft_attachment(
 )
 async def send_draft(
     interaction_id: UUID,
+    body: DraftSendRequest | None = None,
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
@@ -562,6 +553,7 @@ async def send_draft(
     return await service.send_draft(
         interaction_id=interaction_id,
         current_user=current_user,
+        to_email=body.to_email if body else None,
     )
 
 
@@ -668,6 +660,7 @@ async def reply_to_interaction(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         client_repository=client_repository,
+        sla_service=build_sla_service(db),
     )
 
     return await service.add_interaction_reply(

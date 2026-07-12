@@ -13,7 +13,6 @@ import type {
   InteractionFolderResponse,
   InteractionReplyRequest,
   InteractionReplyResponse,
-  InteractionSnoozeResponse,
   InteractionTagsResponse,
   OpenEmailResponse,
   SentResponse,
@@ -34,6 +33,36 @@ export async function getInbox(
       folder_id: options?.folderId,
     },
   });
+  return data;
+}
+
+// GET /inbox/folder-counts — every custom folder's item count in
+// one query, under the same role scoping as GET /inbox. Replaces
+// calling getInbox("all", {folderId}) once per folder just to read
+// `.total`.
+export async function getFolderCounts(
+  clientId?: string
+): Promise<Record<string, number>> {
+  const { data } = await apiClient.get<Record<string, number>>("/inbox/folder-counts", {
+    params: { client_id: clientId },
+  });
+  return data;
+}
+
+// GET /inbox/view-counts — Pending/Replied/Ticketed/Archived/All
+// badge counts in one query, under the same role scoping as
+// GET /inbox. Lets the sidebar show accurate tab counts without
+// fetching each tab's actual row data until it's opened.
+export async function getViewCounts(
+  clientId?: string
+): Promise<{ pending: number; replied: number; ticketed: number; archived: number; all: number }> {
+  const { data } = await apiClient.get<{
+    pending: number;
+    replied: number;
+    ticketed: number;
+    archived: number;
+    all: number;
+  }>("/inbox/view-counts", { params: { client_id: clientId } });
   return data;
 }
 
@@ -85,12 +114,16 @@ export async function uploadDraftAttachment(
 }
 
 // POST /inbox/{interaction_id}/draft/send — send the current user's
-// draft on this thread as a real reply.
+// draft on this thread as a real reply. `toEmail`, when the agent
+// picked a contact from the "To" dropdown, overrides the default
+// recipient for this send only (not persisted onto the draft).
 export async function sendDraft(
-  interactionId: string
+  interactionId: string,
+  toEmail?: string | null
 ): Promise<InteractionReplyResponse> {
   const { data } = await apiClient.post<InteractionReplyResponse>(
-    `/inbox/${interactionId}/draft/send`
+    `/inbox/${interactionId}/draft/send`,
+    { to_email: toEmail ?? null }
   );
   return data;
 }
@@ -148,29 +181,6 @@ export async function archiveInteraction(
 ): Promise<InteractionArchiveResponse> {
   const { data } = await apiClient.post<InteractionArchiveResponse>(
     `/inbox/${interactionId}/archive`
-  );
-  return data;
-}
-
-// POST /inbox/{interaction_id}/snooze — hide from "pending" until
-// snoozeUntil; resurfaces there automatically once that time passes.
-export async function snoozeInteraction(
-  interactionId: string,
-  snoozeUntil: string
-): Promise<InteractionSnoozeResponse> {
-  const { data } = await apiClient.post<InteractionSnoozeResponse>(
-    `/inbox/${interactionId}/snooze`,
-    { snooze_until: snoozeUntil }
-  );
-  return data;
-}
-
-// POST /inbox/{interaction_id}/unsnooze — clear an active snooze early.
-export async function unsnoozeInteraction(
-  interactionId: string
-): Promise<InteractionSnoozeResponse> {
-  const { data } = await apiClient.post<InteractionSnoozeResponse>(
-    `/inbox/${interactionId}/unsnooze`
   );
   return data;
 }

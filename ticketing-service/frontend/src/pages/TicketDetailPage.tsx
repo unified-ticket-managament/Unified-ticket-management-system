@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -19,8 +19,13 @@ export function TicketDetailPage() {
   const [composerMode, setComposerMode] = useState<ComposerMode | null>(null);
   const [activityTab, setActivityTab] = useState<ActivityTab>("timeline");
   // Bumped after any refresh so the Audit Log tab refetches
-  // immediately instead of waiting for its own poll interval.
+  // immediately instead of waiting for its own poll interval — only
+  // while that tab is actually the one open, so an action taken with
+  // Timeline showing doesn't force an Audit Log fetch nobody's
+  // looking at yet (it'll fetch fresh on its own next mount).
   const [auditRefreshToken, setAuditRefreshToken] = useState(0);
+  const activityTabRef = useRef(activityTab);
+  activityTabRef.current = activityTab;
 
   const { run: runGetTicket, isLoading: isLoadingTicket } = useApiAction(getTicket);
   const { run: runGetTimeline } = useApiAction(getTicketTimeline);
@@ -29,18 +34,22 @@ export function TicketDetailPage() {
     if (!ticketId) return;
     const items = await runGetTimeline(ticketId);
     if (items) setTimeline(items);
-    setAuditRefreshToken((token) => token + 1);
+    if (activityTabRef.current === "audit") {
+      setAuditRefreshToken((token) => token + 1);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketId, runGetTimeline, setTimeline]);
 
   const refreshAll = useCallback(async () => {
     if (!ticketId) return;
-    const ticket = await runGetTicket(ticketId);
+    // Fetched in parallel — the timeline call only needs ticketId,
+    // not the resolved ticket object, so there's no reason to wait
+    // on one before starting the other.
+    const [ticket] = await Promise.all([runGetTicket(ticketId), refreshTimeline()]);
     // Explicitly clear on failure (e.g. transferred away from the
     // current agent) so the page drops to the empty state instead
     // of continuing to show stale, no-longer-accessible data.
     setActiveTicket(ticket);
-    await refreshTimeline();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketId]);
 

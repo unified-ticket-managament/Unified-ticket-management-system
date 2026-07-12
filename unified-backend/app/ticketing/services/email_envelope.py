@@ -45,27 +45,34 @@ def build_reply_envelope(
     account_manager_email: str | None = None,
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
+    to_email_override: str | None = None,
 ) -> OutboundEnvelope | None:
     """
     Builds the outbound envelope for a reply: From is always the
     client's shared inbox (never an agent's personal address — that's
     what keeps the client's next answer routable back through the
-    platform), To is the original sender, and the subject/threading
-    headers keep the conversation linked for the client's mail client
-    and for our own inbound thread-matching.
+    platform), To is the original sender by default, and the subject/
+    threading headers keep the conversation linked for the client's
+    mail client and for our own inbound thread-matching.
 
     `agent_name` is display-only (From address stays the shared
     inbox). `account_manager_email`, when known, is auto-added to Cc
     so the Account Manager sees every reply in their real mailbox
     without checking the platform. `cc`/`bcc` are whatever the agent
     themselves entered on the reply form, merged in alongside it.
+    `to_email_override`, when the agent picked a different contact
+    from the "To" dropdown instead of the thread's own sender, wins
+    over `inbound_payload.from_email` — still requires a resolvable
+    recipient somewhere, so an override can't be used to bypass the
+    "nothing to dispatch" case below.
 
     Returns None if there's no sender to reply to (e.g. a reply on a
     ticket whose originating email is unknown) — callers should treat
     that as "nothing to dispatch" rather than an error.
     """
 
-    if not inbound_payload.from_email:
+    recipient = to_email_override or inbound_payload.from_email
+    if not recipient:
         return None
 
     references = list(inbound_payload.references)
@@ -75,7 +82,7 @@ def build_reply_envelope(
     return OutboundEnvelope(
         from_email=client.inbox_email,
         from_name=agent_name,
-        to_email=inbound_payload.from_email,
+        to_email=recipient,
         cc=_merge_cc(account_manager_email, cc),
         bcc=list(bcc or []),
         subject=_reply_subject(inbound_payload.subject),

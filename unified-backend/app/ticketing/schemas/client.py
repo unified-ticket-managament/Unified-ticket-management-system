@@ -44,3 +44,16 @@ class ClientResponse(BaseModel):
     # revalidates that automatically). Always True right after
     # creation, since ClientService.create validates it up front.
     account_manager_active: bool = True
+
+
+class ClientContactResponse(BaseModel):
+    """
+    One personal email address this client company has contacted our
+    shared inbox from, most-recently-used first — populates the "To"
+    picker on a reply composer so an agent can address a reply to any
+    contact who has actually emailed in, not just whoever sent the
+    specific thread being replied to.
+    """
+
+    email: str
+    name: str | None = None

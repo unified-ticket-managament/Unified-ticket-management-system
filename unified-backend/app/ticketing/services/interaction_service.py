@@ -35,10 +35,8 @@ from app.ticketing.schemas.interaction import (
     InteractionCreate,
     InteractionFolderResponse,
     InteractionResponse,
-    InteractionSnoozeResponse,
     InteractionTagsResponse,
     InteractionUpdate,
-    SnoozeRequest,
     TagsUpdateRequest,
     ThreadResponse,
 )
@@ -63,14 +61,21 @@ from app.ticketing.services.access_control import (
     ensure_agent_can_act_on_ticket,
     ensure_agent_can_view_pending_interaction,
     ensure_agent_can_view_ticket,
+    ensure_can_close_ticket,
     ensure_can_compose_for_client,
     ensure_can_reassign_ticket,
     ensure_has_permission,
     ensure_ticket_not_closed,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.audit_to_interaction import (
+    SYNTHESIZABLE_EVENT_TYPES,
+    synthesize_interaction_from_audit,
+)
 from app.ticketing.services.email_envelope import build_compose_envelope, build_reply_envelope
+from app.ticketing.services.interaction_summary import trim_payload_for_list
 from app.ticketing.services.outbound_dispatcher import OutboundDispatcher
+from app.ticketing.services.sla_service import SLAService
 
 from app.ticketing.enums import (
     AuditEntityType,
@@ -94,6 +99,7 @@ def _to_response(
     interaction: Interaction,
     attachments: list[AttachmentMetadata] | None = None,
     performed_by_name: str | None = None,
+    trim: bool = False,
 ) -> InteractionResponse:
     """
     Builds an InteractionResponse without touching
@@ -102,6 +108,11 @@ def _to_response(
     from_attributes machinery read it directly would trigger an
     unawaited lazy load. Callers that need real attachments (the
     ticket timeline) fetch them separately and pass them in.
+
+    `trim=True` (used only by the list-view timeline) keeps just the
+    handful of payload keys the frontend's summarize() actually reads
+    for this row's type, instead of the full payload — see
+    interaction_summary.trim_payload_for_list.
     """
 
     return InteractionResponse(
@@ -112,7 +123,7 @@ def _to_response(
         direction=interaction.direction,
         performed_by=interaction.performed_by,
         performed_by_name=performed_by_name,
-        payload=interaction.payload,
+        payload=trim_payload_for_list(interaction) if trim else interaction.payload,
         is_visible=interaction.is_visible,
         removed_by=interaction.removed_by,
         removed_at=interaction.removed_at,
@@ -148,6 +159,7 @@ class InteractionService:
         mail_folder_repository: MailFolderRepository | None = None,
         edit_access_repository: TicketEditAccessRequestRepository | None = None,
         notification_service: NotificationService | None = None,
+        sla_service: SLAService | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
@@ -160,6 +172,7 @@ class InteractionService:
         self.mail_folder_repository = mail_folder_repository
         self.edit_access_repository = edit_access_repository
         self.notification_service = notification_service
+        self.sla_service = sla_service
 
     # ---------------------------------------------------------
     # Create Interaction
@@ -251,39 +264,47 @@ class InteractionService:
             .list_by_ticket_id(ticket_id)
         )
 
-        attachments_by_interaction: dict[UUID, list[AttachmentMetadata]] = {}
-
-        if self.attachment_repository is not None and self.storage_service is not None:
-            interaction_ids = [i.interaction_id for i in interactions]
-            attachments_map = await self.attachment_repository.list_by_interaction_ids(
-                interaction_ids
-            )
-            interaction_ids_with_files = list(attachments_map.keys())
-            metadata_lists = await asyncio.gather(
-                *(
-                    attachments_to_metadata(attachments_map[iid], self.storage_service)
-                    for iid in interaction_ids_with_files
-                )
-            )
-            attachments_by_interaction = dict(zip(interaction_ids_with_files, metadata_lists))
-
+        # This list view never renders attachments or full payload
+        # text directly — only the click-to-open thread/email detail
+        # does, via a separate endpoint that keeps doing full
+        # signing — so skip the per-attachment signed-URL generation
+        # and full JSONB payload that used to make this slow.
         performer_ids = [
             i.performed_by for i in interactions if i.performed_by is not None
         ]
         names_by_id = await self.user_repository.get_names_by_ids(performer_ids)
 
-        return [
+        rows = [
             _to_response(
                 interaction,
-                attachments_by_interaction.get(interaction.interaction_id),
                 performed_by_name=(
                     names_by_id.get(interaction.performed_by)
                     if interaction.performed_by is not None
                     else None
                 ),
+                trim=True,
             )
             for interaction in interactions
         ]
+
+        # STATUS_CHANGE/PRIORITY_CHANGE/AGENT_TRANSFER/CLAIM/EDIT_ACCESS_*
+        # no longer get their own Interaction row (see
+        # audit_to_interaction.py) — synthesize a display row back
+        # from the ticket_audit_logs entry each of those actions
+        # still writes, so the Timeline keeps showing every one of
+        # them exactly as before.
+        if self.audit_log_repository is not None:
+            audit_logs = await self.audit_log_repository.list_by_ticket(ticket_id)
+            synthetic_rows = [
+                synthesize_interaction_from_audit(log, ticket_id, ticket.title)
+                for log in audit_logs
+                if log.event_type in SYNTHESIZABLE_EVENT_TYPES
+            ]
+            rows.extend(synthetic_rows)
+
+        rows.sort(key=lambda item: item.created_at)
+
+        return rows
 
     # ---------------------------------------------------------
     # Ticket Audit Trail
@@ -357,6 +378,7 @@ class InteractionService:
         message_id: str | None = None,
         client_id: UUID | None = None,
         parent_interaction_id: UUID | None = None,
+        subject: str | None = None,
     ) -> Interaction:
         """
         Creates any interaction that belongs to a ticket.
@@ -407,6 +429,8 @@ class InteractionService:
 
                 parent_interaction_id=parent_interaction_id,
 
+                subject=subject,
+
             )
 
         )
@@ -445,6 +469,7 @@ class InteractionService:
                 "note": request.note,
             },
             performed_by=actor_id,
+            subject=request.subject,
         )
 
         # Metadata only — the note text itself is never written to
@@ -529,6 +554,7 @@ class InteractionService:
                     account_manager_email=am_email,
                     cc=request.cc,
                     bcc=request.bcc,
+                    to_email_override=request.to_email,
                 )
 
         payload: dict[str, Any] = {"message": request.message}
@@ -547,6 +573,7 @@ class InteractionService:
             message_id=envelope.message_id if envelope is not None else None,
             client_id=ticket.client_company_id,
             parent_interaction_id=thread_root_id,
+            subject=latest_email.subject if latest_email is not None else None,
         )
 
         # Metadata only — the reply body itself is never written to
@@ -639,6 +666,7 @@ class InteractionService:
                     account_manager_email=am_email,
                     cc=request.cc,
                     bcc=request.bcc,
+                    to_email_override=request.to_email,
                 )
 
         payload: dict[str, Any] = {"message": request.message}
@@ -660,6 +688,7 @@ class InteractionService:
                 message_id=envelope.message_id if envelope is not None else None,
                 client_id=root.client_id,
                 parent_interaction_id=root.interaction_id,
+                subject=root.subject,
             )
         )
 
@@ -685,6 +714,12 @@ class InteractionService:
         if root.status == InteractionStatus.PENDING:
             await self.interaction_repository.update(
                 root, InteractionUpdate(status=InteractionStatus.ASSIGNED)
+            )
+
+        if self.sla_service is not None:
+            await self.sla_service.complete_first_response_clock(
+                interaction_id=root.interaction_id,
+                completion_reason="REPLIED",
             )
 
         return InteractionReplyResponse(
@@ -780,6 +815,7 @@ class InteractionService:
                 client_id=client.client_id,
                 parent_interaction_id=None,
                 received_at=datetime.now(timezone.utc),
+                subject=request.subject,
             )
         )
 
@@ -831,6 +867,14 @@ class InteractionService:
         old_closed_at = ticket.closed_at
         new_status = request.new_status
 
+        # Only a supervisor may close a ticket — added specifically so
+        # the Resolution SLA's "ends only when a Manager verifies and
+        # closes" requirement is actually enforced, not just
+        # aspirational (see access_control.ensure_can_close_ticket's
+        # own docstring). Moving to RESOLVED is unaffected.
+        if new_status == TicketStatus.CLOSED:
+            ensure_can_close_ticket(current_user)
+
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
         )
@@ -855,22 +899,13 @@ class InteractionService:
             TicketUpdate(**update_fields),
         )
 
-        interaction = await self._create_ticket_interaction(
-            ticket_id=ticket_id,
-            interaction_type="STATUS_CHANGE",
-            direction=InteractionDirection.INTERNAL,
-            payload={
-                "from": old_status.value,
-                "to": new_status.value,
-            },
-            performed_by=actor_id,
-        )
-
+        # No longer written as an Interaction row — STATUS_CHANGE is
+        # one of the retired timeline-only types (see
+        # services/audit_to_interaction.py); the AuditLog row below is
+        # its sole record now, and the Timeline/Interactions-list
+        # endpoints synthesize a display row back from it.
         old_values: dict[str, Any] = {"current_status": old_status}
-        new_values: dict[str, Any] = {
-            "current_status": new_status,
-            "interaction_id": interaction.interaction_id,
-        }
+        new_values: dict[str, Any] = {"current_status": new_status}
         if "closed_at" in update_fields:
             old_values["closed_at"] = old_closed_at
             new_values["closed_at"] = update_fields["closed_at"]
@@ -887,11 +922,45 @@ class InteractionService:
             new_values=new_values,
         )
 
+        # ---------------------------------------------------------
+        # Resolution SLA — pause/resume/complete all key off this
+        # single chokepoint, matching this repo's existing "change_status
+        # is the one place status transitions happen" principle.
+        # Entering RESOLVED deliberately never completes the clock —
+        # only a supervisor-gated transition into CLOSED does (see the
+        # gate above and ResolutionSLA's own docstring).
+        # ---------------------------------------------------------
+
+        if self.sla_service is not None:
+            if (
+                new_status == TicketStatus.WAITING_FOR_CLIENT
+                and old_status != TicketStatus.WAITING_FOR_CLIENT
+            ):
+                # STATUS_CHANGE no longer creates an Interaction row
+                # (see the AuditLog-only note above) — there's nothing
+                # to point triggering_interaction_id at anymore.
+                await self.sla_service.pause_resolution_clock(
+                    ticket_id=ticket_id,
+                    reason="WAITING_FOR_CLIENT_STATUS",
+                    triggering_interaction_id=None,
+                )
+            elif (
+                old_status == TicketStatus.WAITING_FOR_CLIENT
+                and new_status != TicketStatus.WAITING_FOR_CLIENT
+            ):
+                await self.sla_service.resume_resolution_clock(
+                    ticket_id=ticket_id,
+                    triggering_interaction_id=None,
+                )
+
+            if new_status == TicketStatus.CLOSED and old_status != TicketStatus.CLOSED:
+                await self.sla_service.complete_resolution_clock(ticket_id=ticket_id)
+
         return TicketActionResponse(
-            interaction_id=interaction.interaction_id,
+            interaction_id=None,
             ticket_id=ticket_id,
             message="Ticket status updated successfully.",
-            created_at=interaction.created_at,
+            created_at=datetime.now(timezone.utc),
         )
 
     # ---------------------------------------------------------
@@ -924,17 +993,10 @@ class InteractionService:
             TicketUpdate(current_priority=request.new_priority),
         )
 
-        interaction = await self._create_ticket_interaction(
-            ticket_id=ticket_id,
-            interaction_type="PRIORITY_CHANGE",
-            direction=InteractionDirection.INTERNAL,
-            payload={
-                "from": old_priority.value,
-                "to": request.new_priority.value,
-            },
-            performed_by=actor_id,
-        )
-
+        # No longer written as an Interaction row — PRIORITY_CHANGE is
+        # one of the retired timeline-only types (see
+        # services/audit_to_interaction.py); the AuditLog row below is
+        # its sole record now.
         await AuditLogService.log_event(
             self.ticket_repository.db,
             entity_type=AuditEntityType.TICKET,
@@ -944,17 +1006,20 @@ class InteractionService:
             actor_name=actor_name,
             actor_role=actor_role,
             old_values={"current_priority": old_priority},
-            new_values={
-                "current_priority": request.new_priority,
-                "interaction_id": interaction.interaction_id,
-            },
+            new_values={"current_priority": request.new_priority},
         )
 
+        if self.sla_service is not None:
+            await self.sla_service.reshift_resolution_clock_for_priority_change(
+                ticket_id=ticket_id,
+                new_priority=request.new_priority,
+            )
+
         return TicketActionResponse(
-            interaction_id=interaction.interaction_id,
+            interaction_id=None,
             ticket_id=ticket_id,
             message="Ticket priority updated successfully.",
-            created_at=interaction.created_at,
+            created_at=datetime.now(timezone.utc),
         )
 
     # ---------------------------------------------------------
@@ -1011,19 +1076,13 @@ class InteractionService:
             TicketUpdate(agent_id=new_agent.user_id),
         )
 
-        interaction = await self._create_ticket_interaction(
-            ticket_id=ticket_id,
-            interaction_type="AGENT_TRANSFER",
-            direction=InteractionDirection.INTERNAL,
-            payload={
-                "from_agent_id": str(old_agent_id) if old_agent_id else None,
-                "from_agent_name": old_agent_name,
-                "to_agent_id": str(new_agent.user_id),
-                "to_agent_name": new_agent.name,
-            },
-            performed_by=actor_id,
-        )
-
+        # No longer written as an Interaction row — AGENT_TRANSFER is
+        # one of the retired timeline-only types (see
+        # services/audit_to_interaction.py); the AuditLog row below is
+        # its sole record now, and the Timeline/Interactions-list
+        # endpoints synthesize a display row back from it. Agent
+        # names are logged here (not just ids) precisely so that
+        # synthesis is a pure JSON remap, with no extra name lookup.
         await AuditLogService.log_event(
             self.ticket_repository.db,
             entity_type=AuditEntityType.TICKET,
@@ -1032,10 +1091,13 @@ class InteractionService:
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            old_values={"agent_id": old_agent_id},
+            old_values={
+                "agent_id": old_agent_id,
+                "agent_name": old_agent_name,
+            },
             new_values={
                 "agent_id": new_agent.user_id,
-                "interaction_id": interaction.interaction_id,
+                "agent_name": new_agent.name,
             },
         )
 
@@ -1051,10 +1113,10 @@ class InteractionService:
             )
 
         return TicketActionResponse(
-            interaction_id=interaction.interaction_id,
+            interaction_id=None,
             ticket_id=ticket_id,
             message=f"Ticket transferred to {new_agent.name}.",
-            created_at=interaction.created_at,
+            created_at=datetime.now(timezone.utc),
         )
 
     # ---------------------------------------------------------
@@ -1099,17 +1161,12 @@ class InteractionService:
             current_user
         )
 
-        interaction = await self._create_ticket_interaction(
-            ticket_id=ticket_id,
-            interaction_type="CLAIM",
-            direction=InteractionDirection.INTERNAL,
-            payload={
-                "agent_id": str(current_user.user_id),
-                "agent_name": current_user.name,
-            },
-            performed_by=actor_id,
-        )
-
+        # No longer written as an Interaction row — CLAIM is one of
+        # the retired timeline-only types (see
+        # services/audit_to_interaction.py); the AuditLog row below is
+        # its sole record now. `agent_name` is logged here so the
+        # Timeline/Interactions-list synthesis stays a pure JSON
+        # remap, with no extra name lookup.
         await AuditLogService.log_event(
             self.ticket_repository.db,
             entity_type=AuditEntityType.TICKET,
@@ -1121,15 +1178,15 @@ class InteractionService:
             old_values={"agent_id": None},
             new_values={
                 "agent_id": current_user.user_id,
-                "interaction_id": interaction.interaction_id,
+                "agent_name": current_user.name,
             },
         )
 
         return TicketActionResponse(
-            interaction_id=interaction.interaction_id,
+            interaction_id=None,
             ticket_id=ticket_id,
             message=f"Ticket claimed by {current_user.name}.",
-            created_at=interaction.created_at,
+            created_at=datetime.now(timezone.utc),
         )
 
     # ---------------------------------------------------------
@@ -1266,120 +1323,16 @@ class InteractionService:
             new_values={"status": InteractionStatus.IGNORED},
         )
 
+        if self.sla_service is not None:
+            await self.sla_service.complete_first_response_clock(
+                interaction_id=archived.interaction_id,
+                completion_reason="ARCHIVED",
+            )
+
         return InteractionArchiveResponse(
             interaction_id=archived.interaction_id,
             status=archived.status,
             message="Archived.",
-        )
-
-    async def snooze_interaction(
-        self,
-        interaction_id: UUID,
-        request: SnoozeRequest,
-        current_user: User,
-    ) -> InteractionSnoozeResponse:
-        """
-        Hides a pending, unticketed inbox item from the "pending"
-        view until `request.snooze_until` — it resurfaces on its own,
-        no background job needed, since every read just compares
-        against `now()`.
-        """
-
-        snooze_until = request.snooze_until
-        interaction = await self.interaction_repository.get_by_id(interaction_id)
-
-        if interaction is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Interaction not found.",
-            )
-
-        if interaction.ticket_id is not None:
-            raise HTTPException(
-                status_code=http_status.HTTP_400_BAD_REQUEST,
-                detail="This item has already become a ticket.",
-            )
-
-        await self._ensure_can_act_on_pending_interaction(interaction, current_user)
-
-        snoozed = await self.interaction_repository.snooze(interaction, snooze_until)
-
-        if snoozed is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_409_CONFLICT,
-                detail="This item is no longer pending.",
-            )
-
-        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
-            current_user
-        )
-
-        await AuditLogService.log_event(
-            self.interaction_repository.db,
-            entity_type=AuditEntityType.INTERACTION,
-            entity_id=snoozed.interaction_id,
-            event_type=AuditEventType.INTERACTION_SNOOZED,
-            actor_id=actor_id,
-            actor_name=actor_name,
-            actor_role=actor_role,
-            old_values={"snoozed_until": None},
-            new_values={"snoozed_until": snooze_until.isoformat()},
-        )
-
-        return InteractionSnoozeResponse(
-            interaction_id=snoozed.interaction_id,
-            snoozed_until=snoozed.snoozed_until,
-            message=f"Snoozed until {snooze_until.isoformat()}.",
-        )
-
-    async def unsnooze_interaction(
-        self,
-        interaction_id: UUID,
-        current_user: User,
-    ) -> InteractionSnoozeResponse:
-        """
-        Clears an active snooze early, returning the item to
-        "pending" immediately.
-        """
-
-        interaction = await self.interaction_repository.get_by_id(interaction_id)
-
-        if interaction is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Interaction not found.",
-            )
-
-        await self._ensure_can_act_on_pending_interaction(interaction, current_user)
-
-        unsnoozed = await self.interaction_repository.unsnooze(interaction)
-
-        if unsnoozed is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_409_CONFLICT,
-                detail="This item isn't currently snoozed.",
-            )
-
-        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
-            current_user
-        )
-
-        await AuditLogService.log_event(
-            self.interaction_repository.db,
-            entity_type=AuditEntityType.INTERACTION,
-            entity_id=unsnoozed.interaction_id,
-            event_type=AuditEventType.INTERACTION_UNSNOOZED,
-            actor_id=actor_id,
-            actor_name=actor_name,
-            actor_role=actor_role,
-            old_values={"snoozed_until": "..."},
-            new_values={"snoozed_until": None},
-        )
-
-        return InteractionSnoozeResponse(
-            interaction_id=unsnoozed.interaction_id,
-            snoozed_until=None,
-            message="Unsnoozed.",
         )
 
     async def set_interaction_tags(
@@ -1686,6 +1639,7 @@ class InteractionService:
         self,
         interaction_id: UUID,
         current_user: User,
+        to_email: str | None = None,
     ) -> InteractionReplyResponse:
         """
         Sends current_user's draft on this thread — hands its saved
@@ -1697,6 +1651,12 @@ class InteractionService:
         created reply before deleting the now-obsolete draft row —
         otherwise those attachments would be left pointing at a
         deleted interaction.
+
+        `to_email`, when the agent picked a contact from the "To"
+        dropdown at send time, overrides the default recipient — it's
+        deliberately not part of the auto-saved draft payload (unlike
+        message/cc/bcc), since it's only meaningful at the moment of
+        sending, not while still drafting.
         """
 
         root = await self._resolve_pending_thread_root(interaction_id)
@@ -1720,7 +1680,9 @@ class InteractionService:
 
         reply = await self.add_interaction_reply(
             interaction_id=root.interaction_id,
-            request=InteractionReplyRequest(message=message, cc=cc, bcc=bcc),
+            request=InteractionReplyRequest(
+                message=message, cc=cc, bcc=bcc, to_email=to_email
+            ),
             current_user=current_user,
         )
 
@@ -1826,12 +1788,35 @@ class InteractionService:
         replies = await self.interaction_repository.list_thread(root.interaction_id)
         ordered = [root, *replies]
 
+        # Batch-fetch attachments for every message in the thread, same
+        # batching shape as get_ticket_interactions — each message
+        # renders its own attachments, not one bucket for the root only.
+        attachments_by_interaction: dict[UUID, list[AttachmentMetadata]] = {}
+        if self.attachment_repository is not None and self.storage_service is not None:
+            interaction_ids = [item.interaction_id for item in ordered]
+            attachments_map = await self.attachment_repository.list_by_interaction_ids(
+                interaction_ids
+            )
+            interaction_ids_with_files = list(attachments_map.keys())
+            metadata_lists = await asyncio.gather(
+                *(
+                    attachments_to_metadata(attachments_map[iid], self.storage_service)
+                    for iid in interaction_ids_with_files
+                )
+            )
+            attachments_by_interaction = dict(zip(interaction_ids_with_files, metadata_lists))
+
+        def _with_attachments(item):
+            return _to_response(
+                item, attachments_by_interaction.get(item.interaction_id)
+            )
+
         return ThreadResponse(
-            parent_interaction=_to_response(root),
-            child_interactions=[_to_response(reply) for reply in replies],
-            ordered_thread=[_to_response(item) for item in ordered],
+            parent_interaction=_with_attachments(root),
+            child_interactions=[_with_attachments(reply) for reply in replies],
+            ordered_thread=[_with_attachments(item) for item in ordered],
             reply_count=len(replies),
-            latest_interaction=_to_response(ordered[-1]),
+            latest_interaction=_with_attachments(ordered[-1]),
         )
 
     async def hide_interaction(

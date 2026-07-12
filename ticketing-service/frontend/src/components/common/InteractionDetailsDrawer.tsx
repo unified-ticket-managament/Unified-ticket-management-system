@@ -158,12 +158,25 @@ function resolveFromToSubject(
     case "EMAIL":
       return {
         from: (payload.client_name as string) ?? (payload.from_email as string) ?? null,
-        to: (payload.agent_name as string) ?? null,
+        // The shared inbox address the client sent to — `agent_name`
+        // was never a real field on this payload (see the DB shape
+        // in email_service.py), so this always rendered blank.
+        to: (payload.to_email as string) ?? null,
         subject: (payload.subject as string) ?? null,
       };
-    case "REPLY":
+    case "REPLY": {
       // Agent replying to the client — reversed from an inbound EMAIL.
-      return { from: row.agent || null, to: row.clientName, subject: null };
+      // Same three fields (From/To/Subject), sourced from the reply's
+      // envelope instead of the flat EMAIL shape, so an outbound
+      // message shows exactly the fields an inbound one does — never
+      // a conspicuously blank Subject.
+      const envelope = (payload.envelope ?? {}) as Record<string, unknown>;
+      return {
+        from: row.agent || (envelope.from_email as string) || null,
+        to: (envelope.to_email as string) ?? row.clientName,
+        subject: (envelope.subject as string) ?? null,
+      };
+    }
     case "INTERNAL_NOTE":
     case "ATTACHMENT":
       // Authored/uploaded by the agent, not sent to anyone.

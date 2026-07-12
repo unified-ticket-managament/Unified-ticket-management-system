@@ -61,11 +61,24 @@ export function TicketAuditLog({ refreshToken, flat = false }: TicketAuditLogPro
     }
 
     load(true);
-    const interval = window.setInterval(() => load(false), POLL_INTERVAL_MS);
+    // Skip poll ticks while the browser tab is backgrounded — no
+    // point hitting the backend every 10s for a panel nobody can
+    // see — and catch up with one immediate refetch the moment it
+    // becomes visible again instead of waiting for the next tick.
+    const interval = window.setInterval(() => {
+      if (document.hidden) return;
+      load(false);
+    }, POLL_INTERVAL_MS);
+
+    function handleVisibilityChange() {
+      if (!document.hidden) load(false);
+    }
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       cancelled = true;
       window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketId, refreshToken]);

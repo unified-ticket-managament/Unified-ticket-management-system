@@ -14,7 +14,7 @@ const TYPE_META: Record<string, InteractionTypeMeta> = {
   RESOLVED: { icon: "✅", label: "Ticket Resolved", tone: "success" },
   PRIORITY_CHANGE: { icon: "🔥", label: "Priority Change", tone: "danger" },
   ATTACHMENT: { icon: "📎", label: "Attachment", tone: "default" },
-  AGENT_TRANSFER: { icon: "🔁", label: "Agent Transfer", tone: "info" },
+  AGENT_TRANSFER: { icon: "🔁", label: "Agent Assigned", tone: "info" },
   CLAIM: { icon: "🙌", label: "Ticket Claimed", tone: "success" },
   EDIT_ACCESS_REQUESTED: { icon: "🙏", label: "Edit Access Requested", tone: "warning" },
   EDIT_ACCESS_APPROVED: { icon: "🤝", label: "Edit Access Approved", tone: "success" },
@@ -25,12 +25,28 @@ export function metaFor(type: string): InteractionTypeMeta {
   return TYPE_META[type] ?? { icon: "•", label: type, tone: "default" };
 }
 
+// STATUS_CHANGE/PRIORITY_CHANGE/AGENT_TRANSFER/CLAIM/EDIT_ACCESS_*
+// no longer have a real Interaction row of their own — the backend
+// synthesizes a display row for them from the ticket's audit trail
+// instead (see audit_to_interaction.py), keyed on that audit row's
+// own id rather than a real interaction_id. Actions that assume a
+// real row exists (Hide) must exclude these types.
+export const RETIRED_INTERACTION_TYPES = new Set([
+  "STATUS_CHANGE",
+  "PRIORITY_CHANGE",
+  "AGENT_TRANSFER",
+  "CLAIM",
+  "EDIT_ACCESS_REQUESTED",
+  "EDIT_ACCESS_APPROVED",
+  "EDIT_ACCESS_REJECTED",
+]);
+
 export function summarize(interaction: InteractionResponse): string {
   const payload = interaction.payload ?? {};
 
   switch (interaction.interaction_type) {
     case "EMAIL":
-      return (payload.subject as string) ?? "Email received";
+      return interaction.subject || (payload.subject as string) || "Email received";
     case "INTERNAL_NOTE":
       return (payload.note as string) ?? "";
     case "REPLY":

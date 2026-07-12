@@ -10,6 +10,7 @@ from .audit_enums import (
     AuditEventType,
 )
 from .edit_access_enums import EditAccessStatus
+from .sla_enums import SLAClockStatus
 
 __all__ = [
     "TicketStatus",
@@ -20,4 +21,5 @@ __all__ = [
     "AuditEntityType",
     "AuditEventType",
     "EditAccessStatus",
+    "SLAClockStatus",
 ]

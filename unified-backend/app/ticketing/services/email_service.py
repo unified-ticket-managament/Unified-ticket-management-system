@@ -33,6 +33,7 @@ from app.ticketing.services.attachment_service import (
     attachments_to_metadata,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.sla_service import SLAService
 from app.notifications.service import NotificationService, NotificationType
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ class EmailService:
         user_repository: UserRepository | None = None,
         ticket_repository: TicketRepository | None = None,
         notification_service: NotificationService | None = None,
+        sla_service: SLAService | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.client_repository = client_repository
@@ -90,6 +92,7 @@ class EmailService:
         self.user_repository = user_repository
         self.ticket_repository = ticket_repository
         self.notification_service = notification_service
+        self.sla_service = sla_service
 
     async def receive_email(
         self,
@@ -267,12 +270,38 @@ class EmailService:
     in_reply_to_message_id=email.in_reply_to,
 
     references=email.references or None,
+
+    subject=email.subject,
 )
 
         created = (
             await self.interaction_repository
             .create(interaction)
         )
+
+        # ---------------------------------------
+        # SLA
+        #
+        # A genuinely new thread root (matched is None, so
+        # parent_interaction_id stayed None) starts a First Response
+        # clock — never a reply threading onto an existing pending
+        # item or ticket, which would otherwise double-clock the same
+        # conversation (see the plan doc's gap #7). A reply that
+        # landed directly on an existing ticket (ticket_id is not
+        # None) instead resumes that ticket's Resolution clock if it
+        # was paused — independent of whether the ticket's status
+        # label has been changed back off WAITING_FOR_CLIENT yet (gap
+        # #4's customer-driven resume path).
+        # ---------------------------------------
+
+        if self.sla_service is not None:
+            if parent_interaction_id is None and ticket_id is None:
+                await self.sla_service.start_first_response_clock(interaction=created)
+            elif ticket_id is not None:
+                await self.sla_service.resume_resolution_clock(
+                    ticket_id=ticket_id,
+                    triggering_interaction_id=created.interaction_id,
+                )
 
         # ---------------------------------------
         # Audit Trail — the client is the actor here,

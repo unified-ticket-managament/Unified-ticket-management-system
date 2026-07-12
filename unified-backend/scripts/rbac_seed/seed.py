@@ -76,6 +76,14 @@ DEFAULT_PERMISSIONS = [
     ("ticket:manage_agents", "Activate or deactivate agent accounts"),
     ("ticket:manage_roles_permissions", "Manage roles and permissions for the ticket workspace"),
     ("ticket:system_config", "Configure ticket system and storage settings"),
+    # SLA policy admin — company-wide First Response/Resolution SLA
+    # targets per priority, distinct from the existing (unenforced)
+    # ticket:change_sla, which is about adjusting one ticket's own
+    # target rather than editing the global policy matrix. Granted to
+    # Site Lead/Super Admin only by default (see DEFAULT_ROLES below) —
+    # SLA targets are a contractual/operational setting, not per-team
+    # config.
+    ("sla:manage_policies", "Edit company-wide SLA policy targets (First Response / Resolution minutes per priority)"),
 ]
 
 # `ticket:bulk_reassign` and `ticket:configure_routing` (previously part

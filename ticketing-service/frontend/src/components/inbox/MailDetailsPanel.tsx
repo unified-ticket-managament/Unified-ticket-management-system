@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowUpRight, Clock, X } from "lucide-react";
+import { ArrowUpRight, X } from "lucide-react";
 import { AttachmentList } from "@/components/common/AttachmentList";
 import { Badge } from "@/components/common/Badge";
 import { Card } from "@/components/common/Card";
@@ -24,26 +24,10 @@ const MAIL_STATUS_LABEL: Record<string, string> = {
   IGNORED: "Archived",
 };
 
-const SNOOZE_PRESETS: Array<{ label: string; getDate: () => Date }> = [
-  { label: "1 hour", getDate: () => new Date(Date.now() + 60 * 60 * 1000) },
-  {
-    label: "Tomorrow, 9am",
-    getDate: () => {
-      const d = new Date();
-      d.setDate(d.getDate() + 1);
-      d.setHours(9, 0, 0, 0);
-      return d;
-    },
-  },
-  { label: "1 week", getDate: () => new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
-];
-
 interface MailDetailsPanelProps {
   folders: MailFolder[];
   onUpdateTags: (interactionId: string, tags: string[]) => Promise<boolean>;
   onAssignFolder: (interactionId: string, folderId: string | null) => Promise<boolean>;
-  onSnooze: (interactionId: string, snoozeUntil: string) => Promise<boolean>;
-  onUnsnooze: (interactionId: string) => Promise<boolean>;
 }
 
 /**
@@ -51,20 +35,15 @@ interface MailDetailsPanelProps {
  * TicketDetails.tsx, but for a pre-ticket Interaction. Priority and
  * Category/Team only exist once this item has become a ticket
  * (neither applies to a bare pre-ticket email), so those rows are
- * conditional on ticket_id being set. Tags/folder are always
- * editable; snooze only applies while the item is still pending and
- * unticketed (mirrors the backend's own guard).
+ * conditional on ticket_id being set. Tags/folder are always editable.
  */
 export function MailDetailsPanel({
   folders,
   onUpdateTags,
   onAssignFolder,
-  onSnooze,
-  onUnsnooze,
 }: MailDetailsPanelProps) {
   const { selectedEmail } = useWorkflowContext();
   const [newTag, setNewTag] = useState("");
-  const [isSnoozeMenuOpen, setIsSnoozeMenuOpen] = useState(false);
 
   if (!selectedEmail) return null;
 
@@ -72,10 +51,6 @@ export function MailDetailsPanel({
   const statusLabel = isTicketed
     ? "Ticketed"
     : MAIL_STATUS_LABEL[selectedEmail.status] ?? selectedEmail.status;
-
-  const isSnoozed = Boolean(
-    selectedEmail.snoozed_until && new Date(selectedEmail.snoozed_until) > new Date()
-  );
 
   async function handleAddTag() {
     const tag = newTag.trim();
@@ -99,12 +74,6 @@ export function MailDetailsPanel({
   async function handleFolderChange(value: string) {
     if (!selectedEmail) return;
     await onAssignFolder(selectedEmail.interaction_id, value || null);
-  }
-
-  async function handleSnooze(getDate: () => Date) {
-    if (!selectedEmail) return;
-    await onSnooze(selectedEmail.interaction_id, getDate().toISOString());
-    setIsSnoozeMenuOpen(false);
   }
 
   return (
@@ -176,49 +145,6 @@ export function MailDetailsPanel({
           className="mt-2 w-full rounded-md2 border border-border bg-white px-2.5 py-1.5 text-[12px] outline-none focus:ring-2 focus:ring-accent/40"
         />
       </div>
-
-      {!isTicketed && (
-        <div className="mt-2 border-t border-border pt-4">
-          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted">Snooze</p>
-          {isSnoozed ? (
-            <div className="flex items-center justify-between gap-2">
-              <span className="flex items-center gap-1.5 text-[12px] text-slate-600">
-                <Clock size={13} />
-                Until {formatDateTime(selectedEmail.snoozed_until!)}
-              </span>
-              <button
-                onClick={() => onUnsnooze(selectedEmail.interaction_id)}
-                className="rounded-md2 border border-border px-2 py-1 text-[11px] font-semibold text-slate-600 hover:bg-surfaceHover"
-              >
-                Unsnooze
-              </button>
-            </div>
-          ) : (
-            <div className="relative">
-              <button
-                onClick={() => setIsSnoozeMenuOpen((prev) => !prev)}
-                className="flex w-full items-center justify-center gap-1.5 rounded-md2 border border-border px-3 py-2 text-[12px] font-semibold text-slate-600 hover:bg-surfaceHover"
-              >
-                <Clock size={14} />
-                Snooze
-              </button>
-              {isSnoozeMenuOpen && (
-                <div className="absolute right-0 z-10 mt-1 w-full rounded-md2 border border-border bg-white py-1 shadow-sm">
-                  {SNOOZE_PRESETS.map((preset) => (
-                    <button
-                      key={preset.label}
-                      onClick={() => handleSnooze(preset.getDate)}
-                      className="block w-full px-3 py-1.5 text-left text-[12px] text-slate-600 hover:bg-surfaceHover"
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
 
       {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
         <div className="mt-2 border-t border-border pt-4">

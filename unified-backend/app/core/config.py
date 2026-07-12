@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
 
+    # Shared secret for POST /internal/sla/sweep — the Render Cron Job
+    # is the only caller, and there's no "user" behind a cron tick to
+    # issue it a JWT, so this is a plain shared-secret header instead
+    # (same trust model as an API key). No default: fail fast at boot
+    # rather than leaving the sweep endpoint reachable with a
+    # well-known placeholder value.
+    sla_sweep_shared_secret: str
+
     # Kept as a raw string (not List[str]): pydantic-settings tries to
     # JSON-decode env vars for list-typed fields before any validator runs,
     # which blows up on a plain comma-separated value like "http://a,http://b".

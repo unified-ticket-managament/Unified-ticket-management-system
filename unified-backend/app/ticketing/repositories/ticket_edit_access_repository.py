@@ -72,6 +72,31 @@ class TicketEditAccessRequestRepository:
 
         return result.scalar_one_or_none() is not None
 
+    async def list_active_ticket_ids_for_user(self, user_id: UUID) -> list[UUID]:
+        """
+        Every ticket_id this user currently holds an approved,
+        not-yet-expired edit-access grant on — same condition shape as
+        has_active_grant, just not scoped to one ticket. Lets Mail's
+        Staff-scoped inbox query include tickets granted via edit
+        access, not only ones this Staff member is actually assigned
+        to (see InboxService.get_inbox).
+        """
+
+        now = utc_now()
+
+        result = await self.db.execute(
+            select(TicketEditAccessRequest.ticket_id).where(
+                TicketEditAccessRequest.requested_by == user_id,
+                TicketEditAccessRequest.status == EditAccessStatus.APPROVED,
+                or_(
+                    TicketEditAccessRequest.expires_at.is_(None),
+                    TicketEditAccessRequest.expires_at > now,
+                ),
+            )
+        )
+
+        return list(result.scalars().all())
+
     async def list_by_ticket(self, ticket_id: UUID) -> list[TicketEditAccessRequest]:
         result = await self.db.execute(
             select(TicketEditAccessRequest)

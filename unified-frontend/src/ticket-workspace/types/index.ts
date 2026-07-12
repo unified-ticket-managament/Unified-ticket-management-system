@@ -80,6 +80,13 @@ export interface ClientResponse {
   account_manager_active: boolean;
 }
 
+// One personal address this client company has contacted our shared
+// inbox from — backs the reply composers' "To" dropdown.
+export interface ClientContact {
+  email: string;
+  name: string | null;
+}
+
 // ==========================================================
 // Attachments
 // ==========================================================
@@ -123,7 +130,7 @@ export interface CurrentUser {
 // Account Manager Inbox
 // ==========================================================
 
-export type InboxView = "pending" | "replied" | "ticketed" | "archived" | "snoozed" | "all";
+export type InboxView = "pending" | "replied" | "ticketed" | "archived" | "all";
 export type InboxScope = "mine" | "all";
 
 export interface InboxItem {
@@ -151,7 +158,6 @@ export interface InboxItem {
   claimed_by_name: string | null;
   tags: string[];
   folder_id: string | null;
-  snoozed_until: string | null;
   reply_count: number;
   latest_message: string | null;
   latest_sender: string | null;
@@ -200,7 +206,6 @@ export interface OpenEmailResponse {
   ticket_status: string | null;
   tags: string[];
   folder_id: string | null;
-  snoozed_until: string | null;
   draft_message: string | null;
   draft_cc: string[];
   draft_bcc: string[];
@@ -209,12 +214,6 @@ export interface OpenEmailResponse {
   replies: InteractionResponse[];
   recommended_ticket_id: string | null;
   recommended_ticket_reason: string | null;
-}
-
-export interface InteractionSnoozeResponse {
-  interaction_id: string;
-  snoozed_until: string | null;
-  message: string;
 }
 
 export interface InteractionTagsResponse {
@@ -285,6 +284,7 @@ export interface InteractionReplyRequest {
   message: string;
   cc?: string[];
   bcc?: string[];
+  to_email?: string | null;
 }
 
 export interface InteractionReplyResponse {
@@ -425,6 +425,7 @@ export interface InteractionResponse {
   direction: InteractionDirection;
   performed_by: string | null;
   performed_by_name?: string | null;
+  subject?: string | null;
   payload: Record<string, unknown>;
   is_visible: boolean;
   removed_by: string | null;
@@ -456,6 +457,7 @@ export interface TicketInteractionResponse extends InteractionResponse {
 }
 
 export interface InternalNoteRequest {
+  subject: string;
   note: string;
 }
 
@@ -470,6 +472,7 @@ export interface ReplyRequest {
   message: string;
   cc?: string[];
   bcc?: string[];
+  to_email?: string | null;
 }
 
 // ==========================================================
@@ -493,7 +496,7 @@ export interface PriorityChangeRequest {
 }
 
 export interface TicketActionResponse {
-  interaction_id: string;
+  interaction_id: string | null;
   ticket_id: string;
   message: string;
   created_at: string;

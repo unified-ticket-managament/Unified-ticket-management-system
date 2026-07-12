@@ -7,8 +7,6 @@ from app.ticketing.enums import (
     AuditEntityType,
     AuditEventType,
     EditAccessStatus,
-    InteractionDirection,
-    InteractionStatus,
 )
 from app.ticketing.models.ticket_edit_access_request import TicketEditAccessRequest
 from app.ticketing.repositories.interaction_repository import InteractionRepository
@@ -23,7 +21,6 @@ from app.ticketing.schemas.edit_access import (
     EditAccessRequestCreate,
     EditAccessRequestResponse,
 )
-from app.ticketing.schemas.interaction import InteractionCreate
 from app.ticketing.services.access_control import (
     SUPERVISOR_ROLE_NAMES,
     ensure_agent_can_view_ticket,
@@ -128,26 +125,21 @@ class EditAccessService:
         self,
         *,
         ticket_id: UUID,
-        interaction_type: str,
         actor_id: UUID | None,
         actor_name: str,
         actor_role,
-        payload: dict,
         event_type: AuditEventType,
         old_values: dict | None = None,
         new_values: dict | None = None,
     ) -> None:
-        await self.interaction_repository.create(
-            InteractionCreate(
-                ticket_id=ticket_id,
-                interaction_type=interaction_type,
-                direction=InteractionDirection.INTERNAL,
-                status=InteractionStatus.ASSIGNED,
-                performed_by=actor_id,
-                payload=payload,
-                is_visible=True,
-            )
-        )
+        """
+        Writes the AuditLog row for an edit-access transition. No
+        longer also writes an Interaction row — EDIT_ACCESS_REQUESTED/
+        APPROVED/REJECTED are retired timeline-only types (see
+        services/audit_to_interaction.py); this AuditLog row is now
+        the sole record, and the Timeline/Interactions-list endpoints
+        synthesize a display row back from it.
+        """
 
         await AuditLogService.log_event(
             self.ticket_repository.db,
@@ -239,11 +231,9 @@ class EditAccessService:
 
         await self._record(
             ticket_id=ticket_id,
-            interaction_type="EDIT_ACCESS_REQUESTED",
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            payload={"request_id": str(edit_request.request_id), "reason": request.reason},
             event_type=AuditEventType.EDIT_ACCESS_REQUESTED,
             new_values={
                 "request_id": edit_request.request_id,
@@ -309,17 +299,9 @@ class EditAccessService:
 
         await self._record(
             ticket_id=ticket_id,
-            interaction_type="EDIT_ACCESS_APPROVED",
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            payload={
-                "request_id": str(edit_request.request_id),
-                "requested_by": str(edit_request.requested_by),
-                "expires_at": (
-                    request.expires_at.isoformat() if request.expires_at else None
-                ),
-            },
             event_type=AuditEventType.EDIT_ACCESS_APPROVED,
             old_values={"status": EditAccessStatus.PENDING},
             new_values={
@@ -383,20 +365,15 @@ class EditAccessService:
 
         await self._record(
             ticket_id=ticket_id,
-            interaction_type="EDIT_ACCESS_REJECTED",
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            payload={
-                "request_id": str(edit_request.request_id),
-                "requested_by": str(edit_request.requested_by),
-                "review_note": request.review_note,
-            },
             event_type=AuditEventType.EDIT_ACCESS_REJECTED,
             old_values={"status": EditAccessStatus.PENDING},
             new_values={
                 "status": EditAccessStatus.REJECTED,
                 "requested_by": edit_request.requested_by,
+                "review_note": request.review_note,
             },
         )
 

@@ -77,6 +77,17 @@ class Interaction(Base):
         nullable=False,
     )
 
+    # A real, queryable one-line summary — populated for EMAIL/REPLY/
+    # INTERNAL_NOTE rows (the only types this service creates going
+    # forward) so list endpoints can show it without extracting from
+    # `payload` on every read. NULL for every other historical type
+    # (ATTACHMENT, and the retired STATUS_CHANGE/PRIORITY_CHANGE/
+    # AGENT_TRANSFER/CLAIM/EDIT_ACCESS_* rows) — never meant to have one.
+    subject: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+
     is_visible: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
@@ -128,17 +139,6 @@ class Interaction(Base):
     folder_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("mail_folders.folder_id"),
-        nullable=True,
-        index=True,
-    )
-
-    # Set to hide this item from the "pending" view until this time,
-    # after which it resurfaces automatically — no background job
-    # needed, `list_inbox`'s "pending"/"snoozed" filters just compare
-    # against `now()` on every read. Only meaningful pre-ticket, same
-    # as `claimed_by`.
-    snoozed_until: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
         nullable=True,
         index=True,
     )

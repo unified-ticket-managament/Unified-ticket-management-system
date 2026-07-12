@@ -18,6 +18,7 @@ from app.ticketing.schemas.ticket_from_interaction import (
     TicketFromInteractionResponse,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.sla_service import SLAService
 
 
 class InboxTicketService:
@@ -33,9 +34,11 @@ class InboxTicketService:
         self,
         ticket_repository: TicketRepository,
         interaction_repository: InteractionRepository,
+        sla_service: SLAService | None = None,
     ):
         self.ticket_repository = ticket_repository
         self.interaction_repository = interaction_repository
+        self.sla_service = sla_service
 
     # ---------------------------------------------------------
     # Shared Validation
@@ -141,6 +144,18 @@ class InboxTicketService:
             },
         )
 
+        if self.sla_service is not None:
+            await self.sla_service.complete_first_response_clock(
+                interaction_id=interaction.interaction_id,
+                completion_reason="TICKET_CREATED",
+                resulting_ticket_id=ticket.ticket_id,
+            )
+            await self.sla_service.start_resolution_clock(
+                ticket_id=ticket.ticket_id,
+                client_id=ticket.client_company_id,
+                priority=ticket.current_priority,
+            )
+
         return TicketFromInteractionResponse(
             message="Ticket created successfully.",
             ticket_id=ticket.ticket_id,
@@ -182,6 +197,23 @@ class InboxTicketService:
             root_interaction_id=interaction.interaction_id,
             ticket_id=ticket.ticket_id,
         )
+
+        if self.sla_service is not None:
+            await self.sla_service.complete_first_response_clock(
+                interaction_id=interaction.interaction_id,
+                completion_reason="ATTACHED_TO_TICKET",
+                resulting_ticket_id=ticket.ticket_id,
+            )
+            # Creates a fresh Resolution clock if this ticket somehow
+            # never had one (pre-dates this feature), or resumes it if
+            # paused — see SLAService.create_or_resume_resolution_clock's
+            # own docstring for the full RUNNING/PAUSED/COMPLETED
+            # decision table.
+            await self.sla_service.create_or_resume_resolution_clock(
+                ticket_id=ticket.ticket_id,
+                client_id=ticket.client_company_id,
+                priority=ticket.current_priority,
+            )
 
         return AttachInteractionResponse(
             message="Interaction attached successfully.",

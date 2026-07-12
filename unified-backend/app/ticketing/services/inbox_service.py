@@ -9,6 +9,9 @@ from app.ticketing.repositories.attachment_repository import AttachmentRepositor
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.ticketing.repositories.ticket_edit_access_repository import (
+    TicketEditAccessRequestRepository,
+)
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 
@@ -48,9 +51,11 @@ class InboxService:
       exists). A Team Lead with no category assigned sees nothing,
       matching ensure_agent_can_view_ticket's own safe-failure
       convention.
-    - Staff: only threads whose ticket is currently assigned to them
-      — same "ticketed only" restriction as Team Lead, scoped by
-      agent_id instead of category.
+    - Staff: only threads whose ticket is currently assigned to them,
+      plus any ticket they hold an approved, not-yet-expired edit-
+      access grant on — same "ticketed only" restriction as Team
+      Lead, scoped by agent_id (or an edit-access grant) instead of
+      category.
 
     Because a reply is stored once on the shared thread row (never
     duplicated per viewer), this same scoped query automatically
@@ -64,11 +69,65 @@ class InboxService:
         attachment_repository: AttachmentRepository | None = None,
         user_repository: UserRepository | None = None,
         ticket_repository: TicketRepository | None = None,
+        edit_access_repository: TicketEditAccessRequestRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
         self.user_repository = user_repository
         self.ticket_repository = ticket_repository
+        self.edit_access_repository = edit_access_repository
+
+    async def _resolve_scope(self, current_user: User) -> tuple[
+        UUID | None, str | None, UUID | None, list[UUID] | None
+    ]:
+        """
+        Resolves the same role-based scoping tuple
+        (account_manager_id, ticket_type, assigned_agent_id,
+        extra_ticket_ids) `get_inbox` and `get_folder_counts` both
+        need, so the two can never drift into applying different
+        visibility rules for the same user.
+        """
+
+        role_name = current_user.role.name
+
+        account_manager_id: UUID | None = None
+        ticket_type: str | None = None
+        assigned_agent_id: UUID | None = None
+        extra_ticket_ids: list[UUID] | None = None
+
+        if role_name in GLOBAL_INBOX_ROLE_NAMES:
+            # No filter at all when they've asked to see everything;
+            # otherwise `client_id` (if provided) is the only
+            # narrowing already applied below.
+            pass
+        elif role_name == ACCOUNT_MANAGER_ROLE_NAME:
+            account_manager_id = current_user.user_id
+        elif role_name == "Team Lead":
+            ticket_type = (
+                current_user.category.category_name.value
+                if current_user.category is not None
+                else "__no_category__"
+            )
+        elif role_name == "Staff":
+            assigned_agent_id = current_user.user_id
+            # An approved edit-access grant is exactly what lets this
+            # Staff member act on a ticket they aren't assigned to
+            # (ensure_agent_can_act_on_ticket) — without this, the
+            # ticket's mail thread would never surface in their own
+            # inbox even after approval, only reachable by navigating
+            # to the ticket directly.
+            if self.edit_access_repository is not None:
+                extra_ticket_ids = await self.edit_access_repository.list_active_ticket_ids_for_user(
+                    current_user.user_id
+                )
+        else:
+            # Shouldn't happen — get_current_agent already blocks
+            # Viewer, and every other AGENT_ROLE_NAMES member is
+            # handled above. Safe fallback: scope to "owns nothing",
+            # same as an Account Manager with no clients.
+            account_manager_id = current_user.user_id
+
+        return account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids
 
     async def get_inbox(
         self,
@@ -88,33 +147,9 @@ class InboxService:
         request can't peek at another user's mail.
         """
 
-        role_name = current_user.role.name
-
-        account_manager_id: UUID | None = None
-        ticket_type: str | None = None
-        assigned_agent_id: UUID | None = None
-
-        if role_name in GLOBAL_INBOX_ROLE_NAMES:
-            # No filter at all when they've asked to see everything;
-            # otherwise `client_id` (if provided) is the only
-            # narrowing already applied below.
-            pass
-        elif role_name == ACCOUNT_MANAGER_ROLE_NAME:
-            account_manager_id = current_user.user_id
-        elif role_name == "Team Lead":
-            ticket_type = (
-                current_user.category.category_name.value
-                if current_user.category is not None
-                else "__no_category__"
-            )
-        elif role_name == "Staff":
-            assigned_agent_id = current_user.user_id
-        else:
-            # Shouldn't happen — get_current_agent already blocks
-            # Viewer, and every other AGENT_ROLE_NAMES member is
-            # handled above. Safe fallback: scope to "owns nothing",
-            # same as an Account Manager with no clients.
-            account_manager_id = current_user.user_id
+        account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids = (
+            await self._resolve_scope(current_user)
+        )
 
         interactions = await self.interaction_repository.list_inbox(
             account_manager_id=account_manager_id,
@@ -123,6 +158,7 @@ class InboxService:
             folder_id=folder_id,
             ticket_type=ticket_type,
             assigned_agent_id=assigned_agent_id,
+            extra_ticket_ids=extra_ticket_ids,
         )
 
         interactions_with_attachments: set = set()
@@ -276,8 +312,6 @@ class InboxService:
 
                     folder_id=interaction.folder_id,
 
-                    snoozed_until=interaction.snoozed_until,
-
                     reply_count=reply_count,
 
                     latest_message=latest_message,
@@ -300,6 +334,57 @@ class InboxService:
 
             items=inbox_items,
 
+        )
+
+    async def get_folder_counts(
+        self,
+        current_user: User,
+        client_id: UUID | None = None,
+    ) -> dict[UUID, int]:
+        """
+        One grouped-COUNT query for every custom folder's badge count,
+        under the same role scoping as get_inbox(view="all") — used
+        instead of calling get_inbox once per folder just to read
+        `.total`, which used to mean N full list-and-serialize round
+        trips (each re-running the thread-summary/claimer-name/ticket
+        lookups) purely to display a number.
+        """
+
+        account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids = (
+            await self._resolve_scope(current_user)
+        )
+
+        return await self.interaction_repository.count_by_folder(
+            account_manager_id=account_manager_id,
+            client_id=client_id,
+            ticket_type=ticket_type,
+            assigned_agent_id=assigned_agent_id,
+            extra_ticket_ids=extra_ticket_ids,
+        )
+
+    async def get_view_counts(
+        self,
+        current_user: User,
+        client_id: UUID | None = None,
+    ) -> dict[str, int]:
+        """
+        Pending/Replied/Ticketed/Archived/All badge counts in one
+        query, under the same role scoping as get_inbox — lets the
+        Mail sidebar show accurate counts for every tab immediately,
+        even though each tab's actual row data is now only fetched
+        once the agent actually opens it.
+        """
+
+        account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids = (
+            await self._resolve_scope(current_user)
+        )
+
+        return await self.interaction_repository.count_by_view(
+            account_manager_id=account_manager_id,
+            client_id=client_id,
+            ticket_type=ticket_type,
+            assigned_agent_id=assigned_agent_id,
+            extra_ticket_ids=extra_ticket_ids,
         )
 
     async def get_sent(self, current_user: User) -> SentResponse:

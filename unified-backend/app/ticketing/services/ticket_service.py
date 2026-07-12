@@ -1,7 +1,6 @@
 # ticket_service.py
 
 
-import asyncio
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -20,7 +19,11 @@ from app.ticketing.repositories.ticket_repository import (
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.audit_log import TicketAuditLogResponse
 from app.ticketing.schemas.interaction import TicketInteractionResponse
-from app.ticketing.services.attachment_service import attachments_to_metadata
+from app.ticketing.services.audit_to_interaction import (
+    SYNTHESIZABLE_EVENT_TYPES,
+    synthesize_interaction_from_audit,
+)
+from app.ticketing.services.interaction_summary import trim_payload_for_list
 from app.ticketing.storage.base import StorageService
 from app.ticketing.schemas.ticket import (
     RelatedTicketSummary,
@@ -497,21 +500,12 @@ class TicketService:
             list(titles.keys())
         )
 
-        attachments_by_interaction: dict[UUID, list] = {}
-        if self.attachment_repository is not None and self.storage_service is not None:
-            interaction_ids = [i.interaction_id for i in interactions]
-            attachments_map = await self.attachment_repository.list_by_interaction_ids(
-                interaction_ids
-            )
-            interaction_ids_with_files = list(attachments_map.keys())
-            metadata_lists = await asyncio.gather(
-                *(
-                    attachments_to_metadata(attachments_map[iid], self.storage_service)
-                    for iid in interaction_ids_with_files
-                )
-            )
-            attachments_by_interaction = dict(zip(interaction_ids_with_files, metadata_lists))
-
+        # Neither this cross-ticket list view nor its row rendering
+        # ever shows attachments or full payload text directly (only
+        # the click-to-open thread/email detail does, via a separate
+        # endpoint that keeps doing full signing) — skip the
+        # per-attachment signed-URL generation and full JSONB payload
+        # that used to make this endpoint slow to load.
         performer_ids = [
             interaction.performed_by
             for interaction in interactions
@@ -519,7 +513,7 @@ class TicketService:
         ]
         names_by_id = await self.user_repository.get_names_by_ids(performer_ids)
 
-        return [
+        rows = [
             TicketInteractionResponse(
                 interaction_id=interaction.interaction_id,
                 ticket_id=interaction.ticket_id,
@@ -532,7 +526,7 @@ class TicketService:
                     if interaction.performed_by is not None
                     else None
                 ),
-                payload=interaction.payload,
+                payload=trim_payload_for_list(interaction),
                 is_visible=interaction.is_visible,
                 removed_by=interaction.removed_by,
                 removed_at=interaction.removed_at,
@@ -541,7 +535,7 @@ class TicketService:
                 parent_interaction_id=interaction.parent_interaction_id,
                 received_at=interaction.received_at,
                 created_at=interaction.created_at,
-                attachments=attachments_by_interaction.get(interaction.interaction_id) or [],
+                attachments=[],
                 conversation_id=interaction.conversation_id,
                 in_reply_to_message_id=interaction.in_reply_to_message_id,
                 references=interaction.references or [],
@@ -550,6 +544,35 @@ class TicketService:
             )
             for interaction in interactions
         ]
+
+        # STATUS_CHANGE/PRIORITY_CHANGE/AGENT_TRANSFER/CLAIM/EDIT_ACCESS_*
+        # no longer get their own Interaction row (see
+        # audit_to_interaction.py) — synthesize a display row back
+        # from each ticket's audit trail so this cross-ticket view
+        # keeps showing every one of them exactly as before.
+        if self.audit_log_repository is not None:
+            audit_logs = await self.audit_log_repository.list_by_ticket_ids(
+                list(titles.keys())
+            )
+            for log in audit_logs:
+                if log.event_type not in SYNTHESIZABLE_EVENT_TYPES:
+                    continue
+                ticket_id = log.entity_id
+                rows.append(
+                    synthesize_interaction_from_audit(
+                        log,
+                        ticket_id,
+                        titles.get(ticket_id, "Unknown"),
+                        client_names.get(ticket_id),
+                    )
+                )
+
+        # Matches list_by_ticket_ids' own ascending order — the
+        # Interactions page re-sorts client-side anyway, but this
+        # keeps the endpoint's own ordering convention consistent.
+        rows.sort(key=lambda item: item.created_at)
+
+        return rows
 
     # ---------------------------------------------------------
     # Update Ticket

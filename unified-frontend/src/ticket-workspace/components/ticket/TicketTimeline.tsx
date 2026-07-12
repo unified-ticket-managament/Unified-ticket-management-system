@@ -4,7 +4,7 @@ import { Card } from "@tw/components/common/Card";
 import { Badge } from "@tw/components/common/Badge";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { AttachmentList } from "@tw/components/common/AttachmentList";
-import { metaFor, summarize } from "@tw/lib/interactionMeta";
+import { RETIRED_INTERACTION_TYPES, metaFor, summarize } from "@tw/lib/interactionMeta";
 import { shortId } from "@tw/lib/format";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { hideInteraction } from "@tw/api/interaction";
@@ -126,7 +126,7 @@ export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps)
                         ? `Performed by ${item.performed_by_name ?? shortId(item.performed_by)}`
                         : ""}
                     </p>
-                    {item.is_visible && (
+                    {item.is_visible && !RETIRED_INTERACTION_TYPES.has(item.interaction_type) && (
                       <button
                         disabled={isHiding}
                         onClick={() => handleHide(item.interaction_id)}

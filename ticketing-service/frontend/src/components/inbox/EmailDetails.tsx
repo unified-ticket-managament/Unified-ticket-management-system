@@ -162,7 +162,10 @@ export function EmailDetails({ onSaveDraft, onSendDraft, onDiscardDraft }: Email
       const result = await runTicketReply(selectedEmail.ticket_id!, { message: message.trim() });
       if (result) {
         setMessage("");
-        setSelectedEmail(appendReply(selectedEmail, result));
+        // TicketActionResponse.interaction_id is nullable now that
+        // status/priority/transfer/claim no longer create one — a
+        // reply itself (this call) still always does.
+        setSelectedEmail(appendReply(selectedEmail, { ...result, interaction_id: result.interaction_id! }));
       }
       return;
     }

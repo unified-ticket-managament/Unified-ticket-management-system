@@ -14,14 +14,19 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useAuthContext } from "@/context/AuthContext";
 import { useWorkflowContext } from "@/context/WorkflowContext";
 import { shortId, formatDateTime } from "@/lib/format";
-import { metaFor, summarize } from "@/lib/interactionMeta";
+import { RETIRED_INTERACTION_TYPES, metaFor, summarize } from "@/lib/interactionMeta";
 import type { InteractionDirection, InteractionResponse, InteractionStatus, OpenEmailResponse, ThreadResponse } from "@/types";
 
 const PAGE_SIZE = 20;
 
-// These stay on a ticket's own Timeline and in the Audit Log, but are
-// deliberately left out of this cross-ticket activity explorer.
-const HIDDEN_INTERACTION_TYPES = new Set(["STATUS_CHANGE", "PRIORITY_CHANGE", "AGENT_TRANSFER"]);
+// This cross-ticket activity explorer shows client communication
+// only — inbound email, outbound replies, and internal notes.
+// Everything else (status/priority changes, transfers, claims,
+// edit-access requests, attachment uploads) stays on the ticket's
+// own Timeline and Audit Log. A whitelist rather than a blacklist so
+// any future interaction type is hidden here by default, not shown
+// by accident.
+const VISIBLE_INTERACTION_TYPES = new Set(["EMAIL", "REPLY", "INTERNAL_NOTE"]);
 
 interface InteractionRow {
   id: string;
@@ -33,6 +38,7 @@ interface InteractionRow {
   ticketId: string | null;
   ticketTitle: string | null;
   clientName: string | null;
+  subject: string;
   summaryText: string;
   sourceAgent?: string;
   // Full backend record for ticket-linked rows — already returned by
@@ -101,7 +107,7 @@ export function InteractionsPage() {
       ]);
 
       const ticketRows = interactions
-        .filter((item) => !HIDDEN_INTERACTION_TYPES.has(item.interaction_type))
+        .filter((item) => VISIBLE_INTERACTION_TYPES.has(item.interaction_type))
         .map<InteractionRow>((item) => ({
           id: item.interaction_id,
           createdAt: item.created_at,
@@ -114,6 +120,10 @@ export function InteractionsPage() {
           ticketId: item.ticket_id,
           ticketTitle: item.ticket_title,
           clientName: item.client_company_name,
+          // Falls back to summarize() only for the rare row created
+          // before `subject` existed and never backfilled (a
+          // rootless legacy reply) — every new row always has one.
+          subject: item.subject || summarize(item),
           summaryText: summarize(item),
           raw: item,
         }));
@@ -127,6 +137,7 @@ export function InteractionsPage() {
         ticketId: null,
         ticketTitle: null,
         clientName: item.client_name,
+        subject: item.subject,
         summaryText: item.subject,
         sourceAgent: currentUser?.name,
       }));
@@ -203,6 +214,16 @@ export function InteractionsPage() {
     if (!row.ticketId) {
       const detail = await runOpenEmail(row.id);
       if (detail) setDrawerEmail(detail);
+      return;
+    }
+
+    // CLAIM/EDIT_ACCESS_* rows are synthesized from an audit-log
+    // entry, not a real Interaction (see audit_to_interaction.py) —
+    // row.id is that audit row's own id, which GET /interactions/{id}
+    // /thread has never heard of. Skip the fetch; the drawer already
+    // has everything it needs from the row itself (raw), same as any
+    // other single-message, no-thread row.
+    if (RETIRED_INTERACTION_TYPES.has(row.type)) {
       return;
     }
 
@@ -387,7 +408,7 @@ export function InteractionsPage() {
                   <li key={row.id} className="group flex items-center transition-colors hover:bg-surfaceHover">
                     <button
                       onClick={() => handleRowClick(row)}
-                      aria-label={`${meta.label}: ${row.summaryText}`}
+                      aria-label={`${row.subject}: ${row.summaryText}`}
                       className="flex flex-1 items-center gap-3.5 px-5 py-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
                     >
                       <span className="flex h-10 w-10 flex-none items-center justify-center rounded-full border border-border bg-canvas text-base">
@@ -395,10 +416,10 @@ export function InteractionsPage() {
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-[13px] font-semibold text-slate-900">
-                            {meta.label}
+                          <p className="truncate text-[13px] font-semibold text-slate-900">
+                            {row.subject}
                           </p>
-                          <Badge tone={meta.tone}>{row.direction}</Badge>
+                          <Badge tone={meta.tone}>{meta.label}</Badge>
                           {row.clientName && (
                             <span className="truncate text-xs text-muted">
                               {row.clientName}
@@ -410,7 +431,13 @@ export function InteractionsPage() {
                             </span>
                           )}
                         </div>
-                        <p className="mt-1 truncate text-[13px] text-slate-600">{row.summaryText}</p>
+                        {/* For EMAIL rows summaryText IS the subject
+                            (no body preview in this trimmed list
+                            response) — skip the second line rather
+                            than repeat the heading verbatim. */}
+                        {row.summaryText && row.summaryText !== row.subject && (
+                          <p className="mt-1 truncate text-[13px] text-slate-600">{row.summaryText}</p>
+                        )}
                       </div>
                       <div className="flex-none text-right">
                         <p className="text-xs font-medium text-slate-600">{formatDateTime(row.createdAt)}</p>

@@ -75,6 +75,7 @@ from app.ticketing.services.attachment_service import AttachmentService
 from app.ticketing.services.edit_access_service import EditAccessService
 from app.ticketing.services.inbox_ticket_service import InboxTicketService
 from app.ticketing.services.interaction_service import InteractionService
+from app.ticketing.services.sla_service import build_sla_service
 from app.ticketing.services.ticket_service import TicketService
 from app.ticketing.storage import get_storage_service
 
@@ -111,6 +112,7 @@ async def create_ticket_from_interaction(
     service = InboxTicketService(
         ticket_repository=ticket_repository,
         interaction_repository=interaction_repository,
+        sla_service=build_sla_service(db),
     )
 
     return await service.create_ticket_from_interaction(request, current_user=current_user)
@@ -139,6 +141,7 @@ async def attach_interaction_to_ticket(
     service = InboxTicketService(
         ticket_repository=ticket_repository,
         interaction_repository=interaction_repository,
+        sla_service=build_sla_service(db),
     )
 
     return await service.attach_to_existing_ticket(
@@ -167,6 +170,7 @@ async def get_ticket_interactions(
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     attachment_repository = AttachmentRepository(db)
+    audit_log_repository = AuditLogRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
@@ -174,6 +178,7 @@ async def get_ticket_interactions(
         user_repository=user_repository,
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
+        audit_log_repository=audit_log_repository,
     )
 
     return await service.get_ticket_interactions(ticket_id, current_user=current_user)
@@ -363,6 +368,7 @@ async def change_ticket_status(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         edit_access_repository=edit_access_repository,
+        sla_service=build_sla_service(db),
     )
 
     return await service.change_status(
@@ -400,6 +406,7 @@ async def change_ticket_priority(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        sla_service=build_sla_service(db),
     )
 
     return await service.change_priority(
@@ -743,6 +750,7 @@ async def list_all_ticket_interactions(
     client_repository = ClientRepository(db)
     interaction_repository = InteractionRepository(db)
     attachment_repository = AttachmentRepository(db)
+    audit_log_repository = AuditLogRepository(db)
 
     service = TicketService(
         ticket_repository=ticket_repository,
@@ -751,6 +759,7 @@ async def list_all_ticket_interactions(
         interaction_repository=interaction_repository,
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
+        audit_log_repository=audit_log_repository,
     )
 
     return await service.list_all_interactions(current_user=current_user)
