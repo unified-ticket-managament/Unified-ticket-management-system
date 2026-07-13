@@ -95,7 +95,13 @@ or `unified-backend/.env` or the browser will get CORS-blocked requests that loo
 6. On a ticket's detail page, use "Related Tickets" to link it to a second ticket and
    confirm the link shows up on **both** tickets' detail pages (it's written symmetrically
    — see CLAUDE.md), then unlink and confirm it disappears from both.
-7. **Edit Access** (the "Edit Access" panel on a ticket's detail page): log in as `Staff`
+7. **SLA & Escalation** (see root `CLAUDE.md`'s "SLA & Escalation" section for the full model): a ticket's First Response/Resolution clocks tick automatically — no manual step needed to start them — but the breach-detection sweep only runs when something calls `POST /internal/sla/sweep` (in production, a GitHub Actions schedule; nothing triggers it automatically in local dev). To manually fire it after seeding an overdue clock (e.g. backdating a ticket's `created_at` in a throwaway script) and see whether at-risk/breach/escalation notifications and the ticket's own audit trail update correctly:
+   ```bash
+   curl -X POST http://127.0.0.1:8000/internal/sla/sweep \
+     -H "X-SLA-Sweep-Secret: <value of SLA_SWEEP_SHARED_SECRET in unified-backend/.env>"
+   ```
+   Confirm the JSON response's counts match what you expect, then check the ticket's SLA card/timeline in the UI and the notification bell. Manually escalating (`ticket:escalate` permission required) and acknowledging from the ticket detail page's own controls doesn't need the sweep at all — only the *automatic* breach-driven paths (auto-escalate-on-breach, auto-advance-on-overdue-ack) do.
+8. **Edit Access** (the "Edit Access" panel on a ticket's detail page): log in as `Staff`
    on a ticket *not* assigned to them and confirm "Request Edit Access" is the only option
    (replying/note-adding/priority-changing 403s until access is granted). Submit a request
    with a reason, then log in as `Account Manager`/`Site Lead`/`Super Admin` (any role
