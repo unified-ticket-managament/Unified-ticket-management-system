@@ -51,6 +51,16 @@ class SLAPolicy(Base):
         nullable=False,
     )
 
+    # How long a TicketEscalation's current-level owner has to
+    # acknowledge before the sweep auto-advances to the next level
+    # (TEAM_LEAD -> MANAGER -> SITE_LEAD) — see ticket_escalation.py.
+    # Kept on this same per-priority table rather than a new one, same
+    # rationale as the two targets above.
+    escalation_ack_target_minutes: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+    )
+
     is_active: Mapped[bool] = mapped_column(
         Boolean,
         default=True,

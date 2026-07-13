@@ -124,7 +124,9 @@ async def create_ticket_from_interaction(
     service = InboxTicketService(
         ticket_repository=ticket_repository,
         interaction_repository=interaction_repository,
-        sla_service=build_sla_service(db),
+        sla_service=build_sla_service(
+            db, notification_service=NotificationService(NotificationRepository(db))
+        ),
     )
 
     return await service.create_ticket_from_interaction(request, current_user=current_user)
@@ -153,7 +155,9 @@ async def attach_interaction_to_ticket(
     service = InboxTicketService(
         ticket_repository=ticket_repository,
         interaction_repository=interaction_repository,
-        sla_service=build_sla_service(db),
+        sla_service=build_sla_service(
+            db, notification_service=NotificationService(NotificationRepository(db))
+        ),
     )
 
     return await service.attach_to_existing_ticket(

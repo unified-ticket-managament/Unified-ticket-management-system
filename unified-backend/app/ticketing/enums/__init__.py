@@ -11,6 +11,14 @@ from .audit_enums import (
 )
 from .edit_access_enums import EditAccessStatus
 from .sla_enums import SLAClockStatus
+from .escalation_enums import (
+    CLOSED_REASON_MANUALLY_CLOSED,
+    CLOSED_REASON_TICKET_RESOLVED,
+    TRIGGERED_BY_AUTO_SLA_BREACH,
+    TRIGGERED_BY_MANUAL,
+    EscalationLevel,
+    EscalationStatus,
+)
 
 __all__ = [
     "TicketStatus",
@@ -22,4 +30,10 @@ __all__ = [
     "AuditEventType",
     "EditAccessStatus",
     "SLAClockStatus",
+    "EscalationLevel",
+    "EscalationStatus",
+    "TRIGGERED_BY_MANUAL",
+    "TRIGGERED_BY_AUTO_SLA_BREACH",
+    "CLOSED_REASON_TICKET_RESOLVED",
+    "CLOSED_REASON_MANUALLY_CLOSED",
 ]

@@ -21,6 +21,7 @@ class NotificationRepository:
         user_id: UUID,
         *,
         unread_only: bool = False,
+        notification_types: list[str] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[Notification]:
@@ -29,18 +30,30 @@ class NotificationRepository:
         if unread_only:
             query = query.where(Notification.is_read.is_(False))
 
+        if notification_types:
+            query = query.where(Notification.notification_type.in_(notification_types))
+
         query = query.order_by(Notification.created_at.desc()).offset(offset).limit(limit)
 
         result = await self.db.execute(query)
         return list(result.scalars().all())
 
-    async def count_for_user(self, user_id: UUID, *, unread_only: bool = False) -> int:
+    async def count_for_user(
+        self,
+        user_id: UUID,
+        *,
+        unread_only: bool = False,
+        notification_types: list[str] | None = None,
+    ) -> int:
         query = select(func.count()).select_from(Notification).where(
             Notification.user_id == user_id
         )
 
         if unread_only:
             query = query.where(Notification.is_read.is_(False))
+
+        if notification_types:
+            query = query.where(Notification.notification_type.in_(notification_types))
 
         result = await self.db.execute(query)
         return result.scalar_one()

@@ -36,12 +36,15 @@ class SLAPolicyRepository:
         *,
         first_response_target_minutes: int | None = None,
         resolution_target_minutes: int | None = None,
+        escalation_ack_target_minutes: int | None = None,
         is_active: bool | None = None,
     ) -> SLAPolicy:
         if first_response_target_minutes is not None:
             policy.first_response_target_minutes = first_response_target_minutes
         if resolution_target_minutes is not None:
             policy.resolution_target_minutes = resolution_target_minutes
+        if escalation_ack_target_minutes is not None:
+            policy.escalation_ack_target_minutes = escalation_ack_target_minutes
         if is_active is not None:
             policy.is_active = is_active
 

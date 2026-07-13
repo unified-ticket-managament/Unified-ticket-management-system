@@ -46,6 +46,9 @@ window per user; there is no cross-process invalidation signal.
 import threading
 import time
 from collections import OrderedDict
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class RBACCache:
@@ -89,6 +92,16 @@ class RBACCache:
             # should be the last evicted under memory pressure.
             self._entries.move_to_end(key)
             return True
+        if expires_at is None:
+            logger.info("RBAC_CACHE_MISS: not found")
+            return False
+
+        if expires_at <= now:
+            logger.info("RBAC_CACHE_MISS: expired")
+            del self._entries[key]
+            return False
+
+        logger.info("RBAC_CACHE_HIT")
 
     def mark_valid(self, user_id: str, permission_version: int) -> None:
         """Record that (user_id, permission_version) was just confirmed against Postgres."""
@@ -101,6 +114,7 @@ class RBACCache:
             self._entries.move_to_end(key)
             while len(self._entries) > self._max_size:
                 self._entries.popitem(last=False)
+        logger.info("RBAC_CACHE_SET")
 
     def invalidate(self, user_id: str, permission_version: int) -> None:
         """

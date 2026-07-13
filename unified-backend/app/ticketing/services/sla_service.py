@@ -19,6 +19,7 @@ from app.ticketing.models.first_response_sla import FirstResponseSLA
 from app.ticketing.models.interaction import Interaction
 from app.ticketing.models.resolution_sla import ResolutionSLA
 from app.ticketing.models.sla_policy import SLAPolicy
+from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.first_response_sla_repository import (
     FirstResponseSLARepository,
 )
@@ -26,8 +27,12 @@ from app.ticketing.repositories.interaction_repository import InteractionReposit
 from app.ticketing.repositories.resolution_sla_repository import (
     ResolutionSLARepository,
 )
+from app.ticketing.repositories.sla_breach_notification_repository import (
+    SLABreachNotificationRepository,
+)
 from app.ticketing.repositories.sla_policy_repository import SLAPolicyRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
+from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.interaction import InteractionCreate
 from app.ticketing.schemas.sla import (
     FirstResponseSLAState,
@@ -43,6 +48,13 @@ from app.ticketing.services.access_control import (
     ensure_can_override_sla,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.escalation_service import build_escalation_service
+from app.ticketing.services.sla_breach_notifier import (
+    CLOCK_TYPE_FIRST_RESPONSE,
+    notify_first_response_threshold,
+    resolve_global_inbox_user_ids,
+)
+from app.ticketing.services.sla_escalation_rules import thresholds_reached
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +105,9 @@ class SLAService:
         ticket_repository: TicketRepository | None = None,
         interaction_repository: InteractionRepository | None = None,
         notification_service: NotificationService | None = None,
+        client_repository: ClientRepository | None = None,
+        user_repository: UserRepository | None = None,
+        sla_breach_notification_repository: SLABreachNotificationRepository | None = None,
     ):
         self.sla_policy_repository = sla_policy_repository
         self.first_response_sla_repository = first_response_sla_repository
@@ -100,6 +115,13 @@ class SLAService:
         self.ticket_repository = ticket_repository
         self.interaction_repository = interaction_repository
         self.notification_service = notification_service
+        # Only needed for the completion-time breach check in
+        # complete_first_response_clock (see that method) — optional,
+        # like notification_service, so this stays a plain no-op for
+        # any caller that hasn't been updated to pass them.
+        self.client_repository = client_repository
+        self.user_repository = user_repository
+        self.sla_breach_notification_repository = sla_breach_notification_repository
 
     # ---------------------------------------------------------
     # Policy lookup
@@ -163,6 +185,24 @@ class SLAService:
         exists for this interaction (predates this feature's rollout —
         see the backfill script) or it's already completed — SLA
         bookkeeping must never block triage.
+
+        Also checks the clock against every SLA threshold *at the
+        moment of completion*, before marking it COMPLETED, and fires
+        any not-yet-recorded breach notification right here. This is
+        not redundant with the periodic sweep: SLASweepService.
+        run_sweep only ever looks at still-PENDING clocks
+        (list_active_for_sweep), so a clock that breaches its target
+        and then gets completed (an agent finally replies, or attaches
+        it to a ticket) *before the next sweep tick* would otherwise
+        never be caught — once COMPLETED, it's permanently invisible
+        to the sweep, no matter how far past its target it ran. A
+        First Response clock's whole lifecycle is often minutes, well
+        inside a sweep interval that's only guaranteed by a
+        once-a-minute cron in production and isn't running at all
+        during local/manual testing — so this gap isn't hypothetical.
+        Uses the same idempotency ledger (SLABreachNotificationRepository
+        .try_record_many) the sweep does, so if the sweep DID already
+        catch this clock first, nothing double-fires here.
         """
 
         clock = await self.first_response_sla_repository.get_by_interaction_id(
@@ -171,9 +211,54 @@ class SLAService:
         if clock is None:
             return
 
+        completed_at = datetime.now(timezone.utc)
+
+        if (
+            clock.status == SLAClockStatus.PENDING
+            and self.sla_breach_notification_repository is not None
+        ):
+            policy = await self._get_policy(clock.priority)
+            target_minutes = policy.first_response_target_minutes if policy is not None else 0
+            fraction = compute_elapsed_fraction(
+                due_at=clock.due_at, target_minutes=target_minutes, at=completed_at
+            )
+            reached = thresholds_reached(fraction)
+
+            if reached:
+                candidates = [
+                    (CLOCK_TYPE_FIRST_RESPONSE, clock.first_response_sla_id, threshold)
+                    for threshold in reached
+                ]
+                newly_recorded = (
+                    await self.sla_breach_notification_repository.try_record_many(
+                        candidates
+                    )
+                )
+
+                if newly_recorded:
+                    client = (
+                        await self.client_repository.get_by_id(clock.client_id)
+                        if clock.client_id is not None and self.client_repository is not None
+                        else None
+                    )
+                    global_inbox_ids = (
+                        await resolve_global_inbox_user_ids(self.user_repository)
+                        if self.user_repository is not None
+                        else set()
+                    )
+                    for _, _, threshold in newly_recorded:
+                        await notify_first_response_threshold(
+                            clock=clock,
+                            threshold=threshold,
+                            client=client,
+                            global_inbox_ids=global_inbox_ids,
+                            notification_service=self.notification_service,
+                            user_repository=self.user_repository,
+                        )
+
         await self.first_response_sla_repository.complete(
             clock,
-            completed_at=datetime.now(timezone.utc),
+            completed_at=completed_at,
             completion_reason=completion_reason,
             resulting_ticket_id=resulting_ticket_id,
         )
@@ -281,7 +366,14 @@ class SLAService:
         )
 
     async def complete_resolution_clock(self, *, ticket_id: UUID) -> None:
-        """Called from InteractionService.change_status on entry into CLOSED."""
+        """
+        Called from InteractionService.change_status on entry into
+        CLOSED. Also closes any active internal escalation for this
+        ticket (see EscalationService.close_for_ticket_resolution) —
+        an escalation never outlives the ticket it was raised on, but
+        this never touches the Resolution SLA row itself beyond the
+        usual `complete()` call already below.
+        """
 
         clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
         if clock is None:
@@ -290,6 +382,10 @@ class SLAService:
         await self.resolution_sla_repository.complete(
             clock, completed_at=datetime.now(timezone.utc)
         )
+
+        if self.ticket_repository is not None:
+            escalation_service = build_escalation_service(self.ticket_repository.db)
+            await escalation_service.close_for_ticket_resolution(ticket_id)
 
     async def reshift_resolution_clock_for_priority_change(
         self,
@@ -354,10 +450,16 @@ class SLAService:
                 ),
             )
 
+        escalation_state = None
+        if self.ticket_repository is not None:
+            escalation_service = build_escalation_service(self.ticket_repository.db)
+            escalation_state = await escalation_service.get_escalation_state(ticket_id)
+
         return TicketSLAResponse(
             ticket_id=ticket_id,
             first_response=None,
             resolution=resolution_state,
+            escalation=escalation_state,
         )
 
     async def get_first_response_sla_state(
@@ -411,6 +513,7 @@ class SLAService:
             policy,
             first_response_target_minutes=request.first_response_target_minutes,
             resolution_target_minutes=request.resolution_target_minutes,
+            escalation_ack_target_minutes=request.escalation_ack_target_minutes,
             is_active=request.is_active,
         )
 
@@ -575,5 +678,8 @@ def build_sla_service(
         ticket_repository=TicketRepository(db),
         interaction_repository=InteractionRepository(db),
         notification_service=notification_service,
+        client_repository=ClientRepository(db),
+        user_repository=UserRepository(db),
+        sla_breach_notification_repository=SLABreachNotificationRepository(db),
     )
 

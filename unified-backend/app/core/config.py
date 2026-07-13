@@ -83,6 +83,29 @@ class Settings(BaseSettings):
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
 
+    # Real outbound email transport for internal notifications (SLA
+    # breach escalations today — see app/core/email_sender.py). All
+    # optional: leaving smtp_host unset keeps the app on the existing
+    # logging-only fallback, same convention as OutboundDispatcher's
+    # own no-op-until-configured behavior for client-facing replies.
+    # No specific provider is assumed — any standard SMTP endpoint
+    # works (a company mail relay, Gmail/Outlook with an app password,
+    # or a local dev catcher like Mailtrap/Mailhog).
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+    smtp_use_tls: bool = True
+
+    # Absolute base URL of the deployed frontend — used only to build
+    # a real clickable link in outbound notification emails (the
+    # in-app notification's own `link` field is already relative,
+    # which is fine inside the app but useless in an email client).
+    # Optional: an unset value just means the email body describes the
+    # relative path instead of a clickable URL.
+    app_frontend_url: str | None = None
+
     @property
     def cors_origins_list(self) -> List[str]:
         value = self.cors_origins.strip()
