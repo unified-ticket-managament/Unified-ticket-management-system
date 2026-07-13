@@ -25,6 +25,10 @@ const EVENT_META: Record<AuditEventType, AuditEventMeta> = {
   EDIT_ACCESS_REQUESTED: { icon: "🙏", label: "Edit Access Requested", tone: "warning" },
   EDIT_ACCESS_APPROVED: { icon: "🤝", label: "Edit Access Approved", tone: "success" },
   EDIT_ACCESS_REJECTED: { icon: "🚫", label: "Edit Access Rejected", tone: "danger" },
+  SLA_MANUALLY_PAUSED: { icon: "⏸", label: "SLA Manually Paused", tone: "warning" },
+  SLA_MANUALLY_RESUMED: { icon: "▶", label: "SLA Manually Resumed", tone: "info" },
+  SLA_BREACH_DETECTED: { icon: "⚠", label: "SLA Breached", tone: "danger" },
+  SLA_ESCALATED: { icon: "🔺", label: "SLA Escalated", tone: "danger" },
 };
 
 export function auditMetaFor(type: AuditEventType): AuditEventMeta {

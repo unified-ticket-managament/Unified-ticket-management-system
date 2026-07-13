@@ -67,6 +67,7 @@ import type {
 } from "@tw/types";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { ReplyComposer } from "@tw/components/mail/ReplyComposer";
+import { SlaFirstResponseBadge } from "@tw/components/sla/SlaFirstResponseBadge";
 
 const PRIORITY_VARIANT: Record<TicketPriority, "success" | "warning" | "destructive"> = {
   LOW: "success",
@@ -531,6 +532,12 @@ export function MessageDetailsView({
             )}
             {email.ticket_category && <Badge variant="secondary">{email.ticket_category}</Badge>}
           </div>
+        </div>
+        <div className="mt-2">
+          <SlaFirstResponseBadge
+            receivedAt={email.received_at}
+            enabled={!isTicketed && email.status === "PENDING"}
+          />
         </div>
         <p className="mt-1.5 text-[12px] text-muted-foreground">{formatDateTime(email.received_at)}</p>
       </div>

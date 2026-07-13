@@ -550,7 +550,11 @@ export type AuditEventType =
   | "INTERACTION_ARCHIVED"
   | "EDIT_ACCESS_REQUESTED"
   | "EDIT_ACCESS_APPROVED"
-  | "EDIT_ACCESS_REJECTED";
+  | "EDIT_ACCESS_REJECTED"
+  | "SLA_MANUALLY_PAUSED"
+  | "SLA_MANUALLY_RESUMED"
+  | "SLA_BREACH_DETECTED"
+  | "SLA_ESCALATED";
 
 export type ActorRole = "AGENT" | "CLIENT" | "SYSTEM";
 
@@ -571,4 +575,52 @@ export interface AuditLogResponse {
 export interface TicketAuditLogResponse extends AuditLogResponse {
   ticket_id: string;
   ticket_title: string;
+}
+
+// ==========================================================
+// SLA
+// ==========================================================
+
+export type SLAClockStatus = "PENDING" | "RUNNING" | "PAUSED" | "COMPLETED";
+
+export interface ResolutionSLAState {
+  status: SLAClockStatus;
+  started_at: string;
+  due_at: string;
+  paused_at: string | null;
+  total_paused_seconds: number;
+  completed_at: string | null;
+  elapsed_fraction: number;
+}
+
+export interface FirstResponseSLAState {
+  status: SLAClockStatus;
+  started_at: string;
+  due_at: string;
+  completed_at: string | null;
+  completion_reason: string | null;
+  elapsed_fraction: number;
+}
+
+// GET /tickets/{ticket_id}/sla — first_response is always null here by
+// backend design (that clock lives on the originating interaction, not
+// the ticket) — see SLAService.get_ticket_sla_state's own docstring.
+export interface TicketSLAResponse {
+  ticket_id: string;
+  first_response: FirstResponseSLAState | null;
+  resolution: ResolutionSLAState | null;
+}
+
+export interface SLAPauseRequest {
+  reason: string;
+}
+
+export interface SLAPolicyResponse {
+  policy_id: string;
+  priority: TicketPriority;
+  first_response_target_minutes: number;
+  resolution_target_minutes: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
 }

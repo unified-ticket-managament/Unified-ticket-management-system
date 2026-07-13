@@ -20,6 +20,7 @@ import { useMemo } from "react";
 import { PageHeader } from "@/components/layout/dashboard-shell";
 import { CategoryBarList } from "@/components/shared/charts";
 import { StatCard } from "@/components/shared/stats";
+import { SlaOverviewSection } from "@/components/dashboard/SlaOverviewSection";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -130,6 +131,8 @@ export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: Sup
           tone="warning"
         />
       </div>
+
+      <SlaOverviewSection />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>

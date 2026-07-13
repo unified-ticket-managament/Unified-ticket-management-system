@@ -93,6 +93,12 @@ services:
   - type: cron
     name: sla-sweep
     runtime: python
+    # No `plan` field here — Render's Blueprint schema rejects `plan: free`
+    # (or any plan value) on `type: cron` services outright ("services[N].plan
+    # free not a valid plan for service type cron", hit during an actual
+    # Blueprint sync). Cron jobs have no dyno/tier concept to select, same
+    # underlying reason `type: static` omits it below, even though the error
+    # message for each is different.
     rootDir: unified-backend
     schedule: "*/2 * * * *"
     buildCommand: pip install requests
@@ -148,7 +154,11 @@ services:
     runtime: static
     # No `plan` field here — static sites have no compute dyno/tier (Render
     # serves them free off a CDN), and Render rejects `plan: free` for
-    # runtime: static specifically (it's valid on the other services above).
+    # runtime: static specifically. `plan: free` IS required on the `type:
+    # web` services above, but NOT valid on this static site or the
+    # `sla-sweep` cron job — three service types, two different reasons to
+    # omit it, don't assume the field is optional everywhere by pattern-
+    # matching off this comment.
     rootDir: ticketing-service/frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: ./dist

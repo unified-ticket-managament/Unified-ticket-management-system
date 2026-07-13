@@ -5,11 +5,14 @@ import {
   Archive,
   CheckCircle2,
   ChevronRight,
+  Flame,
   Inbox as InboxIcon,
   Lock,
   MailPlus,
+  PauseCircle,
   ShieldAlert,
   Ticket as TicketIcon,
+  Timer,
   UserCheck,
 } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
@@ -204,13 +207,6 @@ export function Dashboard() {
             hint="High priority tickets still open"
           />
           <StatCard
-            icon={<ShieldAlert size={19} className="text-warning" />}
-            label="SLA Risk"
-            value={slaRiskCount}
-            tone="bg-warning/10"
-            hint={`Open tickets untouched for ${SLA_RISK_HOURS}+ hours`}
-          />
-          <StatCard
             icon={<CheckCircle2 size={19} className="text-success" />}
             label="Resolved Today"
             value={resolvedTodayCount}
@@ -230,6 +226,59 @@ export function Dashboard() {
             tone="bg-slate-500/10"
             hint="All-time tickets marked closed"
           />
+        </div>
+
+        <div>
+          <p className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted">
+            SLA Overview
+          </p>
+          {/* Aggregated client-side from the per-ticket SLA endpoint —
+              see useDashboardSlaCounts for why (no aggregate endpoint
+              exists yet). */}
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+            <StatCard
+              icon={<Timer size={19} className="text-accent" />}
+              label="Running"
+              value={slaCounts.running}
+              tone="bg-accent/10"
+              hint="Resolution SLA actively counting down"
+            />
+            <StatCard
+              icon={<PauseCircle size={19} className="text-slate-600" />}
+              label="Paused"
+              value={slaCounts.paused}
+              tone="bg-slate-500/10"
+              hint="Waiting for Client, or manually overridden"
+            />
+            <StatCard
+              icon={<ShieldAlert size={19} className="text-warning" />}
+              label="At Risk"
+              value={slaCounts.atRisk}
+              tone="bg-warning/10"
+              hint="80% or more of the resolution target elapsed"
+            />
+            <StatCard
+              icon={<AlertTriangle size={19} className="text-danger" />}
+              label="Breached"
+              value={slaCounts.breached}
+              tone="bg-danger/10"
+              hint="Past the resolution target"
+            />
+            <StatCard
+              icon={<Flame size={19} className="text-danger" />}
+              label="Escalated"
+              value={slaCounts.escalated}
+              tone="bg-danger/10"
+              hint="150% or more of the resolution target elapsed"
+            />
+            <StatCard
+              icon={<CheckCircle2 size={19} className="text-success" />}
+              label="Completed"
+              value={slaCounts.completed}
+              tone="bg-success/10"
+              hint="Resolution SLA ended — ticket was closed"
+            />
+          </div>
         </div>
 
         <div className={`grid grid-cols-1 gap-3 ${currentUser?.role === "Site Lead" ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>

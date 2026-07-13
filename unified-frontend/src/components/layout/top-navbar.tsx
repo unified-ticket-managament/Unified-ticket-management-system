@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useTranslation } from "@/hooks/use-translation";
+import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import {
   getNotifications,
@@ -29,6 +30,16 @@ import { authService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 
 const NOTIFICATION_POLL_INTERVAL_MS = 30_000;
+
+// SLA_AT_RISK/SLA_BREACHED/SLA_ESCALATED (app/notifications/service.py's
+// NotificationType) — colored distinctly from the generic unread dot so
+// severity reads at a glance, matching the same tier colors used on the
+// Ticket Detail page's SLA card/badge.
+const SLA_NOTIFICATION_DOT: Record<string, string> = {
+  SLA_AT_RISK: "bg-warning",
+  SLA_BREACHED: "bg-danger",
+  SLA_ESCALATED: "bg-danger",
+};
 
 function timeAgo(isoString: string): string {
   const seconds = Math.max(0, (Date.now() - new Date(isoString).getTime()) / 1000);
@@ -44,6 +55,7 @@ function timeAgo(isoString: string): string {
 export function TopNavbar() {
   const router = useRouter();
   const { t } = useTranslation();
+  const { toast } = useToast();
 
   const user = useAuthStore((state) => state.user);
   const logout = useAuthStore((state) => state.logout);
@@ -58,6 +70,12 @@ export function TopNavbar() {
   // notification would silently reappear on the next 30s refresh.
   const dismissedIdsRef = useRef<Set<string>>(new Set());
 
+  // Every notification_id already seen, so a poll only toasts for
+  // ones that are genuinely new — not on first load (which would
+  // toast every pre-existing notification at once the moment any page
+  // mounts) and not again on every subsequent poll of the same item.
+  const seenIdsRef = useRef<Set<string> | null>(null);
+
   // Polls the real notification feed — silent on failure, same
   // rationale as this app's other polling (the bell just keeps
   // showing the last good state rather than flashing an error toast
@@ -68,13 +86,32 @@ export function TopNavbar() {
     async function load() {
       try {
         const data = await getNotifications();
-        if (!cancelled) {
-          const visible = data.items.filter(
-            (n) => !dismissedIdsRef.current.has(n.notification_id)
-          );
-          setNotifications(visible);
-          setUnreadCount(visible.filter((n) => !n.is_read).length);
+        if (cancelled) return;
+
+        const isFirstLoad = seenIdsRef.current === null;
+        const previouslySeen = seenIdsRef.current ?? new Set<string>();
+
+        // SLA breach/at-risk/escalation notifications get a toast in
+        // addition to the bell update — everything else (permission
+        // requests, etc.) only updates the bell, unchanged from before.
+        if (!isFirstLoad) {
+          for (const n of data.items) {
+            if (previouslySeen.has(n.notification_id)) continue;
+            if (!(n.notification_type in SLA_NOTIFICATION_DOT)) continue;
+            toast({
+              variant: n.notification_type === "SLA_AT_RISK" ? "default" : "destructive",
+              title: n.title,
+              description: n.message,
+            });
+          }
         }
+        seenIdsRef.current = new Set(data.items.map((n) => n.notification_id));
+
+        const visible = data.items.filter(
+          (n) => !dismissedIdsRef.current.has(n.notification_id)
+        );
+        setNotifications(visible);
+        setUnreadCount(visible.filter((n) => !n.is_read).length);
       } catch {
         // ignore
       }
@@ -87,6 +124,7 @@ export function TopNavbar() {
       cancelled = true;
       window.clearInterval(interval);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleLogout = () => {

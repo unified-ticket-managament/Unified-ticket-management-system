@@ -8,6 +8,8 @@ import { TicketComposer, type ComposerMode } from "@tw/components/ticket/TicketC
 import { TicketDetails } from "@tw/components/ticket/TicketDetails";
 import { TicketActions } from "@tw/components/ticket/TicketActions";
 import { EditAccessPanel } from "@tw/components/ticket/EditAccessPanel";
+import { SlaCard } from "@tw/components/sla/SlaCard";
+import { SlaTimeline } from "@tw/components/sla/SlaTimeline";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { getTicket, listEditAccessRequests } from "@tw/api/ticket";
 import { getTicketTimeline } from "@tw/api/interaction";
@@ -145,6 +147,7 @@ export function TicketDetailPage() {
               <div>
                 <div className="flex flex-col gap-5 lg:sticky lg:top-0">
                   <TicketDetails onRelatedChanged={refreshAll} />
+                  <SlaCard ticketId={activeTicket.ticket_id} ticketPriority={activeTicket.current_priority} />
                   <TicketActions onActionComplete={refreshAll} onOpenComposer={setComposerMode} />
                   <EditAccessPanel onRequestsChanged={refreshEditAccessRequests} />
                 </div>
