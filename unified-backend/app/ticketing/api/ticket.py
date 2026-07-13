@@ -1,8 +1,18 @@
+from datetime import datetime
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, UploadFile, status
+from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import User
+
+from app.ticketing.enums import (
+    AuditEntityType,
+    AuditEventType,
+    InteractionDirection,
+    InteractionStatus,
+    TicketPriority,
+    TicketStatus,
+)
 
 from app.database.session import get_db
 from app.dependencies.auth import get_current_agent, get_current_user
@@ -53,8 +63,10 @@ from app.ticketing.schemas.note import (
     InternalNoteResponse,
 )
 from app.ticketing.schemas.ticket import (
+    DashboardStatsResponse,
     RelateTicketRequest,
     RelateTicketResponse,
+    TicketListItemResponse,
     TicketResponse,
     TicketUpdate,
     UnrelateTicketResponse,
@@ -656,10 +668,22 @@ async def update_ticket(
 
 @router.get(
     "",
-    response_model=list[TicketResponse],
+    response_model=list[TicketListItemResponse],
     status_code=status.HTTP_200_OK,
 )
 async def list_tickets(
+    response: Response,
+    limit: int | None = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    ticket_status: TicketStatus | None = Query(None, alias="status"),
+    priority: TicketPriority | None = Query(None),
+    ticket_type: str | None = Query(None),
+    view: str | None = Query(None, pattern="^(pool|mine|all)$"),
+    search: str | None = Query(None),
+    date_from: datetime | None = Query(None),
+    date_to: datetime | None = Query(None),
+    sort_by: str = Query("created_at", pattern="^(created_at|updated_at|title)$"),
+    sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -668,6 +692,21 @@ async def list_tickets(
     scoped to their own clients' tickets; Team Lead/Staff are scoped
     to their own work-specialization category's shared pool; Site
     Lead/Super Admin see every ticket. See TicketService.list_all.
+
+    Returns `TicketListItemResponse` (not the full `TicketResponse` —
+    see that schema's own docstring), dropping `custom_fields`/
+    `related_tickets`, neither of which any list view reads.
+    GET /tickets/{id} (detail) is unaffected and still returns the
+    full shape.
+
+    `limit`/`offset` (plus the filter params) are all optional and
+    additive: omitting `limit` returns the exact same unbounded
+    response this endpoint always returned. Passing `limit` bounds the
+    query and reports the matching total via `X-Total-Count`. `view`
+    is the ticket-list page's own Open Pool/My Tickets/All tab filter
+    (`"mine"` resolves against the caller's own id, never a caller-
+    supplied one) — orthogonal to the status/priority/category
+    filters, all of which can be combined with any tab.
     """
 
     ticket_repository = TicketRepository(db)
@@ -680,7 +719,85 @@ async def list_tickets(
         client_repository=client_repository,
     )
 
-    return await service.list_all(current_user=current_user)
+    items, total = await service.list_all(
+        current_user=current_user,
+        limit=limit,
+        offset=offset,
+        status_filter=ticket_status,
+        priority_filter=priority,
+        ticket_type_filter=ticket_type,
+        view=view,
+        search=search,
+        date_from=date_from,
+        date_to=date_to,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+
+    if limit is not None:
+        response.headers["X-Total-Count"] = str(total)
+
+    return items
+
+
+@router.get(
+    "/view-counts",
+    status_code=status.HTTP_200_OK,
+)
+async def get_ticket_view_counts(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    The ticket-list page's three tab badges (Open Pool / My Tickets /
+    All) — one grouped query under the same visibility scoping as
+    GET /tickets itself, so the page never needs to fetch all three
+    tabs' full row sets just to show a count on each. See
+    TicketService.count_by_view.
+    """
+
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = TicketService(
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    return await service.count_by_view(current_user=current_user)
+
+
+@router.get(
+    "/dashboard-stats",
+    response_model=DashboardStatsResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_ticket_dashboard_stats(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Every stat card and small ticket list the ticket-workspace
+    Dashboard needs, computed server-side under the same visibility
+    scoping as GET /tickets — replaces the Dashboard's old
+    `listTickets()` call, which fetched every visible ticket unbounded
+    just to derive these numbers client-side. See
+    TicketService.get_dashboard_stats.
+    """
+
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = TicketService(
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    return await service.get_dashboard_stats(current_user=current_user)
 
 
 # =========================================================
@@ -698,6 +815,15 @@ async def list_tickets(
     status_code=status.HTTP_200_OK,
 )
 async def list_all_ticket_audit_logs(
+    response: Response,
+    limit: int | None = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    entity_type: AuditEntityType | None = Query(None),
+    event_type: AuditEventType | None = Query(None),
+    actor_name: str | None = Query(None),
+    date_from: datetime | None = Query(None),
+    date_to: datetime | None = Query(None),
+    search: str | None = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -706,6 +832,13 @@ async def list_all_ticket_audit_logs(
     in one query — the same visibility scoping as GET /tickets. Used
     by the Audit Log page instead of fetching the ticket list and then
     each ticket's own audit trail one request at a time.
+
+    `limit`/`offset` (plus the filter params) are all optional and
+    additive — omitting `limit` returns the exact same unbounded
+    response this endpoint always returned. Passing `limit` bounds the
+    query and reports the matching total via `X-Total-Count` — this
+    matters more here than almost anywhere else in the app, since the
+    Audit Log page polls this endpoint every 15 seconds.
     """
 
     ticket_repository = TicketRepository(db)
@@ -720,7 +853,22 @@ async def list_all_ticket_audit_logs(
         audit_log_repository=audit_log_repository,
     )
 
-    return await service.list_all_audit_logs(current_user=current_user)
+    items, total = await service.list_all_audit_logs(
+        current_user=current_user,
+        limit=limit,
+        offset=offset,
+        entity_type=entity_type,
+        event_type=event_type,
+        actor_name=actor_name,
+        date_from=date_from,
+        date_to=date_to,
+        search=search,
+    )
+
+    if limit is not None:
+        response.headers["X-Total-Count"] = str(total)
+
+    return items
 
 
 # =========================================================
@@ -735,6 +883,18 @@ async def list_all_ticket_audit_logs(
     status_code=status.HTTP_200_OK,
 )
 async def list_all_ticket_interactions(
+    response: Response,
+    limit: int | None = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    cursor: str | None = Query(None),
+    interaction_type: str | None = Query(None),
+    direction: InteractionDirection | None = Query(None),
+    interaction_status: InteractionStatus | None = Query(None, alias="status"),
+    agent_id: UUID | None = Query(None),
+    ticket_id: UUID | None = Query(None),
+    date_from: datetime | None = Query(None),
+    date_to: datetime | None = Query(None),
+    search: str | None = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -743,6 +903,18 @@ async def list_all_ticket_interactions(
     in one query — the same visibility scoping as GET /tickets. Used
     by the Interactions page instead of fetching the ticket list and
     then each ticket's own timeline one request at a time.
+
+    `limit`/`offset` (plus the filter params) are all optional and
+    additive: a caller that omits `limit` gets the exact same
+    unbounded, unfiltered response this endpoint always returned (the
+    standalone `ticketing-service/frontend` still calls it this way).
+    Passing `limit` switches the query itself to a bounded, filtered
+    one and reports the matching total via `X-Total-Count` so a
+    paginated caller (the embedded Interactions page) can show
+    "Showing X-Y of Z" without a second round trip. `cursor` (from a
+    previous response's `X-Next-Cursor` header) is an additive keyset-
+    paging alternative to `offset` for deep paging at scale — pass
+    either, not both.
     """
 
     ticket_repository = TicketRepository(db)
@@ -762,7 +934,27 @@ async def list_all_ticket_interactions(
         audit_log_repository=audit_log_repository,
     )
 
-    return await service.list_all_interactions(current_user=current_user)
+    items, total, next_cursor = await service.list_all_interactions(
+        current_user=current_user,
+        limit=limit,
+        offset=offset,
+        cursor=cursor,
+        interaction_type=interaction_type,
+        direction=direction,
+        interaction_status=interaction_status,
+        agent_id=agent_id,
+        ticket_id=ticket_id,
+        date_from=date_from,
+        date_to=date_to,
+        search=search,
+    )
+
+    if limit is not None:
+        response.headers["X-Total-Count"] = str(total)
+        if next_cursor is not None:
+            response.headers["X-Next-Cursor"] = next_cursor
+
+    return items
 
 
 # =========================================================

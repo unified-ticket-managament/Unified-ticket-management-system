@@ -18,15 +18,11 @@ import {
 } from "@tw/api/inbox";
 import { deleteAttachment } from "@tw/api/interaction";
 import { createMailFolder, deleteMailFolder, listMailFolders } from "@tw/api/mailFolder";
-import { listClients } from "@tw/api/clients";
-import { listCategories } from "@tw/api/categories";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import type {
-  CategoryResponse,
-  ClientResponse,
   DraftItem,
   InboxItem,
   InboxView,
@@ -35,6 +31,17 @@ import type {
 } from "@tw/types";
 
 const SUPERVISOR_ROLES = ["Site Lead", "Super Admin"];
+
+// How many rows a base tab fetches at a time. GET /inbox used to be
+// called with no limit at all — every matching row for a view (e.g.
+// Site Lead/Super Admin's "All Inboxes") was fetched, fully enriched,
+// and serialized on every load, even though MessageList only ever
+// shows 10 at a time. Bounding the fetch itself (rather than just
+// paginating client-side over an already-fully-loaded array) is what
+// actually caps the request cost; `loadMoreBaseTab` below fetches the
+// next batch on demand instead of ever pulling a tab's entire history
+// up front.
+const MAIL_TAB_FETCH_SIZE = 200;
 
 // "Unassigned"/"My Claims" aren't separate backend views — they're
 // derived client-side from the "pending" set (claimed_by null vs.
@@ -185,11 +192,22 @@ function baseKeysForView(view: MailViewKey): LoadKey[] {
  * of truth without prop-drilling through a rewritten AgentInbox.
  */
 export function useMailInbox() {
-  const { selectedEmail, setSelectedEmail } = useWorkflowContext();
+  const {
+    selectedEmail,
+    setSelectedEmail,
+    clients,
+    categories: contextCategories,
+  } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const { pushToast } = useToast();
 
   const isSupervisor = Boolean(currentUser && SUPERVISOR_ROLES.includes(currentUser.role));
+
+  // Guards openThread against a fast message-to-message selection
+  // change: without this, an older thread's response resolving after
+  // a newer one is already selected could overwrite `selectedEmail`
+  // with the wrong conversation.
+  const openThreadRequestIdRef = useRef(0);
 
   const [rowsByTab, setRowsByTab] = useState<Record<BaseTabKey, InboxItem[]>>({
     pending: [],
@@ -200,6 +218,17 @@ export function useMailInbox() {
   });
   const [sentItems, setSentItems] = useState<InboxItem[]>([]);
   const [draftItems, setDraftItems] = useState<InboxItem[]>([]);
+  // The server's own filtered total per base tab (from GET /inbox's
+  // `total`) — lets `hasMore` below tell "there's another batch to
+  // load" apart from "this tab just happens to have exactly
+  // MAIL_TAB_FETCH_SIZE rows."
+  const [tabTotals, setTabTotals] = useState<Record<BaseTabKey, number>>({
+    pending: 0,
+    replied: 0,
+    ticketed: 0,
+    archived: 0,
+    all: 0,
+  });
   // Real Pending/Replied/Ticketed/Archived/All counts, fetched
   // eagerly via one cheap aggregate query — kept separate from
   // rowsByTab so the sidebar badges stay accurate even for a tab
@@ -219,12 +248,35 @@ export function useMailInbox() {
   // loop, since refresh() is what populates it).
   const loadedKeysRef = useRef<Set<LoadKey>>(new Set());
   const prevClientFilterRef = useRef<string>("ALL");
-  const [clients, setClients] = useState<ClientResponse[]>([]);
+  // One AbortController per base tab — a fast clientFilter/priority/
+  // category change (or refresh()/ensureLoaded() overlapping) used to
+  // leave the older, now-superseded request in flight with nothing
+  // to stop it from still landing and overwriting rowsByTab with
+  // stale data if it happened to resolve after the newer one. Keyed
+  // per-tab (not one shared controller) so aborting "pending"'s stale
+  // request never cancels an unrelated in-flight "all" fetch.
+  const baseTabAbortRef = useRef<Partial<Record<BaseTabKey, AbortController>>>({});
+  // Folders (this agent's own custom mail folders) are loaded once
+  // and never re-fetched on a clientFilter change or later refresh()
+  // call — see refresh()'s own comment for why re-fetching every time
+  // was always redundant. Clients/categories no longer fetched here
+  // at all — both are now shared, session-wide lookup data owned by
+  // WorkflowContext (fetched once for the whole app, not once per
+  // consumer — see that context's own comment).
+  const chromeLoadedRef = useRef(false);
   const [isLoading, setIsLoading] = useState(true);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [activeViewRaw, setActiveViewRaw] = useState<MailViewKey>("pending");
   const [clientFilter, setClientFilter] = useState<string>("ALL");
+  // The Filters dropdown's Priority/Category selections (MessageList)
+  // used to filter `items` client-side after the fact — correct only
+  // as long as every matching row happened to already be in the
+  // currently-loaded batch. Both are now passed to GET /inbox itself
+  // (both already exist as real, indexed backend filters), same
+  // invalidation treatment as clientFilter below.
+  const [priorityFilter, setPriorityFilter] = useState<string>("ALL");
+  const [messageCategoryFilter, setMessageCategoryFilter] = useState<string>("ALL");
   const [timeFilter, setTimeFilter] = useState<TimeFilterKey>("ALL");
   const [openedIds, setOpenedIds] = useState<Set<string>>(new Set());
 
@@ -235,11 +287,21 @@ export function useMailInbox() {
   const [isFolderLoading, setIsFolderLoading] = useState(false);
 
   // Category "folders" (Eligibility, Claims, AR, ...) are a fixed,
-  // backend-known set — not a custom mail_folders row. Sliced
-  // client-side from the already-fetched "ticketed" set (same
-  // no-extra-request pattern as unassigned/mine below), keyed by
-  // Ticket.ticket_type via InboxItem.ticket_category.
-  const [categories, setCategories] = useState<CategoryResponse[]>([]);
+  // backend-known set — not a custom mail_folders row, and (as of
+  // this session) not fetched here at all: WorkflowContext already
+  // fetches the full category list once for the whole app, so this
+  // just applies the same role-based visibility filter to it that
+  // used to be applied at fetch time.
+  // Team Lead/Staff are already category-scoped to their own single
+  // category everywhere else (ensure_agent_can_view_ticket) — a
+  // category filter is redundant (and would just show one enabled
+  // entry) for them. Only roles that see across multiple categories
+  // (Account Manager, Site Lead, Super Admin) get it.
+  const isCategoryScopedRole = currentUser?.role === "Team Lead" || currentUser?.role === "Staff";
+  const categories = useMemo(
+    () => (isCategoryScopedRole ? [] : contextCategories),
+    [isCategoryScopedRole, contextCategories]
+  );
   const [activeCategory, setActiveCategoryRaw] = useState<string | null>(null);
 
   const { run: runOpen } = useApiAction(openInboxThread);
@@ -274,18 +336,76 @@ export function useMailInbox() {
 
   // Fetches one base tab's actual row data — the thing that used to
   // happen eagerly for every tab on every load/refresh, regardless of
-  // which one the agent was actually looking at.
+  // which one the agent was actually looking at. Bounded to the
+  // first MAIL_TAB_FETCH_SIZE rows (see loadMoreBaseTab for how a
+  // tab with more than that gets the rest) instead of the tab's
+  // entire history.
   const fetchBaseTab = useCallback(
     async (key: BaseTabKey) => {
       if (key === "all" && !isSupervisor) {
         setRowsByTab((prev) => ({ ...prev, all: [] }));
+        setTabTotals((prev) => ({ ...prev, all: 0 }));
         return;
       }
+      baseTabAbortRef.current[key]?.abort();
+      const controller = new AbortController();
+      baseTabAbortRef.current[key] = controller;
       const clientId = clientFilter === "ALL" ? undefined : clientFilter;
-      const result = await getInbox(key, { clientId, scope: key === "all" ? "all" : undefined });
-      setRowsByTab((prev) => ({ ...prev, [key]: result.items }));
+      try {
+        const result = await getInbox(
+          key,
+          {
+            clientId,
+            scope: key === "all" ? "all" : undefined,
+            limit: MAIL_TAB_FETCH_SIZE,
+            offset: 0,
+            priority: priorityFilter === "ALL" ? undefined : priorityFilter,
+            category: messageCategoryFilter === "ALL" ? undefined : messageCategoryFilter,
+          },
+          controller.signal
+        );
+        setRowsByTab((prev) => ({ ...prev, [key]: result.items }));
+        setTabTotals((prev) => ({ ...prev, [key]: result.total }));
+      } catch (error) {
+        if (error instanceof Error && error.name === "CanceledError") return;
+        throw error;
+      }
     },
-    [clientFilter, isSupervisor]
+    [clientFilter, isSupervisor, priorityFilter, messageCategoryFilter]
+  );
+
+  // Fetches the next MAIL_TAB_FETCH_SIZE-row batch for a tab that has
+  // more rows than what's currently loaded, and appends it — used by
+  // the Mail page's "Load more" affordance instead of ever pulling a
+  // tab's whole history up front.
+  const loadMoreBaseTab = useCallback(
+    async (key: BaseTabKey) => {
+      baseTabAbortRef.current[key]?.abort();
+      const controller = new AbortController();
+      baseTabAbortRef.current[key] = controller;
+      const clientId = clientFilter === "ALL" ? undefined : clientFilter;
+      const alreadyLoaded = rowsByTab[key].length;
+      try {
+        const result = await getInbox(
+          key,
+          {
+            clientId,
+            scope: key === "all" ? "all" : undefined,
+            limit: MAIL_TAB_FETCH_SIZE,
+            offset: alreadyLoaded,
+            priority: priorityFilter === "ALL" ? undefined : priorityFilter,
+            category: messageCategoryFilter === "ALL" ? undefined : messageCategoryFilter,
+          },
+          controller.signal
+        );
+        setRowsByTab((prev) => ({ ...prev, [key]: [...prev[key], ...result.items] }));
+        setTabTotals((prev) => ({ ...prev, [key]: result.total }));
+      } catch (error) {
+        if (error instanceof Error && error.name === "CanceledError") return;
+        throw error;
+      }
+    },
+    [clientFilter, rowsByTab, priorityFilter, messageCategoryFilter]
   );
 
   const fetchSent = useCallback(async () => {
@@ -327,49 +447,57 @@ export function useMailInbox() {
     try {
       const clientId = clientFilter === "ALL" ? undefined : clientFilter;
 
-      // A client-filter change invalidates every previously-loaded
-      // tab's cached data (it was scoped to the old filter) — start
-      // this refresh as if nothing had been fetched yet, same as the
-      // very first load.
-      if (prevClientFilterRef.current !== clientFilter) {
+      // A client/priority/category filter change invalidates every
+      // previously-loaded tab's cached data (it was scoped to the old
+      // filters) — start this refresh as if nothing had been fetched
+      // yet, same as the very first load.
+      const filterSignature = `${clientFilter}|${priorityFilter}|${messageCategoryFilter}`;
+      if (prevClientFilterRef.current !== filterSignature) {
         loadedKeysRef.current = new Set();
-        prevClientFilterRef.current = clientFilter;
+        prevClientFilterRef.current = filterSignature;
       }
 
-      // Sidebar chrome (client list, folders, categories) plus real
-      // Pending/Replied/Ticketed/Archived/All counts and per-folder
-      // counts — both via one cheap aggregate query each, regardless
-      // of which tabs have actually been opened — stay eager so the
-      // sidebar never shows a misleadingly-zero badge.
-      const [clientList, folderList, categoryList, viewCounts, folderCountsResult] =
-        await Promise.all([
-          listClients(),
-          listMailFolders(),
-          listCategories(),
-          getViewCounts(clientId),
-          getFolderCounts(clientId),
-        ]);
-
-      setClients(clientList);
-      setFolders(folderList);
-      // Team Lead/Staff are already category-scoped to their own
-      // single category everywhere else (ensure_agent_can_view_ticket) —
-      // a category filter is redundant (and would just show one
-      // enabled entry) for them. Only roles that see across multiple
-      // categories (Account Manager, Site Lead, Super Admin) get it.
-      const isCategoryScopedRole = currentUser?.role === "Team Lead" || currentUser?.role === "Staff";
-      setCategories(isCategoryScopedRole ? [] : categoryList);
-      setBaseViewCounts(viewCounts);
-      setFolderCounts(folderCountsResult);
-
-      // Re-fetch every tab already visited (so previously-seen data
-      // stays fresh after a mutation), plus whichever tab is active
-      // right now (covers the very first load, before anything's
-      // been marked loaded).
+      // Which tabs need (re)fetching this round — every tab already
+      // visited (so previously-seen data stays fresh after a
+      // mutation), plus whichever tab is active right now (covers the
+      // very first load, before anything's been marked loaded).
+      // Computed up front (synchronously) so these fetches can join
+      // the same fan-out as the sidebar chrome below, instead of
+      // waiting for it to resolve first.
       const keysToRefresh = new Set(loadedKeysRef.current);
       baseKeysForView(activeViewRaw).forEach((key) => keysToRefresh.add(key));
       keysToRefresh.forEach((key) => loadedKeysRef.current.add(key));
-      await Promise.all(Array.from(keysToRefresh).map((key) => fetchKey(key)));
+
+      // Folders (this agent's own custom mail folders) don't depend
+      // on `clientFilter` at all, so they're only fetched once, on
+      // the true first load, not every time the filter changes.
+      // Clients/categories are no longer fetched here at all — see
+      // this hook's own top-of-file comment on chromeLoadedRef.
+      // Real Pending/Replied/Ticketed/Archived/All + per-folder counts
+      // and every tab's actual row data genuinely do depend on
+      // `clientFilter`, so those still fire every refresh. All of it
+      // still fires in one fan-out (two Promise.all groups nested
+      // inside an outer one, purely to keep the first group's tuple
+      // typing) — the active tab's data used to only start loading
+      // after the sidebar chrome round finished, an avoidable serial
+      // round-trip on every load.
+      const shouldLoadChrome = !chromeLoadedRef.current;
+      const [[folderList, viewCounts, folderCountsResult]] =
+        await Promise.all([
+          Promise.all([
+            shouldLoadChrome ? listMailFolders() : Promise.resolve(null),
+            getViewCounts(clientId),
+            getFolderCounts(clientId),
+          ]),
+          Promise.all(Array.from(keysToRefresh).map((key) => fetchKey(key))),
+        ]);
+
+      if (folderList) {
+        setFolders(folderList);
+        chromeLoadedRef.current = true;
+      }
+      setBaseViewCounts(viewCounts);
+      setFolderCounts(folderCountsResult);
     } catch (error) {
       pushToast(
         error instanceof Error ? error.message : "Failed to load inbox.",
@@ -378,12 +506,42 @@ export function useMailInbox() {
     } finally {
       setIsLoading(false);
     }
-  }, [pushToast, clientFilter, activeViewRaw, fetchKey, currentUser]);
+  }, [pushToast, clientFilter, activeViewRaw, fetchKey, priorityFilter, messageCategoryFilter]);
+
+  // A lighter alternative to refresh() for after a single mutation
+  // (tag/folder/draft-send/discard/compose) — re-pulls the cheap
+  // view/folder count aggregates plus only the tab(s) the mutation
+  // actually affects (always including whatever's currently on
+  // screen), instead of every tab visited so far this session. Any
+  // other already-loaded tab is invalidated rather than eagerly
+  // re-fetched, so it lazily refetches (see ensureLoaded) the next
+  // time the agent actually switches back to it — this keeps what's
+  // visible right now correct without every tab paying for one
+  // mutation's cost immediately.
+  const refreshAfterMutation = useCallback(
+    async (extraKeys: LoadKey[] = []) => {
+      const clientId = clientFilter === "ALL" ? undefined : clientFilter;
+      const keysToRefetchNow = new Set([...baseKeysForView(activeViewRaw), ...extraKeys]);
+
+      loadedKeysRef.current.forEach((key) => {
+        if (!keysToRefetchNow.has(key)) loadedKeysRef.current.delete(key);
+      });
+      keysToRefetchNow.forEach((key) => loadedKeysRef.current.add(key));
+
+      const [[viewCounts, folderCountsResult]] = await Promise.all([
+        Promise.all([getViewCounts(clientId), getFolderCounts(clientId)]),
+        Promise.all(Array.from(keysToRefetchNow).map((key) => fetchKey(key))),
+      ]);
+      setBaseViewCounts(viewCounts);
+      setFolderCounts(folderCountsResult);
+    },
+    [clientFilter, activeViewRaw, fetchKey]
+  );
 
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientFilter]);
+  }, [clientFilter, priorityFilter, messageCategoryFilter]);
 
   // Lazy-load a view/tab's data the first time the agent actually
   // switches to it.
@@ -428,8 +586,10 @@ export function useMailInbox() {
   }, [activeFolder, clientFilter, isSupervisor, pushToast]);
 
   async function openThread(interactionId: string) {
+    const requestId = ++openThreadRequestIdRef.current;
     setOpeningId(interactionId);
     const result = await runOpen(interactionId);
+    if (requestId !== openThreadRequestIdRef.current) return;
     setOpeningId(null);
 
     if (result) {
@@ -448,7 +608,7 @@ export function useMailInbox() {
       if (selectedEmail?.interaction_id === interactionId) {
         setSelectedEmail({ ...selectedEmail, tags: result.tags });
       }
-      await refresh();
+      await refreshAfterMutation();
     }
     return Boolean(result);
   }
@@ -459,7 +619,7 @@ export function useMailInbox() {
       if (selectedEmail?.interaction_id === interactionId) {
         setSelectedEmail({ ...selectedEmail, folder_id: result.folder_id });
       }
-      await refresh();
+      await refreshAfterMutation();
       if (activeFolder) {
         setFolderItems((prev) => prev.filter((item) => item.interaction_id !== interactionId));
       }
@@ -496,7 +656,10 @@ export function useMailInbox() {
       const fresh = await openInboxThread(interactionId);
       setSelectedEmail(fresh);
     }
-    if (result) await refresh();
+    // A send always clears the draft and adds a sent item, regardless
+    // of which tab is currently active — refresh both explicitly on
+    // top of whatever's on screen.
+    if (result) await refreshAfterMutation(["drafts", "sent"]);
     return result;
   }
 
@@ -512,7 +675,7 @@ export function useMailInbox() {
           draft_attachments: [],
         });
       }
-      await refresh();
+      await refreshAfterMutation(["drafts"]);
     }
     return Boolean(result);
   }
@@ -542,34 +705,43 @@ export function useMailInbox() {
   async function composeEmail(payload: ComposeEmailPayload) {
     const result = await runCompose(payload);
     if (result) {
-      await refresh();
+      await refreshAfterMutation(["sent"]);
     }
     return result;
   }
 
-  async function createFolder(name: string) {
-    const folder = await runCreateFolder(name);
-    if (folder) {
-      setFolders((prev) => [...prev, folder].sort((a, b) => a.name.localeCompare(b.name)));
-      setFolderCounts((prev) => ({ ...prev, [folder.folder_id]: 0 }));
-    }
-    return folder;
-  }
-
-  async function deleteFolder(folderId: string) {
-    const result = await runDeleteFolder(folderId);
-    if (result !== null) {
-      setFolders((prev) => prev.filter((folder) => folder.folder_id !== folderId));
-      setFolderCounts((prev) => {
-        const next = { ...prev };
-        delete next[folderId];
-        return next;
-      });
-      if (activeFolder === folderId) {
-        setActiveFolderRaw(null);
+  // Stable identities (useCallback, not a plain function declaration)
+  // — both are passed straight through to MailSidebar, which is
+  // wrapped in React.memo specifically so it doesn't re-render on
+  // every Mail search keystroke; an unstable prop here would defeat
+  // that regardless of the memo.
+  const createFolder = useCallback(
+    async (name: string) => {
+      const folder = await runCreateFolder(name);
+      if (folder) {
+        setFolders((prev) => [...prev, folder].sort((a, b) => a.name.localeCompare(b.name)));
+        setFolderCounts((prev) => ({ ...prev, [folder.folder_id]: 0 }));
       }
-    }
-  }
+      return folder;
+    },
+    [runCreateFolder]
+  );
+
+  const deleteFolder = useCallback(
+    async (folderId: string) => {
+      const result = await runDeleteFolder(folderId);
+      if (result !== null) {
+        setFolders((prev) => prev.filter((folder) => folder.folder_id !== folderId));
+        setFolderCounts((prev) => {
+          const next = { ...prev };
+          delete next[folderId];
+          return next;
+        });
+        setActiveFolderRaw((prev) => (prev === folderId ? null : prev));
+      }
+    },
+    [runDeleteFolder]
+  );
 
   const now = useMemo(() => new Date(), [rowsByTab, sentItems, draftItems, timeFilter]);
   const debouncedSearch = useDebouncedValue(search, 300);
@@ -644,6 +816,31 @@ export function useMailInbox() {
     ? clients.filter((c) => c.account_manager_id === currentUser.user_id).length
     : 0;
 
+  // Whether the currently active view's underlying base tab(s) have
+  // more rows on the server than what's loaded so far — false for
+  // Sent/Drafts (kept unbounded; personal, inherently small lists)
+  // and for a custom-folder/category view (not part of this pass).
+  const hasMore =
+    !activeFolder &&
+    !activeCategory &&
+    baseKeysForView(activeViewRaw).some((key) => {
+      if (key === "sent" || key === "drafts") return false;
+      return rowsByTab[key].length < tabTotals[key];
+    });
+
+  // Fetches the next batch for whichever of the active view's base
+  // tab(s) actually have more rows waiting server-side — the Mail
+  // page's explicit "Load more" action, so a tab's full history is
+  // only ever pulled on demand instead of up front.
+  const loadMore = useCallback(async () => {
+    const keys = baseKeysForView(activeViewRaw).filter(
+      (key): key is BaseTabKey =>
+        key !== "sent" && key !== "drafts" && rowsByTab[key].length < tabTotals[key]
+    );
+    if (keys.length === 0) return;
+    await Promise.all(keys.map((key) => loadMoreBaseTab(key)));
+  }, [activeViewRaw, rowsByTab, tabTotals, loadMoreBaseTab]);
+
   return {
     isSupervisor,
     isLoading: activeFolder ? isFolderLoading : isLoading,
@@ -652,6 +849,10 @@ export function useMailInbox() {
     clients,
     clientFilter,
     setClientFilter,
+    priorityFilter,
+    setPriorityFilter,
+    messageCategoryFilter,
+    setMessageCategoryFilter,
     timeFilter,
     setTimeFilter,
     search,
@@ -660,6 +861,8 @@ export function useMailInbox() {
     setActiveView,
     viewCounts,
     filteredItems,
+    hasMore,
+    loadMore,
     managedClientCount,
     refresh,
     openThread,

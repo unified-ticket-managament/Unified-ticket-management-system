@@ -116,3 +116,58 @@ class TicketResponse(ORMBase):
     # Populated only on GET /tickets/{id} (not the list view, to
     # avoid an N+1 lookup per row) — see TicketService._attach_related_tickets.
     related_tickets: list[RelatedTicketSummary] = Field(default_factory=list)
+
+
+class TicketListItemResponse(ORMBase):
+    """
+    GET /tickets (list) response shape — identical to TicketResponse
+    minus `custom_fields` and `related_tickets`. `custom_fields` is
+    arbitrary, unbounded JSONB that's only ever read on a single
+    ticket's own detail view (confirmed unused by both frontends on a
+    list row); `related_tickets` is never populated for list rows at
+    all (`list_all` never calls `_attach_related_tickets` — that's
+    detail-only), so it always serialized as an empty list here
+    anyway. At production scale (thousands of tickets per page across
+    thousands of clients), dropping an unbounded per-row JSONB blob
+    that's dead weight on every list request adds up; GET /tickets/{id}
+    is untouched and still returns the full TicketResponse.
+    """
+
+    ticket_id: UUID
+    client_id: UUID | None
+    client_company_id: UUID | None = None
+    agent_id: UUID | None
+    created_by: UUID | None
+    title: str
+    ticket_type: str
+    current_status: TicketStatus
+    current_priority: TicketPriority
+    version: int
+    closed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+    client_name: str | None = None
+    client_company_name: str | None = None
+    agent_name: str | None = None
+    created_by_name: str | None = None
+
+
+class DashboardStatsResponse(BaseModel):
+    """
+    GET /tickets/dashboard-stats -- every number/list the ticket-
+    workspace Dashboard needs, computed server-side (see
+    TicketService.get_dashboard_stats) instead of the browser fetching
+    every visible ticket and deriving these client-side.
+    """
+
+    assigned: int
+    open: int
+    in_progress: int
+    resolved: int
+    resolved_today: int
+    closed: int
+    critical: int
+    sla_risk: int
+    recent_tickets: list[TicketListItemResponse]
+    critical_tickets: list[TicketListItemResponse]

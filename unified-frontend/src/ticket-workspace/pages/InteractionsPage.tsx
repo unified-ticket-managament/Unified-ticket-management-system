@@ -24,10 +24,10 @@ const PAGE_SIZE = 20;
 // only — inbound email, outbound replies, and internal notes.
 // Everything else (status/priority changes, transfers, claims,
 // edit-access requests, attachment uploads) stays on the ticket's
-// own Timeline and Audit Log. A whitelist rather than a blacklist so
-// any future interaction type is hidden here by default, not shown
-// by accident.
-const VISIBLE_INTERACTION_TYPES = new Set(["EMAIL", "REPLY", "INTERNAL_NOTE"]);
+// own Timeline and Audit Log. Mirrored server-side (see the backend's
+// INTERACTIONS_PAGE_VISIBLE_TYPES) now that filtering/pagination
+// happens there instead of over a fully-loaded client-side array.
+const INTERACTION_TYPE_OPTIONS = ["EMAIL", "REPLY", "INTERNAL_NOTE"];
 
 interface InteractionRow {
   id: string;
@@ -36,6 +36,12 @@ interface InteractionRow {
   direction: InteractionDirection;
   status: InteractionStatus;
   agent: string;
+  // Raw `performed_by` id for ticket-linked rows only, kept alongside
+  // the shortId-fallback `agent` above so the display name can be
+  // upgraded to the real one once `agents` (fetched separately, async)
+  // resolves — without that resolution being a dependency of the
+  // network fetch itself (see the `ticketRows` memo below).
+  performedById?: string | null;
   ticketId: string | null;
   ticketTitle: string | null;
   clientName: string | null;
@@ -61,10 +67,41 @@ export function InteractionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const ticketIdParam = searchParams.get("ticketId");
 
-  const [rows, setRows] = useState<InteractionRow[]>([]);
+  // Raw ticket-linked rows for the current server page, before
+  // agent-name resolution — see the `ticketRows` memo below for why
+  // that's kept separate. `serverTotal` is the backend's filtered
+  // (pre-pagination) total, from the paginated GET /tickets/interactions
+  // call.
+  const [rawTicketRows, setRawTicketRows] = useState<InteractionRow[]>([]);
+  const [serverTotal, setServerTotal] = useState(0);
+  // The (already small, self-bounded) pending inbox queue — fetched
+  // unbounded every load, same as before pagination was added, and
+  // filtered/merged in only on page 1 (see pageItems below) so it
+  // never distorts the server-paginated ticket-linked total.
+  const [rawPendingRows, setRawPendingRows] = useState<InteractionRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
+  // Separate generation counter for the independent pending-inbox
+  // fetch below — kept apart from requestIdRef so the two fetches'
+  // staleness checks can never cross-invalidate each other.
+  const pendingRequestIdRef = useRef(0);
+  // Aborts the previous in-flight /tickets/interactions request
+  // whenever a newer one starts — covers both a real filter/page
+  // change AND React Strict Mode's dev-only double-invoke of this
+  // effect on mount (which would otherwise fire two full requests,
+  // and thus two full backend query executions, for one visible
+  // load). The stale request's response was already dropped by the
+  // requestIdRef check below; this additionally stops the browser
+  // from waiting on/transferring it and lets the backend see the
+  // client disconnect rather than complete pointless work.
+  const interactionsAbortRef = useRef<AbortController | null>(null);
+  const inboxAbortRef = useRef<AbortController | null>(null);
+  // Guards the drawer's own fetch (opened by clicking a row) against
+  // a fast row-to-row selection change: without this, an older row's
+  // thread/email response resolving after a newer row is already
+  // selected could overwrite the drawer with the wrong conversation.
+  const drawerRequestIdRef = useRef(0);
 
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 300);
@@ -86,38 +123,74 @@ export function InteractionsPage() {
     successMessage: "Interaction hidden.",
   });
 
-  const load = useCallback(async () => {
-    const requestId = ++requestIdRef.current;
-    setIsLoading(true);
-    try {
-      // Resolves `performed_by` (a raw user id) to a display name so
-      // "Performed By" / "From" read as a person, not a truncated
-      // UUID — falls back to the shortened id for anyone not in this
-      // active-Staff list (e.g. a removed agent).
-      const agentNameById = new Map(agents.map((a) => [a.user_id, a.name]));
+  // Resolved as a value (not read from `agents` directly inside
+  // `load`) so `load` only changes identity — and only re-fetches —
+  // when the *selected* agent filter's id actually changes, not
+  // whenever the (separately, asynchronously fetched) `agents` list
+  // itself updates. `agentFilter` can't be set to a specific name
+  // before `agents` has loaded (the dropdown options come from the
+  // same list), so this stays `undefined` through the very first load.
+  const agentId = useMemo(() => {
+    if (agentFilter === "ALL") return undefined;
+    return agents.find((a) => a.name === agentFilter)?.user_id;
+  }, [agentFilter, agents]);
 
-      // Scoped to tickets this agent can see (their assignments,
-      // plus anything still unassigned) — matches ticket-level
-      // visibility rules so interactions never leak across agents.
-      // One request for every visible ticket's timeline, instead of
-      // GET /tickets followed by one GET /tickets/{id}/interactions
-      // per ticket (what made this page slow to load).
-      const [interactions, inbox] = await Promise.all([
-        getAllTicketInteractions(),
-        getInbox(),
-      ]);
+  // The critical path: fetches only the paginated, server-filtered
+  // ticket-linked rows this tab actually needs to render. Previously
+  // bundled into one Promise.all with getInbox() below — that made
+  // the whole page wait on the unbounded pending-inbox queue just to
+  // show 20 already-fetched rows. Split so this list renders the
+  // moment its own (much cheaper, already-paginated) request
+  // resolves; the pending queue now arrives independently and merges
+  // in afterward wherever it's still visible (page 1 only).
+  const loadInteractions = useCallback(
+    async (pageToLoad: number) => {
+      const requestId = ++requestIdRef.current;
+      interactionsAbortRef.current?.abort();
+      const controller = new AbortController();
+      interactionsAbortRef.current = controller;
+      setIsLoading(true);
+      try {
+        const offset = (pageToLoad - 1) * PAGE_SIZE;
 
-      const ticketRows = interactions
-        .filter((item) => VISIBLE_INTERACTION_TYPES.has(item.interaction_type))
-        .map<InteractionRow>((item) => ({
+        // Scoped to tickets this agent can see (their assignments,
+        // plus anything still unassigned) — matches ticket-level
+        // visibility rules so interactions never leak across agents.
+        // Server-paginated/filtered now (see api/interaction.ts) —
+        // this used to fetch every visible ticket's entire history in
+        // one request and filter/paginate the whole thing client-side.
+        const interactionsResult = await getAllTicketInteractions(
+          {
+            limit: PAGE_SIZE,
+            offset,
+            interactionType: typeFilter === "ALL" ? undefined : typeFilter,
+            direction: directionFilter === "ALL" ? undefined : directionFilter,
+            status: statusFilter === "ALL" ? undefined : statusFilter,
+            agentId,
+            ticketId: ticketIdParam ?? undefined,
+            dateFrom: dateFrom ? new Date(dateFrom).toISOString() : undefined,
+            dateTo: dateTo ? new Date(`${dateTo}T23:59:59`).toISOString() : undefined,
+            search: debouncedSearch.trim() || undefined,
+          },
+          controller.signal
+        );
+
+        // A newer load already started (a filter/page change, or a
+        // manual retry) — drop this now-stale response.
+        if (requestId !== requestIdRef.current) return;
+
+        const ticketRows = interactionsResult.items.map<InteractionRow>((item) => ({
           id: item.interaction_id,
           createdAt: item.created_at,
           type: item.interaction_type,
           direction: item.direction,
           status: item.status,
-          agent: item.performed_by
-            ? agentNameById.get(item.performed_by) ?? shortId(item.performed_by)
-            : "—",
+          // Resolved against `agents` in the `ticketRows` memo below,
+          // once that (separately-fetched, async) list is available —
+          // this shortId fallback is just the pre-resolution display
+          // value, not a dependency of this fetch.
+          agent: item.performed_by ? shortId(item.performed_by) : "—",
+          performedById: item.performed_by,
           ticketId: item.ticket_id,
           ticketTitle: item.ticket_title,
           clientName: item.client_company_name,
@@ -128,56 +201,154 @@ export function InteractionsPage() {
           summaryText: summarize(item),
           raw: item,
         }));
-      const pendingRows: InteractionRow[] = inbox.items.map((item) => ({
-        id: item.interaction_id,
-        createdAt: item.received_at,
-        type: "EMAIL",
-        direction: "INBOUND" as InteractionDirection,
-        status: item.status,
-        agent: currentUser?.name ?? "—",
-        ticketId: null,
-        ticketTitle: null,
-        clientName: item.client_name,
-        subject: item.subject,
-        summaryText: item.subject,
-        sourceAgent: currentUser?.name,
-      }));
 
-      // A newer load already started (a manual retry) — drop this
-      // now-stale response.
-      if (requestId !== requestIdRef.current) return;
+        setRawTicketRows(ticketRows);
+        setServerTotal(interactionsResult.total);
+        setLoadError(null);
+      } catch (error) {
+        if (requestId !== requestIdRef.current) return;
+        // A real abort (Strict Mode's double-invoke, or a
+        // filter/page change firing before this one finished) is not
+        // a user-visible failure — only report a genuine error.
+        if (error instanceof Error && error.name === "CanceledError") return;
+        setLoadError(error instanceof Error ? error.message : "Failed to load interactions.");
+      } finally {
+        if (requestId === requestIdRef.current) setIsLoading(false);
+      }
+    },
+    [typeFilter, directionFilter, statusFilter, agentId, ticketIdParam, dateFrom, dateTo, debouncedSearch]
+  );
 
-      const merged = [...pendingRows, ...ticketRows].sort(
-        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-      );
-      setRows(merged);
-      setLoadError(null);
-    } catch (error) {
-      if (requestId !== requestIdRef.current) return;
-      setLoadError(error instanceof Error ? error.message : "Failed to load interactions.");
-    } finally {
-      if (requestId === requestIdRef.current) setIsLoading(false);
+  // Secondary/non-essential: the still-pending (pre-ticket) queue,
+  // only ever merged into page 1's view (see pageItems below) — a
+  // single-ticket view or any page past the first has no use for it
+  // at all, so skip the request entirely rather than fetch and
+  // discard it. Bounded to PAGE_SIZE (it used to fetch the entire
+  // unbounded pending queue just to enrich one page of 20 rows) and
+  // runs independently of loadInteractions so a slow inbox fetch
+  // never delays the ticket-linked rows from rendering.
+  const loadPendingInbox = useCallback(
+    async (pageToLoad: number) => {
+      const requestId = ++pendingRequestIdRef.current;
+      inboxAbortRef.current?.abort();
+      const controller = new AbortController();
+      inboxAbortRef.current = controller;
+
+      if (pageToLoad !== 1 || ticketIdParam) {
+        setRawPendingRows([]);
+        return;
+      }
+
+      try {
+        const inbox = await getInbox("pending", { limit: PAGE_SIZE }, controller.signal);
+        if (requestId !== pendingRequestIdRef.current) return;
+
+        const pendingRows: InteractionRow[] = inbox.items.map((item) => ({
+          id: item.interaction_id,
+          createdAt: item.received_at,
+          type: "EMAIL",
+          direction: "INBOUND" as InteractionDirection,
+          status: item.status,
+          agent: currentUser?.name ?? "—",
+          ticketId: null,
+          ticketTitle: null,
+          clientName: item.client_name,
+          subject: item.subject,
+          summaryText: item.subject,
+          sourceAgent: currentUser?.name,
+        }));
+
+        setRawPendingRows(pendingRows);
+      } catch (error) {
+        // Non-essential data — a failed/aborted fetch here silently
+        // leaves the pending queue empty rather than surfacing an
+        // error for what's still a successful page load overall.
+      }
+    },
+    [ticketIdParam, currentUser]
+  );
+
+  // Drives every fetch: a page change (Next/Previous) or a filter
+  // change, but never both as two separate round trips for one user
+  // action. A filter change resets to page 1 — if we're not already
+  // there, this effect only calls setPage(1) and returns (no fetch);
+  // the resulting re-render changes `page`, re-runs this same effect,
+  // and *that* pass does the actual fetch. Fetching unconditionally
+  // here (the naive approach) would double-fetch: once for the old
+  // page with the new filters, once more for page 1.
+  const filterSignature = useMemo(
+    () =>
+      JSON.stringify([
+        debouncedSearch,
+        typeFilter,
+        directionFilter,
+        statusFilter,
+        agentId,
+        dateFrom,
+        dateTo,
+        ticketIdParam,
+      ]),
+    [debouncedSearch, typeFilter, directionFilter, statusFilter, agentId, dateFrom, dateTo, ticketIdParam]
+  );
+  const prevFilterSignatureRef = useRef(filterSignature);
+
+  useEffect(() => {
+    if (prevFilterSignatureRef.current !== filterSignature) {
+      prevFilterSignatureRef.current = filterSignature;
+      if (page !== 1) {
+        setPage(1);
+        return;
+      }
     }
-  }, [agents, currentUser]);
+    // Independent fetches, not a Promise.all — the (already fast,
+    // server-paginated) ticket-linked rows render as soon as they
+    // arrive, without waiting on the separate, non-essential pending-
+    // inbox merge. Aborted correctly (see the abort-ref plumbing in
+    // each function) if this effect re-fires before either resolves —
+    // including React Strict Mode's dev-only double-invoke, which
+    // would otherwise leave two full requests in flight for one
+    // visible load.
+    loadInteractions(page);
+    loadPendingInbox(page);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterSignature, page, loadInteractions, loadPendingInbox]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    return () => {
+      interactionsAbortRef.current?.abort();
+      inboxAbortRef.current?.abort();
+    };
+  }, []);
 
-  useEffect(() => {
-    setPage(1);
-  }, [debouncedSearch, typeFilter, directionFilter, statusFilter, agentFilter, dateFrom, dateTo, ticketIdParam]);
+  // Upgrades each ticket-linked row's shortId-fallback `agent` to the
+  // real display name once `agents` (fetched independently, on its
+  // own schedule, by WorkflowContext) resolves — purely an in-memory
+  // recompute, not a re-fetch, so `load`/its effect never needs
+  // `agents` as a dependency (that used to cause the interactions/
+  // inbox fetch to fire twice on a cold mount: once before `agents`
+  // arrived, once again the instant it did).
+  const ticketRows = useMemo(() => {
+    if (agents.length === 0) return rawTicketRows;
+    const agentNameById = new Map(agents.map((a) => [a.user_id, a.name]));
+    return rawTicketRows.map((r) =>
+      r.performedById
+        ? { ...r, agent: agentNameById.get(r.performedById) ?? shortId(r.performedById) }
+        : r
+    );
+  }, [rawTicketRows, agents]);
 
-  const types = useMemo(() => Array.from(new Set(rows.map((r) => r.type))).sort(), [rows]);
-
-  const filtered = useMemo(() => {
+  // The pending queue is small and already role-scoped (not the
+  // unbounded historical log the ticket-linked side used to be), so
+  // it stays filtered client-side rather than growing its own set of
+  // server query params — see api/interaction.ts's search note for
+  // the equivalent tradeoff on the ticket-linked side.
+  const filteredPendingRows = useMemo(() => {
+    if (ticketIdParam) return []; // pending rows never belong to a ticket
     const term = debouncedSearch.trim().toLowerCase();
-    return rows.filter((r) => {
-      if (ticketIdParam && r.ticketId !== ticketIdParam) return false;
+    return rawPendingRows.filter((r) => {
       if (
         term &&
         !r.summaryText.toLowerCase().includes(term) &&
-        !(r.ticketTitle ?? "").toLowerCase().includes(term) &&
         !(r.clientName ?? "").toLowerCase().includes(term)
       ) {
         return false;
@@ -190,21 +361,41 @@ export function InteractionsPage() {
       if (dateTo && new Date(r.createdAt) > new Date(`${dateTo}T23:59:59`)) return false;
       return true;
     });
-  }, [rows, ticketIdParam, debouncedSearch, typeFilter, directionFilter, statusFilter, agentFilter, dateFrom, dateTo]);
+  }, [rawPendingRows, ticketIdParam, debouncedSearch, typeFilter, directionFilter, statusFilter, agentFilter, dateFrom, dateTo]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  // The pending queue is only merged onto page 1 — it's additive on
+  // top of the server-paginated ticket-linked rows, not itself paged,
+  // so folding it into every page would both duplicate rows and throw
+  // off "Page X of Y" (computed from the server's own filtered total).
+  const pageItems = useMemo(() => {
+    if (page !== 1) return ticketRows;
+    return [...filteredPendingRows, ...ticketRows].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }, [page, filteredPendingRows, ticketRows]);
+
+  const totalCount = serverTotal + filteredPendingRows.length;
+  const totalPages = Math.max(1, Math.ceil(serverTotal / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const pageItems = useMemo(
-    () => filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
-    [filtered, currentPage]
+
+  const hasActiveFilters = Boolean(
+    debouncedSearch.trim() ||
+      typeFilter !== "ALL" ||
+      directionFilter !== "ALL" ||
+      statusFilter !== "ALL" ||
+      agentFilter !== "ALL" ||
+      dateFrom ||
+      dateTo ||
+      ticketIdParam
   );
 
   const filteredTicketTitle = useMemo(() => {
     if (!ticketIdParam) return null;
-    return rows.find((r) => r.ticketId === ticketIdParam)?.ticketTitle ?? null;
-  }, [rows, ticketIdParam]);
+    return ticketRows.find((r) => r.ticketId === ticketIdParam)?.ticketTitle ?? null;
+  }, [ticketRows, ticketIdParam]);
 
   async function handleRowClick(row: InteractionRow) {
+    const requestId = ++drawerRequestIdRef.current;
     setDrawerRow(row);
     setDrawerEmail(null);
     setDrawerThread(null);
@@ -214,6 +405,7 @@ export function InteractionsPage() {
     // the full email (same endpoint the inbox page already uses).
     if (!row.ticketId) {
       const detail = await runOpenEmail(row.id);
+      if (requestId !== drawerRequestIdRef.current) return;
       if (detail) setDrawerEmail(detail);
       return;
     }
@@ -235,6 +427,11 @@ export function InteractionsPage() {
     // real parent/children (a note, status change, etc.) still comes
     // back as a valid thread of exactly one message.
     const thread = await runGetThread(row.id);
+    // A newer row click already started (the agent selected a
+    // different row before this one's thread came back) — drop this
+    // now-stale response rather than overwrite the drawer with the
+    // wrong conversation.
+    if (requestId !== drawerRequestIdRef.current) return;
     if (thread) setDrawerThread(thread);
   }
 
@@ -251,7 +448,8 @@ export function InteractionsPage() {
     e.stopPropagation();
     const result = await runHide(row.id, { removed_by: null });
     if (result) {
-      setRows((prev) => prev.filter((r) => r.id !== row.id));
+      setRawTicketRows((prev) => prev.filter((r) => r.id !== row.id));
+      setRawPendingRows((prev) => prev.filter((r) => r.id !== row.id));
     }
   }
 
@@ -307,7 +505,7 @@ export function InteractionsPage() {
             className={selectClass}
           >
             <option value="ALL">All Types</option>
-            {types.map((t) => (
+            {INTERACTION_TYPE_OPTIONS.map((t) => (
               <option key={t} value={t}>
                 {metaFor(t).label}
               </option>
@@ -381,23 +579,23 @@ export function InteractionsPage() {
               <AlertTriangle size={15} className="flex-none" />
               <span>{loadError}</span>
             </div>
-            <Button size="sm" variant="secondary" onClick={load}>
+            <Button size="sm" variant="secondary" onClick={() => loadInteractions(page)}>
               Retry
             </Button>
           </div>
         )}
 
         <div className="rounded-md2 border border-border bg-surface shadow-xs">
-          {isLoading && rows.length === 0 ? (
+          {isLoading && pageItems.length === 0 ? (
             <div className="p-5">
               <SkeletonRows rows={6} />
             </div>
-          ) : filtered.length === 0 ? (
+          ) : pageItems.length === 0 ? (
             <EmptyState
               icon="💬"
-              title={rows.length === 0 ? "No interactions yet" : "No interactions found"}
+              title={!hasActiveFilters && page === 1 ? "No interactions yet" : "No interactions found"}
               description={
-                rows.length === 0
+                !hasActiveFilters && page === 1
                   ? "Emails, replies, notes, and status changes will show up here."
                   : "Try adjusting your filters."
               }
@@ -464,10 +662,8 @@ export function InteractionsPage() {
             <div className="flex items-center justify-between border-t border-border px-5 py-3 text-xs text-muted">
               <p>
                 Showing{" "}
-                <span className="font-medium text-slate-700">
-                  {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filtered.length)}
-                </span>{" "}
-                of <span className="font-medium text-slate-700">{filtered.length}</span> interactions
+                <span className="font-medium text-slate-700">{pageItems.length}</span>{" "}
+                of <span className="font-medium text-slate-700">{totalCount}</span> interactions
               </p>
               <div className="flex items-center gap-2">
                 <Button

@@ -24,6 +24,119 @@ export async function listTickets(): Promise<TicketResponse[]> {
   return data;
 }
 
+export interface ListTicketsPageParams {
+  limit: number;
+  offset: number;
+  status?: string;
+  priority?: string;
+  ticketType?: string;
+  view?: "pool" | "mine" | "all";
+  search?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  sortBy?: "created_at" | "updated_at" | "title";
+  sortDir?: "asc" | "desc";
+}
+
+export interface ListTicketsPageResult {
+  items: TicketResponse[];
+  total: number;
+}
+
+// GET /tickets, server-paginated/filtered/sorted — used by
+// TicketsListPage instead of the unbounded listTickets() above, which
+// fetches every visible ticket and does every filter/sort/tab/page
+// slice in the browser. Reports the matching total via
+// X-Total-Count so "Page X of Y" doesn't need a second request.
+export async function listTicketsPage(
+  params: ListTicketsPageParams,
+  signal?: AbortSignal
+): Promise<ListTicketsPageResult> {
+  const { data, headers } = await apiClient.get<TicketResponse[]>("/tickets", {
+    params: {
+      limit: params.limit,
+      offset: params.offset,
+      status: params.status,
+      priority: params.priority,
+      ticket_type: params.ticketType,
+      view: params.view,
+      search: params.search,
+      date_from: params.dateFrom,
+      date_to: params.dateTo,
+      sort_by: params.sortBy,
+      sort_dir: params.sortDir,
+    },
+    signal,
+  });
+
+  const totalHeader = headers["x-total-count"];
+  return {
+    items: data,
+    total: totalHeader !== undefined ? Number(totalHeader) : data.length,
+  };
+}
+
+export interface TicketViewCounts {
+  pool: number;
+  mine: number;
+  all: number;
+}
+
+// GET /tickets/view-counts — the three tab badges (Open Pool / My
+// Tickets / All) in one grouped query, without fetching any tab's
+// full row set just to show a count.
+export async function getTicketViewCounts(
+  signal?: AbortSignal
+): Promise<TicketViewCounts> {
+  const { data } = await apiClient.get<TicketViewCounts>("/tickets/view-counts", {
+    signal,
+  });
+  return data;
+}
+
+// Only the fields the Dashboard's "Recent Activity"/"Needs Attention"
+// lists actually render — the backend's DashboardStatsResponse omits
+// custom_fields/related_tickets entirely (see that schema's own
+// docstring), so this is deliberately narrower than the full
+// TicketResponse rather than a type that doesn't match the real
+// payload.
+export type DashboardTicketSummary = Pick<
+  TicketResponse,
+  | "ticket_id"
+  | "title"
+  | "client_name"
+  | "client_company_name"
+  | "current_status"
+  | "current_priority"
+  | "updated_at"
+>;
+
+export interface DashboardStats {
+  assigned: number;
+  open: number;
+  in_progress: number;
+  resolved: number;
+  resolved_today: number;
+  closed: number;
+  critical: number;
+  sla_risk: number;
+  recent_tickets: DashboardTicketSummary[];
+  critical_tickets: DashboardTicketSummary[];
+}
+
+// GET /tickets/dashboard-stats — every stat card and small ticket
+// list the Dashboard needs, computed server-side under real
+// visibility scoping instead of the browser fetching every visible
+// ticket (listTickets()) and deriving these numbers client-side.
+export async function getDashboardStats(
+  signal?: AbortSignal
+): Promise<DashboardStats> {
+  const { data } = await apiClient.get<DashboardStats>("/tickets/dashboard-stats", {
+    signal,
+  });
+  return data;
+}
+
 // POST /tickets/from-interaction
 export async function createTicketFromInteraction(
   payload: TicketFromInteractionRequest

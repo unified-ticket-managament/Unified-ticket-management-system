@@ -1,10 +1,14 @@
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.datastructures import MutableHeaders
 
 from app.core.config import get_settings
+from app.core.request_timing import get_stage_times, reset_stage_times
+from app.database.timing import get_db_time_ms, reset_db_time
 from app.notifications.routes import router as notifications_router
 from app.rbac.api.v1.api_router import api_router as rbac_api_router
 from app.ticketing.api.agent import router as ticketing_agent_router
@@ -51,7 +55,73 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Custom response headers are otherwise invisible to browser JS on
+    # a cross-origin request (unified-frontend on :3000 calling this
+    # on :8000) — X-Total-Count backs paginated list endpoints (e.g.
+    # GET /tickets/interactions, GET /inbox) that report a filtered
+    # total alongside a bounded page of items.
+    expose_headers=["X-Total-Count", "X-Next-Cursor", "Server-Timing"],
 )
+
+# ---------------------------------------------------------
+# Server-Timing
+#
+# Two phases: `total` (the whole request) and `db` (cumulative time
+# spent inside DB cursor execution, via SQLAlchemy engine events — see
+# app/database/timing.py). `total - db` is everything else (auth
+# dependency, enrichment/serialization, network). This is the one
+# phase split that's actually cheap and low-risk to add: it hooks the
+# engine once, centrally, rather than threading timers through every
+# service/route — which is exactly why a full auth/query/enrichment/
+# serialization breakdown (a separate timer at every layer, in every
+# route) remains out of scope: that would need touching every service
+# module for a granularity this session's actual investigations never
+# needed (EXPLAIN ANALYZE + this total/db split already answered every
+# "is this the backend or the network/frontend, and is it the DB or
+# app-side" question that came up). No existing timing/logging
+# middleware was in place before this.
+#
+# Deliberately a raw ASGI middleware, not `@app.middleware("http")`.
+# The latter is Starlette's BaseHTTPMiddleware, which runs the actual
+# route handler in a *separate* asyncio Task (to support streaming
+# responses) — asyncio Tasks get their own copy of the contextvars
+# Context, and mutations inside a child Task never propagate back to
+# the parent, so `db_time_ms` always read back as 0 from the parent
+# Task even though the DB events were firing correctly. A raw ASGI
+# middleware runs the whole downstream app in the same Task, so the
+# ContextVar set here is the same one the DB event listeners mutate.
+# ---------------------------------------------------------
+
+
+class ServerTimingMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        reset_db_time()
+        reset_stage_times()
+        start = time.perf_counter()
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                duration_ms = (time.perf_counter() - start) * 1000
+                db_ms = get_db_time_ms()
+                stages = get_stage_times()
+                entries = [f"total;dur={duration_ms:.1f}", f"db;dur={db_ms:.1f}"]
+                entries.extend(f"{name};dur={dur:.1f}" for name, dur in stages.items())
+                headers = MutableHeaders(scope=message)
+                headers.append("Server-Timing", ", ".join(entries))
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+app.add_middleware(ServerTimingMiddleware)
+
 
 # ---------------------------------------------------------
 # Routers

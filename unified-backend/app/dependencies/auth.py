@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import User
 
 from app.auth.jwt import decode_token
+from app.core.request_timing import timed_stage
 from app.database.session import get_db
 # Deliberately ticketing's UserRepository, not rbac's, for this one
 # shared dependency: its get_by_id eager-loads both User.role AND
@@ -61,7 +62,8 @@ async def get_current_user(
             detail="Invalid token payload.",
         )
 
-    user = await UserRepository(db).get_by_id(UUID(user_id))
+    with timed_stage("auth"):
+        user = await UserRepository(db).get_by_id(UUID(user_id))
 
     if user is None:
         raise HTTPException(

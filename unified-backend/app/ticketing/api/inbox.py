@@ -6,6 +6,7 @@ from shared_models.models import User
 
 from app.database.session import get_db
 from app.dependencies.auth import get_current_agent
+from app.ticketing.enums import TicketPriority
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.schemas.attachment import AttachmentMetadata
@@ -13,6 +14,9 @@ from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
+from app.ticketing.repositories.message_read_receipt_repository import (
+    MessageReadReceiptRepository,
+)
 from app.ticketing.repositories.ticket_edit_access_repository import (
     TicketEditAccessRequestRepository,
 )
@@ -77,6 +81,12 @@ async def get_inbox(
     folder_id: UUID | None = Query(default=None),
     view: str = Query(default="pending", pattern="^(pending|replied|ticketed|archived|all)$"),
     scope: str = Query(default="mine", pattern="^(mine|all)$"),
+    search: str | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    cursor: str | None = Query(default=None),
+    category: str | None = Query(default=None),
+    priority: TicketPriority | None = Query(default=None),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
@@ -95,6 +105,19 @@ async def get_inbox(
     `scope="all"` is the "All Inboxes" escape hatch — every client's
     mail, not just this user's own. Only takes effect for Team Lead /
     Account Manager / Site Lead / Super Admin; ignored for anyone else.
+
+    `limit`/`offset`/`search` are all optional and additive — omitting
+    `limit` returns the exact same unbounded response this endpoint
+    always returned. `total` in the response always reflects the full
+    filtered count, whether or not `limit` was passed. `cursor` (from
+    a previous response's `next_cursor`) is an additive keyset-paging
+    alternative to `offset` for deep paging at scale — pass either,
+    not both; `cursor` wins if both are given.
+
+    `category`/`priority` filter to threads whose ticket matches (both
+    only ever apply to already-ticketed threads) — moves what used to
+    be a client-side-only filter over whatever page was already loaded
+    into the query itself, so it searches the full filtered set.
     """
 
     repository = InteractionRepository(db)
@@ -102,6 +125,7 @@ async def get_inbox(
     user_repository = UserRepository(db)
     ticket_repository = TicketRepository(db)
     edit_access_repository = TicketEditAccessRequestRepository(db)
+    read_receipt_repository = MessageReadReceiptRepository(db)
 
     service = InboxService(
         repository,
@@ -109,6 +133,7 @@ async def get_inbox(
         user_repository=user_repository,
         ticket_repository=ticket_repository,
         edit_access_repository=edit_access_repository,
+        read_receipt_repository=read_receipt_repository,
     )
 
     return await service.get_inbox(
@@ -117,6 +142,12 @@ async def get_inbox(
         view=view,
         scope=scope,
         folder_id=folder_id,
+        search=search,
+        limit=limit,
+        offset=offset,
+        cursor=cursor,
+        category_filter=category,
+        priority_filter=priority,
     )
 
 
@@ -613,6 +644,7 @@ async def open_email(
     user_repository = UserRepository(db)
     client_repository = ClientRepository(db)
     ticket_repository = TicketRepository(db)
+    read_receipt_repository = MessageReadReceiptRepository(db)
 
     service = OpenEmailService(
         repository,
@@ -621,6 +653,7 @@ async def open_email(
         user_repository=user_repository,
         client_repository=client_repository,
         ticket_repository=ticket_repository,
+        read_receipt_repository=read_receipt_repository,
     )
 
     return await service.get_email_details(

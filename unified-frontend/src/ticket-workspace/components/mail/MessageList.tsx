@@ -26,11 +26,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { TIME_FILTERS, type TimeFilterKey } from "@tw/hooks/useMailInbox";
 import { formatRelativeTime } from "@/lib/utils";
-import type { ClientResponse, InboxItem, TicketPriority } from "@tw/types";
+import type { CategoryResponse, ClientResponse, InboxItem, TicketPriority } from "@tw/types";
 import { MailEmptyState } from "@tw/components/mail/MailEmptyState";
 
 type SortKey = "newest" | "oldest" | "sender";
-type PriorityFilter = "ALL" | TicketPriority;
 
 const PAGE_SIZE = 10;
 
@@ -73,10 +72,30 @@ interface MessageListProps {
   onTimeFilterChange: (value: TimeFilterKey) => void;
   clientFilter: string;
   onClientFilterChange: (value: string) => void;
+  // Priority/Category are real, indexed backend filters (GET /inbox)
+  // — `items` arrives already filtered by both, so this component no
+  // longer filters on them itself (see the removed local state this
+  // replaced). `availableCategories` is the full, session-wide
+  // category list (WorkflowContext), not derived from `items` — a
+  // list narrowed by the current filter can't also be the source of
+  // that filter's own dropdown options.
+  priorityFilter: string;
+  onPriorityFilterChange: (value: string) => void;
+  categoryFilter: string;
+  onCategoryFilterChange: (value: string) => void;
+  availableCategories: CategoryResponse[];
   clients: ClientResponse[];
   onOpen: (interactionId: string) => void;
   onCompose: () => void;
   onRefresh: () => void;
+  // Whether the active view's underlying tab(s) have more rows on the
+  // server than what's currently in `items` — this list is fetched in
+  // bounded batches now (see useMailInbox's MAIL_TAB_FETCH_SIZE)
+  // rather than a tab's entire history up front, so reaching the last
+  // locally-available page doesn't necessarily mean there's nothing
+  // more to see.
+  hasMore: boolean;
+  onLoadMore: () => Promise<void>;
 }
 
 export function MessageList({
@@ -91,32 +110,36 @@ export function MessageList({
   onTimeFilterChange,
   clientFilter,
   onClientFilterChange,
+  priorityFilter,
+  onPriorityFilterChange,
+  categoryFilter,
+  onCategoryFilterChange,
+  availableCategories,
   clients,
   onOpen,
   onCompose,
   onRefresh,
+  hasMore,
+  onLoadMore,
 }: MessageListProps) {
   const [sort, setSort] = useState<SortKey>("newest");
-  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("ALL");
+  // Unread/attachments have no backend filter equivalent (unread
+  // isn't queryable server-side yet — see InboxItemResponse.is_read's
+  // own docstring — and has_attachments is a per-row derived flag,
+  // not a real column) — these stay client-side, over whatever page
+  // is currently loaded, same as before.
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [attachmentsOnly, setAttachmentsOnly] = useState(false);
-  const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
   const [page, setPage] = useState(0);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
 
-  const categories = useMemo(() => {
-    const set = new Set<string>();
-    items.forEach((item) => {
-      if (item.ticket_category) set.add(item.ticket_category);
-    });
-    return Array.from(set).sort();
-  }, [items]);
-
+  // Priority/category are now applied server-side (GET /inbox) —
+  // `items` already reflects both filters, so only unread/attachments
+  // and sort are applied here.
   const filtered = useMemo(() => {
     let rows = items;
-    if (priorityFilter !== "ALL") rows = rows.filter((item) => item.ticket_priority === priorityFilter);
     if (unreadOnly) rows = rows.filter((item) => !openedIds.has(item.open_interaction_id ?? item.interaction_id));
     if (attachmentsOnly) rows = rows.filter((item) => item.has_attachments);
-    if (categoryFilter !== "ALL") rows = rows.filter((item) => item.ticket_category === categoryFilter);
 
     return [...rows].sort((a, b) => {
       if (sort === "sender") return a.client_name.localeCompare(b.client_name);
@@ -124,7 +147,7 @@ export function MessageList({
       const bTime = new Date(b.latest_at ?? b.received_at).getTime();
       return sort === "oldest" ? aTime - bTime : bTime - aTime;
     });
-  }, [items, priorityFilter, unreadOnly, attachmentsOnly, categoryFilter, sort, openedIds]);
+  }, [items, unreadOnly, attachmentsOnly, sort, openedIds]);
 
   useEffect(() => {
     setPage(0);
@@ -133,6 +156,24 @@ export function MessageList({
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const clampedPage = Math.min(page, totalPages - 1);
   const paged = filtered.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE);
+  const onLastLoadedPage = clampedPage >= totalPages - 1;
+
+  // Reaching the last page of what's currently loaded doesn't mean
+  // there's nothing more — fetch the next server batch, then advance,
+  // instead of the "Next" button just going dead early.
+  async function handleNextOrLoadMore() {
+    if (onLastLoadedPage && hasMore) {
+      setIsLoadingMore(true);
+      try {
+        await onLoadMore();
+        setPage((p) => p + 1);
+      } finally {
+        setIsLoadingMore(false);
+      }
+      return;
+    }
+    setPage((p) => Math.min(totalPages - 1, p + 1));
+  }
 
   const activeFilterCount = [
     priorityFilter !== "ALL",
@@ -201,7 +242,7 @@ export function MessageList({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-64 p-3">
             <DropdownMenuLabel className="px-0 py-0 text-xs">Priority</DropdownMenuLabel>
-            <Select value={priorityFilter} onValueChange={(v) => setPriorityFilter(v as PriorityFilter)}>
+            <Select value={priorityFilter} onValueChange={onPriorityFilterChange}>
               <SelectTrigger className="mt-1.5 h-8 text-xs">
                 <SelectValue />
               </SelectTrigger>
@@ -214,15 +255,15 @@ export function MessageList({
             </Select>
 
             <DropdownMenuLabel className="mt-3 px-0 py-0 text-xs">Category</DropdownMenuLabel>
-            <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+            <Select value={categoryFilter} onValueChange={onCategoryFilterChange}>
               <SelectTrigger className="mt-1.5 h-8 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="ALL">Any category</SelectItem>
-                {categories.map((category) => (
-                  <SelectItem key={category} value={category}>
-                    {category}
+                {availableCategories.map((category) => (
+                  <SelectItem key={category.category_id} value={category.category_name}>
+                    {category.category_name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -257,8 +298,8 @@ export function MessageList({
               <button
                 type="button"
                 onClick={() => {
-                  setPriorityFilter("ALL");
-                  setCategoryFilter("ALL");
+                  onPriorityFilterChange("ALL");
+                  onCategoryFilterChange("ALL");
                   setUnreadOnly(false);
                   setAttachmentsOnly(false);
                   onTimeFilterChange("ALL");
@@ -357,7 +398,9 @@ export function MessageList({
       {filtered.length > 0 && (
         <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-2.5">
           <p className="text-[11.5px] text-muted-foreground">
-            {filtered.length} message{filtered.length === 1 ? "" : "s"} · Page {clampedPage + 1} of {totalPages}
+            {filtered.length} message{filtered.length === 1 ? "" : "s"}
+            {hasMore ? "+" : ""} · Page {clampedPage + 1} of {totalPages}
+            {isLoadingMore && " · Loading more…"}
           </p>
           <div className="flex items-center gap-1">
             <Button
@@ -373,8 +416,8 @@ export function MessageList({
               variant="outline"
               size="icon"
               className="h-7 w-7"
-              disabled={clampedPage >= totalPages - 1}
-              onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+              disabled={(onLastLoadedPage && !hasMore) || isLoadingMore}
+              onClick={handleNextOrLoadMore}
             >
               <ChevronRight className="h-3.5 w-3.5" />
             </Button>

@@ -71,6 +71,15 @@ class InboxItemResponse(BaseModel):
 
     latest_at: datetime | None = None
 
+    # Persisted read state (message_read_receipts), batched per page —
+    # additive, defaults False so any consumer that doesn't know about
+    # it yet is unaffected. Not currently wired into the frontend's own
+    # rendering (which still uses its existing session-local `openedIds`
+    # state) — this is the backend capability existing independently,
+    # available for the frontend to adopt later without another schema
+    # change.
+    is_read: bool = False
+
 
 class InboxResponse(BaseModel):
     """
@@ -80,6 +89,14 @@ class InboxResponse(BaseModel):
     total: int
 
     items: list[InboxItemResponse]
+
+    # Opaque keyset-pagination cursor — set only when `limit` was
+    # passed and the page came back full (implying more may exist).
+    # Additive/optional so existing callers that don't know about it
+    # are unaffected; pass it back as the `cursor` query param instead
+    # of `offset` to page without OFFSET's cost-grows-with-depth
+    # behavior. See InteractionRepository.list_inbox's docstring.
+    next_cursor: str | None = None
 
 
 class SentItemResponse(BaseModel):

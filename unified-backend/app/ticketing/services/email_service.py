@@ -196,9 +196,17 @@ class EmailService:
             # — without this, a follow-up email lands with
             # parent_interaction_id NULL and shows up as a brand-new,
             # duplicate root in the AM inbox instead of nesting under
-            # the conversation it's actually replying to.
+            # the conversation it's actually replying to. A recursive
+            # resolve (InteractionRepository.find_thread_root) rather
+            # than a single hop — `matched` is usually already a root
+            # by this point (this same flattening keeps it that way),
+            # but resolving correctly regardless of depth is what
+            # actually keeps the invariant true rather than assuming it.
+            root = await self.interaction_repository.find_thread_root(
+                matched.interaction_id
+            )
             parent_interaction_id = (
-                matched.parent_interaction_id or matched.interaction_id
+                root.interaction_id if root is not None else matched.interaction_id
             )
 
             if matched.ticket_id is not None:

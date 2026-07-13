@@ -10,6 +10,9 @@ from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.ticketing.repositories.message_read_receipt_repository import (
+    MessageReadReceiptRepository,
+)
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.interaction import InteractionResponse
@@ -72,6 +75,7 @@ class OpenEmailService:
         user_repository: UserRepository | None = None,
         client_repository: ClientRepository | None = None,
         ticket_repository: TicketRepository | None = None,
+        read_receipt_repository: MessageReadReceiptRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
@@ -79,6 +83,7 @@ class OpenEmailService:
         self.user_repository = user_repository
         self.client_repository = client_repository
         self.ticket_repository = ticket_repository
+        self.read_receipt_repository = read_receipt_repository
 
     async def get_email_details(
         self,
@@ -101,16 +106,18 @@ class OpenEmailService:
             )
 
         # A reply/follow-up isn't itself a thread root — resolve up to
-        # the root first (same walk-up as add_interaction_reply) so
-        # this endpoint always shows the full conversation regardless
-        # of which id within it the caller happened to pass. The Sent
-        # view is the main caller that can hand in a non-root id (a
-        # reply whose own thread root couldn't be resolved at send
-        # time — legacy data predating the threading rule).
+        # the root first (InteractionRepository.find_thread_root, a
+        # recursive CTE — correct regardless of nesting depth, unlike
+        # a single `parent_interaction_id` hop, see that method's own
+        # docstring) so this endpoint always shows the full
+        # conversation regardless of which id within it the caller
+        # happened to pass. The Sent view is the main caller that can
+        # hand in a non-root id (a reply whose own thread root
+        # couldn't be resolved at send time — legacy data predating
+        # the threading rule, exactly the kind of multi-level chain a
+        # single-hop walk-up would get wrong).
         if interaction.parent_interaction_id is not None:
-            root = await self.interaction_repository.get_by_id(
-                interaction.parent_interaction_id
-            )
+            root = await self.interaction_repository.find_thread_root(interaction_id)
             if root is not None:
                 interaction = root
                 interaction_id = root.interaction_id
@@ -129,6 +136,16 @@ class OpenEmailService:
         elif current_user is not None:
             await ensure_agent_can_view_pending_interaction(
                 interaction, current_user, self.client_repository
+            )
+
+        # Records that this user has now opened this thread — the
+        # persisted counterpart to the frontend's own session-local
+        # "unread" tracking (see MessageReadReceipt's docstring).
+        # After access control, so a request that failed the checks
+        # above never gets recorded as "read".
+        if current_user is not None and self.read_receipt_repository is not None:
+            await self.read_receipt_repository.mark_read(
+                current_user.user_id, interaction_id
             )
 
         try:

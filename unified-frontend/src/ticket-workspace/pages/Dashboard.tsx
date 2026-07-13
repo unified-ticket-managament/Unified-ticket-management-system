@@ -17,40 +17,32 @@ import { Card } from "@tw/components/common/Card";
 import { Badge } from "@tw/components/common/Badge";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
-import { getInbox } from "@tw/api/inbox";
-import { listTickets } from "@tw/api/ticket";
+import { getViewCounts } from "@tw/api/inbox";
+import { getDashboardStats, type DashboardStats } from "@tw/api/ticket";
 import { useToast } from "@tw/context/ToastContext";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { formatDateTime } from "@tw/lib/format";
 import { statusTone } from "@tw/lib/ticketTone";
-import type { TicketResponse, TicketStatus } from "@tw/types";
-
-const OPEN_STATUSES: TicketStatus[] = [
-  "OPEN",
-  "IN_PROGRESS",
-  "PENDING",
-  "WAITING_FOR_CLIENT",
-];
 
 // No SLA contract field exists on the ticket model yet, so "SLA Risk"
 // is defined transparently here as a derived heuristic — open tickets
 // that have gone untouched past this threshold — rather than a
-// fabricated percentage.
+// fabricated percentage. Computed server-side now (see
+// TicketService.get_dashboard_stats) using this same threshold.
 const SLA_RISK_HOURS = 24;
 
-function isToday(iso: string) {
-  const d = new Date(iso);
-  const now = new Date();
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  );
-}
-
-function hoursSince(iso: string) {
-  return (Date.now() - new Date(iso).getTime()) / (1000 * 60 * 60);
-}
+const EMPTY_STATS: DashboardStats = {
+  assigned: 0,
+  open: 0,
+  in_progress: 0,
+  resolved: 0,
+  resolved_today: 0,
+  closed: 0,
+  critical: 0,
+  sla_risk: 0,
+  recent_tickets: [],
+  critical_tickets: [],
+};
 
 function StatCard({
   icon,
@@ -119,21 +111,31 @@ function QuickAction({
 export function Dashboard() {
   const { pushToast } = useToast();
   const { currentUser } = useAuthContext();
-  const [tickets, setTickets] = useState<TicketResponse[]>([]);
+  const [stats, setStats] = useState<DashboardStats>(EMPTY_STATS);
   const [pendingInboxCount, setPendingInboxCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
 
     async function load() {
       setIsLoading(true);
       try {
-        const [ticketList, inbox] = await Promise.all([listTickets(), getInbox()]);
+        // Both bounded/grouped server-side queries now — this used to
+        // be listTickets() (every visible ticket, unbounded) plus
+        // getInbox() (the entire pending queue, just to read
+        // `.total`). Neither scales with total ticket/mail count
+        // anymore; both cost a fixed, small amount of work regardless.
+        const [dashboardStats, viewCounts] = await Promise.all([
+          getDashboardStats(controller.signal),
+          getViewCounts(),
+        ]);
         if (cancelled) return;
-        setTickets(ticketList);
-        setPendingInboxCount(inbox.total);
+        setStats(dashboardStats);
+        setPendingInboxCount(viewCounts.pending);
       } catch (error) {
+        if (cancelled || (error instanceof Error && error.name === "CanceledError")) return;
         pushToast(
           error instanceof Error ? error.message : "Failed to load dashboard.",
           "error"
@@ -146,36 +148,23 @@ export function Dashboard() {
     load();
     return () => {
       cancelled = true;
+      controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const assignedCount = tickets.filter((t) => t.agent_id).length;
-  const openCount = tickets.filter((t) => OPEN_STATUSES.includes(t.current_status)).length;
-  const inProgressCount = tickets.filter((t) => t.current_status === "IN_PROGRESS").length;
-  const resolvedCount = tickets.filter(
-    (t) => t.current_status === "RESOLVED" || t.current_status === "CLOSED"
-  ).length;
-  const resolvedTodayCount = tickets.filter(
-    (t) =>
-      (t.current_status === "RESOLVED" || t.current_status === "CLOSED") &&
-      isToday(t.updated_at)
-  ).length;
-  const closedCount = tickets.filter((t) => t.current_status === "CLOSED").length;
-  const criticalCount = tickets.filter(
-    (t) => t.current_priority === "HIGH" && OPEN_STATUSES.includes(t.current_status)
-  ).length;
-  const slaRiskCount = tickets.filter(
-    (t) => OPEN_STATUSES.includes(t.current_status) && hoursSince(t.updated_at) >= SLA_RISK_HOURS
-  ).length;
-
-  const recentTickets = [...tickets]
-    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-    .slice(0, 6);
-
-  const criticalTickets = tickets
-    .filter((t) => t.current_priority === "HIGH" && OPEN_STATUSES.includes(t.current_status))
-    .slice(0, 5);
+  const {
+    assigned: assignedCount,
+    open: openCount,
+    in_progress: inProgressCount,
+    resolved: resolvedCount,
+    resolved_today: resolvedTodayCount,
+    closed: closedCount,
+    critical: criticalCount,
+    sla_risk: slaRiskCount,
+    recent_tickets: recentTickets,
+    critical_tickets: criticalTickets,
+  } = stats;
 
   const funnelStages = [
     { label: "Pending Inbox", count: pendingInboxCount },

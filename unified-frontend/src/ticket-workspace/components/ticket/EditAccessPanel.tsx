@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Loader2, ShieldCheck, UserPlus2 } from "lucide-react";
+import { useState } from "react";
+import { ShieldCheck, UserPlus2 } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { Badge } from "@tw/components/common/Badge";
 import { Button } from "@tw/components/common/Button";
@@ -7,15 +7,10 @@ import { Modal } from "@tw/components/common/Modal";
 import { TextArea } from "@tw/components/common/FormField";
 import { formatDateTime } from "@tw/lib/format";
 import { useApiAction } from "@tw/hooks/useApiAction";
-import {
-  approveEditAccess,
-  listEditAccessRequests,
-  rejectEditAccess,
-  requestEditAccess,
-} from "@tw/api/ticket";
+import { approveEditAccess, rejectEditAccess, requestEditAccess } from "@tw/api/ticket";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
-import type { EditAccessRequestResponse, EditAccessStatus } from "@tw/types";
+import type { EditAccessStatus } from "@tw/types";
 
 const STATUS_TONE: Record<EditAccessStatus, "warning" | "success" | "danger"> = {
   PENDING: "warning",
@@ -23,14 +18,20 @@ const STATUS_TONE: Record<EditAccessStatus, "warning" | "success" | "danger"> = 
   REJECTED: "danger",
 };
 
-export function EditAccessPanel() {
-  const { activeTicket } = useWorkflowContext();
+interface EditAccessPanelProps {
+  // Re-fetches the shared (WorkflowContext-held) request list after a
+  // mutation — the list itself is fetched once per ticket by
+  // TicketDetailPage, not by this component, since TicketActions
+  // reads the exact same data (see that component's own comment).
+  onRequestsChanged: () => void;
+}
+
+export function EditAccessPanel({ onRequestsChanged }: EditAccessPanelProps) {
+  const { activeTicket, editAccessRequests: requests } = useWorkflowContext();
   const { currentUser } = useAuthContext();
-  const [requests, setRequests] = useState<EditAccessRequestResponse[]>([]);
   const [isRequestModalOpen, setIsRequestModalOpen] = useState(false);
   const [reason, setReason] = useState("");
 
-  const { run: runList, isLoading: isLoadingList } = useApiAction(listEditAccessRequests);
   const { run: runRequest, isLoading: isRequesting } = useApiAction(requestEditAccess, {
     successMessage: "Access request sent.",
   });
@@ -40,17 +41,6 @@ export function EditAccessPanel() {
   const { run: runReject, isLoading: isRejecting } = useApiAction(rejectEditAccess, {
     successMessage: "Request rejected.",
   });
-
-  async function reload() {
-    if (!activeTicket) return;
-    const result = await runList(activeTicket.ticket_id);
-    if (result) setRequests(result);
-  }
-
-  useEffect(() => {
-    reload();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTicket?.ticket_id]);
 
   if (!activeTicket || !currentUser) return null;
 
@@ -74,20 +64,20 @@ export function EditAccessPanel() {
     if (result) {
       setReason("");
       setIsRequestModalOpen(false);
-      reload();
+      onRequestsChanged();
     }
   }
 
   async function handleApprove(requestId: string) {
     if (!activeTicket) return;
     const result = await runApprove(activeTicket.ticket_id, requestId);
-    if (result) reload();
+    if (result) onRequestsChanged();
   }
 
   async function handleReject(requestId: string) {
     if (!activeTicket) return;
     const result = await runReject(activeTicket.ticket_id, requestId);
-    if (result) reload();
+    if (result) onRequestsChanged();
   }
 
   return (
@@ -147,34 +137,28 @@ export function EditAccessPanel() {
         </div>
       )}
 
-      {isLoadingList ? (
-        <div className="mt-3 flex justify-center py-2">
-          <Loader2 size={16} className="animate-spin text-muted" />
-        </div>
-      ) : (
-        requests.length > 0 && (
-          <div className="mt-3 flex flex-col gap-1.5 border-t border-border pt-3">
-            {requests.map((request) => (
-              <div
-                key={request.request_id}
-                className="flex items-center justify-between gap-2 text-[12px]"
-              >
-                <span className="flex min-w-0 items-center gap-1.5 truncate text-slate-700">
-                  {request.status === "APPROVED" && (
-                    <ShieldCheck size={12} className="shrink-0 text-success" />
-                  )}
-                  <span className="truncate">{request.requested_by_name ?? "Someone"}</span>
+      {requests.length > 0 && (
+        <div className="mt-3 flex flex-col gap-1.5 border-t border-border pt-3">
+          {requests.map((request) => (
+            <div
+              key={request.request_id}
+              className="flex items-center justify-between gap-2 text-[12px]"
+            >
+              <span className="flex min-w-0 items-center gap-1.5 truncate text-slate-700">
+                {request.status === "APPROVED" && (
+                  <ShieldCheck size={12} className="shrink-0 text-success" />
+                )}
+                <span className="truncate">{request.requested_by_name ?? "Someone"}</span>
+              </span>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <span className="text-[11px] text-muted">
+                  {formatDateTime(request.created_at)}
                 </span>
-                <div className="flex shrink-0 items-center gap-1.5">
-                  <span className="text-[11px] text-muted">
-                    {formatDateTime(request.created_at)}
-                  </span>
-                  <Badge tone={STATUS_TONE[request.status]}>{request.status}</Badge>
-                </div>
+                <Badge tone={STATUS_TONE[request.status]}>{request.status}</Badge>
               </div>
-            ))}
-          </div>
-        )
+            </div>
+          ))}
+        </div>
       )}
 
       <Modal

@@ -1,13 +1,19 @@
 import logging
 from uuid import UUID
 
+from fastapi import HTTPException, status
 from pydantic import ValidationError
 from shared_models.models import User
 
+from app.ticketing.enums import TicketPriority
 from app.ticketing.models.interaction import Interaction
+from app.ticketing.pagination import InvalidCursorError, decode_cursor, encode_cursor
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
+)
+from app.ticketing.repositories.message_read_receipt_repository import (
+    MessageReadReceiptRepository,
 )
 from app.ticketing.repositories.ticket_edit_access_repository import (
     TicketEditAccessRequestRepository,
@@ -70,12 +76,14 @@ class InboxService:
         user_repository: UserRepository | None = None,
         ticket_repository: TicketRepository | None = None,
         edit_access_repository: TicketEditAccessRequestRepository | None = None,
+        read_receipt_repository: MessageReadReceiptRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
         self.user_repository = user_repository
         self.ticket_repository = ticket_repository
         self.edit_access_repository = edit_access_repository
+        self.read_receipt_repository = read_receipt_repository
 
     async def _resolve_scope(self, current_user: User) -> tuple[
         UUID | None, str | None, UUID | None, list[UUID] | None
@@ -136,6 +144,12 @@ class InboxService:
         view: str = "pending",
         scope: str = "mine",
         folder_id: UUID | None = None,
+        search: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        cursor: str | None = None,
+        category_filter: str | None = None,
+        priority_filter: TicketPriority | None = None,
     ) -> InboxResponse:
         """
         Returns the role-scoped inbox for the current user.
@@ -145,13 +159,42 @@ class InboxService:
         it's ignored and their fixed scope (own clients / own
         category / own assignments) always applies, so a crafted
         request can't peek at another user's mail.
+
+        `limit=None` (the default) preserves the original unbounded
+        response — `total` is just `len(items)`, same as always.
+        Passing `limit` bounds the query itself and reports the true
+        filtered total (before pagination) in `total`, so the Mail
+        page's client-side pagination can move server-side without a
+        second round trip just to know how many pages there are.
+
+        `cursor` (opaque, from a previous response's `next_cursor`) is
+        an additive, opt-in alternative to `offset` for deep paging at
+        scale — see InteractionRepository.list_inbox's own docstring.
+        Ignored unless `limit` is also given.
+
+        `category_filter`/`priority_filter` — see
+        InteractionRepository.list_inbox's docstring — move what used
+        to be MessageList.tsx's client-side-only priority/category
+        filters (searching only whatever page was already loaded)
+        server-side, so they search the full filtered set regardless
+        of pagination.
         """
+
+        decoded_cursor: tuple | None = None
+        if cursor is not None and limit is not None:
+            try:
+                decoded_cursor = decode_cursor(cursor)
+            except InvalidCursorError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid pagination cursor.",
+                ) from exc
 
         account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids = (
             await self._resolve_scope(current_user)
         )
 
-        interactions = await self.interaction_repository.list_inbox(
+        interactions, total = await self.interaction_repository.list_inbox(
             account_manager_id=account_manager_id,
             client_id=client_id,
             view=view,
@@ -159,6 +202,12 @@ class InboxService:
             ticket_type=ticket_type,
             assigned_agent_id=assigned_agent_id,
             extra_ticket_ids=extra_ticket_ids,
+            search=search,
+            limit=limit,
+            offset=offset,
+            cursor=decoded_cursor,
+            category_filter=category_filter,
+            priority_filter=priority_filter,
         )
 
         interactions_with_attachments: set = set()
@@ -178,6 +227,17 @@ class InboxService:
                 i.claimed_by for i in interactions if i.claimed_by is not None
             ]
             claimer_names = await self.user_repository.get_names_by_ids(claimer_ids)
+
+        # Batched — one query for the whole page, not one per row —
+        # see MessageReadReceipt's own docstring for why this exists
+        # alongside (not yet replacing) the frontend's own session-
+        # local unread tracking.
+        read_interaction_ids: set[UUID] = set()
+        if self.read_receipt_repository is not None:
+            read_interaction_ids = await self.read_receipt_repository.get_read_interaction_ids(
+                current_user.user_id,
+                [i.interaction_id for i in interactions],
+            )
 
         # Outlook-style "latest message" preview per row — one batched
         # query for every root on this page rather than an N+1 fetch.
@@ -324,15 +384,33 @@ class InboxService:
                         else None
                     ),
 
+                    is_read=interaction.interaction_id in read_interaction_ids,
+
                 )
 
             )
 
+        # A full page (exactly `limit` rows came back) implies there
+        # may be more — encode a cursor from the last *scanned* row
+        # (not the last response item, which can differ if a payload
+        # failed validation and was skipped above) for the caller to
+        # pass back as `cursor` on the next request.
+        next_cursor = None
+        if limit is not None and len(interactions) == limit:
+            last = interactions[-1]
+            next_cursor = encode_cursor(last.received_at or last.created_at, last.interaction_id)
+
         return InboxResponse(
 
-            total=len(inbox_items),
+            # The repository's own filtered (pre-pagination) count —
+            # not len(inbox_items), which can be a handful lower if any
+            # row's payload failed EmailPayload validation above and
+            # was skipped from the page itself.
+            total=total,
 
             items=inbox_items,
+
+            next_cursor=next_cursor,
 
         )
 

@@ -3,7 +3,9 @@ import type {
   AttachmentUploadResponse,
   HideInteractionRequest,
   HideInteractionResponse,
+  InteractionDirection,
   InteractionResponse,
+  InteractionStatus,
   InternalNoteRequest,
   InternalNoteResponse,
   PriorityChangeRequest,
@@ -13,6 +15,24 @@ import type {
   TicketActionResponse,
   TicketInteractionResponse,
 } from "@tw/types";
+
+export interface ListTicketInteractionsParams {
+  limit?: number;
+  offset?: number;
+  interactionType?: string;
+  direction?: InteractionDirection;
+  status?: InteractionStatus;
+  agentId?: string;
+  ticketId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  search?: string;
+}
+
+export interface ListTicketInteractionsResult {
+  items: TicketInteractionResponse[];
+  total: number;
+}
 
 // GET /tickets/{ticket_id}/interactions
 export async function getTicketTimeline(
@@ -25,11 +45,41 @@ export async function getTicketTimeline(
 }
 
 // GET /tickets/interactions — every interaction across every ticket
-// the caller can see, in one request, instead of GET /tickets
-// followed by one GET /tickets/{id}/interactions per ticket.
-export async function getAllTicketInteractions(): Promise<TicketInteractionResponse[]> {
-  const { data } = await apiClient.get<TicketInteractionResponse[]>("/tickets/interactions");
-  return data;
+// the caller can see, instead of GET /tickets followed by one
+// GET /tickets/{id}/interactions per ticket. Passing `limit` switches
+// the backend to a bounded, filtered, server-paginated query and
+// reports the matching total via the X-Total-Count response header
+// (see unified-backend's list_all_ticket_interactions) — omitting it
+// preserves the old unbounded-response shape, `total` just being
+// `items.length`.
+export async function getAllTicketInteractions(
+  params: ListTicketInteractionsParams = {},
+  signal?: AbortSignal
+): Promise<ListTicketInteractionsResult> {
+  const { data, headers } = await apiClient.get<TicketInteractionResponse[]>(
+    "/tickets/interactions",
+    {
+      params: {
+        limit: params.limit,
+        offset: params.offset,
+        interaction_type: params.interactionType,
+        direction: params.direction,
+        status: params.status,
+        agent_id: params.agentId,
+        ticket_id: params.ticketId,
+        date_from: params.dateFrom,
+        date_to: params.dateTo,
+        search: params.search,
+      },
+      signal,
+    }
+  );
+
+  const totalHeader = headers["x-total-count"];
+  return {
+    items: data,
+    total: totalHeader !== undefined ? Number(totalHeader) : data.length,
+  };
 }
 
 // GET /interactions/{interaction_id}/thread — the full conversation

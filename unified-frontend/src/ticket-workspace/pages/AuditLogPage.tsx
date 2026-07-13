@@ -68,7 +68,13 @@ export function AuditLogPage() {
   const { currentUser } = useAuthContext();
   const { agents } = useWorkflowContext();
 
+  // The current server page only (server-paginated/filtered now) —
+  // this used to be every visible audit-log row ever written, fetched
+  // and re-filtered/re-paginated client-side on every 15s poll tick,
+  // which meant every connected agent's browser re-fetched the entire
+  // audit history forever as it grew.
   const [rows, setRows] = useState<AuditRow[]>([]);
+  const [serverTotal, setServerTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const requestIdRef = useRef(0);
@@ -86,37 +92,49 @@ export function AuditLogPage() {
   const [drawerRow, setDrawerRow] = useState<AuditRow | null>(null);
 
   const load = useCallback(
-    async (showLoading: boolean) => {
+    async (pageToLoad: number, showLoading: boolean) => {
       const requestId = ++requestIdRef.current;
       if (showLoading) setIsLoading(true);
       try {
+        const offset = (pageToLoad - 1) * PAGE_SIZE;
         // Same visibility scoping as every other cross-ticket view in
         // this app (Interactions page, Inbox): this agent's tickets
-        // plus anything still unassigned. One request for every
-        // visible ticket's audit trail, instead of GET /tickets
-        // followed by one GET .../audit-logs per ticket.
-        const logs = await getAllTicketAuditLogs();
+        // plus anything still unassigned. One request for the current
+        // page of every visible ticket's audit trail, instead of
+        // GET /tickets followed by one GET .../audit-logs per ticket
+        // — and, since this session's pagination work, instead of the
+        // entire unbounded history on every load and every poll tick.
+        const result = await getAllTicketAuditLogs({
+          limit: PAGE_SIZE,
+          offset,
+          entityType: entityFilter === "ALL" ? undefined : entityFilter,
+          eventType: eventFilter === "ALL" ? undefined : eventFilter,
+          actorName: agentFilter === "ALL" ? undefined : agentFilter,
+          dateFrom: dateFrom ? new Date(dateFrom).toISOString() : undefined,
+          dateTo: dateTo ? new Date(`${dateTo}T23:59:59`).toISOString() : undefined,
+          search: debouncedSearch.trim() || undefined,
+        });
 
-        // A newer load already started (agent switch, manual refresh,
-        // or the next poll tick) — this response is stale, drop it
-        // rather than overwriting fresher data with older data.
+        // A newer load already started (a filter/page change, manual
+        // refresh, or the next poll tick) — this response is stale,
+        // drop it rather than overwriting fresher data with older data.
         if (requestId !== requestIdRef.current) return;
 
-        const merged = logs
-          .map<AuditRow>((log) => ({
-            auditId: log.audit_id,
-            createdAt: log.created_at,
-            entityType: log.entity_type,
-            eventType: log.event_type,
-            actorName: log.actor_name,
-            actorRole: log.actor_role,
-            ticketId: log.ticket_id,
-            ticketTitle: log.ticket_title,
-            oldValues: log.old_values,
-            newValues: log.new_values,
-          }))
-          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        const merged = result.items.map<AuditRow>((log) => ({
+          auditId: log.audit_id,
+          createdAt: log.created_at,
+          entityType: log.entity_type,
+          eventType: log.event_type,
+          actorName: log.actor_name,
+          actorRole: log.actor_role,
+          ticketId: log.ticket_id,
+          ticketTitle: log.ticket_title,
+          oldValues: log.old_values,
+          newValues: log.new_values,
+        }));
+        // Already newest-first from the backend — no client re-sort.
         setRows(merged);
+        setServerTotal(result.total);
         setLoadError(null);
       } catch (error) {
         if (requestId !== requestIdRef.current) return;
@@ -125,40 +143,64 @@ export function AuditLogPage() {
         if (requestId === requestIdRef.current) setIsLoading(false);
       }
     },
-    []
+    [entityFilter, eventFilter, agentFilter, dateFrom, dateTo, debouncedSearch]
   );
 
+  // The poll interval below is only ever created once (on mount), but
+  // each tick must use whatever page/filters are current *at that
+  // moment*, not whatever they were when the interval was created —
+  // these refs are updated every render so the interval's closure
+  // always reads the latest values without needing to be torn down
+  // and recreated on every filter/page change.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const pageRef = useRef(page);
+  pageRef.current = page;
+
+  // Drives every fetch: a page change (Next/Previous) or a filter
+  // change, but never both as two separate round trips for one user
+  // action — same pattern as InteractionsPage.tsx. A filter change
+  // resets to page 1; if we're not already there, this effect only
+  // calls setPage(1) and returns (no fetch), and the resulting
+  // re-render (page now 1) re-runs this same effect to do the actual
+  // fetch. Fetching unconditionally here would double-fetch: once for
+  // the old page with the new filters, once more for page 1.
+  const filterSignature = useMemo(
+    () => JSON.stringify([debouncedSearch, entityFilter, eventFilter, agentFilter, dateFrom, dateTo]),
+    [debouncedSearch, entityFilter, eventFilter, agentFilter, dateFrom, dateTo]
+  );
+  const prevFilterSignatureRef = useRef(filterSignature);
+
   useEffect(() => {
-    load(true);
-    const interval = window.setInterval(() => load(false), POLL_INTERVAL_MS);
+    if (prevFilterSignatureRef.current !== filterSignature) {
+      prevFilterSignatureRef.current = filterSignature;
+      if (page !== 1) {
+        setPage(1);
+        return;
+      }
+    }
+    load(page, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterSignature, page, load]);
+
+  useEffect(() => {
+    const interval = window.setInterval(
+      () => loadRef.current(pageRef.current, false),
+      POLL_INTERVAL_MS
+    );
     return () => window.clearInterval(interval);
-  }, [load]);
+  }, []);
 
-  // Any filter change should snap back to page 1 — otherwise a
-  // narrower result set can leave the user stranded on a page
-  // number that no longer has any rows.
-  useEffect(() => {
-    setPage(1);
-  }, [debouncedSearch, entityFilter, eventFilter, agentFilter, dateFrom, dateTo]);
-
-  const filtered = useMemo(() => {
-    const term = debouncedSearch.trim().toLowerCase();
-    return rows.filter((row) => {
-      if (term && !row.ticketTitle.toLowerCase().includes(term)) return false;
-      if (entityFilter !== "ALL" && row.entityType !== entityFilter) return false;
-      if (eventFilter !== "ALL" && row.eventType !== eventFilter) return false;
-      if (agentFilter !== "ALL" && row.actorName !== agentFilter) return false;
-      if (dateFrom && new Date(row.createdAt) < new Date(dateFrom)) return false;
-      if (dateTo && new Date(row.createdAt) > new Date(`${dateTo}T23:59:59`)) return false;
-      return true;
-    });
-  }, [rows, debouncedSearch, entityFilter, eventFilter, agentFilter, dateFrom, dateTo]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(serverTotal / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
-  const pageItems = useMemo(
-    () => filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE),
-    [filtered, currentPage]
+
+  const hasActiveFilters = Boolean(
+    debouncedSearch.trim() ||
+      entityFilter !== "ALL" ||
+      eventFilter !== "ALL" ||
+      agentFilter !== "ALL" ||
+      dateFrom ||
+      dateTo
   );
 
   function handleRowClick(row: AuditRow) {
@@ -264,7 +306,7 @@ export function AuditLogPage() {
             size="sm"
             variant="ghost"
             isLoading={isLoading}
-            onClick={() => load(true)}
+            onClick={() => load(page, true)}
             aria-label="Refresh audit log"
           >
             <RefreshCw size={14} />
@@ -284,7 +326,7 @@ export function AuditLogPage() {
               <AlertTriangle size={15} className="flex-none" />
               <span>{loadError}</span>
             </div>
-            <Button size="sm" variant="secondary" onClick={() => load(true)}>
+            <Button size="sm" variant="secondary" onClick={() => load(page, true)}>
               Retry
             </Button>
           </div>
@@ -295,12 +337,12 @@ export function AuditLogPage() {
             <div className="p-5">
               <SkeletonRows rows={6} />
             </div>
-          ) : filtered.length === 0 ? (
+          ) : rows.length === 0 ? (
             <EmptyState
               icon="🔒"
-              title={rows.length === 0 ? "No audit events yet" : "No audit events found"}
+              title={!hasActiveFilters && page === 1 ? "No audit events yet" : "No audit events found"}
               description={
-                rows.length === 0
+                !hasActiveFilters && page === 1
                   ? "Ticket changes will appear here permanently once they happen."
                   : "Try adjusting your filters."
               }
@@ -308,7 +350,7 @@ export function AuditLogPage() {
           ) : (
             <>
               <ul className="divide-y divide-border">
-                {pageItems.map((row) => {
+                {rows.map((row) => {
                   const meta = auditMetaFor(row.eventType);
                   const fields = diffFields(row.oldValues, row.newValues);
 
@@ -359,10 +401,8 @@ export function AuditLogPage() {
               <div className="flex items-center justify-between border-t border-border px-5 py-3 text-xs text-muted">
                 <p>
                   Showing{" "}
-                  <span className="font-medium text-slate-700">
-                    {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filtered.length)}
-                  </span>{" "}
-                  of <span className="font-medium text-slate-700">{filtered.length}</span> events
+                  <span className="font-medium text-slate-700">{rows.length}</span>{" "}
+                  of <span className="font-medium text-slate-700">{serverTotal}</span> events
                 </p>
                 <div className="flex items-center gap-2">
                   <Button

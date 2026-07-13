@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import get_settings
+from app.database.timing import register_db_timing
 
 
 settings = get_settings()
@@ -19,6 +20,11 @@ engine = create_async_engine(
     max_overflow=20,
     pool_recycle=1800,
 )
+
+# Backs the `db` phase of the Server-Timing header (app/main.py) —
+# see app/database/timing.py for why this needs a ContextVar rather
+# than a plain accumulator.
+register_db_timing(engine)
 
 AsyncSessionLocal = async_sessionmaker(
     engine,

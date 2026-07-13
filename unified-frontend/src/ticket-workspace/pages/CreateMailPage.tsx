@@ -9,10 +9,10 @@ import { TextArea, TextInput, SelectInput } from "@tw/components/common/FormFiel
 import { FileDropzone } from "@tw/components/common/FileDropzone";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
+import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { receiveIncomingEmail } from "@tw/api/email";
-import { listClients } from "@tw/api/clients";
 import { validateFiles } from "@tw/lib/attachmentMeta";
-import type { ClientResponse, EmailResponse } from "@tw/types";
+import type { EmailResponse } from "@tw/types";
 
 function randomMessageId() {
   return `<msg-${Date.now()}-${Math.floor(Math.random() * 10000)}@dummy.local>`;
@@ -28,7 +28,10 @@ const ALLOWED_ROLES = ["Site Lead"];
 
 export function CreateMailPage() {
   const { currentUser } = useAuthContext();
-  const [clients, setClients] = useState<ClientResponse[]>([]);
+  // `clients` used to be fetched independently on every mount of this
+  // page — it's now shared, session-wide lookup data fetched once by
+  // WorkflowContext instead (see that context's own comment).
+  const { clients } = useWorkflowContext();
   const [toEmail, setToEmail] = useState("");
   const [fromEmail, setFromEmail] = useState("mary.j@abcclinic.com");
   const [fromName, setFromName] = useState("Mary Johnson");
@@ -39,20 +42,10 @@ export function CreateMailPage() {
   const [lastResult, setLastResult] = useState<EmailResponse | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
-    listClients()
-      .then((fetched) => {
-        if (cancelled) return;
-        setClients(fetched);
-        if (fetched.length > 0) setToEmail(fetched[0].inbox_email);
-      })
-      .catch(() => {
-        // Keep the empty list — the send button stays disabled below.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    if (clients.length > 0) {
+      setToEmail((current) => current || clients[0].inbox_email);
+    }
+  }, [clients]);
 
   const { run, isLoading } = useApiAction(receiveIncomingEmail, {
     successMessage: (res) => `Email delivered to ${res.client_name}'s inbox.`,

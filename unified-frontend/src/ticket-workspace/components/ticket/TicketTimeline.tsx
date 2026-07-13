@@ -1,14 +1,20 @@
+import { useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { EyeOff } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { Badge } from "@tw/components/common/Badge";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { AttachmentList } from "@tw/components/common/AttachmentList";
+import {
+  InteractionDetailsDrawer,
+  type InteractionDrawerRow,
+} from "@tw/components/common/InteractionDetailsDrawer";
 import { RETIRED_INTERACTION_TYPES, metaFor, summarize } from "@tw/lib/interactionMeta";
 import { shortId } from "@tw/lib/format";
 import { useApiAction } from "@tw/hooks/useApiAction";
-import { hideInteraction } from "@tw/api/interaction";
+import { getInteractionThread, hideInteraction } from "@tw/api/interaction";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import type { InteractionResponse, ThreadResponse } from "@tw/types";
 
 const toneRing: Record<string, string> = {
   default: "border-slate-200 bg-slate-50",
@@ -41,13 +47,74 @@ export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps)
 
   // Every interaction is already timestamped by the backend —
   // sort newest first rather than trusting call-site ordering.
-  const events = [...timeline].sort(
-    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  // Memoized so a re-render caused by an unrelated WorkflowContext
+  // field changing (e.g. selectedEmail, from the Mail page) doesn't
+  // re-sort this list every time.
+  const events = useMemo(
+    () =>
+      [...timeline].sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      ),
+    [timeline]
   );
 
   const { run: runHide, isLoading: isHiding } = useApiAction(hideInteraction, {
     successMessage: "Interaction hidden.",
   });
+  const { run: runGetThread, isLoading: isLoadingThread } = useApiAction(getInteractionThread);
+
+  // Same request-generation guard as InteractionsPage.tsx's drawer —
+  // a fast click from one event to another before the first thread
+  // fetch resolves must not overwrite the drawer with the wrong
+  // conversation.
+  const drawerRequestIdRef = useRef(0);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerRow, setDrawerRow] = useState<InteractionDrawerRow | null>(null);
+  const [drawerThread, setDrawerThread] = useState<ThreadResponse | null>(null);
+
+  function toDrawerRow(item: InteractionResponse): InteractionDrawerRow {
+    return {
+      id: item.interaction_id,
+      createdAt: item.created_at,
+      type: item.interaction_type,
+      direction: item.direction,
+      status: item.status,
+      ticketId: item.ticket_id,
+      ticketTitle: activeTicket?.title ?? null,
+      clientName: activeTicket?.client_company_name ?? null,
+      agent: item.performed_by_name ?? (item.performed_by ? shortId(item.performed_by) : "—"),
+      summaryText: summarize(item),
+      raw: item,
+    };
+  }
+
+  // Every ticket-linked event may be part of a thread (a reply, or a
+  // root with replies already filed under it) — resolves to the full
+  // conversation (parent + every descendant, any depth) via the same
+  // GET /interactions/{id}/thread endpoint the Interactions page uses,
+  // so a threaded email/reply clicked from this per-ticket Timeline
+  // shows its complete parent/child context too, not just the one
+  // clicked row. STATUS_CHANGE/PRIORITY_CHANGE/etc. are synthesized
+  // audit rows, not real interactions with a thread — skip the fetch
+  // for those and just show the single-item fallback view.
+  async function handleEventClick(item: InteractionResponse) {
+    const requestId = ++drawerRequestIdRef.current;
+    setDrawerRow(toDrawerRow(item));
+    setDrawerThread(null);
+    setDrawerOpen(true);
+
+    if (RETIRED_INTERACTION_TYPES.has(item.interaction_type)) {
+      return;
+    }
+
+    const thread = await runGetThread(item.interaction_id);
+    if (requestId !== drawerRequestIdRef.current) return;
+    if (thread) setDrawerThread(thread);
+  }
+
+  function closeDrawer() {
+    setDrawerOpen(false);
+  }
 
   async function handleHide(interactionId: string) {
     if (!activeTicket) return;
@@ -58,6 +125,7 @@ export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps)
   }
 
   return (
+    <>
     <Card
       flat={flat}
       title="Timeline"
@@ -97,7 +165,13 @@ export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps)
                 </div>
 
                 <div
-                  className={`group flex-1 rounded-md2 border p-4 pb-5 transition-colors ${toneCard[meta.tone]} ${
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => handleEventClick(item)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") handleEventClick(item);
+                  }}
+                  className={`group flex-1 cursor-pointer rounded-md2 border p-4 pb-5 transition-colors hover:bg-surfaceHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 ${toneCard[meta.tone]} ${
                     !item.is_visible ? "opacity-40" : ""
                   }`}
                 >
@@ -129,7 +203,10 @@ export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps)
                     {item.is_visible && !RETIRED_INTERACTION_TYPES.has(item.interaction_type) && (
                       <button
                         disabled={isHiding}
-                        onClick={() => handleHide(item.interaction_id)}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleHide(item.interaction_id);
+                        }}
                         aria-label="Hide this interaction"
                         className="flex items-center gap-1 rounded-md2 text-[11px] font-medium text-muted opacity-0 transition-opacity hover:text-danger focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/30 disabled:opacity-50 group-hover:opacity-100"
                       >
@@ -144,5 +221,14 @@ export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps)
         </ol>
       )}
     </Card>
+    <InteractionDetailsDrawer
+      open={drawerOpen}
+      row={drawerRow}
+      thread={drawerThread}
+      isLoadingThread={isLoadingThread}
+      onClose={closeDrawer}
+      onViewTicket={() => closeDrawer()}
+    />
+    </>
   );
 }

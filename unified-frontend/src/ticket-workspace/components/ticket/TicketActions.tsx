@@ -21,15 +21,10 @@ import {
   uploadAttachment,
 } from "@tw/api/interaction";
 import { listAgents } from "@tw/api/agent";
-import { claimTicket, listEditAccessRequests, transferTicketAgent } from "@tw/api/ticket";
+import { claimTicket, transferTicketAgent } from "@tw/api/ticket";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
-import type {
-  AgentSummary,
-  EditAccessRequestResponse,
-  TicketPriority,
-  TicketStatus,
-} from "@tw/types";
+import type { AgentSummary, TicketPriority, TicketStatus } from "@tw/types";
 import type { ComposerMode } from "@tw/components/ticket/TicketComposer";
 
 const STATUSES: TicketStatus[] = [
@@ -91,7 +86,11 @@ interface TicketActionsProps {
 }
 
 export function TicketActions({ onActionComplete, onOpenComposer }: TicketActionsProps) {
-  const { activeTicket } = useWorkflowContext();
+  // editAccessRequests is fetched once per ticket by TicketDetailPage
+  // and shared via context with EditAccessPanel — see that context
+  // field's own comment for why this used to be a separate
+  // GET /tickets/{id}/edit-access call from each component.
+  const { activeTicket, editAccessRequests } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const [modal, setModal] = useState<ActiveModal>(null);
 
@@ -100,7 +99,6 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [newAgentId, setNewAgentId] = useState("");
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
-  const [editAccessRequests, setEditAccessRequests] = useState<EditAccessRequestResponse[]>([]);
 
   const { run: runStatus, isLoading: isStatusLoading } = useApiAction(changeTicketStatus, {
     successMessage: "Ticket status changed.",
@@ -120,7 +118,6 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
     successMessage: (res) =>
       `${res.attachments.length} file${res.attachments.length === 1 ? "" : "s"} uploaded.`,
   });
-  const { run: runListEditAccess } = useApiAction(listEditAccessRequests);
 
   useEffect(() => {
     if (!activeTicket) return;
@@ -131,14 +128,6 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
       .then(setAgents)
       .catch(() => setAgents([]));
   }, [activeTicket?.ticket_id, activeTicket?.ticket_type]);
-
-  useEffect(() => {
-    if (!activeTicket) return;
-    runListEditAccess(activeTicket.ticket_id).then((result) => {
-      if (result) setEditAccessRequests(result);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTicket?.ticket_id]);
 
   if (!activeTicket) return null;
 

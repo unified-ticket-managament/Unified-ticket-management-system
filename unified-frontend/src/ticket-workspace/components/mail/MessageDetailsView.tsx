@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Archive,
@@ -41,7 +41,6 @@ import { cn } from "@/lib/utils";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { archiveInteraction, claimInteraction, replyToInteraction } from "@tw/api/inbox";
 import { listAgents } from "@tw/api/agent";
-import { listCategories } from "@tw/api/categories";
 import { listClientContacts } from "@tw/api/clients";
 import { replyToClient, uploadAttachment } from "@tw/api/interaction";
 import {
@@ -57,7 +56,6 @@ import { buildForwardHtml, linkifyPlainText } from "@tw/lib/richText";
 import type {
   AgentSummary,
   AttachmentMeta,
-  CategoryResponse,
   ClientContact,
   DraftSaveResponse,
   InteractionReplyResponse,
@@ -224,13 +222,16 @@ export function MessageDetailsView({
   onUpdateTags,
   onAssignFolder,
 }: MessageDetailsViewProps) {
-  const { setSelectedEmail } = useWorkflowContext();
+  // `categories` used to be fetched independently here on every
+  // single mount (i.e. every time a message was opened) — it's now
+  // shared, session-wide lookup data fetched once by WorkflowContext
+  // instead (see that context's own comment).
+  const { setSelectedEmail, categories } = useWorkflowContext();
   const [replyMode, setReplyMode] = useState<"reply" | "replyAll" | null>(null);
   const [newTag, setNewTag] = useState("");
   const [ticketDetail, setTicketDetail] = useState<TicketResponse | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
-  const [categories, setCategories] = useState<CategoryResponse[]>([]);
   const [title, setTitle] = useState("");
   const [ticketType, setTicketType] = useState("");
   const [priority, setPriority] = useState<TicketPriority>("MEDIUM");
@@ -238,6 +239,11 @@ export function MessageDetailsView({
   const [clientTickets, setClientTickets] = useState<TicketResponse[]>([]);
   const [assignAgents, setAssignAgents] = useState<AgentSummary[]>([]);
   const [contacts, setContacts] = useState<ClientContact[]>([]);
+  // Guards against a fast thread switch racing: without this, an
+  // older thread's ticket lookup resolving after a newer thread is
+  // already open could overwrite `ticketDetail` with the wrong
+  // ticket's data.
+  const ticketDetailRequestIdRef = useRef(0);
 
   const isTicketed = Boolean(email.ticket_id);
   const isClosed = email.ticket_status === "CLOSED";
@@ -249,10 +255,15 @@ export function MessageDetailsView({
     // into edit mode — the user shouldn't have to click Reply first
     // to see (and resume) work they already started.
     setReplyMode(hasDraft ? (email.draft_cc.length > 0 || email.draft_bcc.length > 0 ? "replyAll" : "reply") : null);
+    const requestId = ++ticketDetailRequestIdRef.current;
     if (email.ticket_id) {
       getTicket(email.ticket_id)
-        .then(setTicketDetail)
-        .catch(() => setTicketDetail(null));
+        .then((ticket) => {
+          if (requestId === ticketDetailRequestIdRef.current) setTicketDetail(ticket);
+        })
+        .catch(() => {
+          if (requestId === ticketDetailRequestIdRef.current) setTicketDetail(null);
+        });
     } else {
       setTicketDetail(null);
     }
@@ -260,13 +271,10 @@ export function MessageDetailsView({
   }, [email.interaction_id, email.ticket_id]);
 
   useEffect(() => {
-    listCategories()
-      .then((result) => {
-        setCategories(result);
-        setTicketType((current) => current || result[0]?.category_name || "");
-      })
-      .catch(() => {});
-  }, []);
+    if (categories.length > 0) {
+      setTicketType((current) => current || categories[0]?.category_name || "");
+    }
+  }, [categories]);
 
   // Every personal address this client has ever emailed the shared
   // inbox from — backs the reply composer's "To" dropdown.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { ComposeView, type ComposeInitialValues } from "@tw/components/mail/ComposeView";
 import { MailSidebar } from "@tw/components/mail/MailSidebar";
@@ -34,34 +34,52 @@ export function InboxPage() {
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeInitialValues, setComposeInitialValues] = useState<ComposeInitialValues | undefined>(undefined);
 
-  function openCompose(initial?: ComposeInitialValues) {
-    setSelectedEmail(null);
-    setComposeInitialValues(initial);
-    setComposeOpen(true);
-  }
+  // useCallback below (rather than plain function declarations) is
+  // required for MailSidebar's React.memo to actually skip re-renders
+  // — an unstable prop identity defeats memo regardless of how the
+  // component itself is wrapped.
+  const openCompose = useCallback(
+    (initial?: ComposeInitialValues) => {
+      setSelectedEmail(null);
+      setComposeInitialValues(initial);
+      setComposeOpen(true);
+    },
+    [setSelectedEmail]
+  );
+
+  const handleComposeClick = useCallback(() => openCompose(), [openCompose]);
 
   function closeCompose() {
     setComposeOpen(false);
     setComposeInitialValues(undefined);
   }
 
-  function handleSelectView(view: MailViewKey) {
-    setComposeOpen(false);
-    setSelectedEmail(null);
-    mail.setActiveView(view);
-  }
+  const handleSelectView = useCallback(
+    (view: MailViewKey) => {
+      setComposeOpen(false);
+      setSelectedEmail(null);
+      mail.setActiveView(view);
+    },
+    [setSelectedEmail, mail.setActiveView]
+  );
 
-  function handleSelectFolder(folderId: string | null) {
-    setComposeOpen(false);
-    setSelectedEmail(null);
-    mail.setActiveFolder(folderId);
-  }
+  const handleSelectFolder = useCallback(
+    (folderId: string | null) => {
+      setComposeOpen(false);
+      setSelectedEmail(null);
+      mail.setActiveFolder(folderId);
+    },
+    [setSelectedEmail, mail.setActiveFolder]
+  );
 
-  function handleSelectCategory(category: string | null) {
-    setComposeOpen(false);
-    setSelectedEmail(null);
-    mail.setActiveCategory(category);
-  }
+  const handleSelectCategory = useCallback(
+    (category: string | null) => {
+      setComposeOpen(false);
+      setSelectedEmail(null);
+      mail.setActiveCategory(category);
+    },
+    [setSelectedEmail, mail.setActiveCategory]
+  );
 
   async function handleOpen(interactionId: string) {
     setComposeOpen(false);
@@ -122,7 +140,7 @@ export function InboxPage() {
           activeView={mail.activeView}
           isComposing={composeOpen}
           onSelectView={handleSelectView}
-          onCompose={() => openCompose()}
+          onCompose={handleComposeClick}
           counts={mail.viewCounts}
           isSupervisor={mail.isSupervisor}
           folders={mail.folders}
@@ -175,10 +193,17 @@ export function InboxPage() {
               onTimeFilterChange={mail.setTimeFilter}
               clientFilter={mail.clientFilter}
               onClientFilterChange={mail.setClientFilter}
+              priorityFilter={mail.priorityFilter}
+              onPriorityFilterChange={mail.setPriorityFilter}
+              categoryFilter={mail.messageCategoryFilter}
+              onCategoryFilterChange={mail.setMessageCategoryFilter}
+              availableCategories={mail.categories}
               clients={mail.clients}
               onOpen={handleOpen}
-              onCompose={() => openCompose()}
+              onCompose={handleComposeClick}
               onRefresh={mail.refresh}
+              hasMore={mail.hasMore}
+              onLoadMore={mail.loadMore}
             />
           )}
         </div>

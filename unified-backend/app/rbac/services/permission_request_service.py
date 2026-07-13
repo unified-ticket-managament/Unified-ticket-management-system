@@ -131,7 +131,7 @@ class PermissionRequestService:
         # list_all(agent_id=...) deliberately also returns unassigned
         # tickets (shared-pool visibility) — not wanted here, so filter
         # to tickets actually assigned to this teammate.
-        tickets = await self.ticket_repository.list_all(agent_id=staff_id)
+        tickets, _ = await self.ticket_repository.list_all(agent_id=staff_id)
         return [t for t in tickets if t.agent_id == staff_id]
 
     async def _resolve_approver_ids(

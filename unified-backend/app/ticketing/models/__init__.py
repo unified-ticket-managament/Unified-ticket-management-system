@@ -13,6 +13,7 @@ from .first_response_sla import FirstResponseSLA
 from .resolution_sla import ResolutionSLA
 from .resolution_sla_pause_interval import ResolutionSLAPauseInterval
 from .sla_breach_notification import SLABreachNotification
+from .message_read_receipt import MessageReadReceipt
 
 __all__ = [
     "Base",
@@ -29,4 +30,5 @@ __all__ = [
     "ResolutionSLA",
     "ResolutionSLAPauseInterval",
     "SLABreachNotification",
+    "MessageReadReceipt",
 ]

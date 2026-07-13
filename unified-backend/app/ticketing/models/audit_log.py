@@ -98,6 +98,25 @@ class AuditLog(Base):
         nullable=True,
     )
 
+    # The owning ticket, when there is one — derived once at write
+    # time (AuditLogRepository.create) from `entity_id` (when
+    # entity_type == TICKET) or from `new_values["ticket_id"]`
+    # (INTERACTION/ATTACHMENT rows that stamp the owning ticket into
+    # their payload). NULL for CLIENT/USER rows, which aren't
+    # ticket-related at all. A real, indexed, FK-backed column
+    # (replacing an earlier functional index on the JSONB expression)
+    # so `list_by_ticket`/`list_by_ticket_ids` — called on every
+    # Interactions-page and Timeline-tab load — do a plain UUID
+    # index lookup instead of extracting/casting JSONB per row.
+    # `new_values` itself is untouched (still holds the full audit
+    # detail, including its own `ticket_id` key) — this column is
+    # purely a query-performance mirror of data already there.
+    ticket_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tickets.ticket_id"),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -122,6 +141,11 @@ class AuditLog(Base):
         Index(
             "idx_audit_event_type",
             "event_type",
+            text("created_at DESC"),
+        ),
+        Index(
+            "idx_audit_ticket_id",
+            "ticket_id",
             text("created_at DESC"),
         ),
     )

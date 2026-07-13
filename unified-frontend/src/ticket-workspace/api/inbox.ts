@@ -23,7 +23,17 @@ import type {
 // hatch to see every client's mail).
 export async function getInbox(
   view: InboxView = "pending",
-  options?: { clientId?: string; scope?: InboxScope; folderId?: string }
+  options?: {
+    clientId?: string;
+    scope?: InboxScope;
+    folderId?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+    category?: string;
+    priority?: string;
+  },
+  signal?: AbortSignal
 ): Promise<InboxResponse> {
   const { data } = await apiClient.get<InboxResponse>("/inbox", {
     params: {
@@ -31,7 +41,13 @@ export async function getInbox(
       client_id: options?.clientId,
       scope: options?.scope,
       folder_id: options?.folderId,
+      search: options?.search,
+      limit: options?.limit,
+      offset: options?.offset,
+      category: options?.category,
+      priority: options?.priority,
     },
+    signal,
   });
   return data;
 }

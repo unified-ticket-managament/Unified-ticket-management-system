@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { memo, useState, type ReactNode } from "react";
 import {
   Archive,
   FileEdit,
@@ -68,7 +68,15 @@ function CountBadge({ count }: { count: number }): ReactNode {
   );
 }
 
-export function MailSidebar({
+// Memoized: InboxPage re-renders on every Mail search keystroke (the
+// search box's state lives in the same hook this sidebar reads its
+// props from), and this sidebar's own content — nav items, folders,
+// categories — has nothing to do with the search text. Only actually
+// skips re-rendering if its props are referentially stable; see
+// useMailInbox's setActiveView/setActiveFolder/setActiveCategory/
+// createFolder/deleteFolder (all useCallback-wrapped) and InboxPage's
+// own useCallback-wrapped handlers passed in below.
+export const MailSidebar = memo(function MailSidebar({
   activeView,
   isComposing,
   onSelectView,
@@ -260,4 +268,4 @@ export function MailSidebar({
       )}
     </aside>
   );
-}
+});

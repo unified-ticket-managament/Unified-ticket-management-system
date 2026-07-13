@@ -109,8 +109,16 @@ export default function RolesPage() {
     queryFn: () => roleService.list({ page: 1, page_size: 100 }),
   });
 
+  // Same key as the Users page's own "users-table" query (and Audit
+  // Logs' matching query) — identical call/params, so TanStack
+  // Query's cache (staleTime: 30_000, see query-provider.tsx) shares
+  // one request across all three pages instead of a fresh identical
+  // fetch every time any of them mounts. Also means a user mutated
+  // from the Users page (which invalidates "users-table") correctly
+  // invalidates this page's copy too, instead of it silently staying
+  // stale until its own 30s window happened to expire.
   const usersQuery = useQuery({
-    queryKey: ["users-for-roles"],
+    queryKey: ["users-table"],
     queryFn: () => userService.list({ page: 1, page_size: 100 }),
   });
 

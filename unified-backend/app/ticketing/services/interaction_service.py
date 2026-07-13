@@ -529,15 +529,22 @@ class InteractionService:
         # The latest inbound email on this ticket is both the envelope
         # source (recipient address, In-Reply-To) and the thread this
         # reply belongs to — resolved once, used for both, regardless
-        # of whether envelope-building succeeds.
+        # of whether envelope-building succeeds. Resolved to the true
+        # root via a recursive walk-up (InteractionRepository
+        # .find_thread_root), not a single hop, for the same reason
+        # as get_thread/add_interaction_reply — see that method's
+        # docstring.
         latest_email = await self.interaction_repository.get_latest_inbound_email_for_ticket(
             ticket_id
         )
-        thread_root_id = (
-            (latest_email.parent_interaction_id or latest_email.interaction_id)
-            if latest_email is not None
-            else None
-        )
+        thread_root_id = None
+        if latest_email is not None:
+            root = await self.interaction_repository.find_thread_root(
+                latest_email.interaction_id
+            )
+            thread_root_id = (
+                root.interaction_id if root is not None else latest_email.interaction_id
+            )
 
         envelope = None
         if self.client_repository is not None and ticket.client_company_id is not None:
@@ -631,14 +638,12 @@ class InteractionService:
                 detail="This interaction already belongs to a ticket — use the ticket reply endpoint.",
             )
 
-        # Resolve the thread root: replying on a reply should still
-        # thread under the original conversation, not fork a new one.
-        root_id = root_interaction.parent_interaction_id or root_interaction.interaction_id
-        root = (
-            root_interaction
-            if root_interaction.parent_interaction_id is None
-            else await self.interaction_repository.get_by_id(root_id)
-        )
+        # Resolve the thread root: replying on a reply (or a deeply
+        # nested descendant) should still thread under the original
+        # conversation, not fork a new one. A recursive CTE
+        # (InteractionRepository.find_thread_root) — correct at any
+        # nesting depth, see that method's own docstring.
+        root = await self.interaction_repository.find_thread_root(interaction_id)
 
         if root is None:
             raise HTTPException(
@@ -1452,10 +1457,12 @@ class InteractionService:
     ) -> Interaction:
         """
         Resolves any id within a bare (pre-ticket) Mail thread — the
-        root itself, one of its replies, or a draft — up to the
-        thread root, same walk-up as `add_interaction_reply`. Shared
-        by the draft save/send/discard actions below, which all key
-        off "the current thread", not the specific id a client
+        root itself, a reply, a draft, or a deeply nested descendant —
+        up to the thread root (InteractionRepository.find_thread_root,
+        a recursive CTE — see that method's own docstring for why this
+        is correct at any nesting depth, unlike a single-hop walk-up).
+        Shared by the draft save/send/discard actions below, which all
+        key off "the current thread", not the specific id a client
         happened to pass. 404s on a missing id, 400s if the thread
         has already become a ticket (drafts, like the rest of Mail,
         are pre-ticket only — see `add_interaction_reply`'s own
@@ -1470,12 +1477,7 @@ class InteractionService:
                 detail="Interaction not found.",
             )
 
-        root_id = interaction.parent_interaction_id or interaction.interaction_id
-        root = (
-            interaction
-            if interaction.parent_interaction_id is None
-            else await self.interaction_repository.get_by_id(root_id)
-        )
+        root = await self.interaction_repository.find_thread_root(interaction_id)
 
         if root is None:
             raise HTTPException(
@@ -1746,13 +1748,17 @@ class InteractionService:
         current_user: User,
     ) -> ThreadResponse:
         """
-        Resolves any id within a conversation — the root itself, or
-        any reply filed under it — up to the thread root, then
-        returns that root plus every reply, oldest first. Access is
-        gated the same way the rest of Mail/Tickets already are: a
-        still-pending (pre-ticket) thread uses the Account-Manager-
-        ownership-or-global-inbox check; a ticketed thread uses the
-        same category/ownership gate as the ticket timeline.
+        Resolves any id within a conversation — the root itself, a
+        direct reply, or a deeply nested descendant — up to the
+        thread root (InteractionRepository.find_thread_root, a
+        recursive CTE — correct at any nesting depth, see that
+        method's own docstring), then returns that root plus every
+        reply at any depth (InteractionRepository.list_thread, also
+        recursive), oldest first. Access is gated the same way the
+        rest of Mail/Tickets already are: a still-pending (pre-ticket)
+        thread uses the Account-Manager-ownership-or-global-inbox
+        check; a ticketed thread uses the same category/ownership
+        gate as the ticket timeline.
         """
 
         interaction = await self.interaction_repository.get_by_id(interaction_id)
@@ -1763,12 +1769,7 @@ class InteractionService:
                 detail="Interaction not found.",
             )
 
-        root_id = interaction.parent_interaction_id or interaction.interaction_id
-        root = (
-            interaction
-            if interaction.parent_interaction_id is None
-            else await self.interaction_repository.get_by_id(root_id)
-        )
+        root = await self.interaction_repository.find_thread_root(interaction_id)
 
         if root is None:
             raise HTTPException(

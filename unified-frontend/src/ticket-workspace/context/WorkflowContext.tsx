@@ -2,16 +2,22 @@ import {
   createContext,
   useContext,
   useEffect,
+  useMemo,
   useState,
   type ReactNode,
 } from "react";
 import type {
   AgentSummary,
+  CategoryResponse,
+  ClientResponse,
+  EditAccessRequestResponse,
   InteractionResponse,
   OpenEmailResponse,
   TicketResponse,
 } from "@tw/types";
 import { listAgents } from "@tw/api/agent";
+import { listClients } from "@tw/api/clients";
+import { listCategories } from "@tw/api/categories";
 
 // ==========================================================
 // WorkflowContext
@@ -30,6 +36,15 @@ interface WorkflowContextValue {
   // initial fetch resolves.
   agents: AgentSummary[];
 
+  // Stable lookup data — clients and categories rarely change within
+  // a session, but used to be fetched independently by every consumer
+  // that needed them (useMailInbox on every clientFilter change before
+  // this session's earlier fix, MessageDetailsView on every single
+  // message opened, CreateMailPage on every mount). Fetched once here,
+  // alongside `agents`, and shared by every consumer instead.
+  clients: ClientResponse[];
+  categories: CategoryResponse[];
+
   selectedEmail: OpenEmailResponse | null;
   setSelectedEmail: (email: OpenEmailResponse | null) => void;
 
@@ -38,6 +53,15 @@ interface WorkflowContextValue {
 
   timeline: InteractionResponse[];
   setTimeline: (items: InteractionResponse[]) => void;
+
+  // The active ticket's Edit Access requests — used to be fetched
+  // independently by both TicketActions (to check whether the
+  // current user holds an active approved grant) and EditAccessPanel
+  // (to render/manage the list), one GET /tickets/{id}/edit-access
+  // each on every ticket mount. Fetched once here instead, alongside
+  // activeTicket/timeline.
+  editAccessRequests: EditAccessRequestResponse[];
+  setEditAccessRequests: (requests: EditAccessRequestResponse[]) => void;
 }
 
 const WorkflowContext = createContext<WorkflowContextValue | undefined>(
@@ -46,6 +70,8 @@ const WorkflowContext = createContext<WorkflowContextValue | undefined>(
 
 export function WorkflowProvider({ children }: { children: ReactNode }) {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [clients, setClients] = useState<ClientResponse[]>([]);
+  const [categories, setCategories] = useState<CategoryResponse[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<OpenEmailResponse | null>(
     null
   );
@@ -53,10 +79,16 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     null
   );
   const [timeline, setTimeline] = useState<InteractionResponse[]>([]);
+  const [editAccessRequests, setEditAccessRequests] = useState<
+    EditAccessRequestResponse[]
+  >([]);
 
   useEffect(() => {
     let cancelled = false;
 
+    // One fetch each, once per session — every previous independent
+    // fetch site (useMailInbox, MessageDetailsView, CreateMailPage)
+    // now reads from here instead.
     listAgents()
       .then((fetched) => {
         if (!cancelled) setAgents(fetched);
@@ -65,20 +97,45 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
         // Keep the empty list — better than a broken picker.
       });
 
+    listClients()
+      .then((fetched) => {
+        if (!cancelled) setClients(fetched);
+      })
+      .catch(() => {});
+
+    listCategories()
+      .then((fetched) => {
+        if (!cancelled) setCategories(fetched);
+      })
+      .catch(() => {});
+
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const value: WorkflowContextValue = {
-    agents,
-    selectedEmail,
-    setSelectedEmail,
-    activeTicket,
-    setActiveTicket,
-    timeline,
-    setTimeline,
-  };
+  // useState setters are already referentially stable across renders,
+  // so this only needs to change identity when the actual data does —
+  // without it, every consumer of this context (TicketComposer,
+  // TicketTimeline, TicketDetailPage, ...) re-rendered on every
+  // WorkflowProvider render, regardless of whether the specific field
+  // a given consumer reads had actually changed.
+  const value: WorkflowContextValue = useMemo(
+    () => ({
+      agents,
+      clients,
+      categories,
+      selectedEmail,
+      setSelectedEmail,
+      activeTicket,
+      setActiveTicket,
+      timeline,
+      setTimeline,
+      editAccessRequests,
+      setEditAccessRequests,
+    }),
+    [agents, clients, categories, selectedEmail, activeTicket, timeline, editAccessRequests]
+  );
 
   return (
     <WorkflowContext.Provider value={value}>
