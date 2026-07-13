@@ -1,7 +1,7 @@
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, ForeignKey, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -72,6 +72,25 @@ class User(TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
+        nullable=False,
+    )
+
+    # Bumped whenever anything auth-relevant about this user changes
+    # (role/category/manager/teamlead reassignment, activation state,
+    # a personal permission override grant/revoke) or whenever their
+    # role's own permission set changes (a bulk UPDATE across every
+    # user sharing that role_id — see RolePermissionService). Embedded
+    # in the JWT at login/refresh time and used as part of the
+    # in-memory RBAC cache's key (app/core/rbac_cache.py): a cached
+    # "this session is still valid" entry is keyed on
+    # (user_id, permission_version), so bumping this column doesn't
+    # require touching the cache at all — it just means the next time
+    # that user's token is checked against the DB, the versions won't
+    # match and the stale session is rejected. Never decremented.
+    permission_version: Mapped[int] = mapped_column(
+        Integer,
+        default=1,
+        server_default="1",
         nullable=False,
     )
 

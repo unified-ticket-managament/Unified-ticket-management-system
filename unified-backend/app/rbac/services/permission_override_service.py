@@ -179,6 +179,16 @@ class PermissionOverrideService:
 
         override = await self.permission_override_repository.create(override)
 
+        # This changes what `target` is authorized to do — bump so any
+        # session already in flight for them gets re-verified against
+        # the DB (and picks up the new grant) instead of trusting its
+        # now-stale `permissions` JWT claim for the rest of its natural
+        # TTL. `target` is already a tracked instance from
+        # `user_repository.get_by_id` above, so this flushes/commits in
+        # the same transaction as the override itself with no extra
+        # round trip.
+        target.permission_version += 1
+
         await self.audit_log_service.create_log(
             AuditLogCreate(
                 user_id=actor.user_id,
@@ -250,6 +260,9 @@ class PermissionOverrideService:
             override,
             revoked_by=actor.user_id,
         )
+
+        # See the matching comment in grant() above.
+        target.permission_version += 1
 
         await self.audit_log_service.create_log(
             AuditLogCreate(

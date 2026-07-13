@@ -8,6 +8,7 @@ from app.database.session import get_db
 from app.rbac.repositories.permission_repository import PermissionRepository
 from app.rbac.repositories.role_permission_repository import RolePermissionRepository
 from app.rbac.repositories.role_repository import RoleRepository
+from app.rbac.repositories.user_repository import UserRepository
 from app.rbac.schemas.permission import PermissionResponse
 from app.rbac.schemas.role_permission import AssignPermissionsRequest
 from app.rbac.services.role_permission_service import RolePermissionService
@@ -34,6 +35,7 @@ def get_role_permission_service(
         role_repository=RoleRepository(db),
         permission_repository=PermissionRepository(db),
         role_permission_repository=RolePermissionRepository(db),
+        user_repository=UserRepository(db),
     )
 
 

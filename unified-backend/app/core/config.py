@@ -30,6 +30,16 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
 
+    # In-memory RBAC cache (app/core/rbac_cache.py) — how long a
+    # (user_id, permission_version) pair is trusted before the next
+    # request re-verifies it against Postgres. This is the bound on
+    # how quickly a role change/deactivation/permission change actually
+    # takes effect; keep it short relative to access_token_expire_minutes.
+    rbac_cache_ttl_seconds: float = 30.0
+    # Per-process entry cap (LRU-evicted) — bounds memory, not a
+    # correctness knob.
+    rbac_cache_max_size: int = 10_000
+
     # Shared secret for POST /internal/sla/sweep — the Render Cron Job
     # is the only caller, and there's no "user" behind a cron tick to
     # issue it a JWT, so this is a plain shared-secret header instead

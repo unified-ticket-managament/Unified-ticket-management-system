@@ -6,6 +6,7 @@ from app.rbac.repositories import (
     PermissionRepository,
     RolePermissionRepository,
     RoleRepository,
+    UserRepository,
 )
 
 
@@ -19,10 +20,12 @@ class RolePermissionService:
         role_repository: RoleRepository,
         permission_repository: PermissionRepository,
         role_permission_repository: RolePermissionRepository,
+        user_repository: UserRepository,
     ):
         self.role_repository = role_repository
         self.permission_repository = permission_repository
         self.role_permission_repository = role_permission_repository
+        self.user_repository = user_repository
 
     # --------------------------------------------------
     # Assign Permission
@@ -67,10 +70,20 @@ class RolePermissionService:
                 detail="Permission already assigned to this role.",
             )
 
-        return await self.role_permission_repository.assign_permission(
+        result = await self.role_permission_repository.assign_permission(
             role_id,
             permission_id,
         )
+
+        # Every user holding this role now has a different effective
+        # permission set — one bulk UPDATE (not a per-user loop, see
+        # UserRepository.bump_permission_version_for_role) rejects any
+        # of their already-issued sessions on next DB-verified request
+        # instead of leaving them on the old, now-incomplete permission
+        # list for the rest of that token's natural TTL.
+        await self.user_repository.bump_permission_version_for_role(role_id)
+
+        return result
 
     # --------------------------------------------------
     # Get Permissions of Role
@@ -128,6 +141,9 @@ class RolePermissionService:
             permission_id,
         )
 
+        # See the matching comment in assign_permission above.
+        await self.user_repository.bump_permission_version_for_role(role_id)
+
     # --------------------------------------------------
     # Replace Permissions
     # --------------------------------------------------
@@ -168,3 +184,6 @@ class RolePermissionService:
                 role_id,
                 permission_id,
             )
+
+        # See the matching comment in assign_permission above.
+        await self.user_repository.bump_permission_version_for_role(role_id)

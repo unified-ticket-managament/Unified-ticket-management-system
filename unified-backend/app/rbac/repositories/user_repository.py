@@ -1,8 +1,8 @@
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import joinedload
 
 from shared_models.models import Role, User
 
@@ -32,22 +32,27 @@ class UserRepository(BaseRepository):
     # --------------------------------------------------
 
     async def get_by_id(self, user_id: UUID) -> User | None:
+        # joinedload (one round trip), not selectinload (a separate
+        # one per relationship) — both `role` and `category` are
+        # many-to-one from User's side, so no row-fanout risk. login/
+        # refresh_token now need `.category` too (to embed its name in
+        # the JWT — see AuthService), not just `.role` as before.
         result = await self.db.execute(
             select(User)
-            .options(selectinload(User.role))
+            .options(joinedload(User.role), joinedload(User.category))
             .where(User.user_id == user_id)
         )
 
-        return result.scalar_one_or_none()
+        return result.unique().scalar_one_or_none()
 
     async def get_by_email(self, email: str) -> User | None:
         result = await self.db.execute(
             select(User)
-            .options(selectinload(User.role))
+            .options(joinedload(User.role), joinedload(User.category))
             .where(User.email == email)
         )
 
-        return result.scalar_one_or_none()
+        return result.unique().scalar_one_or_none()
 
     async def get_all(
         self,
@@ -107,6 +112,22 @@ class UserRepository(BaseRepository):
         await self.db.flush()
         await self.db.refresh(user)
         return user
+
+    async def bump_permission_version_for_role(self, role_id: UUID) -> None:
+        """
+        A role's own permission set changing (grant/revoke/replace,
+        see RolePermissionService) affects every user who holds that
+        role, not just one — one bulk UPDATE, not a per-row Python
+        loop, so this stays cheap regardless of how many users share
+        the role. See User.permission_version's own docstring and
+        app/core/rbac_cache.py for what this actually invalidates.
+        """
+
+        await self.db.execute(
+            update(User)
+            .where(User.role_id == role_id)
+            .values(permission_version=User.permission_version + 1)
+        )
 
     # --------------------------------------------------
     # Delete

@@ -84,6 +84,11 @@ class AuthService:
             role=user.role.name,
             permissions=permissions,
             scoped_permissions=scoped_permissions,
+            name=user.name,
+            role_id=user.role_id,
+            category_id=user.category_id,
+            category=user.category.category_name.value if user.category else None,
+            permission_version=user.permission_version,
         )
 
         refresh_token = create_refresh_token(
@@ -155,6 +160,11 @@ class AuthService:
             role=user.role.name,
             permissions=permissions,
             scoped_permissions=scoped_permissions,
+            name=user.name,
+            role_id=user.role_id,
+            category_id=user.category_id,
+            category=user.category.category_name.value if user.category else None,
+            permission_version=user.permission_version,
         )
 
         refresh_token = create_refresh_token(

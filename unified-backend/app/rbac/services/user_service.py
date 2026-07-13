@@ -14,6 +14,15 @@ from app.rbac.schemas.user import UserCreate, UserUpdate
 # role-access.ts today; keep this set in sync with it by hand.
 CATEGORY_REQUIRED_ROLE_NAMES = {"Staff", "Team Lead"}
 
+# Fields whose change should invalidate any already-issued session's
+# cached RBAC state (see User.permission_version's own docstring and
+# app/core/rbac_cache.py) — role/category/reporting-line reassignment
+# all change what a user is authorized to do or see. `name`/`email`
+# are deliberately excluded: cosmetic, not authorization-relevant, and
+# already accepted as "stale until next token refresh" the same way
+# permissions/scoped_permissions are.
+_RBAC_RELEVANT_FIELDS = {"role_id", "category_id", "manager_id", "teamlead_id"}
+
 
 class UserService:
     """
@@ -219,6 +228,15 @@ class UserService:
         for field, value in update_data.items():
             setattr(user, field, value)
 
+        # Any of these change what this user is authorized to do or
+        # see — bump so a session already in flight with the old
+        # value baked into its JWT gets rejected on its next DB-
+        # verified request instead of trusting a stale role/category
+        # for the rest of the token's natural TTL. See
+        # app/core/rbac_cache.py's module docstring.
+        if _RBAC_RELEVANT_FIELDS.intersection(update_data.keys()):
+            user.permission_version += 1
+
         return await self.user_repository.update(user)
 
     # --------------------------------------------------
@@ -244,6 +262,7 @@ class UserService:
     ) -> User:
 
         user = await self.get_user(user_id)
+        user.permission_version += 1
 
         return await self.user_repository.activate(
             user
@@ -259,6 +278,7 @@ class UserService:
     ) -> User:
 
         user = await self.get_user(user_id)
+        user.permission_version += 1
 
         return await self.user_repository.deactivate(
             user

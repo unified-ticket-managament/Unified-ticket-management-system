@@ -109,6 +109,22 @@ apiClient.interceptors.response.use(
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
+    // A request aborted via AbortController (e.g. a stale-response
+    // guard superseding an in-flight fetch, or a page unmounting
+    // mid-request) is not a backend error — it's expected, silent
+    // cancellation. Passing it through unchanged (rather than
+    // rewrapping it into a plain Error below) preserves
+    // axios.isCancel()/error.code === "ERR_CANCELED" for every
+    // caller's own cancellation check; rewrapping it turned every
+    // such check into a false negative (a plain Error's `.message`
+    // happens to be the literal string "canceled", but its `.name`
+    // is just "Error", not "CanceledError"), which is what let a
+    // routine, intentional cancellation surface as a visible
+    // "canceled" error toast instead of being silently absorbed.
+    if (axios.isCancel(error)) {
+      return Promise.reject(error);
+    }
+
     const detail =
       error?.response?.data?.detail ??
       error?.message ??

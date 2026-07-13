@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import axios from "axios";
 import { useDebouncedValue } from "@tw/hooks/useDebouncedValue";
 import {
   composeEmail as composeEmailRequest,
@@ -367,7 +368,15 @@ export function useMailInbox() {
         setRowsByTab((prev) => ({ ...prev, [key]: result.items }));
         setTabTotals((prev) => ({ ...prev, [key]: result.total }));
       } catch (error) {
-        if (error instanceof Error && error.name === "CanceledError") return;
+        // axios.isCancel, not error.name/instanceof — client.ts's
+        // response interceptor now passes a canceled request through
+        // unchanged specifically so this check keeps working; it used
+        // to rewrap every rejection into a plain Error first, which
+        // erased everything about the original CanceledError except
+        // its message ("canceled"), silently defeating this guard and
+        // letting a routine, expected cancellation surface as a
+        // visible "canceled" error toast via refresh()'s own catch.
+        if (axios.isCancel(error)) return;
         throw error;
       }
     },
@@ -401,7 +410,15 @@ export function useMailInbox() {
         setRowsByTab((prev) => ({ ...prev, [key]: [...prev[key], ...result.items] }));
         setTabTotals((prev) => ({ ...prev, [key]: result.total }));
       } catch (error) {
-        if (error instanceof Error && error.name === "CanceledError") return;
+        // axios.isCancel, not error.name/instanceof — client.ts's
+        // response interceptor now passes a canceled request through
+        // unchanged specifically so this check keeps working; it used
+        // to rewrap every rejection into a plain Error first, which
+        // erased everything about the original CanceledError except
+        // its message ("canceled"), silently defeating this guard and
+        // letting a routine, expected cancellation surface as a
+        // visible "canceled" error toast via refresh()'s own catch.
+        if (axios.isCancel(error)) return;
         throw error;
       }
     },

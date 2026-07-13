@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import axios from "axios";
 import { AlertTriangle, EyeOff, Search, SlidersHorizontal, X } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { Badge } from "@tw/components/common/Badge";
@@ -210,7 +211,12 @@ export function InteractionsPage() {
         // A real abort (Strict Mode's double-invoke, or a
         // filter/page change firing before this one finished) is not
         // a user-visible failure — only report a genuine error.
-        if (error instanceof Error && error.name === "CanceledError") return;
+        // axios.isCancel (not error.name/instanceof checks) is the
+        // reliable way to detect this: client.ts's response
+        // interceptor rewraps every rejection into a plain Error
+        // before it reaches here, which erases everything about the
+        // original CanceledError except its message.
+        if (axios.isCancel(error)) return;
         setLoadError(error instanceof Error ? error.message : "Failed to load interactions.");
       } finally {
         if (requestId === requestIdRef.current) setIsLoading(false);
