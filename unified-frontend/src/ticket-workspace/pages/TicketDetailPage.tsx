@@ -149,6 +149,7 @@ export function TicketDetailPage() {
                   <TicketDetails onRelatedChanged={refreshAll} />
                   <SlaCard ticketId={activeTicket.ticket_id} ticketPriority={activeTicket.current_priority} />
                   <TicketActions onActionComplete={refreshAll} onOpenComposer={setComposerMode} />
+                  <SlaTimeline ticketId={activeTicket.ticket_id} />
                   <EditAccessPanel onRequestsChanged={refreshEditAccessRequests} />
                 </div>
               </div>

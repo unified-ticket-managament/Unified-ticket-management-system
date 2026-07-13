@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timezone
+from uuid import UUID
 
 from app.notifications.service import NotificationService, NotificationType
 from app.ticketing.enums import ActorRole, AuditEntityType, AuditEventType
@@ -21,6 +22,15 @@ from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.sla import SLASweepResponse
 from app.ticketing.services.access_control import GLOBAL_INBOX_ROLE_NAMES
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.sla_escalation_rules import (
+    FIRST_RESPONSE_RULES,
+    RESOLUTION_RULES_CLAIMED,
+    RESOLUTION_RULES_UNCLAIMED,
+    TEAM_LEAD_ROLE_NAME,
+    RecipientContext,
+    resolve_recipients,
+    thresholds_reached,
+)
 from app.ticketing.services.sla_service import compute_elapsed_fraction
 
 logger = logging.getLogger(__name__)
@@ -28,34 +38,43 @@ logger = logging.getLogger(__name__)
 CLOCK_TYPE_FIRST_RESPONSE = "FIRST_RESPONSE"
 CLOCK_TYPE_RESOLUTION = "RESOLUTION"
 
-# Ordered so a single elapsed_fraction reading yields every threshold
-# it has crossed, oldest first — a clock discovered at 160% fires
-# AT_RISK, BREACHED, and ESCALATED all in the same tick (each is its
-# own idempotent row, so this is safe even if a prior tick already
-# recorded the earlier ones).
-THRESHOLDS = (
-    ("AT_RISK", 0.8),
-    ("BREACHED", 1.0),
-    ("ESCALATED", 1.5),
-)
-
-TEAM_LEAD_ROLE_NAME = "Team Lead"
-
-
-def thresholds_reached(elapsed_fraction: float) -> list[str]:
-    """Pure classification — every named threshold `elapsed_fraction` has met or passed."""
-
-    return [name for name, cutoff in THRESHOLDS if elapsed_fraction >= cutoff]
+_NOTIFICATION_TYPE_BY_THRESHOLD = {
+    "HALF_ELAPSED": NotificationType.SLA_HALF_ELAPSED,
+    "AT_RISK": NotificationType.SLA_AT_RISK,
+    "BREACHED": NotificationType.SLA_BREACHED,
+    "ESCALATED": NotificationType.SLA_ESCALATED,
+}
 
 
 class SLASweepService:
     """
     Runs one breach-detection pass over every active SLA clock — the
     Render Cron Job's target, called via POST /internal/sla/sweep.
-    Two cheap, status-filtered queries (no scheduler infra existed in
-    this codebase before this feature; see the plan doc's §3), then
-    per-row threshold classification in Python and an idempotent
-    notify via SLABreachNotificationRepository's unique-index guard.
+
+    Shape: (1) two cheap, status-filtered queries fetch every active
+    clock; (2) classify each clock's crossed thresholds in Python
+    (compute_elapsed_fraction + thresholds_reached, both pure); (3) one
+    batched INSERT ... ON CONFLICT DO NOTHING ... RETURNING checks
+    every crossed (clock_type, clock_id, threshold) triple's
+    idempotency ledger at once (SLABreachNotificationRepository.
+    try_record_many) and reports exactly which are newly-crossed; (4)
+    only those get real recipient-resolution + notify + audit-log work,
+    each isolated in its own SAVEPOINT (db.begin_nested()) so one
+    entry's failure can't affect another's in the same run.
+
+    Every per-clock lookup (ticket, client, assigned agent) is also
+    batch-prefetched once up front rather than fetched per crossed
+    threshold — both of these batching passes exist because Neon's
+    per-round-trip latency (several hundred ms, confirmed via this
+    project's own Server-Timing investigation) means round-trip
+    *count*, not per-query cost, dominates this sweep's wall-clock
+    time; a live smoke test before this batching showed consecutive
+    clocks' notifications landing 4-6s apart, almost entirely idle
+    network time.
+
+    Recipient resolution is table-driven (see sla_escalation_rules.py)
+    rather than hardcoded if/elif — who gets notified at each threshold
+    is declared once, there, and this service only interprets it.
 
     v1 is in-app notifications only — OutboundDispatcher (real email
     transport) is a logging no-op in this codebase today; there is no
@@ -83,22 +102,59 @@ class SLASweepService:
         self.notification_service = notification_service
 
     async def run_sweep(self) -> SLASweepResponse:
-        now = datetime.now(timezone.utc)
+        # Every repository here is constructed from the same AsyncSession
+        # per request (see api/sla_internal.py's run_sla_sweep) — reusing
+        # one of them for `.db` is already this codebase's established
+        # pattern (AuditLogService.log_event below does the same thing).
+        db = self.ticket_repository.db
+
+        started_at = datetime.now(timezone.utc)
+        now = started_at
 
         policies = await self.sla_policy_repository.list_all()
         target_by_priority_fr = {p.priority: p.first_response_target_minutes for p in policies}
         target_by_priority_res = {p.priority: p.resolution_target_minutes for p in policies}
 
         counts = {
+            "first_response_half_elapsed": 0,
             "first_response_at_risk": 0,
             "first_response_breached": 0,
+            "resolution_half_elapsed": 0,
             "resolution_at_risk": 0,
             "resolution_breached": 0,
             "resolution_escalated": 0,
         }
         notifications_sent = 0
+        errors = 0
 
-        for clock in await self.first_response_sla_repository.list_active_for_sweep():
+        global_inbox_ids = await self._global_inbox_user_ids()
+
+        # ticket_type -> (team_leads, staff-under-them), populated lazily
+        # the first time an unclaimed Resolution clock in that category
+        # is seen, reused for every later clock sharing it in this run —
+        # caps the extra query fan-out the Case-1 (Team Lead + team
+        # members) escalation path would otherwise add per-clock.
+        category_cache: dict[str, tuple[list, list]] = {}
+
+        # Every (clock_type, clock_id, threshold) triple that crossed
+        # this tick, across both clock types — checked against the
+        # idempotency ledger in one batch below, not one round trip
+        # each.
+        candidates: list[tuple[str, UUID, str]] = []
+        fr_clock_by_id: dict[UUID, FirstResponseSLA] = {}
+        res_clock_by_id: dict[UUID, ResolutionSLA] = {}
+
+        first_response_clocks = await self.first_response_sla_repository.list_active_for_sweep()
+        logger.info("SLA sweep: %d active First Response clock(s)", len(first_response_clocks))
+
+        # Batch-prefetch every First Response clock's client once, up
+        # front — same rationale as the Resolution prefetch below.
+        fr_client_ids = {c.client_id for c in first_response_clocks if c.client_id is not None}
+        fr_clients_by_id = {
+            c.client_id: c for c in await self.client_repository.list_by_ids(list(fr_client_ids))
+        }
+
+        for clock in first_response_clocks:
             target_minutes = target_by_priority_fr.get(clock.priority)
             if target_minutes is None:
                 continue
@@ -107,16 +163,43 @@ class SLASweepService:
                 due_at=clock.due_at, target_minutes=target_minutes, at=now
             )
             reached = thresholds_reached(fraction)
+            if "HALF_ELAPSED" in reached:
+                counts["first_response_half_elapsed"] += 1
             if "AT_RISK" in reached:
                 counts["first_response_at_risk"] += 1
             if "BREACHED" in reached:
                 counts["first_response_breached"] += 1
 
-            for threshold in reached:
-                sent = await self._notify_first_response(clock, threshold)
-                notifications_sent += int(sent)
+            if reached:
+                fr_clock_by_id[clock.first_response_sla_id] = clock
+                candidates.extend(
+                    (CLOCK_TYPE_FIRST_RESPONSE, clock.first_response_sla_id, threshold)
+                    for threshold in reached
+                )
 
-        for clock in await self.resolution_sla_repository.list_active_for_sweep():
+        resolution_clocks = await self.resolution_sla_repository.list_active_for_sweep()
+        logger.info("SLA sweep: %d active Resolution clock(s)", len(resolution_clocks))
+
+        # Batch-prefetch every resolution clock's ticket, client, and
+        # (for already-claimed tickets) assigned agent up front, instead
+        # of one get_by_id call per clock — see the class docstring for
+        # why this matters under Neon's per-round-trip latency.
+        ticket_ids = [c.ticket_id for c in resolution_clocks]
+        tickets_by_id = {
+            t.ticket_id: t for t in await self.ticket_repository.list_by_ids(ticket_ids)
+        }
+
+        res_client_ids = {c.client_id for c in resolution_clocks if c.client_id is not None}
+        res_clients_by_id = {
+            c.client_id: c for c in await self.client_repository.list_by_ids(list(res_client_ids))
+        }
+
+        agent_ids = {t.agent_id for t in tickets_by_id.values() if t.agent_id is not None}
+        agents_by_id = {
+            u.user_id: u for u in await self.user_repository.list_by_ids(list(agent_ids))
+        }
+
+        for clock in resolution_clocks:
             target_minutes = target_by_priority_res.get(clock.priority)
             if target_minutes is None:
                 continue
@@ -125,6 +208,8 @@ class SLASweepService:
                 due_at=clock.due_at, target_minutes=target_minutes, at=now
             )
             reached = thresholds_reached(fraction)
+            if "HALF_ELAPSED" in reached:
+                counts["resolution_half_elapsed"] += 1
             if "AT_RISK" in reached:
                 counts["resolution_at_risk"] += 1
             if "BREACHED" in reached:
@@ -132,40 +217,92 @@ class SLASweepService:
             if "ESCALATED" in reached:
                 counts["resolution_escalated"] += 1
 
-            for threshold in reached:
-                sent = await self._notify_resolution(clock, threshold)
-                notifications_sent += int(sent)
+            if reached:
+                res_clock_by_id[clock.resolution_sla_id] = clock
+                candidates.extend(
+                    (CLOCK_TYPE_RESOLUTION, clock.resolution_sla_id, threshold)
+                    for threshold in reached
+                )
 
-        return SLASweepResponse(**counts, notifications_sent=notifications_sent)
+        # ONE round trip checks every crossed triple across both clock
+        # types at once — see try_record_many's own docstring for the
+        # idempotency guarantee and the trade-off it makes.
+        newly_recorded = await self.sla_breach_notification_repository.try_record_many(
+            candidates
+        )
+
+        for clock_type, clock_id, threshold in newly_recorded:
+            try:
+                async with db.begin_nested():
+                    if clock_type == CLOCK_TYPE_FIRST_RESPONSE:
+                        sent = await self._notify_first_response(
+                            fr_clock_by_id[clock_id],
+                            threshold,
+                            global_inbox_ids,
+                            fr_clients_by_id,
+                        )
+                    else:
+                        sent = await self._notify_resolution(
+                            res_clock_by_id[clock_id],
+                            threshold,
+                            global_inbox_ids,
+                            category_cache,
+                            tickets_by_id,
+                            res_clients_by_id,
+                            agents_by_id,
+                        )
+                notifications_sent += int(sent)
+            except Exception:
+                logger.warning(
+                    "SLA sweep: failed processing %s clock %s threshold %s",
+                    clock_type,
+                    clock_id,
+                    threshold,
+                    exc_info=True,
+                )
+                errors += 1
+
+        duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+        logger.info(
+            "SLA sweep completed in %.2fs — notifications_sent=%d errors=%d counts=%s",
+            duration_seconds,
+            notifications_sent,
+            errors,
+            counts,
+        )
+
+        return SLASweepResponse(
+            **counts, notifications_sent=notifications_sent, errors=errors
+        )
 
     # ---------------------------------------------------------
     # First Response notification
     # ---------------------------------------------------------
 
     async def _notify_first_response(
-        self, clock: FirstResponseSLA, threshold: str
+        self,
+        clock: FirstResponseSLA,
+        threshold: str,
+        global_inbox_ids: set[UUID],
+        clients_by_id: dict,
     ) -> bool:
-        inserted = await self.sla_breach_notification_repository.try_record(
-            clock_type=CLOCK_TYPE_FIRST_RESPONSE,
-            clock_id=clock.first_response_sla_id,
-            threshold=threshold,
-        )
-        if not inserted:
-            return False
+        """
+        Only ever called for a triple try_record_many just confirmed
+        is newly-crossed — no idempotency check here, that already
+        happened in the batch.
+        """
 
-        recipient_ids = await self._resolve_first_response_recipients(clock, threshold)
+        client = clients_by_id.get(clock.client_id) if clock.client_id is not None else None
+
+        ctx = RecipientContext(client=client, global_inbox_ids=global_inbox_ids)
+        recipient_ids = resolve_recipients(FIRST_RESPONSE_RULES, threshold, ctx)
+
         if not recipient_ids or self.notification_service is None:
             return False
 
-        notification_type = {
-            "AT_RISK": NotificationType.SLA_AT_RISK,
-            "BREACHED": NotificationType.SLA_BREACHED,
-            "ESCALATED": NotificationType.SLA_ESCALATED,
-        }[threshold]
-
         await self.notification_service.notify(
             recipient_ids,
-            notification_type,
+            _NOTIFICATION_TYPE_BY_THRESHOLD[threshold],
             title=f"First Response SLA {threshold.replace('_', ' ').title()}",
             message="An inbound email is still awaiting triage.",
             link="/inbox",
@@ -174,61 +311,66 @@ class SLASweepService:
         )
         return True
 
-    async def _resolve_first_response_recipients(
-        self, clock: FirstResponseSLA, threshold: str
-    ) -> set:
-        recipients: set = set()
-
-        client = (
-            await self.client_repository.get_by_id(clock.client_id)
-            if clock.client_id is not None
-            else None
-        )
-
-        if threshold == "AT_RISK":
-            if client is not None:
-                recipients.add(client.account_manager_id)
-        elif threshold == "BREACHED":
-            if client is not None:
-                recipients.add(client.account_manager_id)
-            recipients.update(await self._global_inbox_user_ids())
-        elif threshold == "ESCALATED":
-            recipients.update(await self._global_inbox_user_ids())
-
-        return recipients
-
     # ---------------------------------------------------------
     # Resolution notification
     # ---------------------------------------------------------
 
-    async def _notify_resolution(self, clock: ResolutionSLA, threshold: str) -> bool:
-        inserted = await self.sla_breach_notification_repository.try_record(
-            clock_type=CLOCK_TYPE_RESOLUTION,
-            clock_id=clock.resolution_sla_id,
-            threshold=threshold,
-        )
-        if not inserted:
-            return False
+    async def _notify_resolution(
+        self,
+        clock: ResolutionSLA,
+        threshold: str,
+        global_inbox_ids: set[UUID],
+        category_cache: dict[str, tuple[list, list]],
+        tickets_by_id: dict,
+        clients_by_id: dict,
+        agents_by_id: dict,
+    ) -> bool:
+        """
+        Only ever called for a triple try_record_many just confirmed
+        is newly-crossed — no idempotency check here, that already
+        happened in the batch.
+        """
 
-        ticket = await self.ticket_repository.get_by_id(clock.ticket_id)
+        ticket = tickets_by_id.get(clock.ticket_id)
         if ticket is None:
             return False
 
-        recipient_ids = await self._resolve_resolution_recipients(
-            clock, ticket, threshold
-        )
+        client = clients_by_id.get(clock.client_id) if clock.client_id is not None else None
+
+        # Claiming (a Team Lead taking a ticket for themselves) and
+        # assigning (to a Staff member) both just set this same column —
+        # see inbox_ticket_service.py's own "born unclaimed" comment.
+        if ticket.agent_id is not None:
+            # None here means an orphaned/deactivated agent_id — the
+            # resolvers already handle assigned_agent=None gracefully
+            # (ASSIGNED_AGENT/TEAM_LEAD both just resolve to nobody).
+            assigned_agent = agents_by_id.get(ticket.agent_id)
+            ctx = RecipientContext(
+                client=client,
+                assigned_agent=assigned_agent,
+                global_inbox_ids=global_inbox_ids,
+            )
+            rules = RESOLUTION_RULES_CLAIMED
+        else:
+            team_leads, team_members = await self._get_category_team(
+                ticket.ticket_type, category_cache
+            )
+            ctx = RecipientContext(
+                client=client,
+                team_leads=team_leads,
+                team_members=team_members,
+                global_inbox_ids=global_inbox_ids,
+            )
+            rules = RESOLUTION_RULES_UNCLAIMED
+
+        recipient_ids = resolve_recipients(rules, threshold, ctx)
+
         if not recipient_ids or self.notification_service is None:
             return False
 
-        notification_type = {
-            "AT_RISK": NotificationType.SLA_AT_RISK,
-            "BREACHED": NotificationType.SLA_BREACHED,
-            "ESCALATED": NotificationType.SLA_ESCALATED,
-        }[threshold]
-
         await self.notification_service.notify(
             recipient_ids,
-            notification_type,
+            _NOTIFICATION_TYPE_BY_THRESHOLD[threshold],
             title=f"Resolution SLA {threshold.replace('_', ' ').title()}: {ticket.title}",
             message=f"Ticket \"{ticket.title}\" has crossed its Resolution SLA {threshold.lower()} threshold.",
             link=f"/tickets/{ticket.ticket_id}",
@@ -254,36 +396,30 @@ class SLASweepService:
 
         return True
 
-    async def _resolve_resolution_recipients(
-        self, clock: ResolutionSLA, ticket, threshold: str
-    ) -> set:
-        recipients: set = set()
+    async def _get_category_team(
+        self,
+        category_name: str,
+        category_cache: dict[str, tuple[list, list]],
+    ) -> tuple[list, list]:
+        """
+        Team Lead(s) for a ticket category, plus every active Staff
+        member reporting to any of them — memoized per sweep run in
+        `category_cache` (populated by the caller, kept across every
+        unclaimed clock sharing that category in this run).
+        """
 
-        client = (
-            await self.client_repository.get_by_id(clock.client_id)
-            if clock.client_id is not None
-            else None
-        )
+        if category_name in category_cache:
+            return category_cache[category_name]
+
         team_leads = await self.user_repository.list_active_by_role_and_category(
-            TEAM_LEAD_ROLE_NAME, ticket.ticket_type
+            TEAM_LEAD_ROLE_NAME, category_name
+        )
+        team_members = await self.user_repository.list_active_staff_by_teamlead_ids(
+            [u.user_id for u in team_leads]
         )
 
-        if threshold == "AT_RISK":
-            if ticket.agent_id is not None:
-                recipients.add(ticket.agent_id)
-        elif threshold == "BREACHED":
-            if ticket.agent_id is not None:
-                recipients.add(ticket.agent_id)
-            recipients.update(u.user_id for u in team_leads)
-            if client is not None:
-                recipients.add(client.account_manager_id)
-        elif threshold == "ESCALATED":
-            recipients.update(u.user_id for u in team_leads)
-            if client is not None:
-                recipients.add(client.account_manager_id)
-            recipients.update(await self._global_inbox_user_ids())
-
-        return recipients
+        category_cache[category_name] = (team_leads, team_members)
+        return team_leads, team_members
 
     async def _global_inbox_user_ids(self) -> set:
         recipients: set = set()

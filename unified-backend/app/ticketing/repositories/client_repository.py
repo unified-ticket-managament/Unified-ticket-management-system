@@ -58,6 +58,22 @@ class ClientRepository:
         )
         return list(result.scalars().all())
 
+    async def list_by_ids(self, client_ids: list[UUID]) -> list[Client]:
+        """
+        Batch fetch — used by the SLA sweep to resolve every crossed-
+        threshold clock's owning client in one query instead of a
+        get_by_id call per clock, same convention as
+        TicketRepository.list_by_ids.
+        """
+
+        if not client_ids:
+            return []
+
+        result = await self.db.execute(
+            select(Client).where(Client.client_id.in_(client_ids))
+        )
+        return list(result.scalars().all())
+
     async def get_names_by_ids(self, client_ids: list[UUID]) -> dict[UUID, str]:
         """
         Batch-resolves client_id -> company name in one query — used

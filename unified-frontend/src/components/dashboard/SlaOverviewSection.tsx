@@ -40,7 +40,7 @@ export function SlaOverviewSection() {
     };
   }, []);
 
-  const { counts, isLoading } = useDashboardSlaCounts(tickets ?? []);
+  const { counts, isLoading } = useDashboardSlaCounts(tickets);
 
   const items: Array<{
     key: keyof DashboardSlaCounts;

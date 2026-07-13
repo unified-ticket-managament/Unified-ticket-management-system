@@ -23,10 +23,14 @@ def main() -> int:
     url = os.environ["SLA_SWEEP_URL"]
     secret = os.environ["SLA_SWEEP_SHARED_SECRET"]
 
+    # Cadence tightened to every minute and the sweep now resolves more
+    # per-clock recipients (Team Lead + team members, assigned-agent
+    # lookups, a new HALF_ELAPSED tier) — 45s leaves real headroom
+    # under that 60s schedule instead of the old 30s value.
     response = requests.post(
         url,
         headers={"X-SLA-Sweep-Secret": secret},
-        timeout=30,
+        timeout=45,
     )
 
     print(f"POST {url} -> {response.status_code}")

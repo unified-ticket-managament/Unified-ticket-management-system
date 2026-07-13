@@ -79,9 +79,12 @@ class SLASweepResponse(BaseModel):
     Job's own logs, and asserted on directly by the sweep's test suite.
     """
 
+    first_response_half_elapsed: int
     first_response_at_risk: int
     first_response_breached: int
+    resolution_half_elapsed: int
     resolution_at_risk: int
     resolution_breached: int
     resolution_escalated: int
     notifications_sent: int
+    errors: int

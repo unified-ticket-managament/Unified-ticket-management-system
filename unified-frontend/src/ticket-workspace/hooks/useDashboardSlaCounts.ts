@@ -30,7 +30,17 @@ const REFRESH_INTERVAL_MS = 15_000;
 // pattern should ever run against a production-sized ticket list —
 // see the performance review earlier this session for exactly why an
 // N-calls-per-page-load pattern like this doesn't scale.
-export function useDashboardSlaCounts(tickets: TicketResponse[]) {
+//
+// `tickets` is nullable on purpose: `null` means "the caller's own
+// ticket-list fetch hasn't resolved yet," distinct from a genuinely
+// empty list. Callers used to pass `tickets ?? []`, which fired this
+// hook's effect once with a fake empty list before the real one
+// arrived — harmless in production, but in dev, React 18 Strict
+// Mode's double-invoked effects could race that spurious first cycle
+// against the real one, occasionally leaving the UI stuck on its
+// loading state noticeably longer than the real fetch took. Passing
+// `null` straight through skips that spurious cycle entirely.
+export function useDashboardSlaCounts(tickets: TicketResponse[] | null) {
   const [counts, setCounts] = useState<DashboardSlaCounts>(EMPTY_COUNTS);
   const [isLoading, setIsLoading] = useState(true);
   const [policies, setPolicies] = useState<SLAPolicyResponse[] | null>(null);
@@ -52,6 +62,8 @@ export function useDashboardSlaCounts(tickets: TicketResponse[]) {
   }, []);
 
   useEffect(() => {
+    if (tickets === null) return; // caller's own fetch hasn't resolved yet
+
     if (tickets.length === 0) {
       setCounts(EMPTY_COUNTS);
       setIsLoading(false);
@@ -63,7 +75,7 @@ export function useDashboardSlaCounts(tickets: TicketResponse[]) {
     async function load() {
       setIsLoading(true);
       const results = await Promise.all(
-        tickets.map((t) => getTicketSla(t.ticket_id).catch(() => null))
+        tickets!.map((t) => getTicketSla(t.ticket_id).catch(() => null))
       );
       if (cancelled) return;
 
@@ -85,7 +97,7 @@ export function useDashboardSlaCounts(tickets: TicketResponse[]) {
         if (resolution.status === "RUNNING") {
           next.running += 1;
           const targetMinutes = policies?.find(
-            (p) => p.priority === tickets[index].current_priority
+            (p) => p.priority === tickets![index].current_priority
           )?.resolution_target_minutes;
           if (targetMinutes != null) {
             const fraction = computeElapsedFraction({

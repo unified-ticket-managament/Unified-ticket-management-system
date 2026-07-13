@@ -21,11 +21,13 @@ import { Badge } from "@tw/components/common/Badge";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
 import { getViewCounts } from "@tw/api/inbox";
-import { getDashboardStats, type DashboardStats } from "@tw/api/ticket";
+import { getDashboardStats, listTickets, type DashboardStats } from "@tw/api/ticket";
+import { useDashboardSlaCounts } from "@tw/hooks/useDashboardSlaCounts";
 import { useToast } from "@tw/context/ToastContext";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { formatDateTime } from "@tw/lib/format";
 import { statusTone } from "@tw/lib/ticketTone";
+import type { TicketResponse } from "@tw/types";
 
 // No SLA contract field exists on the ticket model yet, so "SLA Risk"
 // is defined transparently here as a derived heuristic — open tickets
@@ -118,6 +120,33 @@ export function Dashboard() {
   const [pendingInboxCount, setPendingInboxCount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
 
+  // Independent of the bounded getDashboardStats()/getViewCounts()
+  // calls above — there's no real SLA-aggregation endpoint yet, so
+  // this still fetches the raw ticket list itself and aggregates
+  // client-side via useDashboardSlaCounts (same approach used in the
+  // shell's SlaOverviewSection, src/components/dashboard/). Kept
+  // separate from `stats` deliberately: swapping this for a real
+  // aggregate endpoint later shouldn't need to touch the
+  // getDashboardStats() call above at all.
+  const [slaTickets, setSlaTickets] = useState<TicketResponse[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    listTickets()
+      .then((data) => {
+        if (!cancelled) setSlaTickets(data);
+      })
+      .catch(() => {
+        // Silent on failure, same convention as the rest of this
+        // page's polling/loading — the SLA Overview section just
+        // shows zeros rather than an error toast on top of the one
+        // the main stats load() below would already show.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const { counts: slaCounts } = useDashboardSlaCounts(slaTickets);
+
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
@@ -206,7 +235,7 @@ export function Dashboard() {
             tone="bg-danger/10"
             hint="High priority tickets still open"
           />
-          <StatCard
+           <StatCard
             icon={<CheckCircle2 size={19} className="text-success" />}
             label="Resolved Today"
             value={resolvedTodayCount}

@@ -100,7 +100,11 @@ services:
     # underlying reason `type: static` omits it below, even though the error
     # message for each is different.
     rootDir: unified-backend
-    schedule: "*/2 * * * *"
+    # Tightened from */2 to every minute for finer-grained SLA
+    # escalation (a new 50%-elapsed early-warning tier was added
+    # alongside this) — see sla_sweep_ping.py's own timeout note for
+    # the matching client-side headroom adjustment.
+    schedule: "* * * * *"
     buildCommand: pip install requests
     startCommand: python scripts/sla_sweep_ping.py
     envVars:

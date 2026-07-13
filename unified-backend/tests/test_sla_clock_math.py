@@ -15,8 +15,8 @@ from app.ticketing.repositories.resolution_sla_repository import (
     compute_reshifted_due_at,
     compute_resumed_due_at,
 )
+from app.ticketing.services.sla_escalation_rules import thresholds_reached
 from app.ticketing.services.sla_service import compute_elapsed_fraction
-from app.ticketing.services.sla_sweep_service import thresholds_reached
 
 
 def _dt(hour: int, minute: int = 0) -> datetime:
@@ -133,19 +133,33 @@ class TestComputeElapsedFraction:
 
 
 class TestThresholdsReached:
-    def test_below_at_risk_reaches_nothing(self):
-        assert thresholds_reached(0.5) == []
+    def test_below_half_elapsed_reaches_nothing(self):
+        assert thresholds_reached(0.3) == []
 
-    def test_between_at_risk_and_breached_reaches_only_at_risk(self):
-        assert thresholds_reached(0.85) == ["AT_RISK"]
+    def test_between_half_elapsed_and_at_risk_reaches_only_half_elapsed(self):
+        assert thresholds_reached(0.6) == ["HALF_ELAPSED"]
 
-    def test_between_breached_and_escalated_reaches_at_risk_and_breached(self):
-        assert thresholds_reached(1.1) == ["AT_RISK", "BREACHED"]
+    def test_between_at_risk_and_breached_reaches_half_elapsed_and_at_risk(self):
+        assert thresholds_reached(0.85) == ["HALF_ELAPSED", "AT_RISK"]
 
-    def test_past_escalated_reaches_all_three_in_order(self):
-        assert thresholds_reached(1.6) == ["AT_RISK", "BREACHED", "ESCALATED"]
+    def test_between_breached_and_escalated_reaches_first_three(self):
+        assert thresholds_reached(1.1) == ["HALF_ELAPSED", "AT_RISK", "BREACHED"]
+
+    def test_past_escalated_reaches_all_four_in_order(self):
+        assert thresholds_reached(1.6) == [
+            "HALF_ELAPSED",
+            "AT_RISK",
+            "BREACHED",
+            "ESCALATED",
+        ]
 
     def test_exact_boundary_values_are_inclusive(self):
-        assert thresholds_reached(0.8) == ["AT_RISK"]
-        assert thresholds_reached(1.0) == ["AT_RISK", "BREACHED"]
-        assert thresholds_reached(1.5) == ["AT_RISK", "BREACHED", "ESCALATED"]
+        assert thresholds_reached(0.5) == ["HALF_ELAPSED"]
+        assert thresholds_reached(0.8) == ["HALF_ELAPSED", "AT_RISK"]
+        assert thresholds_reached(1.0) == ["HALF_ELAPSED", "AT_RISK", "BREACHED"]
+        assert thresholds_reached(1.5) == [
+            "HALF_ELAPSED",
+            "AT_RISK",
+            "BREACHED",
+            "ESCALATED",
+        ]

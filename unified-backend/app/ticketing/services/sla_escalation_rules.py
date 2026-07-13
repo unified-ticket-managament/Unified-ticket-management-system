@@ -1,0 +1,188 @@
+from dataclasses import dataclass, field
+from uuid import UUID
+
+from shared_models.models import User
+
+from app.ticketing.models.client import Client
+
+#sla_escalation_rules.py
+
+# ---------------------------------------------------------------------
+# Threshold ladder — ordered so a single elapsed_fraction reading yields
+# every threshold it has crossed, oldest first (a clock discovered at
+# 160% fires HALF_ELAPSED, AT_RISK, BREACHED, and ESCALATED all in the
+# same tick — each is its own idempotent row via SLABreachNotification's
+# unique index, so this is safe even if a prior tick already recorded
+# the earlier ones).
+# ---------------------------------------------------------------------
+
+THRESHOLDS = (
+    ("HALF_ELAPSED", 0.5),
+    ("AT_RISK", 0.8),
+    ("BREACHED", 1.0),
+    ("ESCALATED", 1.5),
+)
+
+
+def thresholds_reached(elapsed_fraction: float) -> list[str]:
+    """Pure classification — every named threshold `elapsed_fraction` has met or passed."""
+
+    return [name for name, cutoff in THRESHOLDS if elapsed_fraction >= cutoff]
+
+
+# ---------------------------------------------------------------------
+# Recipient roles + declarative rule tables — single source of truth
+# for "who gets notified at which threshold." Adding/changing a tier's
+# recipients is a one-line edit here, not a change to the sweep loop.
+# Plain string constants (not a Python/Postgres enum), matching
+# NotificationType's own style in app/notifications/service.py — this
+# never touches the database, so there's no reason to reach for a
+# heavier construct.
+# ---------------------------------------------------------------------
+
+
+class RecipientRole:
+    ACCOUNT_MANAGER = "ACCOUNT_MANAGER"
+    TEAM_LEAD = "TEAM_LEAD"
+    TEAM_MEMBERS = "TEAM_MEMBERS"
+    ASSIGNED_AGENT = "ASSIGNED_AGENT"
+    GLOBAL_INBOX = "GLOBAL_INBOX"
+
+
+FIRST_RESPONSE_RULES: dict[str, tuple[str, ...]] = {
+    "HALF_ELAPSED": (RecipientRole.ACCOUNT_MANAGER,),
+    "AT_RISK": (RecipientRole.ACCOUNT_MANAGER,),
+    "BREACHED": (RecipientRole.ACCOUNT_MANAGER, RecipientRole.GLOBAL_INBOX),
+    "ESCALATED": (RecipientRole.ACCOUNT_MANAGER, RecipientRole.GLOBAL_INBOX),
+}
+
+# Ticket sitting unclaimed in the category pool (ticket.agent_id is None).
+RESOLUTION_RULES_UNCLAIMED: dict[str, tuple[str, ...]] = {
+    "HALF_ELAPSED": (RecipientRole.TEAM_LEAD, RecipientRole.TEAM_MEMBERS),
+    "AT_RISK": (RecipientRole.TEAM_LEAD, RecipientRole.TEAM_MEMBERS),
+    "BREACHED": (RecipientRole.TEAM_LEAD, RecipientRole.ACCOUNT_MANAGER),
+    "ESCALATED": (
+        RecipientRole.TEAM_LEAD,
+        RecipientRole.ACCOUNT_MANAGER,
+        RecipientRole.GLOBAL_INBOX,
+    ),
+}
+
+# Ticket claimed by a Team Lead for themselves, or assigned to a Staff
+# member — both set the same ticket.agent_id column.
+RESOLUTION_RULES_CLAIMED: dict[str, tuple[str, ...]] = {
+    "HALF_ELAPSED": (RecipientRole.ASSIGNED_AGENT,),
+    "AT_RISK": (RecipientRole.ASSIGNED_AGENT, RecipientRole.TEAM_LEAD),
+    "BREACHED": (
+        RecipientRole.ASSIGNED_AGENT,
+        RecipientRole.TEAM_LEAD,
+        RecipientRole.ACCOUNT_MANAGER,
+    ),
+    "ESCALATED": (
+        RecipientRole.ASSIGNED_AGENT,
+        RecipientRole.TEAM_LEAD,
+        RecipientRole.ACCOUNT_MANAGER,
+        RecipientRole.GLOBAL_INBOX,
+    ),
+}
+
+TEAM_LEAD_ROLE_NAME = "Team Lead"
+
+
+@dataclass
+class RecipientContext:
+    """
+    Per-clock data needed to resolve a threshold's recipient set — narrow
+    and concrete on purpose (only fields resolvers actually consume), not
+    a generic/open-ended bag. `assigned_agent` is populated only for a
+    claimed Resolution clock; `team_leads`/`team_members` only for an
+    unclaimed one; First Response clocks only ever need `client` and
+    `global_inbox_ids`.
+    """
+
+    client: Client | None = None
+    assigned_agent: User | None = None
+    team_leads: list[User] = field(default_factory=list)
+    team_members: list[User] = field(default_factory=list)
+    global_inbox_ids: set[UUID] = field(default_factory=set)
+
+
+def resolve_account_manager(ctx: RecipientContext) -> set[UUID]:
+    """
+    The client-owning Account Manager (`clients.account_manager_id`,
+    NOT nullable) — guarded on `ctx.client is None`, since it's the
+    *link* to a client (ResolutionSLA.client_id / FirstResponseSLA.
+    client_id / Ticket.client_company_id) that's nullable, never
+    account_manager_id itself once a Client row exists.
+    """
+
+    if ctx.client is None:
+        return set()
+    return {ctx.client.account_manager_id}
+
+
+def resolve_team_lead(ctx: RecipientContext) -> set[UUID]:
+    """
+    Claimed case: the assigned agent's own Team Lead (`teamlead_id`) if
+    they're Staff; if they self-claimed as a Team Lead, they satisfy
+    this role themselves; any other self-claimer (Account Manager, Site
+    Lead, Super Admin — all reachable, since claim_ticket applies no
+    category gate) resolves to nobody extra here.
+
+    Unclaimed case: every Team Lead resolved for the ticket's category.
+
+    `ctx.assigned_agent` is only ever populated for the claimed case, so
+    checking it first is enough to pick the right branch without an
+    explicit case flag.
+    """
+
+    if ctx.assigned_agent is not None:
+        if ctx.assigned_agent.teamlead_id is not None:
+            return {ctx.assigned_agent.teamlead_id}
+        if ctx.assigned_agent.role.name == TEAM_LEAD_ROLE_NAME:
+            return {ctx.assigned_agent.user_id}
+        return set()
+
+    return {u.user_id for u in ctx.team_leads}
+
+
+def resolve_team_members(ctx: RecipientContext) -> set[UUID]:
+    return {u.user_id for u in ctx.team_members}
+
+
+def resolve_assigned_agent(ctx: RecipientContext) -> set[UUID]:
+    if ctx.assigned_agent is None:
+        return set()
+    return {ctx.assigned_agent.user_id}
+
+
+def resolve_global_inbox(ctx: RecipientContext) -> set[UUID]:
+    # Precomputed once per sweep run (Site Lead + Super Admin never vary
+    # per-clock) — see SLASweepService._global_inbox_user_ids.
+    return ctx.global_inbox_ids
+
+
+RECIPIENT_RESOLVERS = {
+    RecipientRole.ACCOUNT_MANAGER: resolve_account_manager,
+    RecipientRole.TEAM_LEAD: resolve_team_lead,
+    RecipientRole.TEAM_MEMBERS: resolve_team_members,
+    RecipientRole.ASSIGNED_AGENT: resolve_assigned_agent,
+    RecipientRole.GLOBAL_INBOX: resolve_global_inbox,
+}
+
+
+def resolve_recipients(
+    rules: dict[str, tuple[str, ...]], threshold: str, ctx: RecipientContext
+) -> set[UUID]:
+    """
+    Looks up `threshold`'s recipient-role tuple in `rules`, resolves
+    each role against `ctx`, and unions the results. Returns an empty
+    set for a threshold with no rule entry rather than raising — the
+    sweep should never crash because a rule table is momentarily out of
+    sync with THRESHOLDS during a future edit.
+    """
+
+    recipients: set[UUID] = set()
+    for role in rules.get(threshold, ()):
+        recipients |= RECIPIENT_RESOLVERS[role](ctx)
+    return recipients

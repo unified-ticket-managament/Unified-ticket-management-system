@@ -49,6 +49,27 @@ class UserRepository:
         )
         return result.unique().scalar_one_or_none()
 
+    async def list_by_ids(self, user_ids: list[UUID]) -> list[User]:
+        """
+        Batch fetch with `role` joinedloaded (needed to tell a self-
+        claimed Team Lead apart from a self-claimed Account
+        Manager/Site Lead/Super Admin — see sla_escalation_rules.
+        resolve_team_lead) — used by the SLA sweep to resolve every
+        claimed ticket's assigned agent in one query instead of a
+        get_by_id call per clock, same convention as
+        TicketRepository.list_by_ids / ClientRepository.list_by_ids.
+        """
+
+        if not user_ids:
+            return []
+
+        result = await self.db.execute(
+            select(User)
+            .options(joinedload(User.role))
+            .where(User.user_id.in_(user_ids))
+        )
+        return list(result.unique().scalars().all())
+
     async def get_names_by_ids(self, user_ids: list[UUID]) -> dict[UUID, str]:
         """
         Batch-resolves user_id -> display name. Used to enrich
@@ -118,6 +139,35 @@ class UserRepository:
                 func.lower(Role.name) == role_name.lower(),
                 User.is_active.is_(True),
                 Category.category_name == category_name,
+            )
+            .order_by(User.user_id)
+        )
+        return list(result.scalars().all())
+
+    async def list_active_staff_by_teamlead_ids(
+        self, teamlead_ids: list[UUID]
+    ) -> list[User]:
+        """
+        Active Staff reporting directly to any of the given Team Leads
+        (`User.teamlead_id`) — one batched `IN (...)` query for however
+        many Team Leads a category resolves to (a category can have
+        more than one), matching this repo's existing batch-lookup
+        convention (get_names_by_ids, TicketRepository.list_by_ids)
+        rather than one query per Team Lead. Used by the SLA sweep's
+        "unclaimed ticket" escalation path to notify a whole team, not
+        just its Team Lead(s).
+        """
+
+        if not teamlead_ids:
+            return []
+
+        result = await self.db.execute(
+            select(User)
+            .join(Role, Role.role_id == User.role_id)
+            .where(
+                func.lower(Role.name) == STAFF_ROLE_NAME.lower(),
+                User.is_active.is_(True),
+                User.teamlead_id.in_(teamlead_ids),
             )
             .order_by(User.user_id)
         )
