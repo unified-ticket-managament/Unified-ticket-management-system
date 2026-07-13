@@ -219,7 +219,7 @@ export function AuditLogPage() {
 
   return (
     <AppLayout
-      title="Audit Log"
+      title="Audit Logs"
       description={
         isSupervisorRole(currentUser?.role)
           ? "Immutable record of every ticket change across the team."

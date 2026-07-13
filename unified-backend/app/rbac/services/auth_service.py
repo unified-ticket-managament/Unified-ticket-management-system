@@ -1,3 +1,4 @@
+import json
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -15,6 +16,8 @@ from app.auth.password import (
 )
 from app.rbac.repositories.role_permission_repository import RolePermissionRepository
 from app.rbac.repositories.user_repository import UserRepository
+from app.rbac.schemas.audit_log import AuditLogCreate
+from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.permission_resolver import PermissionResolverService
 from app.rbac.schemas.auth import (
     ChangePasswordRequest,
@@ -35,18 +38,39 @@ class AuthService:
         user_repository: UserRepository,
         role_permission_repository: RolePermissionRepository,
         permission_resolver: PermissionResolverService,
+        audit_log_service: AuditLogService,
     ):
         self.user_repository = user_repository
         self.role_permission_repository = role_permission_repository
         self.permission_resolver = permission_resolver
+        self.audit_log_service = audit_log_service
 
     # --------------------------------------------------
     # Login
     # --------------------------------------------------
 
+    async def _log_login_failed(
+        self,
+        email: str,
+        reason: str,
+        ip_address: str | None,
+        user_id: UUID | None = None,
+    ) -> None:
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=user_id,
+                action="auth.login_failed",
+                entity_type="user",
+                entity_id=str(user_id) if user_id else None,
+                new_value=json.dumps({"email": email, "reason": reason}),
+                ip_address=ip_address,
+            )
+        )
+
     async def login(
         self,
         login_data: LoginRequest,
+        ip_address: str | None = None,
     ) -> TokenResponse:
 
         user = await self.user_repository.get_by_email(
@@ -54,12 +78,18 @@ class AuthService:
         )
 
         if user is None:
+            await self._log_login_failed(
+                login_data.email, "invalid_email", ip_address
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password.",
             )
 
         if not user.is_active:
+            await self._log_login_failed(
+                login_data.email, "account_inactive", ip_address, user.user_id
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User account is inactive.",
@@ -69,6 +99,9 @@ class AuthService:
             login_data.password,
             user.password_hash,
         ):
+            await self._log_login_failed(
+                login_data.email, "invalid_password", ip_address, user.user_id
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password.",
@@ -93,6 +126,17 @@ class AuthService:
 
         refresh_token = create_refresh_token(
             user_id=user.user_id,
+        )
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=user.user_id,
+                action="auth.login",
+                entity_type="user",
+                entity_id=str(user.user_id),
+                new_value=json.dumps({"email": user.email, "role": user.role.name}),
+                ip_address=ip_address,
+            )
         )
 
         return TokenResponse(
@@ -202,6 +246,31 @@ class AuthService:
         )
     
     # --------------------------------------------------
+    # Logout
+    # --------------------------------------------------
+
+    async def logout(
+        self,
+        user: User,
+        ip_address: str | None = None,
+    ) -> None:
+        """
+        Records a logout. Tokens are stateless JWTs with no server-side
+        session to invalidate, so this is purely an audit-trail write —
+        the client discards its tokens locally either way.
+        """
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=user.user_id,
+                action="auth.logout",
+                entity_type="user",
+                entity_id=str(user.user_id),
+                ip_address=ip_address,
+            )
+        )
+
+    # --------------------------------------------------
     # Change Password
     # --------------------------------------------------
 
@@ -209,6 +278,7 @@ class AuthService:
         self,
         user: User,
         password_data: ChangePasswordRequest,
+        ip_address: str | None = None,
     ) -> None:
         """
         Change the password for the authenticated user.
@@ -240,6 +310,16 @@ class AuthService:
         )
 
         await self.user_repository.update(user)
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=user.user_id,
+                action="auth.change_password",
+                entity_type="user",
+                entity_id=str(user.user_id),
+                ip_address=ip_address,
+            )
+        )
 
     # --------------------------------------------------
     # Update Profile

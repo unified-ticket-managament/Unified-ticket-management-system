@@ -60,6 +60,13 @@ const SheetContent = React.forwardRef<
       ref={ref}
       className={cn(sheetVariants({ side }), className)}
       {...props}
+      // Same rule as Dialog/AlertDialog: a Sheet (used for the User
+      // Detail drawer, etc.) should only close via its own X or an
+      // explicit action inside it — never the overlay or Escape. Placed
+      // after `{...props}` so no call site can reintroduce either path.
+      onPointerDownOutside={(event) => event.preventDefault()}
+      onInteractOutside={(event) => event.preventDefault()}
+      onEscapeKeyDown={(event) => event.preventDefault()}
     >
       {children}
       <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring">

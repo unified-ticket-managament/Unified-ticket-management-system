@@ -8,8 +8,10 @@ import { Dashboard } from "@tw/pages/Dashboard";
 import { CreateMailPage } from "@tw/pages/CreateMailPage";
 import { InboxPage } from "@tw/pages/InboxPage";
 import { InteractionsPage } from "@tw/pages/InteractionsPage";
+import { FullInteractionPage } from "@tw/pages/FullInteractionPage";
 import { TicketsListPage } from "@tw/pages/TicketsListPage";
 import { TicketDetailPage } from "@tw/pages/TicketDetailPage";
+import { TicketInteractionPage } from "@tw/pages/TicketInteractionPage";
 import { AuditLogPage } from "@tw/pages/AuditLogPage";
 
 // Mounts the (unmodified) Ticketing frontend's page tree inside RBAC's
@@ -34,8 +36,10 @@ export function TicketWorkspaceApp() {
               <Route path="/create-mail" element={<CreateMailPage />} />
               <Route path="/inbox" element={<InboxPage />} />
               <Route path="/interactions" element={<InteractionsPage />} />
+              <Route path="/interactions/:interactionId" element={<FullInteractionPage />} />
               <Route path="/tickets" element={<TicketsListPage />} />
               <Route path="/tickets/:ticketId" element={<TicketDetailPage />} />
+              <Route path="/tickets/:ticketId/interactions" element={<TicketInteractionPage />} />
               <Route path="/audit-logs" element={<AuditLogPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

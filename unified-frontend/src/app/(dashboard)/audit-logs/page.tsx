@@ -9,7 +9,7 @@ import {
   SortingState,
   useReactTable,
 } from "@tanstack/react-table";
-import { CheckCircle2, Download, Search } from "lucide-react";
+import { CheckCircle2, Download, Search, XCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
@@ -27,10 +27,24 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { formatDate } from "@/lib/utils";
-import { auditService, userService } from "@/services";
-import { AuditLog, User } from "@/types";
+import { auditService, roleService, userService } from "@/services";
+import { AuditLog, Role, User } from "@/types";
 
-type AuditRow = AuditLog & { userName: string; userEmail: string | null };
+type AuditRow = AuditLog & {
+  userName: string;
+  userEmail: string | null;
+  userRole: string | null;
+};
+
+// The only outcome this system currently distinguishes is a failed
+// login attempt / a rejected request — every other logged action only
+// ever gets written after it already succeeded (an exception aborts
+// the request before any audit_logs row is created), so anything else
+// is genuinely "Success," not a hardcoded assumption.
+function isFailureAction(action: string): boolean {
+  const value = action.toLowerCase();
+  return value.includes("failed") || value.includes("reject");
+}
 
 export default function AuditLogsPage() {
   const { t } = useTranslation();
@@ -58,11 +72,22 @@ export default function AuditLogsPage() {
     queryFn: () => userService.list({ page: 1, page_size: 100 }),
   });
 
+  const rolesQuery = useQuery({
+    queryKey: ["roles-for-audit"],
+    queryFn: () => roleService.list({ page: 1, page_size: 100 }),
+  });
+
   const userMap = useMemo(() => {
     const map = new Map<string, User>();
     (usersQuery.data?.users ?? []).forEach((user: User) => map.set(user.user_id, user));
     return map;
   }, [usersQuery.data]);
+
+  const roleMap = useMemo(() => {
+    const map = new Map<string, Role>();
+    (rolesQuery.data?.roles ?? []).forEach((role: Role) => map.set(role.role_id, role));
+    return map;
+  }, [rolesQuery.data]);
 
   const rows: AuditRow[] = useMemo(() => {
     const logs: AuditLog[] = auditQuery.data?.logs ?? [];
@@ -72,9 +97,10 @@ export default function AuditLogsPage() {
         ...log,
         userName: user?.name ?? (log.user_id ? "Unknown User" : "System"),
         userEmail: user?.email ?? null,
+        userRole: user ? roleMap.get(user.role_id)?.name ?? null : null,
       };
     });
-  }, [auditQuery.data, userMap]);
+  }, [auditQuery.data, userMap, roleMap]);
 
   const filteredRows = useMemo(() => {
     return rows.filter((log) => {
@@ -84,7 +110,8 @@ export default function AuditLogsPage() {
           log.action.toLowerCase().includes(query) ||
           log.entity_type.toLowerCase().includes(query) ||
           log.userName.toLowerCase().includes(query) ||
-          (log.userEmail ?? "").toLowerCase().includes(query);
+          (log.userEmail ?? "").toLowerCase().includes(query) ||
+          (log.userRole ?? "").toLowerCase().includes(query);
         if (!matches) return false;
       }
 
@@ -126,6 +153,13 @@ export default function AuditLogsPage() {
         ),
       },
       {
+        accessorKey: "userRole",
+        header: "Role",
+        cell: ({ row }) => (
+          <span className="text-sm text-muted-foreground">{row.original.userRole ?? "—"}</span>
+        ),
+      },
+      {
         accessorKey: "action",
         header: "Action",
         cell: ({ row }) => (
@@ -160,12 +194,18 @@ export default function AuditLogsPage() {
         id: "status",
         header: "Status",
         enableSorting: false,
-        cell: () => (
-          <Badge variant="success" className="gap-1.5">
-            <CheckCircle2 className="h-3 w-3" />
-            Success
-          </Badge>
-        ),
+        cell: ({ row }) =>
+          isFailureAction(row.original.action) ? (
+            <Badge variant="destructive" className="gap-1.5">
+              <XCircle className="h-3 w-3" />
+              Failed
+            </Badge>
+          ) : (
+            <Badge variant="success" className="gap-1.5">
+              <CheckCircle2 className="h-3 w-3" />
+              Success
+            </Badge>
+          ),
       },
     ],
     []
@@ -187,9 +227,19 @@ export default function AuditLogsPage() {
   }
 
   const handleExport = () => {
-    const header = ["User", "Email", "Action", "Entity", "Entity ID", "Timestamp"];
+    const header = ["User", "Email", "Role", "Action", "Entity", "Entity ID", "Status", "Timestamp", "IP Address"];
     const csvRows = filteredRows.map((log) =>
-      [log.userName, log.userEmail ?? "", log.action, log.entity_type, log.entity_id ?? "", log.timestamp]
+      [
+        log.userName,
+        log.userEmail ?? "",
+        log.userRole ?? "",
+        log.action,
+        log.entity_type,
+        log.entity_id ?? "",
+        isFailureAction(log.action) ? "Failed" : "Success",
+        log.timestamp,
+        log.ip_address ?? "",
+      ]
         .map((value) => `"${String(value).replace(/"/g, '""')}"`)
         .join(",")
     );
@@ -205,7 +255,7 @@ export default function AuditLogsPage() {
     toast({ title: "Export ready", description: `${filteredRows.length} log(s) exported.` });
   };
 
-  const isLoading = auditQuery.isLoading || usersQuery.isLoading;
+  const isLoading = auditQuery.isLoading || usersQuery.isLoading || rolesQuery.isLoading;
   const pageRows = table.getRowModel().rows;
 
   return (
@@ -287,20 +337,35 @@ export default function AuditLogsPage() {
                     <div className="flex-1 pb-6">
                       <div className="flex flex-wrap items-center gap-2">
                         <p className="text-sm font-semibold">{log.userName}</p>
+                        {log.userRole && (
+                          <Badge variant="outline" className="text-xs">
+                            {log.userRole}
+                          </Badge>
+                        )}
                         <Badge variant={actionBadgeVariant(log.action)} className="gap-1.5">
                           <ActionIcon action={log.action} />
                           {log.action}
                         </Badge>
-                        <Badge variant="success" className="gap-1.5">
-                          <CheckCircle2 className="h-3 w-3" />
-                          Success
-                        </Badge>
+                        {isFailureAction(log.action) ? (
+                          <Badge variant="destructive" className="gap-1.5">
+                            <XCircle className="h-3 w-3" />
+                            Failed
+                          </Badge>
+                        ) : (
+                          <Badge variant="success" className="gap-1.5">
+                            <CheckCircle2 className="h-3 w-3" />
+                            Success
+                          </Badge>
+                        )}
                       </div>
                       <p className="mt-1 text-sm text-muted-foreground">
                         {log.entity_type}
                         {log.entity_id && <span className="font-mono text-xs"> · {log.entity_id.slice(0, 8)}</span>}
                       </p>
-                      <p className="mt-1 text-xs text-muted-foreground">{formatDate(log.timestamp)}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {formatDate(log.timestamp)}
+                        {log.ip_address && <span> · {log.ip_address}</span>}
+                      </p>
                     </div>
                   </li>
                 );

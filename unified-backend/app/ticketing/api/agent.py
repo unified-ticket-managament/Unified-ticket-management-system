@@ -3,14 +3,45 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import User
 
 from app.database.session import get_db
-from app.dependencies.auth import get_current_user
+from app.dependencies.auth import get_current_agent, get_current_user
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.agent import AgentSummaryResponse
+from app.ticketing.schemas.assignment import AssignableAgentsResponse
+from app.ticketing.services.assignment_service import AssignmentService
 
 router = APIRouter(
     prefix="/agents",
     tags=["Agents"],
 )
+
+
+# ---------------------------------------------------------
+# Assignable "Assigned To" targets (Create Ticket dialog)
+# ---------------------------------------------------------
+
+# Registered before the plain "" list route below only for readability
+# (no path-param collision risk here, unlike /inbox's static-before-
+# {interaction_id} ordering — "/assignable" and "" can't shadow each
+# other either way).
+@router.get(
+    "/assignable",
+    response_model=AssignableAgentsResponse,
+)
+async def get_assignable_agents(
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns who the current user may assign a brand-new ticket to when
+    promoting an inbox email — themselves, plus whichever role-grouped
+    hierarchy they supervise (see AssignmentService for the exact
+    rules per role).
+    """
+
+    repository = UserRepository(db)
+    service = AssignmentService(repository)
+
+    return await service.get_assignable_groups(current_user)
 
 
 # ---------------------------------------------------------

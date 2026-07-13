@@ -33,9 +33,6 @@ export function EnvelopePreview({ senderName, viaEmail, toEmail, subject }: Enve
           </span>
         </>
       )}
-      <span className="rounded-full border border-teal/20 bg-teal/10 px-2 py-0.5 font-medium text-teal">
-        CC: Account Manager (auto)
-      </span>
       <span className="ml-auto">threads as {subjectAsReply(subject)}</span>
     </div>
   );

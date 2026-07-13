@@ -5,15 +5,12 @@ import { Link } from "react-router-dom";
 import {
   Archive,
   ArrowLeft,
-  ExternalLink,
   FilePlus,
   Forward as ForwardIcon,
   Loader2,
   Paperclip,
   Reply as ReplyIcon,
   ReplyAll,
-  UserCog,
-  UserPlus,
   X,
 } from "lucide-react";
 
@@ -30,8 +27,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -39,22 +34,16 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { useApiAction } from "@tw/hooks/useApiAction";
-import { archiveInteraction, claimInteraction, replyToInteraction } from "@tw/api/inbox";
-import { listAgents } from "@tw/api/agent";
+import { archiveInteraction, replyToInteraction } from "@tw/api/inbox";
+import { listAssignableAgents } from "@tw/api/agent";
 import { listClientContacts } from "@tw/api/clients";
 import { replyToClient, uploadAttachment } from "@tw/api/interaction";
-import {
-  attachInteractionToTicket,
-  createTicketFromInteraction,
-  getTicket,
-  listTickets,
-  transferTicketAgent,
-} from "@tw/api/ticket";
+import { attachInteractionToTicket, createTicketFromInteraction, listTickets } from "@tw/api/ticket";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { formatDateTime } from "@tw/lib/format";
 import { buildForwardHtml, linkifyPlainText } from "@tw/lib/richText";
 import type {
-  AgentSummary,
+  AssignableAgentsResponse,
   AttachmentMeta,
   ClientContact,
   DraftSaveResponse,
@@ -230,7 +219,6 @@ export function MessageDetailsView({
   const { setSelectedEmail, categories } = useWorkflowContext();
   const [replyMode, setReplyMode] = useState<"reply" | "replyAll" | null>(null);
   const [newTag, setNewTag] = useState("");
-  const [ticketDetail, setTicketDetail] = useState<TicketResponse | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -238,13 +226,15 @@ export function MessageDetailsView({
   const [priority, setPriority] = useState<TicketPriority>("MEDIUM");
   const [existingTicketId, setExistingTicketId] = useState("");
   const [clientTickets, setClientTickets] = useState<TicketResponse[]>([]);
-  const [assignAgents, setAssignAgents] = useState<AgentSummary[]>([]);
   const [contacts, setContacts] = useState<ClientContact[]>([]);
-  // Guards against a fast thread switch racing: without this, an
-  // older thread's ticket lookup resolving after a newer thread is
-  // already open could overwrite `ticketDetail` with the wrong
-  // ticket's data.
-  const ticketDetailRequestIdRef = useRef(0);
+
+  // "Assigned To" picker (Create Ticket dialog) — `assignedToChoice`
+  // is either "self" or one of assignableAgents.groups[].role;
+  // `selectedAssigneeId` is only meaningful once a role group with
+  // more than one candidate is chosen.
+  const [assignableAgents, setAssignableAgents] = useState<AssignableAgentsResponse | null>(null);
+  const [assignedToChoice, setAssignedToChoice] = useState<string>("self");
+  const [selectedAssigneeId, setSelectedAssigneeId] = useState("");
 
   const isTicketed = Boolean(email.ticket_id);
   const isClosed = email.ticket_status === "CLOSED";
@@ -256,18 +246,6 @@ export function MessageDetailsView({
     // into edit mode — the user shouldn't have to click Reply first
     // to see (and resume) work they already started.
     setReplyMode(hasDraft ? (email.draft_cc.length > 0 || email.draft_bcc.length > 0 ? "replyAll" : "reply") : null);
-    const requestId = ++ticketDetailRequestIdRef.current;
-    if (email.ticket_id) {
-      getTicket(email.ticket_id)
-        .then((ticket) => {
-          if (requestId === ticketDetailRequestIdRef.current) setTicketDetail(ticket);
-        })
-        .catch(() => {
-          if (requestId === ticketDetailRequestIdRef.current) setTicketDetail(null);
-        });
-    } else {
-      setTicketDetail(null);
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email.interaction_id, email.ticket_id]);
 
@@ -276,6 +254,12 @@ export function MessageDetailsView({
       setTicketType((current) => current || categories[0]?.category_name || "");
     }
   }, [categories]);
+
+  useEffect(() => {
+    listAssignableAgents()
+      .then(setAssignableAgents)
+      .catch(() => setAssignableAgents(null));
+  }, []);
 
   // Every personal address this client has ever emailed the shared
   // inbox from — backs the reply composer's "To" dropdown.
@@ -298,9 +282,13 @@ export function MessageDetailsView({
   const { run: runAttach, isLoading: isAttaching } = useApiAction(attachInteractionToTicket, {
     successMessage: "Email attached to existing ticket.",
   });
-  const { run: runTransfer, isLoading: isTransferring } = useApiAction(transferTicketAgent, {
-    successMessage: (res) => res.message,
-  });
+
+  const assignedToGroup = assignableAgents?.groups.find((group) => group.role === assignedToChoice) ?? null;
+  const needsAssigneePick = Boolean(assignedToGroup);
+  const resolvedAgentId =
+    assignedToChoice === "self" || !assignedToGroup
+      ? assignableAgents?.me.user_id
+      : selectedAssigneeId || undefined;
 
   async function handleSend(payload: {
     message: string;
@@ -436,10 +424,15 @@ export function MessageDetailsView({
       title: title || email.subject,
       ticket_type: ticketType,
       current_priority: priority,
+      agent_id: resolvedAgentId,
     });
     if (result) {
       setCreateOpen(false);
       onRefreshList();
+      // Patch the ticket_id onto the open thread immediately so the
+      // toolbar's Create Ticket button flips to View Ticket without
+      // needing a full refetch of this thread's details.
+      setSelectedEmail({ ...email, ticket_id: result.ticket_id, status: "ASSIGNED" });
     }
   }
 
@@ -464,35 +457,7 @@ export function MessageDetailsView({
     if (result) {
       setAttachOpen(false);
       onRefreshList();
-    }
-  }
-
-  async function openAssignMenu() {
-    if (!ticketDetail) return;
-    try {
-      const agents = await listAgents(ticketDetail.ticket_type);
-      setAssignAgents(agents);
-    } catch {
-      setAssignAgents([]);
-    }
-  }
-
-  async function handleTransfer(agentId: string) {
-    if (!email.ticket_id) return;
-    const result = await runTransfer(email.ticket_id, { new_agent_id: agentId });
-    if (result) {
-      getTicket(email.ticket_id).then(setTicketDetail).catch(() => {});
-      onRefreshList();
-    }
-  }
-
-  const { run: runClaim, isLoading: isClaiming } = useApiAction(claimInteraction);
-
-  async function handleClaim() {
-    const result = await runClaim(email.interaction_id);
-    if (result) {
-      setSelectedEmail({ ...email, claimed_by: result.claimed_by, claimed_by_name: result.claimed_by_name });
-      onRefreshList();
+      setSelectedEmail({ ...email, ticket_id: result.ticket_id, status: "ASSIGNED" });
     }
   }
 
@@ -517,7 +482,6 @@ export function MessageDetailsView({
   }
 
   const archiveDisabled = isTicketed || email.status !== "PENDING" || isArchiving;
-  const claimDisabled = isTicketed || Boolean(email.claimed_by) || email.status !== "PENDING" || isClaiming;
 
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card">
@@ -654,44 +618,17 @@ export function MessageDetailsView({
 
         <Separator orientation="vertical" className="mx-1 h-5" />
 
-        <Button size="sm" variant="outline" className="gap-1.5" disabled={isTicketed} onClick={() => setCreateOpen(true)}>
-          <FilePlus className="h-3.5 w-3.5" />
-          Create Ticket
-        </Button>
-
         {isTicketed ? (
-          <DropdownMenu onOpenChange={(open) => open && openAssignMenu()}>
-            <DropdownMenuTrigger asChild>
-              <Button size="sm" variant="outline" className="gap-1.5" disabled={isTransferring}>
-                <UserCog className="h-3.5 w-3.5" />
-                {ticketDetail?.agent_name ? `Assigned: ${ticketDetail.agent_name}` : "Assign Ticket"}
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="w-56">
-              <DropdownMenuLabel className="text-xs">Assign to</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              {assignAgents.length === 0 ? (
-                <p className="px-2 py-2 text-xs text-muted-foreground">No agents available.</p>
-              ) : (
-                assignAgents.map((agent) => (
-                  <DropdownMenuItem key={agent.user_id} onClick={() => handleTransfer(agent.user_id)} className="text-xs">
-                    {agent.name}
-                  </DropdownMenuItem>
-                ))
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <Button asChild size="sm" variant="outline" className="gap-1.5">
+            <Link to={`/tickets/${email.ticket_id}`}>
+              <FilePlus className="h-3.5 w-3.5" />
+              View Ticket
+            </Link>
+          </Button>
         ) : (
-          <Button
-            size="sm"
-            variant="outline"
-            className="gap-1.5"
-            disabled={claimDisabled}
-            title={email.claimed_by ? `Already assigned to ${email.claimed_by_name ?? "someone"}.` : undefined}
-            onClick={handleClaim}
-          >
-            <UserPlus className="h-3.5 w-3.5" />
-            {email.claimed_by ? `Assigned: ${email.claimed_by_name}` : "Assign Ticket"}
+          <Button size="sm" variant="outline" className="gap-1.5" disabled={isCreating} onClick={() => setCreateOpen(true)}>
+            <FilePlus className="h-3.5 w-3.5" />
+            Create Ticket
           </Button>
         )}
 
@@ -701,14 +638,6 @@ export function MessageDetailsView({
         </Button>
 
         <div className="ml-auto flex items-center gap-1.5">
-          {email.ticket_id && (
-            <Button asChild size="sm" variant="ghost" className="gap-1.5 text-primary">
-              <Link to={`/tickets/${email.ticket_id}`}>
-                View full ticket
-                <ExternalLink className="h-3.5 w-3.5" />
-              </Link>
-            </Button>
-          )}
           <Button size="sm" variant="ghost" className="gap-1.5" onClick={onBack}>
             <ArrowLeft className="h-3.5 w-3.5" />
             Back to Message List
@@ -784,22 +713,81 @@ export function MessageDetailsView({
                 </SelectContent>
               </Select>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setCreateOpen(false);
-                openAttachDialog();
-              }}
-              className="text-left text-[11.5px] font-medium text-primary hover:underline"
-            >
-              Or attach this email to an existing ticket instead →
-            </button>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">Assigned To</label>
+              {!assignableAgents || assignableAgents.groups.length === 0 ? (
+                <Input value={assignableAgents?.me.name ?? "Myself"} readOnly className="bg-muted/30" />
+              ) : (
+                <div className="flex flex-col gap-2">
+                  <Select
+                    value={assignedToChoice}
+                    onValueChange={(v) => {
+                      setAssignedToChoice(v);
+                      setSelectedAssigneeId("");
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="self">Myself ({assignableAgents.me.name})</SelectItem>
+                      {assignableAgents.groups.map((group) => (
+                        <SelectItem key={group.role} value={group.role}>
+                          {group.role}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+
+                  {assignedToGroup && (
+                    assignedToGroup.users.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        No {assignedToGroup.role} found in your reporting hierarchy.
+                      </p>
+                    ) : (
+                      <div>
+                        <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                          Select {assignedToGroup.role}
+                        </label>
+                        <Select value={selectedAssigneeId} onValueChange={setSelectedAssigneeId}>
+                          <SelectTrigger>
+                            <SelectValue placeholder={`Choose a ${assignedToGroup.role}...`} />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {assignedToGroup.users.map((user) => (
+                              <SelectItem key={user.user_id} value={user.user_id}>
+                                {user.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )
+                  )}
+                </div>
+              )}
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleCreateTicket} disabled={isCreating}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setCreateOpen(false);
+                openAttachDialog();
+              }}
+            >
+              Existing Ticket
+            </Button>
+            <Button
+              onClick={handleCreateTicket}
+              disabled={
+                isCreating ||
+                (needsAssigneePick && (assignedToGroup?.users.length === 0 || !selectedAssigneeId))
+              }
+            >
               {isCreating && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
               Create Ticket
             </Button>

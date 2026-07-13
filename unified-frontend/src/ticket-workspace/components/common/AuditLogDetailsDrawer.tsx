@@ -41,20 +41,18 @@ export function AuditLogDetailsDrawer({
   onClose,
   onViewTicket,
 }: AuditLogDetailsDrawerProps) {
+  // Closes only via the X button below — no Escape-key listener, and
+  // the overlay below has no onClick — so outside-click/Escape never
+  // close this drawer.
   useEffect(() => {
     if (!open) return;
 
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", handleKeyDown);
     document.body.style.overflow = "hidden";
 
     return () => {
-      document.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = "";
     };
-  }, [open, onClose]);
+  }, [open]);
 
   const meta = row ? auditMetaFor(row.eventType) : null;
   const fields = row ? diffFields(row.oldValues, row.newValues) : [];
@@ -63,7 +61,6 @@ export function AuditLogDetailsDrawer({
     <>
       <div
         aria-hidden={!open}
-        onClick={onClose}
         className={`fixed inset-0 z-40 bg-black/40 transition-opacity duration-300 motion-reduce:transition-none ${
           open ? "opacity-100" : "pointer-events-none opacity-0"
         }`}

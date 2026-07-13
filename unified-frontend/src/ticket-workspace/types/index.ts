@@ -110,6 +110,24 @@ export interface AgentSummary {
   email: string;
 }
 
+// Who the current user may assign a brand-new ticket to on the
+// Create Ticket dialog — see GET /agents/assignable, scoped per the
+// caller's own role/hierarchy (AssignmentService on the backend).
+export interface AssignableUserSummary {
+  user_id: string;
+  name: string;
+}
+
+export interface AssignableGroup {
+  role: string;
+  users: AssignableUserSummary[];
+}
+
+export interface AssignableAgentsResponse {
+  me: AssignableUserSummary;
+  groups: AssignableGroup[];
+}
+
 // ==========================================================
 // Auth — RBAC-issued identity (login/refresh/me all live on
 // the RBAC service, this app only consumes them)
@@ -393,6 +411,9 @@ export interface TicketFromInteractionRequest {
   title: string;
   ticket_type: string;
   current_priority?: TicketPriority;
+  // Who to assign the new ticket to — omitted/undefined keeps the
+  // original behavior (ticket born unclaimed, in the shared pool).
+  agent_id?: string | null;
 }
 
 export interface TicketFromInteractionResponse {
@@ -554,7 +575,14 @@ export type AuditEventType =
   | "SLA_MANUALLY_PAUSED"
   | "SLA_MANUALLY_RESUMED"
   | "SLA_BREACH_DETECTED"
-  | "SLA_ESCALATED";
+  | "SLA_ESCALATED"
+  // Internal escalation workflow (TicketEscalation) — distinct from
+  // SLA_ESCALATED above, which is the Resolution SLA's own
+  // notification-ladder tier and never touches ownership/ack state.
+  | "ESCALATION_CREATED"
+  | "ESCALATION_ACKNOWLEDGED"
+  | "ESCALATION_ADVANCED"
+  | "ESCALATION_CLOSED";
 
 export type ActorRole = "AGENT" | "CLIENT" | "SYSTEM";
 

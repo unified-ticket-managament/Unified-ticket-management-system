@@ -4,21 +4,11 @@ import { Plus, X } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { Badge } from "@tw/components/common/Badge";
 import { Button } from "@tw/components/common/Button";
-import { shortId, formatDateTime } from "@tw/lib/format";
-import { priorityTone, statusTone } from "@tw/lib/ticketTone";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { addRelatedTicket, listTickets, removeRelatedTicket } from "@tw/api/ticket";
+import { statusTone } from "@tw/lib/ticketTone";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import type { TicketResponse } from "@tw/types";
-
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center justify-between gap-3 py-2">
-      <dt className="text-xs text-muted">{label}</dt>
-      <dd className="text-xs font-medium text-slate-800">{children}</dd>
-    </div>
-  );
-}
 
 interface TicketDetailsProps {
   // Refetches the ticket so `related_tickets` reflects a link/unlink
@@ -73,54 +63,23 @@ export function TicketDetails({ onRelatedChanged }: TicketDetailsProps) {
   }
 
   return (
-    // One card instead of two separate ones — cuts a whole extra
-    // header/border/shadow out of the right column so Actions and
-    // the Audit Trail sit closer to the fold instead of needing a
-    // scroll past two thin, mostly-empty-looking boxes.
-    <Card title="Ticket Properties" eyebrow="Overview">
-      <dl className="flex flex-col divide-y divide-border">
-        <Row label="Status">
-          <Badge tone={statusTone[activeTicket.current_status]} dot>
-            {activeTicket.current_status}
-          </Badge>
-        </Row>
-        <Row label="Priority">
-          <Badge tone={priorityTone[activeTicket.current_priority]}>
-            {activeTicket.current_priority}
-          </Badge>
-        </Row>
-        <Row label="Category">{activeTicket.ticket_type}</Row>
-        <Row label="Version">{activeTicket.version}</Row>
-        <Row label="Client">
-          {activeTicket.client_company_name ??
-            activeTicket.client_name ??
-            (activeTicket.client_id ? shortId(activeTicket.client_id) : "—")}
-        </Row>
-        <Row label="Assigned Agent">
-          {activeTicket.agent_id
-            ? activeTicket.agent_name ?? shortId(activeTicket.agent_id)
-            : "Unassigned"}
-        </Row>
-        <Row label="Updated">{formatDateTime(activeTicket.updated_at)}</Row>
-        {activeTicket.closed_at && (
-          <Row label="Resolved At">{formatDateTime(activeTicket.closed_at)}</Row>
-        )}
-      </dl>
-
-      <div className="mt-2 border-t border-border pt-4">
-        <div className="mb-2 flex items-center justify-between">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted">
-            Related Tickets
-          </p>
-          <button
-            onClick={() => setIsPicking((prev) => !prev)}
-            title="Link a related ticket"
-            className="rounded p-0.5 text-muted/70 hover:bg-surfaceHover hover:text-slate-900"
-          >
-            {isPicking ? <X size={13} /> : <Plus size={13} />}
-          </button>
-        </div>
-
+    // Related Tickets used to share a card with the Status/Priority/
+    // Category/etc. property list — those now live in the dedicated,
+    // full-width TicketPropertiesCard instead (see TicketDetailPage),
+    // so this component keeps only the Related Tickets management UI.
+    <Card
+      title="Related Tickets"
+      actions={
+        <button
+          onClick={() => setIsPicking((prev) => !prev)}
+          title="Link a related ticket"
+          className="rounded p-0.5 text-muted/70 hover:bg-surfaceHover hover:text-slate-900"
+        >
+          {isPicking ? <X size={13} /> : <Plus size={13} />}
+        </button>
+      }
+    >
+      <div>
         {isPicking && (
           <div className="mb-2 flex items-center gap-1.5">
             <select

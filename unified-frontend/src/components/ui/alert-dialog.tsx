@@ -35,6 +35,13 @@ const AlertDialogContent = React.forwardRef<
         className
       )}
       {...props}
+      // Radix's AlertDialogContent already hardcodes
+      // onPointerDownOutside/onInteractOutside to preventDefault
+      // internally (outside-click can never close an alert dialog,
+      // and its type deliberately omits those two props) — only
+      // Escape needs an explicit override here, so only its own
+      // Cancel/Action buttons can close this.
+      onEscapeKeyDown={(event) => event.preventDefault()}
     />
   </AlertDialogPortal>
 ));

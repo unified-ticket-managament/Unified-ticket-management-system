@@ -83,6 +83,7 @@ from app.ticketing.schemas.ticket_from_interaction import (
     TicketFromInteractionResponse,
 )
 
+from app.ticketing.services.assignment_service import AssignmentService
 from app.ticketing.services.attachment_service import AttachmentService
 from app.ticketing.services.edit_access_service import EditAccessService
 from app.ticketing.services.inbox_ticket_service import InboxTicketService
@@ -120,10 +121,12 @@ async def create_ticket_from_interaction(
 
     ticket_repository = TicketRepository(db)
     interaction_repository = InteractionRepository(db)
+    assignment_service = AssignmentService(UserRepository(db))
 
     service = InboxTicketService(
         ticket_repository=ticket_repository,
         interaction_repository=interaction_repository,
+        assignment_service=assignment_service,
         sla_service=build_sla_service(
             db, notification_service=NotificationService(NotificationRepository(db))
         ),

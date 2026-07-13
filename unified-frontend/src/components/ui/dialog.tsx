@@ -34,6 +34,13 @@ const DialogContent = React.forwardRef<
         className
       )}
       {...props}
+      // Every popup in the app should close only via its own Cancel
+      // button or this X — never by clicking the overlay or pressing
+      // Escape. Placed after `{...props}` so no call site can
+      // accidentally reintroduce either close path.
+      onPointerDownOutside={(event) => event.preventDefault()}
+      onInteractOutside={(event) => event.preventDefault()}
+      onEscapeKeyDown={(event) => event.preventDefault()}
     >
       {children}
       <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100">

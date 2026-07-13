@@ -1,9 +1,15 @@
 import { useEffect } from "react";
-import { X, Ticket as TicketIcon } from "lucide-react";
+import { Maximize2, X, Ticket as TicketIcon } from "lucide-react";
 import { Badge } from "@tw/components/common/Badge";
 import { Button } from "@tw/components/common/Button";
 import { AttachmentList } from "@tw/components/common/AttachmentList";
-import { metaFor, summarize } from "@tw/lib/interactionMeta";
+import {
+  messageBody,
+  messageDirectionLabel,
+  messageSender,
+  metaFor,
+  summarize,
+} from "@tw/lib/interactionMeta";
 import { shortId, formatDateTime } from "@tw/lib/format";
 import type {
   AttachmentMeta,
@@ -57,6 +63,11 @@ interface InteractionDetailsDrawerProps {
   isLoadingThread?: boolean;
   onClose: () => void;
   onViewTicket: (ticketId: string) => void;
+  // Switches from this sidebar view to the dedicated full-page
+  // Interaction Details view for the same row — no new data is
+  // fetched here, the page receives what's already loaded. Optional
+  // so any other caller of this drawer can omit full-page support.
+  onExpand?: () => void;
 }
 
 const sourceLabels: Record<string, string> = {
@@ -92,47 +103,6 @@ function displayValue(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
-}
-
-// Per-message direction/sender/body resolvers for the full-thread view —
-// distinct from resolveFromToSubject/resolveFields above, which describe
-// only the single clicked row for the no-thread fallback rendering.
-const MESSAGE_DIRECTION_LABELS: Record<string, string> = {
-  EMAIL: "Inbound · Client Email",
-  REPLY: "Outbound · Agent Reply",
-  INTERNAL_NOTE: "Internal Note",
-};
-
-function messageDirectionLabel(message: InteractionResponse): string {
-  return MESSAGE_DIRECTION_LABELS[message.interaction_type] ?? message.direction;
-}
-
-function messageSender(message: InteractionResponse): string | null {
-  const payload = message.payload ?? {};
-  switch (message.interaction_type) {
-    case "EMAIL":
-      return (payload.client_name as string) ?? (payload.from_email as string) ?? "Client";
-    case "REPLY":
-      return message.performed_by_name ?? "Agent";
-    case "INTERNAL_NOTE":
-      return message.performed_by_name ? `${message.performed_by_name} (internal note)` : null;
-    default:
-      return message.performed_by_name ?? null;
-  }
-}
-
-function messageBody(message: InteractionResponse): string {
-  const payload = message.payload ?? {};
-  switch (message.interaction_type) {
-    case "EMAIL":
-      return (payload.body as string) ?? (payload.subject as string) ?? "";
-    case "REPLY":
-      return (payload.message as string) ?? "";
-    case "INTERNAL_NOTE":
-      return (payload.note as string) ?? "";
-    default:
-      return summarize(message);
-  }
 }
 
 interface ResolvedFields {
@@ -241,21 +211,20 @@ export function InteractionDetailsDrawer({
   isLoadingThread,
   onClose,
   onViewTicket,
+  onExpand,
 }: InteractionDetailsDrawerProps) {
+  // Closes only via the X button below — no Escape-key listener, and
+  // the overlay below has no onClick — so outside-click/Escape never
+  // close this drawer.
   useEffect(() => {
     if (!open) return;
 
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-    }
-    document.addEventListener("keydown", handleKeyDown);
     document.body.style.overflow = "hidden";
 
     return () => {
-      document.removeEventListener("keydown", handleKeyDown);
       document.body.style.overflow = "";
     };
-  }, [open, onClose]);
+  }, [open]);
 
   const meta = row ? metaFor(row.type) : null;
   const fields = row ? resolveFields(row, email) : null;
@@ -278,7 +247,6 @@ export function InteractionDetailsDrawer({
     <>
       <div
         aria-hidden={!open}
-        onClick={onClose}
         className={`fixed inset-0 z-40 bg-black/40 transition-opacity duration-300 motion-reduce:transition-none ${
           open ? "opacity-100" : "pointer-events-none opacity-0"
         }`}
@@ -304,13 +272,25 @@ export function InteractionDetailsDrawer({
                   <p className="text-[11px] text-muted">Interaction Details</p>
                 </div>
               </div>
-              <button
-                onClick={onClose}
-                aria-label="Close details drawer"
-                className="flex h-8 w-8 flex-none items-center justify-center rounded-md2 text-muted transition-colors hover:bg-surfaceHover hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              >
-                <X size={16} />
-              </button>
+              <div className="flex flex-none items-center gap-1">
+                {onExpand && (
+                  <button
+                    onClick={onExpand}
+                    aria-label="Expand to full page"
+                    title="Expand to full page"
+                    className="flex h-8 w-8 items-center justify-center rounded-md2 text-muted transition-colors hover:bg-surfaceHover hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                  >
+                    <Maximize2 size={15} />
+                  </button>
+                )}
+                <button
+                  onClick={onClose}
+                  aria-label="Close details drawer"
+                  className="flex h-8 w-8 items-center justify-center rounded-md2 text-muted transition-colors hover:bg-surfaceHover hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+                >
+                  <X size={16} />
+                </button>
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto scrollbar-thin px-5 py-5">

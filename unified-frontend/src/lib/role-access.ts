@@ -80,8 +80,10 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
 // client-facing role that was never an agent.
 //
 // "Audit Logs" (the RBAC-level log, distinct from "Ticket Audit Log")
-// is included for Super Admin and Site Lead, the two roles with the
-// `audit:view` permission by default.
+// was removed from every role's sidebar — the page, its route, and its
+// API are untouched and still reachable directly (e.g. the Super Admin
+// dashboard's "Latest Audit Logs" card still links to it), this only
+// removes the sidebar entry point.
 // "Roles" was removed from every role's sidebar (moved to a button on the
 // Users page instead — see ROLES_BUTTON_VISIBLE_ROLES in
 // app/(dashboard)/users/page.tsx, which intentionally mirrors the same
@@ -106,7 +108,6 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
   [ROLE_NAMES.SUPER_ADMIN]: [
     "Dashboard",
     "Users",
-    "Audit Logs",
     "Reports",
     "Inbox",
     "Interactions",
@@ -116,7 +117,6 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
   [ROLE_NAMES.SITE_LEAD]: [
     "Dashboard",
     "Users",
-    "Audit Logs",
     "Reports",
     "Create Dummy Mail",
     "Inbox",

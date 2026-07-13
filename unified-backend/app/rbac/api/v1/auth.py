@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
 from app.database.session import get_db
+from app.rbac.repositories.audit_log_repository import AuditLogRepository
 from app.rbac.repositories.permission_override_repository import (
     PermissionOverrideRepository,
 )
@@ -16,6 +17,7 @@ from app.rbac.schemas.auth import (
     TokenResponse,
     UpdateProfileRequest,
 )
+from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.auth_service import AuthService
 from app.rbac.services.permission_resolver import PermissionResolverService
 
@@ -45,11 +47,20 @@ def get_auth_service(
         permission_override_repository=permission_override_repository,
     )
 
+    audit_log_service = AuditLogService(
+        audit_log_repository=AuditLogRepository(db),
+    )
+
     return AuthService(
         user_repository=user_repository,
         role_permission_repository=role_permission_repository,
         permission_resolver=permission_resolver,
+        audit_log_service=audit_log_service,
     )
+
+
+def _client_ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
 
 
 # --------------------------------------------------
@@ -65,12 +76,13 @@ def get_auth_service(
 )
 async def login(
     login_data: LoginRequest,
+    request: Request,
     service: AuthService = Depends(get_auth_service),
 ):
     """
     Authenticate user and generate access/refresh tokens.
     """
-    return await service.login(login_data)
+    return await service.login(login_data, ip_address=_client_ip(request))
 
 
 # --------------------------------------------------
@@ -92,6 +104,31 @@ async def refresh_token(
     Generate a new access token using a refresh token.
     """
     return await service.refresh_token(request)
+
+
+# --------------------------------------------------
+# Logout
+# --------------------------------------------------
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_200_OK,
+    summary="Logout",
+)
+async def logout(
+    request: Request,
+    current_user=Depends(get_current_active_user),
+    service: AuthService = Depends(get_auth_service),
+):
+    """
+    Records a logout in the audit trail. Tokens are stateless JWTs —
+    the client is responsible for discarding them locally; there is
+    no server-side session to invalidate.
+    """
+    await service.logout(current_user, ip_address=_client_ip(request))
+
+    return {"message": "Logged out successfully."}
 
 
 # --------------------------------------------------
@@ -152,6 +189,7 @@ async def update_profile(
 )
 async def change_password(
     password_data: ChangePasswordRequest,
+    request: Request,
     current_user=Depends(get_current_active_user),
     service: AuthService = Depends(get_auth_service),
 ):
@@ -161,6 +199,7 @@ async def change_password(
     await service.change_password(
         current_user,
         password_data,
+        ip_address=_client_ip(request),
     )
 
     return {
