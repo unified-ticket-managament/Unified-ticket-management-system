@@ -191,6 +191,7 @@ class AuditLogRepository:
         *,
         account_manager_id: UUID | None,
         ticket_types: list[str] | None,
+        agent_ids: list[UUID] | None = None,
         limit: int,
         offset: int = 0,
         entity_type: AuditEntityType | None = None,
@@ -227,6 +228,12 @@ class AuditLogRepository:
         caveat) and why a genuinely empty page falls back to one plain
         `COUNT(*)` query rather than trying to report a total from a
         window function that has no row to attach it to.
+
+        `agent_ids` (optional) is Team Lead/Staff's audit-log-specific
+        scoping — see TicketService._resolve_audit_log_agent_ids —
+        narrower than and independent of `ticket_types`'s existing
+        category-pool meaning; a caller passes one or the other, never
+        both, for the same role.
         """
 
         conditions = [AuditLog.ticket_id.isnot(None)]
@@ -239,6 +246,14 @@ class AuditLogRepository:
 
         if ticket_types is not None:
             conditions.append(Ticket.ticket_type.in_(ticket_types))
+
+        if agent_ids is not None:
+            # Team Lead/Staff audit-log scoping — see
+            # TicketService._resolve_audit_log_agent_ids. An empty
+            # list is a deliberate "sees nothing" rather than
+            # "unrestricted", same convention as the two conditions
+            # above.
+            conditions.append(Ticket.agent_id.in_(agent_ids))
 
         if entity_type is not None:
             conditions.append(AuditLog.entity_type == entity_type)

@@ -237,6 +237,45 @@ class TicketService:
         return [current_user.category.category_name.value]
 
     # ---------------------------------------------------------
+    # Team Lead / Staff Audit Log Scoping
+    # ---------------------------------------------------------
+
+    async def _resolve_audit_log_agent_ids(
+        self, current_user: User
+    ) -> list[UUID] | None:
+        """
+        Audit Log page-only scoping for Team Lead/Staff — deliberately
+        narrower than (and independent of) _resolve_category_ticket_types'
+        shared-category-pool visibility, which every OTHER endpoint
+        (ticket list, interactions, dashboard stats) still uses
+        unchanged. A Team Lead's/Staff member's audit trail should
+        read as "my team's work", not "everyone's work in my
+        category" — so this scopes to `Ticket.agent_id` instead of
+        `Ticket.ticket_type`.
+
+        None = unrestricted (Super Admin, Site Lead, Account Manager —
+        the latter is already scoped separately via
+        _resolve_owned_client_ids, by client ownership rather than
+        agent). A list (possibly empty) restricts to tickets assigned
+        to one of these specific agents:
+        - Staff: only themselves — "own ticket actions" only.
+        - Team Lead: themselves plus every Staff member reporting to
+          them (`teamlead_id`) — "my team", not other Team Leads'
+          teams or the wider category.
+        """
+
+        if current_user.role.name == "Staff":
+            return [current_user.user_id]
+
+        if current_user.role.name == "Team Lead":
+            reports = await self.user_repository.list_active_staff_by_teamlead(
+                current_user.user_id
+            )
+            return [current_user.user_id] + [u.user_id for u in reports]
+
+        return None
+
+    # ---------------------------------------------------------
     # Get Ticket By ID
     # ---------------------------------------------------------
 
@@ -690,11 +729,19 @@ class TicketService:
                 if current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME
                 else None
             )
-            ticket_types = self._resolve_category_ticket_types(current_user)
+            agent_ids = await self._resolve_audit_log_agent_ids(current_user)
+            # Team Lead/Staff are scoped by agent_ids (their own
+            # reporting line) for this page specifically, never by
+            # ticket_types' wider category pool — see
+            # _resolve_audit_log_agent_ids's own docstring.
+            ticket_types = (
+                None if agent_ids is not None else self._resolve_category_ticket_types(current_user)
+            )
 
             page = await self.audit_log_repository.list_visible_page(
                 account_manager_id=account_manager_id,
                 ticket_types=ticket_types,
+                agent_ids=agent_ids,
                 limit=limit,
                 offset=offset,
                 entity_type=entity_type,
@@ -734,10 +781,14 @@ class TicketService:
         # to always pay for — but only on this now-rarely-exercised
         # path, not on every request/poll tick.
         owned_client_ids = await self._resolve_owned_client_ids(current_user)
-        ticket_types = self._resolve_category_ticket_types(current_user)
+        agent_ids = await self._resolve_audit_log_agent_ids(current_user)
+        ticket_types = (
+            None if agent_ids is not None else self._resolve_category_ticket_types(current_user)
+        )
         tickets, _ = await self.ticket_repository.list_all(
             client_company_ids=owned_client_ids,
             ticket_types=ticket_types,
+            agent_ids=agent_ids,
         )
 
         if not tickets:
