@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
 from app.database.session import get_db
+from app.rbac.repositories.audit_log_repository import AuditLogRepository
 from app.rbac.repositories.category_repository import CategoryRepository
 from app.rbac.repositories.role_repository import RoleRepository
 from app.rbac.repositories.user_repository import UserRepository
@@ -15,6 +16,7 @@ from app.rbac.schemas.user import (
     UserResponse,
     UserUpdate,
 )
+from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.organization_service import OrganizationService
 from app.rbac.services.user_service import UserService
 
@@ -39,11 +41,15 @@ def get_user_service(
     user_repository = UserRepository(db)
     role_repository = RoleRepository(db)
     category_repository = CategoryRepository(db)
+    audit_log_service = AuditLogService(
+        audit_log_repository=AuditLogRepository(db),
+    )
 
     return UserService(
         user_repository=user_repository,
         role_repository=role_repository,
         category_repository=category_repository,
+        audit_log_service=audit_log_service,
     )
 
 
@@ -80,7 +86,7 @@ async def create_user(
     Create a new user.
     """
 
-    return await service.create_user(user_data)
+    return await service.create_user(user_data, actor=current_user)
 
 
 # --------------------------------------------------
@@ -198,6 +204,7 @@ async def update_user(
     return await service.update_user(
         user_id,
         user_data,
+        actor=current_user,
     )
 
 
@@ -219,7 +226,7 @@ async def delete_user(
     """
     Delete a user.
     """
-    await service.delete_user(user_id)
+    await service.delete_user(user_id, actor=current_user)
 
 
 # --------------------------------------------------
@@ -241,7 +248,7 @@ async def activate_user(
     """
     Activate a user account.
     """
-    return await service.activate_user(user_id)
+    return await service.activate_user(user_id, actor=current_user)
 
 
 # --------------------------------------------------
@@ -263,4 +270,4 @@ async def deactivate_user(
     """
     Deactivate a user account.
     """
-    return await service.deactivate_user(user_id)
+    return await service.deactivate_user(user_id, actor=current_user)

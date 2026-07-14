@@ -6,6 +6,8 @@ from shared_models.models import User
 
 from app.database.session import get_db
 from app.dependencies.auth import get_current_agent, get_current_user
+from app.notifications.repository import NotificationRepository
+from app.notifications.service import NotificationService
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.schemas.sla import (
@@ -19,6 +21,7 @@ from app.ticketing.services.access_control import (
     ensure_account_manager_owns_ticket_client,
     ensure_agent_can_view_ticket,
 )
+from app.ticketing.services.escalation_service import build_escalation_service
 from app.ticketing.services.sla_service import build_sla_service
 
 #sla.py
@@ -106,6 +109,53 @@ async def resume_ticket_sla(
 
     sla_service = build_sla_service(db)
     return await sla_service.manual_resume(ticket_id, current_user)
+
+
+@ticket_sla_router.post(
+    "/{ticket_id}/escalate",
+    response_model=TicketActionResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def escalate_ticket(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Manually raises an internal escalation (ticket:escalate) — starts a
+    TEAM_LEAD -> MANAGER -> SITE_LEAD ownership/acknowledgment chain
+    entirely separate from, and never restarting, this ticket's own
+    Resolution SLA clock. 400s if an escalation is already active.
+    """
+
+    escalation_service = build_escalation_service(
+        db, notification_service=NotificationService(NotificationRepository(db))
+    )
+    return await escalation_service.manual_escalate(ticket_id, current_user)
+
+
+@ticket_sla_router.post(
+    "/{ticket_id}/escalation/acknowledge",
+    response_model=TicketActionResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def acknowledge_ticket_escalation(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Acknowledges the ticket's current active escalation level — only
+    the current level's own owner(s), or Site Lead/Super Admin as
+    company-wide overseers, may call this. Stops the ack-deadline
+    auto-advance for this escalation (it stays parked at its current
+    level until the ticket is resolved).
+    """
+
+    escalation_service = build_escalation_service(
+        db, notification_service=NotificationService(NotificationRepository(db))
+    )
+    return await escalation_service.acknowledge(ticket_id, current_user)
 
 
 # ---------------------------------------------------------

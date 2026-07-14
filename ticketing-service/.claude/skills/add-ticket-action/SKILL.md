@@ -30,6 +30,23 @@ on the Interaction's own columns instead of `Ticket.agent_id`. Access is checked
 not `ensure_agent_can_view_ticket`. The rest of this skill (below) is written for the
 ticket-level case; adapt step 3 accordingly for a pending-interaction action.
 
+**Check whether the new action should also touch an SLA clock** — a cross-cutting concern
+layered on top of whichever pattern above applies, not a fourth pattern of its own. If the
+action is the *first agent reply* on a ticket, call `SLAService.complete_first_response_clock`
+after the interaction/audit-log writes (see `add_reply`/`add_interaction_reply` for the
+pattern — guard with `if self.sla_service is not None:`, since it's an optional constructor
+dependency not every call site wires in). If the action changes `current_status` to/from
+`WAITING_FOR_CLIENT`, or to `CLOSED`, call `SLAService.pause_resolution_clock`/
+`resume_resolution_clock`/`complete_resolution_clock` respectively (see `change_status`). If
+it changes `current_priority`, call `reshift_resolution_clock_for_priority_change` (see
+`change_priority`). If it promotes a pending email into a ticket or attaches one to an
+existing ticket, see `InboxTicketService`'s own two methods for `start_resolution_clock`/
+`create_or_resume_resolution_clock`. See root `CLAUDE.md`'s "SLA & Escalation" section for
+the full clock lifecycle before adding a new touch point — and never let a new action call
+into `EscalationService` directly for anything other than reading state; the internal
+escalation workflow is a *consumer* of Resolution SLA breach events (via the sweep), not
+something ticket actions mutate directly.
+
 **Three further variants exist for shapes that don't fit either pattern above** — see
 `CLAUDE.md` for the full detail, summarized here:
 - **A thread-scoped, upsertable action** (Drafts): if the action should have "at most one

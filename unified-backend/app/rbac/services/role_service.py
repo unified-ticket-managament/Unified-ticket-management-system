@@ -1,11 +1,14 @@
+import json
 from uuid import UUID
 
 from fastapi import HTTPException, status
 
-from shared_models.models import Role
+from shared_models.models import Role, User
 
 from app.rbac.repositories import RoleRepository
+from app.rbac.schemas.audit_log import AuditLogCreate
 from app.rbac.schemas.role import RoleCreate, RoleUpdate
+from app.rbac.services.audit_log_service import AuditLogService
 
 
 class RoleService:
@@ -16,8 +19,10 @@ class RoleService:
     def __init__(
         self,
         role_repository: RoleRepository,
+        audit_log_service: AuditLogService,
     ):
         self.role_repository = role_repository
+        self.audit_log_service = audit_log_service
 
     # --------------------------------------------------
     # Create Role
@@ -26,6 +31,7 @@ class RoleService:
     async def create_role(
         self,
         role_data: RoleCreate,
+        actor: User | None = None,
     ) -> Role:
 
         exists = await self.role_repository.exists(
@@ -42,7 +48,19 @@ class RoleService:
             name=role_data.name,
         )
 
-        return await self.role_repository.create(role)
+        role = await self.role_repository.create(role)
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="role.create",
+                entity_type="role",
+                entity_id=str(role.role_id),
+                new_value=json.dumps({"name": role.name}),
+            )
+        )
+
+        return role
 
     # --------------------------------------------------
     # Get Role
@@ -100,6 +118,7 @@ class RoleService:
         self,
         role_id: UUID,
         role_data: RoleUpdate,
+        actor: User | None = None,
     ) -> Role:
 
         role = await self.get_role(role_id)
@@ -123,10 +142,26 @@ class RoleService:
                     detail="Role already exists.",
                 )
 
+        old_values = {field: getattr(role, field) for field in update_data}
+
         for field, value in update_data.items():
             setattr(role, field, value)
 
-        return await self.role_repository.update(role)
+        role = await self.role_repository.update(role)
+
+        if update_data:
+            await self.audit_log_service.create_log(
+                AuditLogCreate(
+                    user_id=actor.user_id if actor else None,
+                    action="role.update",
+                    entity_type="role",
+                    entity_id=str(role.role_id),
+                    old_value=json.dumps(old_values),
+                    new_value=json.dumps(update_data),
+                )
+            )
+
+        return role
 
     # --------------------------------------------------
     # Delete Role
@@ -135,6 +170,7 @@ class RoleService:
     async def delete_role(
         self,
         role_id: UUID,
+        actor: User | None = None,
     ):
 
         role = await self.get_role(role_id)
@@ -150,3 +186,13 @@ class RoleService:
             )
 
         await self.role_repository.delete(role)
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="role.delete",
+                entity_type="role",
+                entity_id=str(role_id),
+                old_value=json.dumps({"name": role.name}),
+            )
+        )

@@ -75,3 +75,46 @@ export function summarize(interaction: InteractionResponse): string {
       return JSON.stringify(payload);
   }
 }
+
+// Per-message direction/sender/body resolvers for a full conversation
+// view (the Ticket Details drawer's thread list, and the full-page
+// Interaction Details view) — distinct from summarize() above, which
+// collapses a single interaction into one summary line rather than
+// resolving who it's from and what its body text is.
+const MESSAGE_DIRECTION_LABELS: Record<string, string> = {
+  EMAIL: "Inbound · Client Email",
+  REPLY: "Outbound · Agent Reply",
+  INTERNAL_NOTE: "Internal Note",
+};
+
+export function messageDirectionLabel(message: InteractionResponse): string {
+  return MESSAGE_DIRECTION_LABELS[message.interaction_type] ?? message.direction;
+}
+
+export function messageSender(message: InteractionResponse): string | null {
+  const payload = message.payload ?? {};
+  switch (message.interaction_type) {
+    case "EMAIL":
+      return (payload.client_name as string) ?? (payload.from_email as string) ?? "Client";
+    case "REPLY":
+      return message.performed_by_name ?? "Agent";
+    case "INTERNAL_NOTE":
+      return message.performed_by_name ? `${message.performed_by_name} (internal note)` : null;
+    default:
+      return message.performed_by_name ?? null;
+  }
+}
+
+export function messageBody(message: InteractionResponse): string {
+  const payload = message.payload ?? {};
+  switch (message.interaction_type) {
+    case "EMAIL":
+      return (payload.body as string) ?? (payload.subject as string) ?? "";
+    case "REPLY":
+      return (payload.message as string) ?? "";
+    case "INTERNAL_NOTE":
+      return (payload.note as string) ?? "";
+    default:
+      return summarize(message);
+  }
+}

@@ -48,6 +48,7 @@ from app.ticketing.schemas.ticket import (
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
     CATEGORY_SCOPED_ROLE_NAMES,
+    ESCALATION_TAB_ROLE_NAMES,
     ensure_agent_can_view_ticket,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
@@ -459,8 +460,17 @@ class TicketService:
         see that method's own docstring. `view` ("pool"/"mine"/"all")
         is this page's own tab filter, resolved against the caller's
         own id for "mine"; it costs nothing extra since it's just
-        another WHERE condition on the same query.
+        another WHERE condition on the same query. `view == "escalated"`
+        is gated to ESCALATION_TAB_ROLE_NAMES — anyone else asking for
+        it gets an empty result rather than a 403, matching this
+        method's existing "sees nothing" convention for out-of-scope
+        requests elsewhere (e.g. an Account Manager who owns no
+        clients) rather than surfacing a new error shape for this one
+        tab specifically.
         """
+
+        if view == "escalated" and current_user.role.name not in ESCALATION_TAB_ROLE_NAMES:
+            return [], 0
 
         # Account Manager is scoped to only their own clients' tickets;
         # Team Lead/Staff are scoped to their own work-specialization
@@ -512,8 +522,22 @@ class TicketService:
                     client_company_name=client_company_name,
                     agent_name=agent_name,
                     created_by_name=created_by_name,
+                    is_escalated=escalation_status is not None,
+                    escalation_level=escalation_level,
+                    escalation_status=escalation_status,
+                    escalation_ack_due_at=escalation_ack_due_at,
                 )
-                for ticket, client_name, client_company_name, agent_name, created_by_name, *_ in page.items
+                for (
+                    ticket,
+                    client_name,
+                    client_company_name,
+                    agent_name,
+                    created_by_name,
+                    escalation_level,
+                    escalation_status,
+                    escalation_ack_due_at,
+                    *_,
+                ) in page.items
             ]
             return rows, page.total
 
@@ -536,9 +560,14 @@ class TicketService:
 
     async def count_by_view(self, current_user: User) -> dict[str, int]:
         """
-        The ticket-list page's three tab badges (Open Pool / My
-        Tickets / All) in one grouped query — see
-        TicketRepository.count_by_view.
+        The ticket-list page's four tab badges (Open Pool / My
+        Tickets / All / Escalated) in one grouped query — see
+        TicketRepository.count_by_view. `escalated` is forced to 0 for
+        anyone outside ESCALATION_TAB_ROLE_NAMES, same "sees nothing"
+        convention list_all's own `view == "escalated"` gate uses —
+        showing a nonzero badge for a tab the caller can't open would
+        be a confusing UI state, so this is overridden here rather
+        than trusting the repository's raw (role-blind) count.
         """
 
         ticket_types = self._resolve_category_ticket_types(current_user)
@@ -547,11 +576,16 @@ class TicketService:
             if current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME
             else None
         )
-        return await self.ticket_repository.count_by_view(
+        counts = await self.ticket_repository.count_by_view(
             account_manager_id=account_manager_id,
             ticket_types=ticket_types,
             assigned_to=current_user.user_id,
         )
+
+        if current_user.role.name not in ESCALATION_TAB_ROLE_NAMES:
+            counts["escalated"] = 0
+
+        return counts
 
     async def get_dashboard_stats(self, current_user: User) -> dict:
         """
@@ -618,7 +652,17 @@ class TicketService:
         # the response directly instead of a second _attach_names
         # round trip (which would defeat the point of that join).
         def _to_summary(row) -> TicketListItemResponse:
-            ticket, client_name, client_company_name, agent_name, created_by_name, *_ = row
+            (
+                ticket,
+                client_name,
+                client_company_name,
+                agent_name,
+                created_by_name,
+                escalation_level,
+                escalation_status,
+                escalation_ack_due_at,
+                *_,
+            ) = row
             return TicketListItemResponse(
                 ticket_id=ticket.ticket_id,
                 client_id=ticket.client_id,
@@ -637,6 +681,10 @@ class TicketService:
                 client_company_name=client_company_name,
                 agent_name=agent_name,
                 created_by_name=created_by_name,
+                is_escalated=escalation_status is not None,
+                escalation_level=escalation_level,
+                escalation_status=escalation_status,
+                escalation_ack_due_at=escalation_ack_due_at,
             )
 
         return {
@@ -644,6 +692,29 @@ class TicketService:
             "recent_tickets": [_to_summary(row) for row in recent_page.items],
             "critical_tickets": [_to_summary(row) for row in critical_rows],
         }
+
+    async def get_sla_overview_counts(self, current_user: User) -> dict[str, int]:
+        """
+        Dashboard "SLA Overview" tile counts — one grouped query (see
+        TicketRepository.sla_overview_counts) under the same
+        visibility scoping as get_dashboard_stats above, replacing the
+        old N+1 pattern (GET /tickets unbounded, then one
+        GET /tickets/{id}/sla call per visible ticket) that used to
+        back this same tile client-side.
+        """
+
+        ticket_types = self._resolve_category_ticket_types(current_user)
+        account_manager_id = (
+            current_user.user_id
+            if current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME
+            else None
+        )
+
+        return await self.ticket_repository.sla_overview_counts(
+            account_manager_id=account_manager_id,
+            ticket_types=ticket_types,
+            now=datetime.now(timezone.utc),
+        )
 
     # ---------------------------------------------------------
     # List Audit Logs Across Every Visible Ticket

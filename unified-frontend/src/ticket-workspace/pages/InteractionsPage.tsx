@@ -445,6 +445,18 @@ export function InteractionsPage() {
     setDrawerOpen(false);
   }
 
+  // Full-page view for the same row — passes along whatever's already
+  // loaded for the drawer (row metadata + thread/email) via router
+  // state so the destination page renders instantly with zero extra
+  // requests; it only re-fetches if that state is ever missing (e.g.
+  // a direct link/refresh on the full-page URL).
+  function handleExpand() {
+    if (!drawerRow) return;
+    navigate(`/interactions/${drawerRow.id}`, {
+      state: { row: drawerRow, email: drawerEmail, thread: drawerThread },
+    });
+  }
+
   function handleViewTicket(ticketId: string) {
     setDrawerOpen(false);
     navigate(`/tickets/${ticketId}`);
@@ -707,6 +719,7 @@ export function InteractionsPage() {
         isLoadingThread={isLoadingThread}
         onClose={closeDrawer}
         onViewTicket={handleViewTicket}
+        onExpand={handleExpand}
       />
     </AppLayout>
   );

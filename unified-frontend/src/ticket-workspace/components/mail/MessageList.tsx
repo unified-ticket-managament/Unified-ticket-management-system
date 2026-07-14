@@ -50,6 +50,16 @@ function statusMeta(item: InboxItem): { label: string; variant: "warning" | "suc
   return STATUS_META[item.status] ?? { label: item.status, variant: "secondary" };
 }
 
+// First 80–120 characters of the latest message as a row preview —
+// empty (not a placeholder) when there's nothing to show.
+const PREVIEW_MAX_LENGTH = 110;
+
+function previewOf(message: string | null | undefined): string {
+  const trimmed = message?.trim();
+  if (!trimmed) return "";
+  return trimmed.length > PREVIEW_MAX_LENGTH ? `${trimmed.slice(0, PREVIEW_MAX_LENGTH).trimEnd()}…` : trimmed;
+}
+
 function initialsOf(name: string): string {
   const initials = name
     .split(" ")
@@ -331,6 +341,7 @@ export function MessageList({
               const isUnread = !openedIds.has(openId);
               const status = statusMeta(item);
               const isOpening = openingId === openId;
+              const preview = previewOf(item.latest_message);
 
               return (
                 <li key={item.interaction_id}>
@@ -372,9 +383,9 @@ export function MessageList({
                       >
                         {item.subject}
                       </p>
-                      <p className="mt-0.5 truncate text-[12px] text-muted-foreground">
-                        {item.latest_message ?? "No preview available."}
-                      </p>
+                      {preview && (
+                        <p className="mt-0.5 truncate text-[12px] text-muted-foreground">{preview}</p>
+                      )}
                     </div>
 
                     <div className="flex flex-none flex-col items-end gap-1.5 pl-1">

@@ -5,12 +5,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
 from app.database.session import get_db
+from app.rbac.repositories.audit_log_repository import AuditLogRepository
 from app.rbac.repositories.permission_repository import PermissionRepository
 from app.rbac.repositories.role_permission_repository import RolePermissionRepository
 from app.rbac.repositories.role_repository import RoleRepository
 from app.rbac.repositories.user_repository import UserRepository
 from app.rbac.schemas.permission import PermissionResponse
 from app.rbac.schemas.role_permission import AssignPermissionsRequest
+from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.role_permission_service import RolePermissionService
 
 router = APIRouter(
@@ -36,6 +38,9 @@ def get_role_permission_service(
         permission_repository=PermissionRepository(db),
         role_permission_repository=RolePermissionRepository(db),
         user_repository=UserRepository(db),
+        audit_log_service=AuditLogService(
+            audit_log_repository=AuditLogRepository(db),
+        ),
     )
 
 
@@ -86,6 +91,7 @@ async def update_role_permissions(
     await service.replace_permissions(
         role_id,
         request.permission_ids,
+        actor=current_user,
     )
 
     return await service.get_role_permissions(role_id)

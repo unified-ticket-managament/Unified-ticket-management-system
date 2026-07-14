@@ -85,6 +85,23 @@ class UserRepository:
         )
         return dict(result.all())
 
+    async def get_emails_by_ids(self, user_ids: list[UUID]) -> dict[UUID, str]:
+        """
+        Batch-resolves user_id -> email address — used to send real
+        outbound notification email (SLA breach escalations) to a
+        resolved recipient set without a lookup per recipient. Kept as
+        its own method rather than widening get_names_by_ids' existing
+        (user_id, name) shape, which other callers already rely on.
+        """
+
+        if not user_ids:
+            return {}
+
+        result = await self.db.execute(
+            select(User.user_id, User.email).where(User.user_id.in_(user_ids))
+        )
+        return dict(result.all())
+
     async def get_active_account_manager_ids(self, user_ids: list[UUID]) -> set[UUID]:
         """
         Batch-checks which of the given user_ids are CURRENTLY active
@@ -141,6 +158,48 @@ class UserRepository:
                 Category.category_name == category_name,
             )
             .order_by(User.user_id)
+        )
+        return list(result.scalars().all())
+
+    async def list_active_by_role_and_manager(
+        self, role_name: str, manager_id: UUID
+    ) -> list[User]:
+        """
+        Active users of the given role reporting (via `manager_id`) to
+        one specific Account Manager — used to scope the Create Ticket
+        "Assigned To" picker's Team Lead/Staff options to the acting
+        Account Manager's own reports, not every Team Lead/Staff
+        company-wide.
+        """
+
+        result = await self.db.execute(
+            select(User)
+            .join(Role, Role.role_id == User.role_id)
+            .where(
+                func.lower(Role.name) == role_name.lower(),
+                User.manager_id == manager_id,
+                User.is_active.is_(True),
+            )
+            .order_by(User.name)
+        )
+        return list(result.scalars().all())
+
+    async def list_active_staff_by_teamlead(self, teamlead_id: UUID) -> list[User]:
+        """
+        Active Staff reporting (via `teamlead_id`) to one specific
+        Team Lead — used to scope a Team Lead's own "Assigned To"
+        Staff picker on the Create Ticket dialog.
+        """
+
+        result = await self.db.execute(
+            select(User)
+            .join(Role, Role.role_id == User.role_id)
+            .where(
+                func.lower(Role.name) == STAFF_ROLE_NAME.lower(),
+                User.teamlead_id == teamlead_id,
+                User.is_active.is_(True),
+            )
+            .order_by(User.name)
         )
         return list(result.scalars().all())
 

@@ -24,9 +24,13 @@ interface EditAccessPanelProps {
   // TicketDetailPage, not by this component, since TicketActions
   // reads the exact same data (see that component's own comment).
   onRequestsChanged: () => void;
+  // When true, skips this component's own Card title/eyebrow and
+  // outer border — for embedding inside another container (the
+  // "More" menu's Edit Access modal) that already provides both.
+  embedded?: boolean;
 }
 
-export function EditAccessPanel({ onRequestsChanged }: EditAccessPanelProps) {
+export function EditAccessPanel({ onRequestsChanged, embedded = false }: EditAccessPanelProps) {
   const { activeTicket, editAccessRequests: requests } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const [isRequestModalOpen, setIsRequestModalOpen] = useState(false);
@@ -81,7 +85,7 @@ export function EditAccessPanel({ onRequestsChanged }: EditAccessPanelProps) {
   }
 
   return (
-    <Card title="Edit Access" eyebrow="Collaboration">
+    <Card {...(embedded ? { flat: true } : { title: "Edit Access", eyebrow: "Collaboration" })}>
       {!alreadyHasAccess && !myPendingRequest && (
         <Button
           size="sm"

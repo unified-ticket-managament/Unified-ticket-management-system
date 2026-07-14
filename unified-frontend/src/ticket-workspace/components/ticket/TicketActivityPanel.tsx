@@ -1,8 +1,10 @@
-import { History, ListChecks } from "lucide-react";
+import { History, ListChecks, MessageSquareText, Paperclip, Send } from "lucide-react";
 import { TicketTimeline } from "@tw/components/ticket/TicketTimeline";
 import { TicketAuditLog } from "@tw/components/ticket/TicketAuditLog";
+import { TicketComposer } from "@tw/components/ticket/TicketComposer";
+import { TicketAttachmentsTab } from "@tw/components/ticket/TicketAttachmentsTab";
 
-export type ActivityTab = "timeline" | "audit";
+export type ActivityTab = "timeline" | "audit" | "reply" | "note" | "attachments";
 
 interface TicketActivityPanelProps {
   activeTab: ActivityTab;
@@ -14,13 +16,16 @@ interface TicketActivityPanelProps {
 const TABS: Array<{ key: ActivityTab; label: string; icon: typeof History }> = [
   { key: "timeline", label: "Timeline", icon: History },
   { key: "audit", label: "Audit Log", icon: ListChecks },
+  { key: "reply", label: "Reply", icon: Send },
+  { key: "note", label: "Internal Note", icon: MessageSquareText },
+  { key: "attachments", label: "Attachments", icon: Paperclip },
 ];
 
-// Timeline and Audit Log used to be two separate stacked cards (the
-// audit trail buried at the bottom of the right sidebar, below
-// Actions) — pulling the audit trail into a tab right next to the
-// Timeline keeps both one click away without the page just being a
-// tall stack of boxes.
+// Timeline, Audit Log, Reply, and Internal Note all live as tabs of
+// one panel — Reply/Internal Note used to be opened via separate
+// "Actions" tiles below the fold; putting them alongside Timeline/
+// Audit Log keeps every ticket activity one click away from the same
+// row instead of scattered across the page.
 export function TicketActivityPanel({
   activeTab,
   onTabChange,
@@ -29,7 +34,7 @@ export function TicketActivityPanel({
 }: TicketActivityPanelProps) {
   return (
     <div className="rounded-md2 border border-border bg-surface shadow-xs">
-      <div className="flex items-center gap-1 border-b border-border px-5 pt-3">
+      <div className="flex flex-wrap items-center gap-1 border-b border-border px-5 pt-3">
         {TABS.map((tab) => {
           const isActive = activeTab === tab.key;
           const Icon = tab.icon;
@@ -51,10 +56,23 @@ export function TicketActivityPanel({
         })}
       </div>
 
-      {activeTab === "timeline" ? (
-        <TicketTimeline onChanged={onTimelineChanged} flat />
-      ) : (
-        <TicketAuditLog refreshToken={auditRefreshToken} flat />
+      {activeTab === "timeline" && <TicketTimeline onChanged={onTimelineChanged} flat />}
+      {activeTab === "audit" && <TicketAuditLog refreshToken={auditRefreshToken} flat />}
+      {activeTab === "attachments" && (
+        <TicketAttachmentsTab onChanged={onTimelineChanged} flat />
+      )}
+      {(activeTab === "reply" || activeTab === "note") && (
+        <TicketComposer
+          key={activeTab}
+          mode={activeTab === "reply" ? "reply" : "note"}
+          lockMode
+          flat
+          onClose={() => onTabChange("timeline")}
+          onSent={() => {
+            onTimelineChanged();
+            onTabChange("timeline");
+          }}
+        />
       )}
     </div>
   );

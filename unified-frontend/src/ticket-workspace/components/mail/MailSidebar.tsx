@@ -3,6 +3,7 @@
 import { memo, useState, type ReactNode } from "react";
 import {
   Archive,
+  Bell,
   FileEdit,
   Folder,
   FolderPlus,
@@ -38,6 +39,12 @@ const VIEW_ITEMS: Array<{ key: MailViewKey; label: string; icon: LucideIcon }> =
   { key: "replied", label: "Replied", icon: Reply },
   { key: "ticketed", label: "Ticketed", icon: TicketIcon },
   { key: "archived", label: "Archived", icon: Archive },
+  // Internal system notices (SLA breach ladder + escalation workflow)
+  // rendered in mail format — see useMailInbox.ts's systemNotifications
+  // and SystemMailList/SystemMailDetailsView. Not part of the Mail
+  // spec's original required order above; appended rather than
+  // inserted so that order stays intact.
+  { key: "system", label: "System", icon: Bell },
 ];
 
 interface MailSidebarProps {

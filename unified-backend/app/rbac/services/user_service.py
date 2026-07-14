@@ -1,3 +1,4 @@
+import json
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -6,7 +7,9 @@ from shared_models.models import User
 
 from app.auth.password import get_password_hash
 from app.rbac.repositories import CategoryRepository, RoleRepository, UserRepository
+from app.rbac.schemas.audit_log import AuditLogCreate
 from app.rbac.schemas.user import UserCreate, UserUpdate
+from app.rbac.services.audit_log_service import AuditLogService
 
 # Roles required to belong to a work-specialization category — see
 # shared_models.models.Category. Not imported from a shared constant
@@ -34,10 +37,12 @@ class UserService:
         user_repository: UserRepository,
         role_repository: RoleRepository,
         category_repository: CategoryRepository,
+        audit_log_service: AuditLogService,
     ):
         self.user_repository = user_repository
         self.role_repository = role_repository
         self.category_repository = category_repository
+        self.audit_log_service = audit_log_service
 
     # --------------------------------------------------
     # Create User
@@ -46,6 +51,7 @@ class UserService:
     async def create_user(
             self,
             user_data: UserCreate,
+            actor: User | None = None,
         ) -> User:
 
         # Check email already exists
@@ -125,7 +131,21 @@ class UserService:
             is_active=user_data.is_active,
         )
 
-        return await self.user_repository.create(user)
+        user = await self.user_repository.create(user)
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="user.create",
+                entity_type="user",
+                entity_id=str(user.user_id),
+                new_value=json.dumps(
+                    {"name": user.name, "email": user.email, "role_id": str(user.role_id)}
+                ),
+            )
+        )
+
+        return user
 
     # --------------------------------------------------
     # Get User
@@ -188,6 +208,7 @@ class UserService:
         self,
         user_id: UUID,
         user_data: UserUpdate,
+        actor: User | None = None,
     ) -> User:
 
         user = await self.get_user(user_id)
@@ -225,6 +246,13 @@ class UserService:
                     detail="Role not found.",
                 )
 
+        old_values = {
+            field: (str(getattr(user, field)) if getattr(user, field) is not None else None)
+            for field in update_data
+        }
+        old_role_id = user.role_id
+        old_is_active = user.is_active
+
         for field, value in update_data.items():
             setattr(user, field, value)
 
@@ -237,7 +265,54 @@ class UserService:
         if _RBAC_RELEVANT_FIELDS.intersection(update_data.keys()):
             user.permission_version += 1
 
-        return await self.user_repository.update(user)
+        user = await self.user_repository.update(user)
+
+        if update_data:
+            await self.audit_log_service.create_log(
+                AuditLogCreate(
+                    user_id=actor.user_id if actor else None,
+                    action="user.update",
+                    entity_type="user",
+                    entity_id=str(user.user_id),
+                    old_value=json.dumps(old_values),
+                    new_value=json.dumps(
+                        {k: (str(v) if v is not None else None) for k, v in update_data.items()}
+                    ),
+                )
+            )
+
+        # "Role Changed" is logged as its own distinct action in
+        # addition to the generic user.update row above — same
+        # mutation, but callers that only care about role history
+        # (not every profile-field edit) can filter on this action
+        # name instead of parsing old_value/new_value.
+        if "role_id" in update_data and str(old_role_id) != str(update_data["role_id"]):
+            await self.audit_log_service.create_log(
+                AuditLogCreate(
+                    user_id=actor.user_id if actor else None,
+                    action="user.role_changed",
+                    entity_type="user",
+                    entity_id=str(user.user_id),
+                    old_value=json.dumps({"role_id": str(old_role_id)}),
+                    new_value=json.dumps({"role_id": str(update_data["role_id"])}),
+                )
+            )
+
+        # Same reasoning as role_changed above — is_active can also be
+        # toggled through this generic update path (not only the
+        # dedicated activate/deactivate endpoints below), so it gets
+        # its own named action here too.
+        if "is_active" in update_data and bool(old_is_active) != bool(update_data["is_active"]):
+            await self.audit_log_service.create_log(
+                AuditLogCreate(
+                    user_id=actor.user_id if actor else None,
+                    action="user.activate" if update_data["is_active"] else "user.deactivate",
+                    entity_type="user",
+                    entity_id=str(user.user_id),
+                )
+            )
+
+        return user
 
     # --------------------------------------------------
     # Delete User
@@ -246,11 +321,22 @@ class UserService:
     async def delete_user(
         self,
         user_id: UUID,
+        actor: User | None = None,
     ):
 
         user = await self.get_user(user_id)
 
         await self.user_repository.delete(user)
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="user.delete",
+                entity_type="user",
+                entity_id=str(user_id),
+                old_value=json.dumps({"name": user.name, "email": user.email}),
+            )
+        )
 
     # --------------------------------------------------
     # Activate
@@ -259,14 +345,26 @@ class UserService:
     async def activate_user(
         self,
         user_id: UUID,
+        actor: User | None = None,
     ) -> User:
 
         user = await self.get_user(user_id)
         user.permission_version += 1
 
-        return await self.user_repository.activate(
+        user = await self.user_repository.activate(
             user
         )
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="user.activate",
+                entity_type="user",
+                entity_id=str(user.user_id),
+            )
+        )
+
+        return user
 
     # --------------------------------------------------
     # Deactivate
@@ -275,11 +373,23 @@ class UserService:
     async def deactivate_user(
         self,
         user_id: UUID,
+        actor: User | None = None,
     ) -> User:
 
         user = await self.get_user(user_id)
         user.permission_version += 1
 
-        return await self.user_repository.deactivate(
+        user = await self.user_repository.deactivate(
             user
         )
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="user.deactivate",
+                entity_type="user",
+                entity_id=str(user.user_id),
+            )
+        )
+
+        return user

@@ -6,6 +6,8 @@ from shared_models.models import User
 
 from app.database.session import get_db
 from app.dependencies.auth import get_current_agent
+from app.notifications.repository import NotificationRepository
+from app.notifications.service import NotificationService
 from app.ticketing.enums import TicketPriority
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.repositories.client_repository import ClientRepository
@@ -391,7 +393,9 @@ async def archive_interaction(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         client_repository=client_repository,
-        sla_service=build_sla_service(db),
+        sla_service=build_sla_service(
+            db, notification_service=NotificationService(NotificationRepository(db))
+        ),
     )
 
     return await service.archive_interaction(
@@ -693,7 +697,9 @@ async def reply_to_interaction(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         client_repository=client_repository,
-        sla_service=build_sla_service(db),
+        sla_service=build_sla_service(
+            db, notification_service=NotificationService(NotificationRepository(db))
+        ),
     )
 
     return await service.add_interaction_reply(

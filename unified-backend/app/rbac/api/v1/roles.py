@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
 from app.database.session import get_db
+from app.rbac.repositories.audit_log_repository import AuditLogRepository
 from app.rbac.repositories.role_repository import RoleRepository
 from app.rbac.schemas.role import (
     RoleCreate,
@@ -12,6 +13,7 @@ from app.rbac.schemas.role import (
     RoleResponse,
     RoleUpdate,
 )
+from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.role_service import RoleService
 
 router = APIRouter(
@@ -33,9 +35,13 @@ def get_role_service(
     """
 
     role_repository = RoleRepository(db)
+    audit_log_service = AuditLogService(
+        audit_log_repository=AuditLogRepository(db),
+    )
 
     return RoleService(
         role_repository=role_repository,
+        audit_log_service=audit_log_service,
     )
 
 
@@ -59,7 +65,7 @@ async def create_role(
     Create a new role.
     """
 
-    return await service.create_role(role_data)
+    return await service.create_role(role_data, actor=current_user)
 
 
 # --------------------------------------------------
@@ -141,6 +147,7 @@ async def update_role(
     return await service.update_role(
         role_id,
         role_data,
+        actor=current_user,
     )
 
 
@@ -163,4 +170,4 @@ async def delete_role(
     Delete role.
     """
 
-    await service.delete_role(role_id)
+    await service.delete_role(role_id, actor=current_user)

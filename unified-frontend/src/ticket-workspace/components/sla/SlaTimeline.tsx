@@ -24,7 +24,17 @@ const RELEVANT_EVENT_TYPES = new Set<AuditEventType>([
   "SLA_MANUALLY_RESUMED",
   "SLA_BREACH_DETECTED",
   "SLA_ESCALATED",
+  "ESCALATION_CREATED",
+  "ESCALATION_ACKNOWLEDGED",
+  "ESCALATION_ADVANCED",
+  "ESCALATION_CLOSED",
 ]);
+
+const ESCALATION_LEVEL_LABEL: Record<string, string> = {
+  TEAM_LEAD: "Team Lead",
+  MANAGER: "Manager",
+  SITE_LEAD: "Site Lead",
+};
 
 const DOT_CLASSES: Record<string, string> = {
   neutral: "bg-accent",
@@ -63,6 +73,37 @@ function describeEvent(log: AuditLogResponse): { label: string; tone: keyof type
       return { label: "Resolution SLA breached (sweep-detected)", tone: "breached" };
     case "SLA_ESCALATED":
       return { label: "Resolution SLA escalated (sweep-detected)", tone: "escalated" };
+    case "ESCALATION_CREATED": {
+      const level = log.new_values?.level as string | undefined;
+      return {
+        label: `Escalated to ${level ? ESCALATION_LEVEL_LABEL[level] ?? level : "next level"}`,
+        tone: "at_risk",
+      };
+    }
+    case "ESCALATION_ACKNOWLEDGED": {
+      const viaAssignment = log.new_values?.via === "assignment";
+      return {
+        label: viaAssignment
+          ? "Escalation acknowledged via staff assignment — Escalation Handling SLA started"
+          : "Escalation acknowledged — Escalation Handling SLA started",
+        tone: "neutral",
+      };
+    }
+    case "ESCALATION_ADVANCED": {
+      const oldLevel = log.old_values?.level as string | undefined;
+      const newLevel = log.new_values?.level as string | undefined;
+      const dueToHandlingBreach = log.new_values?.reason === "escalation_handling_sla_breach";
+      const from = oldLevel ? ESCALATION_LEVEL_LABEL[oldLevel] ?? oldLevel : "?";
+      const to = newLevel ? ESCALATION_LEVEL_LABEL[newLevel] ?? newLevel : "?";
+      return {
+        label: dueToHandlingBreach
+          ? `Escalation Handling SLA breached — advanced from ${from} to ${to}`
+          : `Not acknowledged in time — advanced from ${from} to ${to}`,
+        tone: "escalated",
+      };
+    }
+    case "ESCALATION_CLOSED":
+      return { label: "Escalation closed — ticket resolved", tone: "neutral" };
     default:
       return { label: log.event_type.replace(/_/g, " "), tone: "neutral" };
   }

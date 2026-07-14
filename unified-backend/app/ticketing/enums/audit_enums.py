@@ -49,6 +49,13 @@ class AuditEventType(str, Enum):
     SLA_MANUALLY_RESUMED = "SLA_MANUALLY_RESUMED"
     SLA_BREACH_DETECTED = "SLA_BREACH_DETECTED"
     SLA_ESCALATED = "SLA_ESCALATED"
+    # Internal escalation workflow (TicketEscalation) — distinct from
+    # SLA_ESCALATED above, which is the Resolution SLA's own 1.5x
+    # notification-ladder tier and never touches ownership/ack state.
+    ESCALATION_CREATED = "ESCALATION_CREATED"
+    ESCALATION_ACKNOWLEDGED = "ESCALATION_ACKNOWLEDGED"
+    ESCALATION_ADVANCED = "ESCALATION_ADVANCED"
+    ESCALATION_CLOSED = "ESCALATION_CLOSED"
 
 
 class ActorRole(str, Enum):

@@ -3,10 +3,9 @@ import { useParams } from "react-router-dom";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { TicketHeader } from "@tw/components/ticket/TicketHeader";
+import { TicketPropertiesCard } from "@tw/components/ticket/TicketPropertiesCard";
 import { TicketActivityPanel, type ActivityTab } from "@tw/components/ticket/TicketActivityPanel";
-import { TicketComposer, type ComposerMode } from "@tw/components/ticket/TicketComposer";
 import { TicketDetails } from "@tw/components/ticket/TicketDetails";
-import { TicketActions } from "@tw/components/ticket/TicketActions";
 import { EditAccessPanel } from "@tw/components/ticket/EditAccessPanel";
 import { SlaCard } from "@tw/components/sla/SlaCard";
 import { SlaTimeline } from "@tw/components/sla/SlaTimeline";
@@ -19,7 +18,6 @@ export function TicketDetailPage() {
   const { ticketId } = useParams<{ ticketId: string }>();
   const { activeTicket, setActiveTicket, setTimeline, setEditAccessRequests } =
     useWorkflowContext();
-  const [composerMode, setComposerMode] = useState<ComposerMode | null>(null);
   const [activityTab, setActivityTab] = useState<ActivityTab>("timeline");
   // Bumped after any refresh so the Audit Log tab refetches
   // immediately instead of waiting for its own poll interval — only
@@ -91,17 +89,14 @@ export function TicketDetailPage() {
 
   useEffect(() => {
     refreshAll();
-    setComposerMode(null);
+    setActivityTab("timeline");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketId]);
 
   const showEmptyState = !isLoadingTicket && (!activeTicket || activeTicket.ticket_id !== ticketId);
 
   return (
-    <AppLayout
-      title="Ticket"
-      description="Every action taken here is recorded on the ticket's timeline."
-    >
+    <AppLayout>
       {showEmptyState ? (
         <div className="rounded-md2 border border-border bg-surface shadow-xs">
           <EmptyState
@@ -117,7 +112,8 @@ export function TicketDetailPage() {
       ) : (
         activeTicket && (
           <div className="flex flex-col gap-5">
-            <TicketHeader ticket={activeTicket} />
+            <TicketHeader ticket={activeTicket} onActionComplete={refreshAll} />
+            <TicketPropertiesCard ticket={activeTicket} />
 
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_320px]">
               <div className="flex flex-col gap-5">
@@ -127,16 +123,6 @@ export function TicketDetailPage() {
                   onTimelineChanged={refreshTimeline}
                   auditRefreshToken={auditRefreshToken}
                 />
-                {composerMode && (
-                  <TicketComposer
-                    mode={composerMode}
-                    onClose={() => setComposerMode(null)}
-                    onSent={() => {
-                      setComposerMode(null);
-                      refreshTimeline();
-                    }}
-                  />
-                )}
               </div>
               {/* The outer cell stretches to match the left column's
                   height (CSS Grid's default align-items: stretch) so
@@ -148,7 +134,6 @@ export function TicketDetailPage() {
                 <div className="flex flex-col gap-5 lg:sticky lg:top-0">
                   <TicketDetails onRelatedChanged={refreshAll} />
                   <SlaCard ticketId={activeTicket.ticket_id} ticketPriority={activeTicket.current_priority} />
-                  <TicketActions onActionComplete={refreshAll} onOpenComposer={setComposerMode} />
                   <SlaTimeline ticketId={activeTicket.ticket_id} />
                   <EditAccessPanel onRequestsChanged={refreshEditAccessRequests} />
                 </div>

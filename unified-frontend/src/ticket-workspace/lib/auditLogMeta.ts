@@ -29,6 +29,10 @@ const EVENT_META: Record<AuditEventType, AuditEventMeta> = {
   SLA_MANUALLY_RESUMED: { icon: "▶", label: "SLA Manually Resumed", tone: "info" },
   SLA_BREACH_DETECTED: { icon: "⚠", label: "SLA Breached", tone: "danger" },
   SLA_ESCALATED: { icon: "🔺", label: "SLA Escalated", tone: "danger" },
+  ESCALATION_CREATED: { icon: "📣", label: "Escalation Created", tone: "warning" },
+  ESCALATION_ACKNOWLEDGED: { icon: "👀", label: "Escalation Acknowledged", tone: "info" },
+  ESCALATION_ADVANCED: { icon: "⬆️", label: "Escalation Advanced", tone: "warning" },
+  ESCALATION_CLOSED: { icon: "✅", label: "Escalation Closed", tone: "success" },
 };
 
 export function auditMetaFor(type: AuditEventType): AuditEventMeta {

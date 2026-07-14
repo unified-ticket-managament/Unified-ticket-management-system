@@ -17,6 +17,7 @@ from app.ticketing.schemas.ticket_from_interaction import (
     TicketFromInteractionCreate,
     TicketFromInteractionResponse,
 )
+from app.ticketing.services.assignment_service import AssignmentService
 from app.ticketing.services.audit_log_service import AuditLogService
 from app.ticketing.services.sla_service import SLAService
 
@@ -34,10 +35,12 @@ class InboxTicketService:
         self,
         ticket_repository: TicketRepository,
         interaction_repository: InteractionRepository,
+        assignment_service: AssignmentService | None = None,
         sla_service: SLAService | None = None,
     ):
         self.ticket_repository = ticket_repository
         self.interaction_repository = interaction_repository
+        self.assignment_service = assignment_service
         self.sla_service = sla_service
 
     # ---------------------------------------------------------
@@ -93,9 +96,17 @@ class InboxTicketService:
             current_user
         )
 
-        # Tickets are born unclaimed (agent_id=None) — they sit in
-        # the shared pool until someone claims them. `created_by`
-        # still records who actually did the promoting.
+        # Tickets are born unclaimed (agent_id=None) unless the Create
+        # Ticket dialog's "Assigned To" picker chose someone — resolved
+        # (and validated against the actor's own hierarchy) via
+        # AssignmentService, never trusted as-is. `created_by` still
+        # separately records who actually did the promoting.
+        resolved_agent_id = (
+            await self.assignment_service.resolve_target(current_user, request.agent_id)
+            if self.assignment_service is not None
+            else None
+        )
+
         ticket = await self.ticket_repository.create(
 
             TicketCreate(
@@ -104,7 +115,7 @@ class InboxTicketService:
 
                 client_company_id=interaction.client_id,
 
-                agent_id=None,
+                agent_id=resolved_agent_id,
 
                 created_by=actor_id,
 
@@ -196,6 +207,27 @@ class InboxTicketService:
         await self.interaction_repository.assign_thread_to_ticket(
             root_interaction_id=interaction.interaction_id,
             ticket_id=ticket.ticket_id,
+        )
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        # Reuses TICKET_UPDATED (no new enum value / migration needed
+        # for this) — the new_values payload's own "action" key is
+        # what distinguishes this from any other ticket-field edit.
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket.ticket_id,
+            event_type=AuditEventType.TICKET_UPDATED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            new_values={
+                "action": "existing_email_attached",
+                "interaction_id": interaction.interaction_id,
+            },
         )
 
         if self.sla_service is not None:

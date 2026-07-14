@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.ticketing.enums import TicketPriority, TicketStatus
+from app.ticketing.enums import EscalationLevel, EscalationStatus, TicketPriority, TicketStatus
 from app.ticketing.schemas.common import ORMBase
 
 #ticket.py
@@ -117,6 +117,19 @@ class TicketResponse(ORMBase):
     # avoid an N+1 lookup per row) — see TicketService._attach_related_tickets.
     related_tickets: list[RelatedTicketSummary] = Field(default_factory=list)
 
+    # Escalation display fields — sourced from a LEFT JOIN against
+    # ticket_escalations (see TicketRepository.list_visible_page), not
+    # a second per-ticket lookup. `is_escalated` is the frontend's one
+    # signal to render the Critical/escalation badge and, on My
+    # Tickets, float the row to the top — deliberately NOT a change to
+    # `current_priority` itself (see the plan's "effective display
+    # priority" choice): a ticket's real business priority is never
+    # silently overwritten by escalation state.
+    is_escalated: bool = False
+    escalation_level: EscalationLevel | None = None
+    escalation_status: EscalationStatus | None = None
+    escalation_ack_due_at: datetime | None = None
+
 
 class TicketListItemResponse(ORMBase):
     """
@@ -152,6 +165,13 @@ class TicketListItemResponse(ORMBase):
     agent_name: str | None = None
     created_by_name: str | None = None
 
+    # See TicketResponse's own matching fields for the full rationale
+    # — same LEFT JOIN-sourced, display-only escalation signal.
+    is_escalated: bool = False
+    escalation_level: EscalationLevel | None = None
+    escalation_status: EscalationStatus | None = None
+    escalation_ack_due_at: datetime | None = None
+
 
 class DashboardStatsResponse(BaseModel):
     """
@@ -171,3 +191,20 @@ class DashboardStatsResponse(BaseModel):
     sla_risk: int
     recent_tickets: list[TicketListItemResponse]
     critical_tickets: list[TicketListItemResponse]
+
+
+class SLAOverviewCountsResponse(BaseModel):
+    """
+    GET /tickets/sla-overview-counts — the Dashboard's "SLA Overview"
+    tile row, computed server-side in one grouped query (see
+    TicketRepository.sla_overview_counts) instead of the browser
+    fetching every visible ticket and calling GET /tickets/{id}/sla
+    once per ticket to classify it.
+    """
+
+    running: int
+    paused: int
+    at_risk: int
+    breached: int
+    escalated: int
+    completed: int

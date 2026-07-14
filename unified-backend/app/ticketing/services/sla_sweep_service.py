@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
-from app.notifications.service import NotificationService, NotificationType
+from app.notifications.service import NotificationService
 from app.ticketing.enums import ActorRole, AuditEntityType, AuditEventType
 from app.ticketing.models.first_response_sla import FirstResponseSLA
 from app.ticketing.models.resolution_sla import ResolutionSLA
@@ -17,13 +17,26 @@ from app.ticketing.repositories.sla_breach_notification_repository import (
     SLABreachNotificationRepository,
 )
 from app.ticketing.repositories.sla_policy_repository import SLAPolicyRepository
+from app.ticketing.repositories.ticket_escalation_repository import (
+    TicketEscalationRepository,
+)
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.sla import SLASweepResponse
-from app.ticketing.services.access_control import GLOBAL_INBOX_ROLE_NAMES
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.escalation_handling_sla_service import (
+    build_escalation_handling_sla_service,
+)
+from app.ticketing.services.escalation_service import EscalationService
+from app.ticketing.services.sla_breach_notifier import (
+    CLOCK_TYPE_FIRST_RESPONSE,
+    NOTIFICATION_TYPE_BY_THRESHOLD,
+    build_absolute_link,
+    notify_first_response_threshold,
+    resolve_global_inbox_user_ids,
+    send_notification_emails,
+)
 from app.ticketing.services.sla_escalation_rules import (
-    FIRST_RESPONSE_RULES,
     RESOLUTION_RULES_CLAIMED,
     RESOLUTION_RULES_UNCLAIMED,
     TEAM_LEAD_ROLE_NAME,
@@ -35,15 +48,7 @@ from app.ticketing.services.sla_service import compute_elapsed_fraction
 
 logger = logging.getLogger(__name__)
 
-CLOCK_TYPE_FIRST_RESPONSE = "FIRST_RESPONSE"
 CLOCK_TYPE_RESOLUTION = "RESOLUTION"
-
-_NOTIFICATION_TYPE_BY_THRESHOLD = {
-    "HALF_ELAPSED": NotificationType.SLA_HALF_ELAPSED,
-    "AT_RISK": NotificationType.SLA_AT_RISK,
-    "BREACHED": NotificationType.SLA_BREACHED,
-    "ESCALATED": NotificationType.SLA_ESCALATED,
-}
 
 
 class SLASweepService:
@@ -76,9 +81,15 @@ class SLASweepService:
     rather than hardcoded if/elif — who gets notified at each threshold
     is declared once, there, and this service only interprets it.
 
-    v1 is in-app notifications only — OutboundDispatcher (real email
-    transport) is a logging no-op in this codebase today; there is no
-    email escalation channel to build against yet.
+    Notifications go out two ways: in-app (NotificationService, always,
+    regardless of email config) and real outbound email (EmailSender —
+    see app/core/email_sender.py — via sla_breach_notifier.py's
+    send_notification_emails, gated only on user_repository being
+    available, which it always is here). Email falls back to a
+    logging-only no-op until smtp_host is actually configured in
+    Settings — this is a separate, narrower seam from
+    OutboundDispatcher (the client-facing reply-email transport, still
+    a no-op today), not the same thing.
     """
 
     def __init__(
@@ -100,6 +111,23 @@ class SLASweepService:
         self.client_repository = client_repository
         self.user_repository = user_repository
         self.notification_service = notification_service
+        # Extends this same background worker to also evaluate the
+        # internal escalation workflow (create on first breach,
+        # auto-advance an ignored acknowledgment) rather than standing
+        # up a second scheduler — see EscalationService's own docstring.
+        # Never touches ResolutionSLA/FirstResponseSLA itself.
+        self.escalation_handling_sla_service = build_escalation_handling_sla_service(
+            ticket_repository.db
+        )
+        self.escalation_service = EscalationService(
+            ticket_escalation_repository=TicketEscalationRepository(ticket_repository.db),
+            ticket_repository=ticket_repository,
+            resolution_sla_repository=resolution_sla_repository,
+            sla_policy_repository=sla_policy_repository,
+            user_repository=user_repository,
+            notification_service=notification_service,
+            escalation_handling_sla_service=self.escalation_handling_sla_service,
+        )
 
     async def run_sweep(self) -> SLASweepResponse:
         # Every repository here is constructed from the same AsyncSession
@@ -125,6 +153,7 @@ class SLASweepService:
             "resolution_escalated": 0,
         }
         notifications_sent = 0
+        escalations_created = 0
         errors = 0
 
         global_inbox_ids = await self._global_inbox_user_ids()
@@ -242,7 +271,7 @@ class SLASweepService:
                             fr_clients_by_id,
                         )
                     else:
-                        sent = await self._notify_resolution(
+                        sent, escalation_created = await self._notify_resolution(
                             res_clock_by_id[clock_id],
                             threshold,
                             global_inbox_ids,
@@ -251,6 +280,7 @@ class SLASweepService:
                             res_clients_by_id,
                             agents_by_id,
                         )
+                        escalations_created += int(escalation_created)
                 notifications_sent += int(sent)
             except Exception:
                 logger.warning(
@@ -262,17 +292,50 @@ class SLASweepService:
                 )
                 errors += 1
 
+        # Escalation acknowledgment auto-advance — extends this same
+        # sweep run rather than a second scheduler (see
+        # EscalationService.evaluate_overdue's own docstring). Runs
+        # after the threshold-notification loop above but is otherwise
+        # entirely independent of it (a ticket can have an overdue
+        # escalation on a run where its Resolution SLA crosses no new
+        # threshold at all).
+        escalations_advanced = await self.escalation_service.evaluate_overdue(now=now)
+
+        # Escalation-handling SLA breach detection — a distinct clock
+        # from the ack-window check just above (see
+        # EscalationHandlingSlaService/EscalationService.
+        # advance_for_handling_sla_breach's own docstrings): this one
+        # fires when an *acknowledged* escalation still isn't actually
+        # resolved within its 25%-of-original-target window. Same
+        # "extend this one sweep, no second scheduler" rationale.
+        escalation_handling_sla_breaches = 0
+        for clock in await self.escalation_handling_sla_service.evaluate_breaches(now=now):
+            advanced = await self.escalation_service.advance_for_handling_sla_breach(
+                clock.ticket_id
+            )
+            escalation_handling_sla_breaches += int(advanced)
+
         duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
         logger.info(
-            "SLA sweep completed in %.2fs — notifications_sent=%d errors=%d counts=%s",
+            "SLA sweep completed in %.2fs — notifications_sent=%d "
+            "escalations_created=%d escalations_advanced=%d "
+            "escalation_handling_sla_breaches=%d errors=%d counts=%s",
             duration_seconds,
             notifications_sent,
+            escalations_created,
+            escalations_advanced,
+            escalation_handling_sla_breaches,
             errors,
             counts,
         )
 
         return SLASweepResponse(
-            **counts, notifications_sent=notifications_sent, errors=errors
+            **counts,
+            notifications_sent=notifications_sent,
+            escalations_created=escalations_created,
+            escalations_advanced=escalations_advanced,
+            escalation_handling_sla_breaches=escalation_handling_sla_breaches,
+            errors=errors,
         )
 
     # ---------------------------------------------------------
@@ -289,27 +352,22 @@ class SLASweepService:
         """
         Only ever called for a triple try_record_many just confirmed
         is newly-crossed — no idempotency check here, that already
-        happened in the batch.
+        happened in the batch. Recipient-resolution + notify itself is
+        shared with SLAService.complete_first_response_clock's own
+        completion-time breach check (see sla_breach_notifier.py) —
+        one definition instead of two that could drift apart.
         """
 
         client = clients_by_id.get(clock.client_id) if clock.client_id is not None else None
 
-        ctx = RecipientContext(client=client, global_inbox_ids=global_inbox_ids)
-        recipient_ids = resolve_recipients(FIRST_RESPONSE_RULES, threshold, ctx)
-
-        if not recipient_ids or self.notification_service is None:
-            return False
-
-        await self.notification_service.notify(
-            recipient_ids,
-            _NOTIFICATION_TYPE_BY_THRESHOLD[threshold],
-            title=f"First Response SLA {threshold.replace('_', ' ').title()}",
-            message="An inbound email is still awaiting triage.",
-            link="/inbox",
-            related_entity_type="interaction",
-            related_entity_id=clock.interaction_id,
+        return await notify_first_response_threshold(
+            clock=clock,
+            threshold=threshold,
+            client=client,
+            global_inbox_ids=global_inbox_ids,
+            notification_service=self.notification_service,
+            user_repository=self.user_repository,
         )
-        return True
 
     # ---------------------------------------------------------
     # Resolution notification
@@ -324,16 +382,19 @@ class SLASweepService:
         tickets_by_id: dict,
         clients_by_id: dict,
         agents_by_id: dict,
-    ) -> bool:
+    ) -> tuple[bool, bool]:
         """
         Only ever called for a triple try_record_many just confirmed
         is newly-crossed — no idempotency check here, that already
-        happened in the batch.
+        happened in the batch. Returns (notification_sent,
+        escalation_created) — the second is always False except on a
+        first BREACHED/ESCALATED crossing with no escalation already
+        active (see EscalationService.auto_escalate_if_needed).
         """
 
         ticket = tickets_by_id.get(clock.ticket_id)
         if ticket is None:
-            return False
+            return False, False
 
         client = clients_by_id.get(clock.client_id) if clock.client_id is not None else None
 
@@ -365,19 +426,33 @@ class SLASweepService:
 
         recipient_ids = resolve_recipients(rules, threshold, ctx)
 
-        if not recipient_ids or self.notification_service is None:
-            return False
+        if not recipient_ids:
+            return False, False
 
-        await self.notification_service.notify(
-            recipient_ids,
-            _NOTIFICATION_TYPE_BY_THRESHOLD[threshold],
-            title=f"Resolution SLA {threshold.replace('_', ' ').title()}: {ticket.title}",
-            message=f"Ticket \"{ticket.title}\" has crossed its Resolution SLA {threshold.lower()} threshold.",
-            link=f"/tickets/{ticket.ticket_id}",
-            related_entity_type="ticket",
-            related_entity_id=ticket.ticket_id,
+        title = f"Resolution SLA {threshold.replace('_', ' ').title()}: {ticket.title}"
+        message = f"Ticket \"{ticket.title}\" has crossed its Resolution SLA {threshold.lower()} threshold."
+
+        sent = False
+        if self.notification_service is not None:
+            await self.notification_service.notify(
+                recipient_ids,
+                NOTIFICATION_TYPE_BY_THRESHOLD[threshold],
+                title=title,
+                message=message,
+                link=f"/tickets/{ticket.ticket_id}",
+                related_entity_type="ticket",
+                related_entity_id=ticket.ticket_id,
+            )
+            sent = True
+
+        await send_notification_emails(
+            recipient_ids=recipient_ids,
+            subject=title,
+            body=f"{message}\n\nView it here: {build_absolute_link(f'/tickets/{ticket.ticket_id}')}",
+            user_repository=self.user_repository,
         )
 
+        escalation_created = False
         if threshold in ("BREACHED", "ESCALATED"):
             await AuditLogService.log_event(
                 self.ticket_repository.db,
@@ -394,7 +469,15 @@ class SLASweepService:
                 new_values={"threshold": threshold, "ticket_id": ticket.ticket_id},
             )
 
-        return True
+            # Internal escalation workflow — separate from (and never
+            # touches) the Resolution SLA clock itself. A no-op if this
+            # ticket already has an active escalation, manual or
+            # automatic (see EscalationService.auto_escalate_if_needed).
+            escalation_created = await self.escalation_service.auto_escalate_if_needed(
+                ticket=ticket, resolution_clock=clock
+            )
+
+        return sent, escalation_created
 
     async def _get_category_team(
         self,
@@ -422,8 +505,6 @@ class SLASweepService:
         return team_leads, team_members
 
     async def _global_inbox_user_ids(self) -> set:
-        recipients: set = set()
-        for role_name in GLOBAL_INBOX_ROLE_NAMES:
-            users = await self.user_repository.list_active_by_role_name(role_name)
-            recipients.update(u.user_id for u in users)
-        return recipients
+        # Shared with SLAService.complete_first_response_clock's own
+        # completion-time breach check — see sla_breach_notifier.py.
+        return await resolve_global_inbox_user_ids(self.user_repository)

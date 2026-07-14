@@ -13,14 +13,12 @@ export function Modal({ open, title, onClose, children, footer }: ModalProps) {
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 backdrop-blur-[2px] animate-fadeSlideIn"
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md rounded-lg2 border border-border bg-surface shadow-popover animate-popIn"
-      >
+    // Closes only via the X button below or a Cancel/action button a
+    // caller puts in `footer` — deliberately no onClick here, so
+    // clicking the overlay does nothing (no Escape-key listener
+    // exists on this component either).
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4 backdrop-blur-[2px] animate-fadeSlideIn">
+      <div className="w-full max-w-md rounded-lg2 border border-border bg-surface shadow-popover animate-popIn">
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
           <button

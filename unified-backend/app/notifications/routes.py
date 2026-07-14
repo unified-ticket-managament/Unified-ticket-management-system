@@ -22,6 +22,15 @@ router = APIRouter(
 @router.get("", response_model=NotificationListResponse)
 async def list_notifications(
     unread_only: bool = Query(default=False),
+    types: str | None = Query(
+        default=None,
+        description=(
+            "Comma-separated notification_type values to restrict the list to "
+            "(e.g. the Mail page's System folder passing every SLA_*/ESCALATION_* "
+            "type) — omit for the unfiltered bell/full list, same as before this "
+            "param existed."
+        ),
+    ),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
@@ -31,16 +40,29 @@ async def list_notifications(
     Every notification for the caller, newest first. The bell badge
     reads `unread_count`, which is always the caller's TOTAL unread
     count (not just unread within this page), so pagination never
-    makes the badge undercount.
+    makes the badge undercount — `types`, when passed, scopes both the
+    page and both counts to the same subset, so a filtered view's own
+    badge/total stay internally consistent too.
     """
 
     repository = NotificationRepository(db)
+    notification_types = (
+        [t.strip() for t in types.split(",") if t.strip()] if types else None
+    )
 
     items = await repository.list_for_user(
-        current_user.user_id, unread_only=unread_only, limit=limit, offset=offset
+        current_user.user_id,
+        unread_only=unread_only,
+        notification_types=notification_types,
+        limit=limit,
+        offset=offset,
     )
-    total = await repository.count_for_user(current_user.user_id, unread_only=unread_only)
-    unread_count = await repository.count_for_user(current_user.user_id, unread_only=True)
+    total = await repository.count_for_user(
+        current_user.user_id, unread_only=unread_only, notification_types=notification_types
+    )
+    unread_count = await repository.count_for_user(
+        current_user.user_id, unread_only=True, notification_types=notification_types
+    )
 
     return NotificationListResponse(
         total=total,

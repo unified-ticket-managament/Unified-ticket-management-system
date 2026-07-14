@@ -20,6 +20,14 @@ export function DashboardLayout({
 }: DashboardLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const pathname = usePathname();
+  // Keyed on the top-level segment, not the full pathname: every
+  // ticket-workspace-internal route (/dashboard/inbox, /dashboard/tickets,
+  // /dashboard/tickets/[id], ...) shares the "dashboard" segment, so
+  // navigating between them no longer remounts this motion.div (and
+  // everything inside it, including the workspace's persistent layout) —
+  // only a genuine top-level page change (e.g. /dashboard -> /users)
+  // still gets a fresh mount + enter/exit animation.
+  const animationKey = pathname.split("/")[1] || "root";
 
   return (
     <div className="flex h-screen overflow-hidden bg-muted/30">
@@ -72,7 +80,7 @@ export function DashboardLayout({
         <main className="flex-1 overflow-y-auto p-6 print:overflow-visible print:p-0">
           <AnimatePresence mode="wait">
             <motion.div
-              key={pathname}
+              key={animationKey}
               initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}

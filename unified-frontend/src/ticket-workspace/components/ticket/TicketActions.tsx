@@ -1,18 +1,20 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ArrowLeftRight,
-  Paperclip,
+  ChevronDown,
   Flame,
-  MessageSquareText,
-  Send,
+  MessagesSquare,
+  Paperclip,
   Settings2,
+  ShieldCheck,
   UserPlus,
 } from "lucide-react";
-import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
 import { Modal } from "@tw/components/common/Modal";
 import { SelectInput } from "@tw/components/common/FormField";
 import { FileDropzone } from "@tw/components/common/FileDropzone";
+import { EditAccessPanel } from "@tw/components/ticket/EditAccessPanel";
 import { validateFiles } from "@tw/lib/attachmentMeta";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import {
@@ -25,7 +27,6 @@ import { claimTicket, transferTicketAgent } from "@tw/api/ticket";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import type { AgentSummary, TicketPriority, TicketStatus } from "@tw/types";
-import type { ComposerMode } from "@tw/components/ticket/TicketComposer";
 
 const STATUSES: TicketStatus[] = [
   "OPEN",
@@ -38,54 +39,20 @@ const STATUSES: TicketStatus[] = [
 
 const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
 
-type Tone = "accent" | "warning" | "info" | "danger" | "default";
-
-const tileToneClasses: Record<Tone, string> = {
-  accent: "bg-accent/10 text-accent group-hover:bg-accent/15",
-  warning: "bg-warning/10 text-warning group-hover:bg-warning/15",
-  info: "bg-info/10 text-info group-hover:bg-info/15",
-  danger: "bg-danger/10 text-danger group-hover:bg-danger/15",
-  default: "bg-canvas text-slate-600 group-hover:bg-slate-200/60",
-};
-
-function ActionTile({
-  icon,
-  label,
-  tone,
-  disabled,
-  title,
-  onClick,
-}: {
-  icon: ReactNode;
-  label: string;
-  tone: Tone;
-  disabled?: boolean;
-  title?: string;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className="group flex flex-col items-center gap-2 rounded-md2 border border-border bg-surface px-3 py-4 text-center transition-all duration-150 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-cardHover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:shadow-none"
-    >
-      <span className={`flex h-9 w-9 items-center justify-center rounded-md2 transition-colors ${tileToneClasses[tone]}`}>
-        {icon}
-      </span>
-      <span className="text-[11px] font-semibold leading-tight text-slate-700">{label}</span>
-    </button>
-  );
-}
-
-type ActiveModal = "status" | "priority" | "transfer" | "attachment" | null;
+type ActiveModal = "status" | "priority" | "transfer" | "attachment" | "editAccess" | null;
 
 interface TicketActionsProps {
   onActionComplete: () => void;
-  onOpenComposer: (mode: ComposerMode) => void;
 }
 
-export function TicketActions({ onActionComplete, onOpenComposer }: TicketActionsProps) {
+// Renders only the top-right action row (Change Status / Change
+// Priority / Claim / More ▼) — Reply and Internal Note used to be
+// tiles here too, but now live as their own tabs in
+// TicketActivityPanel instead (see TicketDetailPage). Every modal,
+// permission check, and API call below is unchanged from before; only
+// the trigger markup moved.
+export function TicketActions({ onActionComplete }: TicketActionsProps) {
+  const navigate = useNavigate();
   // editAccessRequests is fetched once per ticket by TicketDetailPage
   // and shared via context with EditAccessPanel — see that context
   // field's own comment for why this used to be a separate
@@ -93,6 +60,8 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   const { activeTicket, editAccessRequests } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const [modal, setModal] = useState<ActiveModal>(null);
+  const [isMoreOpen, setIsMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement>(null);
 
   const [newStatus, setNewStatus] = useState<TicketStatus>("IN_PROGRESS");
   const [newPriority, setNewPriority] = useState<TicketPriority>("HIGH");
@@ -129,6 +98,17 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
       .catch(() => setAgents([]));
   }, [activeTicket?.ticket_id, activeTicket?.ticket_type]);
 
+  useEffect(() => {
+    if (!isMoreOpen) return;
+    function handleClickOutside(event: MouseEvent) {
+      if (moreRef.current && !moreRef.current.contains(event.target as Node)) {
+        setIsMoreOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isMoreOpen]);
+
   if (!activeTicket) return null;
 
   const isStaff = currentUser?.role === "Staff";
@@ -154,10 +134,10 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
   // Mirrors the backend's ensure_agent_can_act_on_ticket: the assigned
   // agent, anyone holding ticket:editother_ticket (globally or scoped to
   // this specific ticket via scoped_permissions), or anyone with an
-  // active, approved Edit Access grant on this ticket. Reply/Internal
-  // Note/Change Status/Upload Attachment all disable-in-place (not hide)
-  // when none of these hold, so a user without access sees why rather
-  // than discovering it via a rejected request after typing a reply.
+  // active, approved Edit Access grant on this ticket. Change Status/
+  // Upload Attachment disable-in-place (not hide) when none of these
+  // hold, so a user without access sees why rather than discovering it
+  // via a rejected request.
   const isOwnTicket = activeTicket.agent_id === currentUser?.user_id;
   const hasEditOther =
     (currentUser?.permissions ?? []).includes("ticket:editother_ticket") ||
@@ -179,9 +159,14 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
     setModal(null);
   }
 
+  function openMoreItem(next: Exclude<ActiveModal, null>) {
+    setIsMoreOpen(false);
+    setModal(next);
+  }
+
   function openTransferModal() {
     setNewAgentId(transferCandidates[0]?.user_id ?? "");
-    setModal("transfer");
+    openMoreItem("transfer");
   }
 
   async function handleStatusChange() {
@@ -225,70 +210,96 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
     }
   }
 
+  const menuItemClass =
+    "flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-[13px] font-medium text-slate-700 transition-colors hover:bg-surfaceHover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent";
+
   return (
     <>
-      <Card title="Actions" eyebrow="Ticket tools">
-        <div className="grid grid-cols-2 gap-2.5">
-          <ActionTile
-            icon={<Send size={16} />}
-            label="Reply"
-            tone="accent"
-            disabled={isTicketClosed || !canActOnTicket}
-            title={noAccessTitle}
-            onClick={() => onOpenComposer("reply")}
-          />
-          <ActionTile
-            icon={<MessageSquareText size={16} />}
-            label="Internal Note"
-            tone="warning"
-            disabled={isTicketClosed || !canActOnTicket}
-            title={noAccessTitle}
-            onClick={() => onOpenComposer("note")}
-          />
-          <ActionTile
-            icon={<Settings2 size={16} />}
-            label="Change Status"
-            tone="info"
-            disabled={!canActOnTicket}
-            title={noAccessTitle}
-            onClick={() => setModal("status")}
-          />
-          <ActionTile
-            icon={<Flame size={16} />}
-            label="Change Priority"
-            tone="danger"
-            disabled={isTicketClosed || !canChangePriority}
-            title={canChangePriority ? undefined : "Requires the Change Priority permission"}
-            onClick={() => setModal("priority")}
-          />
-          {isUnclaimed && (
-            <ActionTile
-              icon={<UserPlus size={16} />}
-              label="Claim Ticket"
-              tone="accent"
-              disabled={isTicketClosed || isClaimLoading}
-              onClick={handleClaim}
-            />
+      <div className="flex flex-none flex-wrap items-center gap-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={!canActOnTicket}
+          title={noAccessTitle}
+          onClick={() => setModal("status")}
+        >
+          <Settings2 size={14} />
+          Change Status
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={isTicketClosed || !canChangePriority}
+          title={canChangePriority ? undefined : "Requires the Change Priority permission"}
+          onClick={() => setModal("priority")}
+        >
+          <Flame size={14} />
+          Change Priority
+        </Button>
+        {isUnclaimed && (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={isTicketClosed || isClaimLoading}
+            isLoading={isClaimLoading}
+            onClick={handleClaim}
+          >
+            <UserPlus size={14} />
+            Claim Ticket
+          </Button>
+        )}
+
+        <div className="relative" ref={moreRef}>
+          <Button variant="secondary" size="sm" onClick={() => setIsMoreOpen((prev) => !prev)}>
+            More
+            <ChevronDown size={14} />
+          </Button>
+          {isMoreOpen && (
+            <div className="absolute right-0 z-20 mt-1.5 w-52 overflow-hidden rounded-md2 border border-border bg-surface py-1 shadow-popover animate-fadeSlideIn">
+              <button
+                type="button"
+                className={menuItemClass}
+                disabled={isTicketClosed || !canActOnTicket}
+                title={noAccessTitle}
+                onClick={() => openMoreItem("attachment")}
+              >
+                <Paperclip size={14} className="text-muted" />
+                Upload Attachment
+              </button>
+              {(!isStaff || canTransfer) && (
+                <button
+                  type="button"
+                  className={menuItemClass}
+                  disabled={isTicketClosed}
+                  onClick={openTransferModal}
+                >
+                  <ArrowLeftRight size={14} className="text-muted" />
+                  {isUnclaimed ? "Assign to Staff" : "Transfer Agent"}
+                </button>
+              )}
+              <button
+                type="button"
+                className={menuItemClass}
+                onClick={() => openMoreItem("editAccess")}
+              >
+                <ShieldCheck size={14} className="text-muted" />
+                Edit Access
+              </button>
+              <button
+                type="button"
+                className={menuItemClass}
+                onClick={() => {
+                  setIsMoreOpen(false);
+                  navigate(`/tickets/${activeTicket.ticket_id}/interactions`);
+                }}
+              >
+                <MessagesSquare size={14} className="text-muted" />
+                Interactions
+              </button>
+            </div>
           )}
-          {(!isStaff || canTransfer) && (
-            <ActionTile
-              icon={<ArrowLeftRight size={16} />}
-              label={isUnclaimed ? "Assign to Staff" : "Transfer Agent"}
-              tone="accent"
-              disabled={isTicketClosed}
-              onClick={openTransferModal}
-            />
-          )}
-          <ActionTile
-            icon={<Paperclip size={16} />}
-            label="Upload Attachment"
-            tone="default"
-            disabled={isTicketClosed || !canActOnTicket}
-            title={noAccessTitle}
-            onClick={() => setModal("attachment")}
-          />
         </div>
-      </Card>
+      </div>
 
       <Modal
         open={modal === "status"}
@@ -401,6 +412,10 @@ export function TicketActions({ onActionComplete, onOpenComposer }: TicketAction
         }
       >
         <FileDropzone label="Files" files={uploadFiles} onFilesChange={setUploadFiles} />
+      </Modal>
+
+      <Modal open={modal === "editAccess"} title="Edit Access" onClose={closeModal}>
+        <EditAccessPanel embedded onRequestsChanged={onActionComplete} />
       </Modal>
     </>
   );

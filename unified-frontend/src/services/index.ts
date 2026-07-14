@@ -35,6 +35,10 @@ export const authService = {
   },
 
   logout: () => {
+    // Best-effort audit-trail write — fired before clearing tokens
+    // (so the auth header is still valid) but never awaited, since
+    // logout must always succeed locally even if this request fails.
+    api.post("/auth/logout").catch(() => {});
     clearTokens();
   },
 

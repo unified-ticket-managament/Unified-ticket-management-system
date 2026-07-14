@@ -30,7 +30,7 @@ export interface ListTicketsPageParams {
   status?: string;
   priority?: string;
   ticketType?: string;
-  view?: "pool" | "mine" | "all";
+  view?: "pool" | "mine" | "all" | "escalated";
   search?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -80,11 +80,16 @@ export interface TicketViewCounts {
   pool: number;
   mine: number;
   all: number;
+  // Forced to 0 server-side for anyone outside the escalation-tab
+  // role set (see TicketService.count_by_view) — the same "sees
+  // nothing" convention this app already uses for a role that owns no
+  // clients, rather than a 403.
+  escalated: number;
 }
 
-// GET /tickets/view-counts — the three tab badges (Open Pool / My
-// Tickets / All) in one grouped query, without fetching any tab's
-// full row set just to show a count.
+// GET /tickets/view-counts — the four tab badges (Open Pool / My
+// Tickets / All / Escalated) in one grouped query, without fetching
+// any tab's full row set just to show a count.
 export async function getTicketViewCounts(
   signal?: AbortSignal
 ): Promise<TicketViewCounts> {
@@ -132,6 +137,29 @@ export async function getDashboardStats(
   signal?: AbortSignal
 ): Promise<DashboardStats> {
   const { data } = await apiClient.get<DashboardStats>("/tickets/dashboard-stats", {
+    signal,
+  });
+  return data;
+}
+
+export interface SlaOverviewCounts {
+  running: number;
+  paused: number;
+  at_risk: number;
+  breached: number;
+  escalated: number;
+  completed: number;
+}
+
+// GET /tickets/sla-overview-counts — the Dashboard's "SLA Overview"
+// tile row, computed server-side in one grouped query instead of the
+// browser fetching every visible ticket unbounded (listTickets()) and
+// calling GET /tickets/{id}/sla once per ticket to classify it — see
+// useDashboardSlaCounts, which this replaced an N+1 pattern inside.
+export async function getSlaOverviewCounts(
+  signal?: AbortSignal
+): Promise<SlaOverviewCounts> {
+  const { data } = await apiClient.get<SlaOverviewCounts>("/tickets/sla-overview-counts", {
     signal,
   });
   return data;

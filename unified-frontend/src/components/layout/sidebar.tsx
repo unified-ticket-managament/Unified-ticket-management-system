@@ -71,11 +71,6 @@ const menuItems: {
     icon: Shield,
   },
   {
-    title: "Audit Logs",
-    href: "/audit-logs",
-    icon: History,
-  },
-  {
     title: "Reports",
     href: "/reports",
     icon: BarChart3,

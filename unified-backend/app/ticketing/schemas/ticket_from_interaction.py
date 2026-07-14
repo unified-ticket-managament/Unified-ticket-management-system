@@ -25,6 +25,15 @@ class TicketFromInteractionCreate(BaseModel):
 
     current_priority: TicketPriority = TicketPriority.MEDIUM
 
+    # Who the ticket should be assigned to — the Create Ticket dialog's
+    # "Assigned To" picker. None (the default, and the only value any
+    # pre-existing caller ever sent) preserves the original behavior:
+    # the ticket is born unclaimed and sits in the shared pool. When
+    # set, InboxTicketService.create_ticket_from_interaction validates
+    # it against AssignmentService's own hierarchy rules for the
+    # caller's role before applying it — never trusted as-is.
+    agent_id: UUID | None = None
+
 
 class TicketFromInteractionResponse(BaseModel):
     """
