@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
-import { getTicketSla, listSlaPolicies } from "@tw/api/sla";
-import { classifyTier, computeElapsedFraction } from "@tw/lib/slaMath";
-import type { SLAPolicyResponse, TicketResponse } from "@tw/types";
+import { getSlaOverviewCounts } from "@tw/api/ticket";
 
 export interface DashboardSlaCounts {
   running: number;
@@ -23,110 +21,52 @@ const EMPTY_COUNTS: DashboardSlaCounts = {
 
 const REFRESH_INTERVAL_MS = 15_000;
 
-// No aggregate endpoint exists for this (only the per-ticket
-// GET /tickets/{id}/sla) — this calls it once per ticket and
-// aggregates client-side. Acceptable at demo scale (a handful of
-// tickets); a real aggregate endpoint would be needed before this
-// pattern should ever run against a production-sized ticket list —
-// see the performance review earlier this session for exactly why an
-// N-calls-per-page-load pattern like this doesn't scale.
-//
-// `tickets` is nullable on purpose: `null` means "the caller's own
-// ticket-list fetch hasn't resolved yet," distinct from a genuinely
-// empty list. Callers used to pass `tickets ?? []`, which fired this
-// hook's effect once with a fake empty list before the real one
-// arrived — harmless in production, but in dev, React 18 Strict
-// Mode's double-invoked effects could race that spurious first cycle
-// against the real one, occasionally leaving the UI stuck on its
-// loading state noticeably longer than the real fetch took. Passing
-// `null` straight through skips that spurious cycle entirely.
-export function useDashboardSlaCounts(tickets: TicketResponse[] | null) {
+// One grouped backend query (GET /tickets/sla-overview-counts) under
+// the same visibility scoping as every other ticket-list endpoint.
+// This used to fetch every visible ticket unbounded (listTickets())
+// and then call GET /tickets/{id}/sla once per ticket to classify it
+// client-side — an N+1 round-trip pattern (1 + up to hundreds of
+// individual SLA lookups) that was both why this tile was slow to
+// resolve and why it sat on its "…" loading placeholder for as long as
+// it did. See TicketRepository.sla_overview_counts for the SQL side.
+export function useDashboardSlaCounts() {
   const [counts, setCounts] = useState<DashboardSlaCounts>(EMPTY_COUNTS);
   const [isLoading, setIsLoading] = useState(true);
-  const [policies, setPolicies] = useState<SLAPolicyResponse[] | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    listSlaPolicies()
-      .then((data) => {
-        if (!cancelled) setPolicies(data);
-      })
-      .catch(() => {
-        // Without policies, tier classification can't happen — the
-        // load effect below just leaves running/paused/completed
-        // countable (status alone) and skips tier-splitting.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (tickets === null) return; // caller's own fetch hasn't resolved yet
-
-    if (tickets.length === 0) {
-      setCounts(EMPTY_COUNTS);
-      setIsLoading(false);
-      return;
-    }
-
-    let cancelled = false;
+    const controller = new AbortController();
 
     async function load() {
-      setIsLoading(true);
-      const results = await Promise.all(
-        tickets!.map((t) => getTicketSla(t.ticket_id).catch(() => null))
-      );
-      if (cancelled) return;
-
-      const next = { ...EMPTY_COUNTS };
-      const now = new Date();
-
-      results.forEach((sla, index) => {
-        const resolution = sla?.resolution;
-        if (!resolution) return;
-
-        if (resolution.status === "COMPLETED") {
-          next.completed += 1;
-          return;
-        }
-        if (resolution.status === "PAUSED") {
-          next.paused += 1;
-          return;
-        }
-        if (resolution.status === "RUNNING") {
-          next.running += 1;
-          const targetMinutes = policies?.find(
-            (p) => p.priority === tickets![index].current_priority
-          )?.resolution_target_minutes;
-          if (targetMinutes != null) {
-            const fraction = computeElapsedFraction({
-              dueAt: resolution.due_at,
-              targetMinutes,
-              now,
-              status: resolution.status,
-              pausedAt: resolution.paused_at,
-            });
-            const tier = classifyTier(fraction);
-            if (tier === "at_risk") next.atRisk += 1;
-            else if (tier === "breached") next.breached += 1;
-            else if (tier === "escalated") next.escalated += 1;
-          }
-        }
-      });
-
-      setCounts(next);
-      setIsLoading(false);
+      try {
+        const data = await getSlaOverviewCounts(controller.signal);
+        if (cancelled) return;
+        setCounts({
+          running: data.running,
+          paused: data.paused,
+          atRisk: data.at_risk,
+          breached: data.breached,
+          escalated: data.escalated,
+          completed: data.completed,
+        });
+      } catch {
+        // Silent on a transient failure — same convention as the rest
+        // of this app's polling: the tile just keeps showing its last
+        // known values instead of an error toast on top of whatever
+        // the page's own main load() already surfaces.
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
     }
 
     load();
     const intervalId = window.setInterval(load, REFRESH_INTERVAL_MS);
     return () => {
       cancelled = true;
+      controller.abort();
       window.clearInterval(intervalId);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tickets, policies]);
+  }, []);
 
   return { counts, isLoading };
 }

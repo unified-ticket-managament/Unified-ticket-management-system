@@ -1,6 +1,5 @@
 import { apiClient } from "./client";
 import type {
-  SLAPauseRequest,
   SLAPolicyResponse,
   TicketActionResponse,
   TicketSLAResponse,
@@ -17,20 +16,6 @@ export async function getTicketSla(
   const { data } = await apiClient.get<TicketSLAResponse>(`/tickets/${ticketId}/sla`, {
     signal,
   });
-  return data;
-}
-
-// POST /tickets/{ticket_id}/sla/pause — supervisor-only on the backend;
-// non-supervisors get a 403 handled the same way any other action
-// error is (useApiAction's toast).
-export async function pauseTicketSla(
-  ticketId: string,
-  payload: SLAPauseRequest
-): Promise<TicketActionResponse> {
-  const { data } = await apiClient.post<TicketActionResponse>(
-    `/tickets/${ticketId}/sla/pause`,
-    payload
-  );
   return data;
 }
 

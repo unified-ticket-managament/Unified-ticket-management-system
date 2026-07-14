@@ -73,6 +73,7 @@ from app.ticketing.services.audit_to_interaction import (
     synthesize_interaction_from_audit,
 )
 from app.ticketing.services.email_envelope import build_compose_envelope, build_reply_envelope
+from app.ticketing.services.escalation_service import EscalationService
 from app.ticketing.services.interaction_summary import trim_payload_for_list
 from app.ticketing.services.outbound_dispatcher import OutboundDispatcher
 from app.ticketing.services.sla_service import SLAService
@@ -160,6 +161,7 @@ class InteractionService:
         edit_access_repository: TicketEditAccessRequestRepository | None = None,
         notification_service: NotificationService | None = None,
         sla_service: SLAService | None = None,
+        escalation_service: EscalationService | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
@@ -173,6 +175,7 @@ class InteractionService:
         self.edit_access_repository = edit_access_repository
         self.notification_service = notification_service
         self.sla_service = sla_service
+        self.escalation_service = escalation_service
 
     # ---------------------------------------------------------
     # Create Interaction
@@ -1069,6 +1072,36 @@ class InteractionService:
                 detail="Ticket is already assigned to this agent.",
             )
 
+        # Escalation-driven assignments get one extra guard beyond the
+        # ordinary active-Staff check above: the chosen staff member
+        # must belong to the ticket's own work-specialization category
+        # (mirrors ensure_agent_can_view_ticket's own category gate) —
+        # an escalation shouldn't be able to route work to a completely
+        # unrelated team. Ordinary (non-escalated) transfers are
+        # unaffected; this only applies when there's an active
+        # escalation on the ticket right now.
+        if self.escalation_service is not None:
+            active_escalation = (
+                await self.escalation_service.ticket_escalation_repository.get_active_by_ticket_id(
+                    ticket_id
+                )
+            )
+            if active_escalation is not None:
+                new_agent_full = await self.user_repository.get_by_id(new_agent.user_id)
+                new_agent_category = (
+                    new_agent_full.category.category_name.value
+                    if new_agent_full is not None and new_agent_full.category is not None
+                    else None
+                )
+                if new_agent_category != ticket.ticket_type:
+                    raise HTTPException(
+                        status_code=http_status.HTTP_400_BAD_REQUEST,
+                        detail=(
+                            "This ticket is actively escalated — it can only be "
+                            "assigned to a Staff member in its own category."
+                        ),
+                    )
+
         old_agent_id = ticket.agent_id
         old_agent_name = None
 
@@ -1115,6 +1148,18 @@ class InteractionService:
                 link=f"/tickets/{ticket_id}",
                 related_entity_type="ticket",
                 related_entity_id=ticket_id,
+            )
+
+        # Assigning an escalated ticket is treated as accepting it —
+        # same rule a literal Acknowledge click follows, applied here
+        # so a supervisor who assigns before ever clicking Acknowledge
+        # doesn't leave the escalation stuck waiting on a separate step.
+        # No-ops entirely if there's no active escalation, and is
+        # idempotent if the escalation was already acknowledged — see
+        # EscalationService.acknowledge_via_assignment's own docstring.
+        if self.escalation_service is not None:
+            await self.escalation_service.acknowledge_via_assignment(
+                ticket_id, current_user
             )
 
         return TicketActionResponse(

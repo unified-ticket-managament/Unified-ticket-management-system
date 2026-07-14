@@ -2,14 +2,17 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from shared_models.models import User
 
-from app.ticketing.enums import TicketPriority, TicketStatus
+from app.ticketing.enums import EscalationStatus, SLAClockStatus, TicketPriority, TicketStatus
 from app.ticketing.models.client import Client
+from app.ticketing.models.resolution_sla import ResolutionSLA
+from app.ticketing.models.sla_policy import SLAPolicy
 from app.ticketing.models.ticket import Ticket
+from app.ticketing.models.ticket_escalation import TicketEscalation
 from app.ticketing.schemas.ticket import TicketCreate, TicketUpdate
 
 CLOSED_STATUSES = (TicketStatus.RESOLVED, TicketStatus.CLOSED)
@@ -117,6 +120,24 @@ class TicketRepository:
             conditions.append(Ticket.ticket_type.in_(ticket_types))
         return conditions
 
+    def _escalated_exists_condition(self):
+        """
+        True when a ticket has a non-CLOSED TicketEscalation row — the
+        "escalated" tab's filter, and (via count_by_view's own use of
+        this as a FILTER clause) that tab's badge count. A correlated
+        EXISTS rather than a JOIN here (list_all/count_by_view have no
+        other reason to join `ticket_escalations`, unlike
+        list_visible_page below, which already joins it for per-row
+        display columns) — at most one non-CLOSED row per ticket is
+        guaranteed by that table's own partial unique index, so this
+        can never inflate a row count even if it were a join instead.
+        """
+
+        return exists().where(
+            TicketEscalation.ticket_id == Ticket.ticket_id,
+            TicketEscalation.status != EscalationStatus.CLOSED,
+        )
+
     async def list_all(
         self,
         agent_id: UUID | None = None,
@@ -179,6 +200,8 @@ class TicketRepository:
             conditions.append(Ticket.current_status == TicketStatus.OPEN)
         elif view == "mine" and assigned_to is not None:
             conditions.append(Ticket.agent_id == assigned_to)
+        elif view == "escalated":
+            conditions.append(self._escalated_exists_condition())
 
         if ticket_type_filter is not None:
             conditions.append(Ticket.ticket_type == ticket_type_filter)
@@ -249,12 +272,13 @@ class TicketRepository:
             ),
             func.count().filter(Ticket.agent_id == assigned_to),
             func.count(),
+            func.count().filter(self._escalated_exists_condition()),
         ).where(*conditions)
 
         result = await self.db.execute(query)
-        pool, mine, all_count = result.one()
+        pool, mine, all_count, escalated = result.one()
 
-        return {"pool": pool, "mine": mine, "all": all_count}
+        return {"pool": pool, "mine": mine, "all": all_count, "escalated": escalated}
 
     async def dashboard_stats(
         self,
@@ -323,6 +347,93 @@ class TicketRepository:
             "sla_risk": sla_risk,
         }
 
+    async def sla_overview_counts(
+        self,
+        *,
+        account_manager_id: UUID | None,
+        ticket_types: list[str] | None,
+        now: datetime,
+    ) -> dict[str, int]:
+        """
+        The Dashboard's "SLA Overview" tile row (Running / Paused / At
+        Risk / Breached / Escalated / Completed) — one grouped query
+        under the same visibility scoping as every other view here,
+        replacing what useDashboardSlaCounts (frontend) used to do by
+        fetching every visible ticket unbounded and then calling
+        GET /tickets/{id}/sla once per ticket to classify it: an N+1
+        round-trip pattern (1 + up to hundreds of individual SLA
+        lookups) that was both why the tile was slow to resolve and why
+        it sat on its loading placeholder for as long as it did.
+
+        Mirrors compute_elapsed_fraction's exact formula (sla_service.py)
+        entirely in SQL, expressed as a comparison of remaining seconds
+        against the target rather than a division, so a zero-row/zero-
+        target edge case never divides by zero: `remaining_seconds =
+        EXTRACT(EPOCH FROM (due_at - now))`, and fraction thresholds
+        become `remaining_seconds` compared against
+        `target_seconds * (1 - threshold)`. Tickets whose priority has
+        no matching (active) SLAPolicy row still count toward `running`
+        (their clock is genuinely running) but toward none of the tier
+        buckets — the NULL `target_seconds` makes every tier
+        comparison evaluate to NULL/false, the same "can't classify
+        without a target" outcome the old client-side loop had.
+
+        `running`/`atRisk`/`breached`/`escalated` are deliberately not
+        mutually exclusive — `running` is every RUNNING clock
+        regardless of tier, and at_risk/breached/escalated are tier
+        sub-classifications of that same set — this preserves the
+        exact (if slightly unusual) counting semantics the previous
+        client-side implementation already had, so the numbers
+        strangers to this change would see don't shift underneath them.
+        """
+
+        conditions = self._visibility_conditions(
+            account_manager_id=account_manager_id, ticket_types=ticket_types
+        )
+
+        remaining_seconds = func.extract(
+            "epoch", ResolutionSLA.due_at - now
+        )
+        target_seconds = SLAPolicy.resolution_target_minutes * 60
+
+        query = (
+            select(
+                func.count().filter(ResolutionSLA.status == SLAClockStatus.RUNNING),
+                func.count().filter(ResolutionSLA.status == SLAClockStatus.PAUSED),
+                func.count().filter(
+                    ResolutionSLA.status == SLAClockStatus.RUNNING,
+                    remaining_seconds > 0,
+                    remaining_seconds <= target_seconds * 0.2,
+                ),
+                func.count().filter(
+                    ResolutionSLA.status == SLAClockStatus.RUNNING,
+                    remaining_seconds <= 0,
+                    remaining_seconds > target_seconds * -0.5,
+                ),
+                func.count().filter(
+                    ResolutionSLA.status == SLAClockStatus.RUNNING,
+                    remaining_seconds <= target_seconds * -0.5,
+                ),
+                func.count().filter(ResolutionSLA.status == SLAClockStatus.COMPLETED),
+            )
+            .select_from(Ticket)
+            .join(ResolutionSLA, ResolutionSLA.ticket_id == Ticket.ticket_id)
+            .outerjoin(SLAPolicy, SLAPolicy.priority == ResolutionSLA.priority)
+            .where(*conditions)
+        )
+
+        result = await self.db.execute(query)
+        running, paused, at_risk, breached, escalated, completed = result.one()
+
+        return {
+            "running": running,
+            "paused": paused,
+            "at_risk": at_risk,
+            "breached": breached,
+            "escalated": escalated,
+            "completed": completed,
+        }
+
     async def list_visible_page(
         self,
         *,
@@ -356,6 +467,24 @@ class TicketRepository:
         `total` is `COUNT(*) OVER()`, same convention (and the same
         empty-page fallback) as InteractionRepository.list_visible_page
         and AuditLogRepository.list_visible_page.
+
+        Also LEFT JOINs `ticket_escalations` (status != CLOSED — at
+        most one such row per ticket, enforced by that table's own
+        partial unique index, so this join can never fan a row out)
+        for the `escalation_level`/`escalation_status`/
+        `escalation_ack_due_at` display columns, and `resolution_slas`
+        purely for `view == "mine"`'s own ordering below (its `due_at`
+        is never selected as an output column here — TicketService
+        already has a separate SLA-state endpoint for that).
+        `view == "escalated"` requires the escalation join to have
+        actually matched (`escalation_id IS NOT NULL`) — the tab's own
+        filter. `view == "mine"` gets a fixed, escalation-aware
+        ordering instead of the plain `sort_by`/`sort_dir` column: 1)
+        actively escalated tickets, 2) HIGH-priority tickets, 3)
+        nearest Resolution SLA deadline, 4) the caller's own chosen
+        sort column/direction, 5) `ticket_id` as a final, deterministic
+        tie-breaker — every other view keeps the plain column sort
+        unchanged.
         """
 
         conditions = self._visibility_conditions(
@@ -367,6 +496,8 @@ class TicketRepository:
             conditions.append(Ticket.current_status == TicketStatus.OPEN)
         elif view == "mine" and assigned_to is not None:
             conditions.append(Ticket.agent_id == assigned_to)
+        elif view == "escalated":
+            conditions.append(TicketEscalation.escalation_id.isnot(None))
 
         if ticket_type_filter is not None:
             conditions.append(Ticket.ticket_type == ticket_type_filter)
@@ -382,7 +513,18 @@ class TicketRepository:
             conditions.append(Ticket.created_at <= date_to)
 
         sort_column = self._SORT_COLUMNS.get(sort_by, Ticket.created_at)
-        order = sort_column.asc() if sort_dir == "asc" else sort_column.desc()
+        chosen_order = sort_column.asc() if sort_dir == "asc" else sort_column.desc()
+
+        if view == "mine":
+            order_clauses = (
+                case((TicketEscalation.escalation_id.isnot(None), 0), else_=1).asc(),
+                case((Ticket.current_priority == TicketPriority.HIGH, 0), else_=1).asc(),
+                ResolutionSLA.due_at.asc().nullslast(),
+                chosen_order,
+                Ticket.ticket_id.asc(),
+            )
+        else:
+            order_clauses = (chosen_order,)
 
         ClientUser = aliased(User)
         AgentUser = aliased(User)
@@ -396,18 +538,29 @@ class TicketRepository:
                     Client.name.label("client_company_name"),
                     AgentUser.name.label("agent_name"),
                     CreatedByUser.name.label("created_by_name"),
+                    TicketEscalation.level.label("escalation_level"),
+                    TicketEscalation.status.label("escalation_status"),
+                    TicketEscalation.ack_due_at.label("escalation_ack_due_at"),
                     *extra_columns,
                 )
                 .outerjoin(ClientUser, ClientUser.user_id == Ticket.client_id)
                 .outerjoin(Client, Client.client_id == Ticket.client_company_id)
                 .outerjoin(AgentUser, AgentUser.user_id == Ticket.agent_id)
                 .outerjoin(CreatedByUser, CreatedByUser.user_id == Ticket.created_by)
+                .outerjoin(
+                    TicketEscalation,
+                    and_(
+                        TicketEscalation.ticket_id == Ticket.ticket_id,
+                        TicketEscalation.status != EscalationStatus.CLOSED,
+                    ),
+                )
+                .outerjoin(ResolutionSLA, ResolutionSLA.ticket_id == Ticket.ticket_id)
                 .where(*conditions)
             )
 
         page_query = (
             _base_select(func.count().over().label("full_count"))
-            .order_by(order)
+            .order_by(*order_clauses)
             .limit(limit)
             .offset(offset)
         )
@@ -417,8 +570,23 @@ class TicketRepository:
         if rows:
             return TicketVisiblePage(items=rows, total=rows[0].full_count)
 
+        # Explicitly (outer-)joins TicketEscalation here too — the
+        # `view == "escalated"` condition above references it, and a
+        # WHERE-only reference to a table absent from FROM is exactly
+        # the kind of implicit-cross-join footgun this codebase avoids
+        # everywhere else; ResolutionSLA is omitted since this fallback
+        # only ever computes a count, never orders anything.
         count_result = await self.db.execute(
-            select(func.count()).select_from(Ticket).where(*conditions)
+            select(func.count())
+            .select_from(Ticket)
+            .outerjoin(
+                TicketEscalation,
+                and_(
+                    TicketEscalation.ticket_id == Ticket.ticket_id,
+                    TicketEscalation.status != EscalationStatus.CLOSED,
+                ),
+            )
+            .where(*conditions)
         )
         return TicketVisiblePage(items=[], total=count_result.scalar_one())
 

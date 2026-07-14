@@ -66,6 +66,7 @@ from app.ticketing.schemas.ticket import (
     DashboardStatsResponse,
     RelateTicketRequest,
     RelateTicketResponse,
+    SLAOverviewCountsResponse,
     TicketListItemResponse,
     TicketResponse,
     TicketUpdate,
@@ -86,6 +87,7 @@ from app.ticketing.schemas.ticket_from_interaction import (
 from app.ticketing.services.assignment_service import AssignmentService
 from app.ticketing.services.attachment_service import AttachmentService
 from app.ticketing.services.edit_access_service import EditAccessService
+from app.ticketing.services.escalation_service import build_escalation_service
 from app.ticketing.services.inbox_ticket_service import InboxTicketService
 from app.ticketing.services.interaction_service import InteractionService
 from app.ticketing.services.sla_service import build_sla_service
@@ -548,6 +550,9 @@ async def transfer_ticket_agent(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         notification_service=NotificationService(NotificationRepository(db)),
+        escalation_service=build_escalation_service(
+            db, notification_service=NotificationService(NotificationRepository(db))
+        ),
     )
 
     return await service.transfer_agent(
@@ -685,7 +690,7 @@ async def list_tickets(
     ticket_status: TicketStatus | None = Query(None, alias="status"),
     priority: TicketPriority | None = Query(None),
     ticket_type: str | None = Query(None),
-    view: str | None = Query(None, pattern="^(pool|mine|all)$"),
+    view: str | None = Query(None, pattern="^(pool|mine|all|escalated)$"),
     search: str | None = Query(None),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
@@ -805,6 +810,37 @@ async def get_ticket_dashboard_stats(
     )
 
     return await service.get_dashboard_stats(current_user=current_user)
+
+
+@router.get(
+    "/sla-overview-counts",
+    response_model=SLAOverviewCountsResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_ticket_sla_overview_counts(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    The Dashboard's "SLA Overview" tile row (Running/Paused/At Risk/
+    Breached/Escalated/Completed), computed server-side in one grouped
+    query — replaces the frontend's old N+1 pattern (an unbounded
+    GET /tickets fetch, then one GET /tickets/{id}/sla call per visible
+    ticket) that used to back this same tile. See
+    TicketService.get_sla_overview_counts.
+    """
+
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = TicketService(
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+    )
+
+    return await service.get_sla_overview_counts(current_user=current_user)
 
 
 # =========================================================

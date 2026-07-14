@@ -21,13 +21,12 @@ import { Badge } from "@tw/components/common/Badge";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
 import { getViewCounts } from "@tw/api/inbox";
-import { getDashboardStats, listTickets, type DashboardStats } from "@tw/api/ticket";
+import { getDashboardStats, type DashboardStats } from "@tw/api/ticket";
 import { useDashboardSlaCounts } from "@tw/hooks/useDashboardSlaCounts";
 import { useToast } from "@tw/context/ToastContext";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { formatDateTime } from "@tw/lib/format";
 import { statusTone } from "@tw/lib/ticketTone";
-import type { TicketResponse } from "@tw/types";
 
 // No SLA contract field exists on the ticket model yet, so "SLA Risk"
 // is defined transparently here as a derived heuristic — open tickets
@@ -121,31 +120,12 @@ export function Dashboard() {
   const [isLoading, setIsLoading] = useState(true);
 
   // Independent of the bounded getDashboardStats()/getViewCounts()
-  // calls above — there's no real SLA-aggregation endpoint yet, so
-  // this still fetches the raw ticket list itself and aggregates
-  // client-side via useDashboardSlaCounts (same approach used in the
-  // shell's SlaOverviewSection, src/components/dashboard/). Kept
-  // separate from `stats` deliberately: swapping this for a real
-  // aggregate endpoint later shouldn't need to touch the
-  // getDashboardStats() call above at all.
-  const [slaTickets, setSlaTickets] = useState<TicketResponse[] | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    listTickets()
-      .then((data) => {
-        if (!cancelled) setSlaTickets(data);
-      })
-      .catch(() => {
-        // Silent on failure, same convention as the rest of this
-        // page's polling/loading — the SLA Overview section just
-        // shows zeros rather than an error toast on top of the one
-        // the main stats load() below would already show.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  const { counts: slaCounts } = useDashboardSlaCounts(slaTickets);
+  // calls above — one grouped GET /tickets/sla-overview-counts query
+  // (see useDashboardSlaCounts, also used by the shell's own
+  // SlaOverviewSection, src/components/dashboard/). Kept separate from
+  // `stats` deliberately: this endpoint has its own refresh cadence and
+  // its own loading state.
+  const { counts: slaCounts } = useDashboardSlaCounts();
 
   useEffect(() => {
     let cancelled = false;
@@ -261,9 +241,8 @@ export function Dashboard() {
           <p className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted">
             SLA Overview
           </p>
-          {/* Aggregated client-side from the per-ticket SLA endpoint —
-              see useDashboardSlaCounts for why (no aggregate endpoint
-              exists yet). */}
+          {/* Server-aggregated via GET /tickets/sla-overview-counts —
+              see useDashboardSlaCounts. */}
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
             <StatCard
               icon={<Timer size={19} className="text-accent" />}

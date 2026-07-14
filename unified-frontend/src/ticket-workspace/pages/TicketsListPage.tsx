@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
-import { AlertTriangle, ArrowUpDown, MessagesSquare, Search, UserPlus } from "lucide-react";
+import { AlertTriangle, ArrowUpDown, MessagesSquare, Search, ShieldAlert, UserPlus } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { Badge } from "@tw/components/common/Badge";
 import { Button } from "@tw/components/common/Button";
@@ -13,6 +13,7 @@ import {
   listTicketsPage,
   type TicketViewCounts,
 } from "@tw/api/ticket";
+import { acknowledgeTicketEscalation } from "@tw/api/sla";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useDebouncedValue } from "@tw/hooks/useDebouncedValue";
 import { useAuthContext } from "@tw/context/AuthContext";
@@ -34,8 +35,21 @@ const STATUSES: TicketStatus[] = [
 const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
 const PAGE_SIZE = 10;
 
+// Mirrors the backend's ESCALATION_TAB_ROLE_NAMES (access_control.py)
+// exactly, same reasoning SlaCard.tsx's own RESOLUTION_OVERRIDE_ROLES
+// comment documents — this is who can actually receive/manage an
+// escalation, not the narrower role sets lib/role-access.ts exports.
+const ESCALATION_TAB_ROLES = new Set(["Team Lead", "Account Manager", "Site Lead", "Super Admin"]);
+const CLOSED_TICKET_STATUSES = new Set<TicketStatus>(["RESOLVED", "CLOSED"]);
+
+const ESCALATION_LEVEL_LABEL: Record<string, string> = {
+  TEAM_LEAD: "Team Lead",
+  MANAGER: "Manager",
+  SITE_LEAD: "Site Lead",
+};
+
 type SortKey = "created_at" | "updated_at" | "title";
-type PoolTab = "pool" | "mine" | "all";
+type PoolTab = "pool" | "mine" | "all" | "escalated";
 
 const selectClass =
   "rounded-md2 border border-border bg-surface px-3 py-2 text-xs font-medium text-slate-700 shadow-xs transition-colors focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";
@@ -59,7 +73,12 @@ export function TicketsListPage() {
   // The three tab badge counts, fetched independently via one grouped
   // query (GET /tickets/view-counts) instead of needing all three
   // tabs' full row sets just to show a number on each.
-  const [viewCounts, setViewCounts] = useState<TicketViewCounts>({ pool: 0, mine: 0, all: 0 });
+  const [viewCounts, setViewCounts] = useState<TicketViewCounts>({
+    pool: 0,
+    mine: 0,
+    all: 0,
+    escalated: 0,
+  });
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -209,6 +228,37 @@ export function TicketsListPage() {
     }
   }
 
+  const { run: runAcknowledge, isLoading: isAcknowledging } = useApiAction(
+    acknowledgeTicketEscalation,
+    { successMessage: "Escalation acknowledged." }
+  );
+  const [acknowledgingId, setAcknowledgingId] = useState<string | null>(null);
+
+  async function handleAcknowledge(ticketId: string, e: React.MouseEvent) {
+    e.stopPropagation();
+    setAcknowledgingId(ticketId);
+    const result = await runAcknowledge(ticketId);
+    setAcknowledgingId(null);
+    // Acknowledging only ever flips this one escalation's own status —
+    // patch it in place instead of reloading the whole page/tab, same
+    // targeted-refresh convention handleClaim above already follows.
+    if (result) {
+      setTickets((prev) =>
+        prev.map((t) =>
+          t.ticket_id === ticketId ? { ...t, escalation_status: "ACKNOWLEDGED" } : t
+        )
+      );
+      loadViewCounts();
+    }
+  }
+
+  const canAcknowledgeRow = (ticket: TicketResponse) =>
+    !!currentUser &&
+    ESCALATION_TAB_ROLES.has(currentUser.role) &&
+    ticket.is_escalated &&
+    ticket.escalation_status === "ACTIVE" &&
+    !CLOSED_TICKET_STATUSES.has(ticket.current_status);
+
   const totalPages = Math.max(1, Math.ceil(serverTotal / PAGE_SIZE));
   const currentPage = Math.min(page, totalPages);
 
@@ -248,6 +298,8 @@ export function TicketsListPage() {
     );
   }
 
+  const canSeeEscalatedTab = !!currentUser && ESCALATION_TAB_ROLES.has(currentUser.role);
+
   return (
     <AppLayout
       title="Tickets"
@@ -256,6 +308,8 @@ export function TicketsListPage() {
           ? "Unclaimed open tickets from every Account Manager — claim one to start working it."
           : poolTab === "mine"
           ? "Tickets currently claimed by you."
+          : poolTab === "escalated"
+          ? "Tickets with an active internal escalation in your scope — acknowledge to take ownership and start the escalation-handling SLA."
           : "Every ticket across every Account Manager."
       }
     >
@@ -266,6 +320,9 @@ export function TicketsListPage() {
               { key: "pool" as const, label: "Open Pool", count: viewCounts.pool },
               { key: "mine" as const, label: "My Tickets", count: viewCounts.mine },
               { key: "all" as const, label: "All", count: viewCounts.all },
+              ...(canSeeEscalatedTab
+                ? [{ key: "escalated" as const, label: "Escalated", count: viewCounts.escalated }]
+                : []),
             ]
           ).map((tab) => {
             const isActive = poolTab === tab.key;
@@ -448,6 +505,7 @@ export function TicketsListPage() {
                     <th className="px-5 py-3.5">Status</th>
                     <th className="px-5 py-3.5">Priority</th>
                     <th className="px-5 py-3.5">Assigned Agent</th>
+                    <th className="px-5 py-3.5">Escalation</th>
                     <th className="px-5 py-3.5">
                       <SortHeader label="Last Updated" sortField="updated_at" />
                     </th>
@@ -487,9 +545,17 @@ export function TicketsListPage() {
                         </Badge>
                       </td>
                       <td className="px-5 py-3.5">
-                        <Badge tone={priorityTone[ticket.current_priority]}>
-                          {ticket.current_priority}
-                        </Badge>
+                        <div className="flex items-center gap-1.5">
+                          {ticket.is_escalated ? (
+                            <Badge tone="danger" icon={<ShieldAlert size={11} />}>
+                              CRITICAL
+                            </Badge>
+                          ) : (
+                            <Badge tone={priorityTone[ticket.current_priority]}>
+                              {ticket.current_priority}
+                            </Badge>
+                          )}
+                        </div>
                       </td>
                       <td className="px-5 py-3.5 text-slate-700">
                         {ticket.agent_id ? (
@@ -500,6 +566,26 @@ export function TicketsListPage() {
                           )
                         ) : (
                           <span className="text-muted">Unclaimed</span>
+                        )}
+                      </td>
+                      <td className="px-5 py-3.5 text-xs">
+                        {ticket.is_escalated ? (
+                          <div className="flex flex-col gap-0.5">
+                            <span className="font-medium text-slate-800">
+                              {ticket.escalation_level
+                                ? ESCALATION_LEVEL_LABEL[ticket.escalation_level] ?? ticket.escalation_level
+                                : "—"}
+                            </span>
+                            <span className="text-muted">
+                              {ticket.escalation_status === "ACKNOWLEDGED"
+                                ? "Acknowledged"
+                                : ticket.escalation_ack_due_at
+                                ? `Ack due ${formatDateTime(ticket.escalation_ack_due_at)}`
+                                : "Awaiting acknowledgment"}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-muted">—</span>
                         )}
                       </td>
                       <td className="px-5 py-3.5 text-xs text-muted">
@@ -515,6 +601,16 @@ export function TicketsListPage() {
                               onClick={(e) => handleClaim(ticket.ticket_id, e)}
                             >
                               <UserPlus size={13} /> Claim
+                            </Button>
+                          )}
+                          {canAcknowledgeRow(ticket) && (
+                            <Button
+                              size="sm"
+                              variant="primary"
+                              isLoading={isAcknowledging && acknowledgingId === ticket.ticket_id}
+                              onClick={(e) => handleAcknowledge(ticket.ticket_id, e)}
+                            >
+                              Acknowledge
                             </Button>
                           )}
                           <Button

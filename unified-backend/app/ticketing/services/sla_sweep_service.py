@@ -24,6 +24,9 @@ from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.sla import SLASweepResponse
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.escalation_handling_sla_service import (
+    build_escalation_handling_sla_service,
+)
 from app.ticketing.services.escalation_service import EscalationService
 from app.ticketing.services.sla_breach_notifier import (
     CLOCK_TYPE_FIRST_RESPONSE,
@@ -113,6 +116,9 @@ class SLASweepService:
         # auto-advance an ignored acknowledgment) rather than standing
         # up a second scheduler — see EscalationService's own docstring.
         # Never touches ResolutionSLA/FirstResponseSLA itself.
+        self.escalation_handling_sla_service = build_escalation_handling_sla_service(
+            ticket_repository.db
+        )
         self.escalation_service = EscalationService(
             ticket_escalation_repository=TicketEscalationRepository(ticket_repository.db),
             ticket_repository=ticket_repository,
@@ -120,6 +126,7 @@ class SLASweepService:
             sla_policy_repository=sla_policy_repository,
             user_repository=user_repository,
             notification_service=notification_service,
+            escalation_handling_sla_service=self.escalation_handling_sla_service,
         )
 
     async def run_sweep(self) -> SLASweepResponse:
@@ -294,14 +301,30 @@ class SLASweepService:
         # threshold at all).
         escalations_advanced = await self.escalation_service.evaluate_overdue(now=now)
 
+        # Escalation-handling SLA breach detection — a distinct clock
+        # from the ack-window check just above (see
+        # EscalationHandlingSlaService/EscalationService.
+        # advance_for_handling_sla_breach's own docstrings): this one
+        # fires when an *acknowledged* escalation still isn't actually
+        # resolved within its 25%-of-original-target window. Same
+        # "extend this one sweep, no second scheduler" rationale.
+        escalation_handling_sla_breaches = 0
+        for clock in await self.escalation_handling_sla_service.evaluate_breaches(now=now):
+            advanced = await self.escalation_service.advance_for_handling_sla_breach(
+                clock.ticket_id
+            )
+            escalation_handling_sla_breaches += int(advanced)
+
         duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
         logger.info(
             "SLA sweep completed in %.2fs — notifications_sent=%d "
-            "escalations_created=%d escalations_advanced=%d errors=%d counts=%s",
+            "escalations_created=%d escalations_advanced=%d "
+            "escalation_handling_sla_breaches=%d errors=%d counts=%s",
             duration_seconds,
             notifications_sent,
             escalations_created,
             escalations_advanced,
+            escalation_handling_sla_breaches,
             errors,
             counts,
         )
@@ -311,6 +334,7 @@ class SLASweepService:
             notifications_sent=notifications_sent,
             escalations_created=escalations_created,
             escalations_advanced=escalations_advanced,
+            escalation_handling_sla_breaches=escalation_handling_sla_breaches,
             errors=errors,
         )
 

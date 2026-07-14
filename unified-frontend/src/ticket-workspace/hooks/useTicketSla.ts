@@ -5,7 +5,6 @@ import {
   escalateTicket,
   getTicketSla,
   listSlaPolicies,
-  pauseTicketSla,
   resumeTicketSla,
 } from "@tw/api/sla";
 import { useApiAction } from "@tw/hooks/useApiAction";
@@ -28,7 +27,6 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
   const lastTierRef = useRef<SlaTier | null>(null);
   const slaAbortRef = useRef<AbortController | null>(null);
 
-  const { run: runPause, isLoading: isPausing } = useApiAction(pauseTicketSla);
   const { run: runResume, isLoading: isResuming } = useApiAction(resumeTicketSla);
   const { run: runEscalate, isLoading: isEscalating } = useApiAction(escalateTicket);
   const { run: runAcknowledge, isLoading: isAcknowledging } = useApiAction(
@@ -139,16 +137,6 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
     }
   }, [tier, pushToast]);
 
-  const pause = useCallback(
-    async (reason: string) => {
-      if (!ticketId) return;
-      const result = await runPause(ticketId, { reason });
-      if (result) await fetchSla();
-      return result;
-    },
-    [ticketId, runPause, fetchSla]
-  );
-
   const resume = useCallback(async () => {
     if (!ticketId) return;
     const result = await runResume(ticketId);
@@ -174,14 +162,13 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
     sla,
     resolution,
     escalation: sla?.escalation ?? null,
+    escalationHandlingSla: sla?.escalation_handling_sla ?? null,
     targetMinutes,
     elapsedFraction,
     remainingSeconds,
     tier,
     isLoading,
-    pause,
     resume,
-    isPausing,
     isResuming,
     escalate,
     acknowledgeEscalation,

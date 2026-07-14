@@ -20,6 +20,9 @@ from app.ticketing.models.interaction import Interaction
 from app.ticketing.models.resolution_sla import ResolutionSLA
 from app.ticketing.models.sla_policy import SLAPolicy
 from app.ticketing.repositories.client_repository import ClientRepository
+from app.ticketing.repositories.escalation_handling_sla_repository import (
+    EscalationHandlingSlaRepository,
+)
 from app.ticketing.repositories.first_response_sla_repository import (
     FirstResponseSLARepository,
 )
@@ -35,6 +38,7 @@ from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.interaction import InteractionCreate
 from app.ticketing.schemas.sla import (
+    EscalationHandlingSLAState,
     FirstResponseSLAState,
     ResolutionSLAState,
     SLAPauseRequest,
@@ -451,15 +455,36 @@ class SLAService:
             )
 
         escalation_state = None
+        handling_sla_state = None
         if self.ticket_repository is not None:
-            escalation_service = build_escalation_service(self.ticket_repository.db)
+            db = self.ticket_repository.db
+            escalation_service = build_escalation_service(db)
             escalation_state = await escalation_service.get_escalation_state(ticket_id)
+
+            if escalation_state is not None:
+                handling_sla_repository = EscalationHandlingSlaRepository(db)
+                handling_clock = await handling_sla_repository.get_by_escalation_id(
+                    escalation_state.escalation_id
+                )
+                if handling_clock is not None:
+                    now = datetime.now(timezone.utc)
+                    at = handling_clock.completed_at or now
+                    handling_sla_state = EscalationHandlingSLAState(
+                        status=handling_clock.status,
+                        target_seconds=handling_clock.target_seconds,
+                        started_at=handling_clock.started_at,
+                        due_at=handling_clock.due_at,
+                        breached_at=handling_clock.breached_at,
+                        completed_at=handling_clock.completed_at,
+                        remaining_seconds=(handling_clock.due_at - at).total_seconds(),
+                    )
 
         return TicketSLAResponse(
             ticket_id=ticket_id,
             first_response=None,
             resolution=resolution_state,
             escalation=escalation_state,
+            escalation_handling_sla=handling_sla_state,
         )
 
     async def get_first_response_sla_state(

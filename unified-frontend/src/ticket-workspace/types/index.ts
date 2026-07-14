@@ -366,6 +366,18 @@ export interface TicketResponse {
   agent_name: string | null;
   created_by_name: string | null;
   related_tickets: RelatedTicketSummary[];
+
+  // Escalation display fields — LEFT JOIN-sourced on the backend
+  // (TicketRepository.list_visible_page), never a second per-row
+  // lookup. `is_escalated` is the one signal the ticket-list page
+  // needs to render the Critical/escalation badge and float a row to
+  // the top of My Tickets — it never means the ticket's own
+  // `current_priority` was overwritten; that field is untouched by
+  // escalation state (see the backend schema's own docstring).
+  is_escalated?: boolean;
+  escalation_level?: EscalationLevel | null;
+  escalation_status?: EscalationStatus | null;
+  escalation_ack_due_at?: string | null;
 }
 
 export interface RelateTicketRequest {
@@ -676,6 +688,25 @@ export interface TicketEscalationState {
   overdue_seconds: number;
 }
 
+// Internal escalation-handling clock — a second, wholly separate timer
+// from `resolution` above, measuring time-to-actually-resolve once the
+// current escalation owner has acknowledged (or been assigned) it.
+// Its target is always 25% of the original Resolution SLA's configured
+// target duration (see EscalationHandlingSlaService.compute_escalation_
+// handling_target_seconds) — never derived from remaining/overdue time,
+// and it never overwrites `resolution`'s own started_at/due_at/status.
+export type EscalationHandlingSLAStatus = "PENDING" | "RUNNING" | "PAUSED" | "COMPLETED";
+
+export interface EscalationHandlingSLAState {
+  status: EscalationHandlingSLAStatus;
+  target_seconds: number;
+  started_at: string;
+  due_at: string;
+  breached_at: string | null;
+  completed_at: string | null;
+  remaining_seconds: number;
+}
+
 // GET /tickets/{ticket_id}/sla — first_response is always null here by
 // backend design (that clock lives on the originating interaction, not
 // the ticket) — see SLAService.get_ticket_sla_state's own docstring.
@@ -684,10 +715,7 @@ export interface TicketSLAResponse {
   first_response: FirstResponseSLAState | null;
   resolution: ResolutionSLAState | null;
   escalation: TicketEscalationState | null;
-}
-
-export interface SLAPauseRequest {
-  reason: string;
+  escalation_handling_sla: EscalationHandlingSLAState | null;
 }
 
 export interface SLAPolicyResponse {
