@@ -952,6 +952,16 @@ class InteractionService:
                     reason="WAITING_FOR_CLIENT_STATUS",
                     triggering_interaction_id=None,
                 )
+                await AuditLogService.log_event(
+                    self.ticket_repository.db,
+                    entity_type=AuditEntityType.TICKET,
+                    entity_id=ticket_id,
+                    event_type=AuditEventType.SLA_PAUSED,
+                    actor_id=actor_id,
+                    actor_name=actor_name,
+                    actor_role=actor_role,
+                    new_values={"reason": "WAITING_FOR_CLIENT_STATUS"},
+                )
             elif (
                 old_status == TicketStatus.WAITING_FOR_CLIENT
                 and new_status != TicketStatus.WAITING_FOR_CLIENT
@@ -960,6 +970,24 @@ class InteractionService:
                     ticket_id=ticket_id,
                     triggering_interaction_id=None,
                 )
+                # Audit row only for the two statuses the spec calls
+                # out (work resuming) — a transition to CLOSED still
+                # resumes the clock (so complete_resolution_clock below
+                # runs against a correctly-unpaused clock) but is
+                # already covered by TICKET_RESOLVED/ESCALATION_CLOSED
+                # semantics, so it doesn't also need its own SLA_RESUMED
+                # row.
+                if new_status in (TicketStatus.IN_PROGRESS, TicketStatus.RESOLVED):
+                    await AuditLogService.log_event(
+                        self.ticket_repository.db,
+                        entity_type=AuditEntityType.TICKET,
+                        entity_id=ticket_id,
+                        event_type=AuditEventType.SLA_RESUMED,
+                        actor_id=actor_id,
+                        actor_name=actor_name,
+                        actor_role=actor_role,
+                        new_values={"new_status": new_status.value},
+                    )
 
             if new_status == TicketStatus.CLOSED and old_status != TicketStatus.CLOSED:
                 await self.sla_service.complete_resolution_clock(ticket_id=ticket_id)

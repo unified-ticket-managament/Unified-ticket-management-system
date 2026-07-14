@@ -10,6 +10,7 @@ from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.first_response_sla_repository import (
     FirstResponseSLARepository,
 )
+from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.resolution_sla_repository import (
     ResolutionSLARepository,
 )
@@ -102,6 +103,7 @@ class SLASweepService:
         client_repository: ClientRepository,
         user_repository: UserRepository,
         notification_service: NotificationService | None = None,
+        interaction_repository: InteractionRepository | None = None,
     ):
         self.sla_policy_repository = sla_policy_repository
         self.first_response_sla_repository = first_response_sla_repository
@@ -111,6 +113,7 @@ class SLASweepService:
         self.client_repository = client_repository
         self.user_repository = user_repository
         self.notification_service = notification_service
+        self.interaction_repository = interaction_repository
         # Extends this same background worker to also evaluate the
         # internal escalation workflow (create on first breach,
         # auto-advance an ignored acknowledgment) rather than standing
@@ -187,6 +190,19 @@ class SLASweepService:
         fr_clients_by_id = {
             c.client_id: c for c in await self.client_repository.list_by_ids(list(fr_client_ids))
         }
+
+        # Same batching for the underlying email itself (subject/body) —
+        # needed so a breach notification can name the specific email
+        # instead of a generic "an inbound email" message.
+        fr_interaction_ids = [c.interaction_id for c in first_response_clocks]
+        fr_interactions_by_id = (
+            {
+                i.interaction_id: i
+                for i in await self.interaction_repository.list_by_ids(fr_interaction_ids)
+            }
+            if self.interaction_repository is not None
+            else {}
+        )
 
         for clock in first_response_clocks:
             target_minutes = target_by_priority_fr.get(clock.priority)
@@ -292,6 +308,7 @@ class SLASweepService:
                             threshold,
                             global_inbox_ids,
                             fr_clients_by_id,
+                            fr_interactions_by_id,
                         )
                     else:
                         sent, escalation_created = await self._notify_resolution(
@@ -371,6 +388,7 @@ class SLASweepService:
         threshold: str,
         global_inbox_ids: set[UUID],
         clients_by_id: dict,
+        interactions_by_id: dict,
     ) -> bool:
         """
         Only ever called for a triple try_record_many just confirmed
@@ -382,11 +400,13 @@ class SLASweepService:
         """
 
         client = clients_by_id.get(clock.client_id) if clock.client_id is not None else None
+        interaction = interactions_by_id.get(clock.interaction_id)
 
         return await notify_first_response_threshold(
             clock=clock,
             threshold=threshold,
             client=client,
+            interaction=interaction,
             global_inbox_ids=global_inbox_ids,
             notification_service=self.notification_service,
             user_repository=self.user_repository,

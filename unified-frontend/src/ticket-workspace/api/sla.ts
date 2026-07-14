@@ -1,5 +1,6 @@
 import { apiClient } from "./client";
 import type {
+  AssignableAgentsResponse,
   SLAPolicyResponse,
   SLAPolicyUpdatePayload,
   TicketActionResponse,
@@ -45,6 +46,21 @@ export async function acknowledgeTicketEscalation(
 ): Promise<TicketActionResponse> {
   const { data } = await apiClient.post<TicketActionResponse>(
     `/tickets/${ticketId}/escalation/acknowledge`
+  );
+  return data;
+}
+
+// GET /tickets/{ticket_id}/escalation/acknowledge-candidates — who the
+// caller may assign this escalated ticket to, role-scoped server-side
+// (Site Lead/Super Admin: category Team Lead + client's Account
+// Manager; Account Manager: their own category-matched Team Leads;
+// Team Lead: category Staff). See EscalationService.
+// get_acknowledge_candidates for the exact per-role shape.
+export async function getAcknowledgeCandidates(
+  ticketId: string
+): Promise<AssignableAgentsResponse> {
+  const { data } = await apiClient.get<AssignableAgentsResponse>(
+    `/tickets/${ticketId}/escalation/acknowledge-candidates`
   );
   return data;
 }

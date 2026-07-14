@@ -711,7 +711,8 @@ export function TicketsListPage() {
     <AcknowledgeAssignModal
       open={acknowledgeAndAssign.isOpen}
       onClose={acknowledgeAndAssign.close}
-      candidates={acknowledgeAndAssign.candidates}
+      me={acknowledgeAndAssign.me}
+      groups={acknowledgeAndAssign.groups}
       selectedAgentId={acknowledgeAndAssign.selectedAgentId}
       onSelectAgent={acknowledgeAndAssign.setSelectedAgentId}
       onConfirm={handleConfirmAcknowledge}

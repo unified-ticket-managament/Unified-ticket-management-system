@@ -622,8 +622,8 @@ export type AuditEventType =
   | "EDIT_ACCESS_REQUESTED"
   | "EDIT_ACCESS_APPROVED"
   | "EDIT_ACCESS_REJECTED"
-  | "SLA_MANUALLY_PAUSED"
-  | "SLA_MANUALLY_RESUMED"
+  | "SLA_PAUSED"
+  | "SLA_RESUMED"
   | "SLA_BREACH_DETECTED"
   | "SLA_ESCALATED"
   // Internal escalation workflow (TicketEscalation) — distinct from

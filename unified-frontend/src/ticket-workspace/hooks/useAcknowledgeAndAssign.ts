@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { acknowledgeTicketEscalation } from "@tw/api/sla";
+import { acknowledgeTicketEscalation, getAcknowledgeCandidates } from "@tw/api/sla";
 import { claimTicket, transferTicketAgent } from "@tw/api/ticket";
-import { listAgents } from "@tw/api/agent";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
-import type { AgentSummary } from "@tw/types";
+import type { AssignableGroup, AssignableUserSummary } from "@tw/types";
 
 interface TargetTicket {
   ticketId: string;
@@ -45,7 +44,11 @@ export function useAcknowledgeAndAssign() {
   const { currentUser } = useAuthContext();
   const [isOpen, setIsOpen] = useState(false);
   const [target, setTarget] = useState<TargetTicket | null>(null);
-  const [agents, setAgents] = useState<AgentSummary[]>([]);
+  // Role-scoped groups from the backend (see
+  // EscalationService.get_acknowledge_candidates) — who appears here
+  // differs by the caller's own role, e.g. a Site Lead sees Team
+  // Lead + Account Manager options, a Team Lead sees Staff.
+  const [groups, setGroups] = useState<AssignableGroup[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState("");
 
   const { run: runAcknowledge, isLoading: isAcknowledging } = useApiAction(
@@ -59,32 +62,26 @@ export function useAcknowledgeAndAssign() {
     setTarget(ticket);
     setSelectedAgentId(ticket.currentAgentId ?? currentUser?.user_id ?? "");
     setIsOpen(true);
-    // Scoped to the ticket's own work-specialization category, same as
-    // TicketActions' own Transfer/Assign picker.
-    listAgents(ticket.ticketType)
-      .then(setAgents)
-      .catch(() => setAgents([]));
+    getAcknowledgeCandidates(ticket.ticketId)
+      .then((res) => setGroups(res.groups))
+      .catch(() => setGroups([]));
   }
 
   function close() {
     setIsOpen(false);
   }
 
-  // "Myself" is a real, explicit option here (unlike TicketActions'
-  // own Transfer picker, which excludes the caller in favor of a
-  // separate Claim button) — acknowledging an escalation is exactly
-  // the moment a supervisor decides whether to take it on personally
-  // or delegate it.
-  const candidates: AgentSummary[] = currentUser
+  // Flat, id-keyed view of every selectable person (self + every
+  // group's users) — used only for the confirm()/name-lookup logic
+  // below, which doesn't care which role group an id came from. The
+  // modal itself renders `groups` as separate <optgroup>s, plus "Myself"
+  // on its own.
+  const allUsers: AssignableUserSummary[] = currentUser
     ? [
-        {
-          user_id: currentUser.user_id,
-          name: `Myself (${currentUser.name})`,
-          email: currentUser.email,
-        },
-        ...agents.filter((a) => a.user_id !== currentUser.user_id),
+        { user_id: currentUser.user_id, name: currentUser.name },
+        ...groups.flatMap((g) => g.users).filter((u) => u.user_id !== currentUser.user_id),
       ]
-    : agents;
+    : groups.flatMap((g) => g.users);
 
   async function confirm(): Promise<ConfirmResult> {
     if (!target || !selectedAgentId) return { success: false };
@@ -107,7 +104,7 @@ export function useAcknowledgeAndAssign() {
       const agentName =
         selectedAgentId === currentUser?.user_id
           ? currentUser.name
-          : agents.find((a) => a.user_id === selectedAgentId)?.name;
+          : allUsers.find((u) => u.user_id === selectedAgentId)?.name;
       return { success: true, agentId: selectedAgentId, agentName };
     }
     // Failed calls already surfaced their own error toast via
@@ -120,7 +117,13 @@ export function useAcknowledgeAndAssign() {
     isOpen,
     open,
     close,
-    candidates,
+    // "Myself" is a real, explicit option here (unlike TicketActions'
+    // own Transfer picker, which excludes the caller in favor of a
+    // separate Claim button) — acknowledging an escalation is exactly
+    // the moment a supervisor decides whether to take it on personally
+    // or delegate it.
+    me: currentUser ? { user_id: currentUser.user_id, name: currentUser.name } : null,
+    groups,
     selectedAgentId,
     setSelectedAgentId,
     confirm,

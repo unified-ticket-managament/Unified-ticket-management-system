@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { ComposeView, type ComposeInitialValues } from "@tw/components/mail/ComposeView";
 import { MailSidebar } from "@tw/components/mail/MailSidebar";
@@ -10,6 +11,7 @@ import { SystemMailDetailsView } from "@tw/components/mail/SystemMailDetailsView
 import { SystemMailList } from "@tw/components/mail/SystemMailList";
 import { useMailInbox, type MailViewKey } from "@tw/hooks/useMailInbox";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import { useAuthContext } from "@tw/context/AuthContext";
 
 const VIEW_LABELS: Record<MailViewKey, string> = {
   pending: "Inbox",
@@ -34,8 +36,10 @@ const VIEW_LABELS: Record<MailViewKey, string> = {
 export function InboxPage() {
   const mail = useMailInbox();
   const { selectedEmail, setSelectedEmail } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeInitialValues, setComposeInitialValues] = useState<ComposeInitialValues | undefined>(undefined);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // useCallback below (rather than plain function declarations) is
   // required for MailSidebar's React.memo to actually skip re-renders
@@ -70,6 +74,28 @@ export function InboxPage() {
     setComposeOpen(false);
     await mail.openThread(interactionId);
   }
+
+  // A First Response SLA notification (topbar bell or the Mail
+  // "System" folder) links here as "/inbox?interaction_id=<id>" so
+  // clicking it opens the specific message instead of leaving the
+  // recipient to find it themselves — see sla_breach_notifier.py's
+  // notify_first_response_threshold. The param is consumed once, then
+  // cleared, so navigating away and back (or refreshing) doesn't
+  // re-open it.
+  useEffect(() => {
+    const interactionId = searchParams.get("interaction_id");
+    if (!interactionId) return;
+    handleOpen(interactionId);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("interaction_id");
+        return next;
+      },
+      { replace: true }
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   function handleForward(values: { clientId: string | null; toEmail: string; subject: string; bodyHtml: string }) {
     openCompose({
@@ -118,6 +144,7 @@ export function InboxPage() {
           onCompose={handleComposeClick}
           counts={mail.viewCounts}
           isSupervisor={mail.isSupervisor}
+          hideMyClaims={currentUser?.role === "Staff"}
         />
 
         <div className="min-h-[560px] min-w-0 flex-1">

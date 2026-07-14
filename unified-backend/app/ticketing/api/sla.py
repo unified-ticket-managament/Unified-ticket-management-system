@@ -10,6 +10,7 @@ from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
+from app.ticketing.schemas.assignment import AssignableAgentsResponse
 from app.ticketing.schemas.sla import (
     SLAPauseRequest,
     SLAPolicyResponse,
@@ -156,6 +157,27 @@ async def acknowledge_ticket_escalation(
         db, notification_service=NotificationService(NotificationRepository(db))
     )
     return await escalation_service.acknowledge(ticket_id, current_user)
+
+
+@ticket_sla_router.get(
+    "/{ticket_id}/escalation/acknowledge-candidates",
+    response_model=AssignableAgentsResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_acknowledge_candidates(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Who the caller may assign this escalated ticket to when
+    acknowledging it — role-scoped, see
+    EscalationService.get_acknowledge_candidates's own docstring for
+    the exact per-role shape.
+    """
+
+    escalation_service = build_escalation_service(db)
+    return await escalation_service.get_acknowledge_candidates(ticket_id, current_user)
 
 
 # ---------------------------------------------------------

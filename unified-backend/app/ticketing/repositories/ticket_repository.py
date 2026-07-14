@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import and_, case, exists, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from shared_models.models import User
@@ -228,6 +228,12 @@ class TicketRepository:
         if view == "pool":
             conditions.append(Ticket.agent_id.is_(None))
             conditions.append(Ticket.current_status == TicketStatus.OPEN)
+            # See list_visible_page's matching pool branch — an
+            # unclaimed, escalated ticket is excluded here too, for the
+            # same reason (it now has an owner via the escalation
+            # chain), keeping this method's counts/results consistent
+            # with that one's.
+            conditions.append(not_(self._escalated_exists_condition()))
         elif view == "mine" and assigned_to is not None:
             conditions.append(Ticket.agent_id == assigned_to)
         elif view == "escalated":
@@ -535,6 +541,14 @@ class TicketRepository:
         if view == "pool":
             conditions.append(Ticket.agent_id.is_(None))
             conditions.append(Ticket.current_status == TicketStatus.OPEN)
+            # An unclaimed ticket that's escalated is excluded here,
+            # never auto-assigned — it now has an owner via the
+            # escalation chain (Team Lead/Manager/Site Lead), exactly
+            # mirroring how an already-claimed escalated ticket is
+            # already invisible in this view (agent_id is set). Reaches
+            # whoever's meant to act on it only through the Escalated
+            # tab's own Acknowledge & Assign flow.
+            conditions.append(TicketEscalation.escalation_id.is_(None))
         elif view == "mine" and assigned_to is not None:
             conditions.append(Ticket.agent_id == assigned_to)
         elif view == "escalated":

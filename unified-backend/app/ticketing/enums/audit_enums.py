@@ -45,8 +45,13 @@ class AuditEventType(str, Enum):
     EDIT_ACCESS_REQUESTED = "EDIT_ACCESS_REQUESTED"
     EDIT_ACCESS_APPROVED = "EDIT_ACCESS_APPROVED"
     EDIT_ACCESS_REJECTED = "EDIT_ACCESS_REJECTED"
-    SLA_MANUALLY_PAUSED = "SLA_MANUALLY_PAUSED"
-    SLA_MANUALLY_RESUMED = "SLA_MANUALLY_RESUMED"
+    # Fired whenever the Resolution SLA clock pauses/resumes — the
+    # automatic WAITING_FOR_CLIENT-driven case (InteractionService.
+    # change_status) as well as a supervisor's manual override
+    # (SLAService.manual_pause/manual_resume, tagged "trigger":
+    # "manual_override" in new_values to distinguish it).
+    SLA_PAUSED = "SLA_PAUSED"
+    SLA_RESUMED = "SLA_RESUMED"
     SLA_BREACH_DETECTED = "SLA_BREACH_DETECTED"
     SLA_ESCALATED = "SLA_ESCALATED"
     # Internal escalation workflow (TicketEscalation) — distinct from

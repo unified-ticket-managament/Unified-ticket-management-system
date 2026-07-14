@@ -245,6 +245,11 @@ class SLAService:
                         if clock.client_id is not None and self.client_repository is not None
                         else None
                     )
+                    interaction = (
+                        await self.interaction_repository.get_by_id(clock.interaction_id)
+                        if self.interaction_repository is not None
+                        else None
+                    )
                     global_inbox_ids = (
                         await resolve_global_inbox_user_ids(self.user_repository)
                         if self.user_repository is not None
@@ -255,6 +260,7 @@ class SLAService:
                             clock=clock,
                             threshold=threshold,
                             client=client,
+                            interaction=interaction,
                             global_inbox_ids=global_inbox_ids,
                             notification_service=self.notification_service,
                             user_repository=self.user_repository,
@@ -621,11 +627,15 @@ class SLAService:
             self.ticket_repository.db,
             entity_type=AuditEntityType.TICKET,
             entity_id=ticket_id,
-            event_type=AuditEventType.SLA_MANUALLY_PAUSED,
+            event_type=AuditEventType.SLA_PAUSED,
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            new_values={"reason": request.reason, "interaction_id": interaction.interaction_id},
+            new_values={
+                "reason": request.reason,
+                "interaction_id": interaction.interaction_id,
+                "trigger": "manual_override",
+            },
         )
 
         return TicketActionResponse(
@@ -671,11 +681,14 @@ class SLAService:
             self.ticket_repository.db,
             entity_type=AuditEntityType.TICKET,
             entity_id=ticket_id,
-            event_type=AuditEventType.SLA_MANUALLY_RESUMED,
+            event_type=AuditEventType.SLA_RESUMED,
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            new_values={"interaction_id": interaction.interaction_id},
+            new_values={
+                "interaction_id": interaction.interaction_id,
+                "trigger": "manual_override",
+            },
         )
 
         return TicketActionResponse(

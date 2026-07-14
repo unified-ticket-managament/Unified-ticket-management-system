@@ -21,6 +21,7 @@ from app.ticketing.enums import (
 from app.ticketing.models.resolution_sla import ResolutionSLA
 from app.ticketing.models.ticket import Ticket
 from app.ticketing.models.ticket_escalation import TicketEscalation
+from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.resolution_sla_repository import ResolutionSLARepository
 from app.ticketing.repositories.sla_policy_repository import SLAPolicyRepository
 from app.ticketing.repositories.ticket_escalation_repository import (
@@ -28,10 +29,16 @@ from app.ticketing.repositories.ticket_escalation_repository import (
 )
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
+from app.ticketing.schemas.assignment import (
+    AssignableAgentsResponse,
+    AssignableGroup,
+    AssignableUserSummary,
+)
 from app.ticketing.schemas.sla import TicketEscalationState
 from app.ticketing.schemas.ticket import TicketUpdate
 from app.ticketing.schemas.ticket_action import TicketActionResponse
 from app.ticketing.services.access_control import (
+    ACCOUNT_MANAGER_ROLE_NAME,
     GLOBAL_INBOX_ROLE_NAMES,
     SUPERVISOR_ROLE_NAMES,
     ensure_agent_can_view_ticket,
@@ -39,6 +46,7 @@ from app.ticketing.services.access_control import (
     ensure_ticket_not_closed,
     has_permission,
 )
+from app.ticketing.services.assignment_service import STAFF_ROLE_NAME
 from app.ticketing.services.escalation_handling_sla_service import (
     EscalationHandlingSlaService,
     build_escalation_handling_sla_service,
@@ -55,6 +63,15 @@ from app.ticketing.services.sla_escalation_rules import (
     RecipientContext,
     resolve_team_lead,
 )
+
+
+def _to_assignable_group(role_name: str, users: list[User]) -> AssignableGroup:
+    return AssignableGroup(
+        role=role_name,
+        users=[
+            AssignableUserSummary(user_id=u.user_id, name=u.name) for u in users
+        ],
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -581,6 +598,78 @@ class EscalationService:
             await self.escalation_handling_sla_service.start_if_not_started(
                 escalation=updated, ticket=ticket
             )
+
+    # ---------------------------------------------------------
+    # Acknowledge candidates — who the caller may hand this escalated
+    # ticket to, role-scoped (see the plan's own role table): the
+    # candidate set is a different concept per acting role, not one
+    # flat list everyone shares.
+    # ---------------------------------------------------------
+
+    async def get_acknowledge_candidates(
+        self, ticket_id: UUID, current_user: User
+    ) -> AssignableAgentsResponse:
+        """
+        Site Lead/Super Admin choose between the ticket's category Team
+        Lead(s) and the Account Manager who owns the ticket's client
+        (Client.account_manager_id — client ownership is the only real
+        AM-scoping concept in this data model, there is no "AM of a
+        category"). Account Manager chooses among their own reporting
+        Team Leads who also match the ticket's category. Team Lead
+        chooses among the ticket's category Staff — identical to the
+        flat listAgents(category) list this replaced, just reshaped
+        into a role-labeled group. The caller's own "assign to myself"
+        option is the separate `me` field, never included in `groups`.
+        """
+
+        ticket = await self.ticket_repository.get_by_id(ticket_id)
+        if ticket is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found."
+            )
+        ensure_agent_can_view_ticket(ticket, current_user)
+
+        groups: list[AssignableGroup] = []
+        role_name = current_user.role.name
+
+        if role_name in GLOBAL_INBOX_ROLE_NAMES:
+            team_leads = await self.user_repository.list_active_by_role_and_category(
+                TEAM_LEAD_ROLE_NAME, ticket.ticket_type
+            )
+            groups.append(_to_assignable_group(TEAM_LEAD_ROLE_NAME, team_leads))
+
+            client_repository = ClientRepository(self.ticket_repository.db)
+            client = (
+                await client_repository.get_by_id(ticket.client_company_id)
+                if ticket.client_company_id is not None
+                else None
+            )
+            if client is not None:
+                account_manager = await self.user_repository.get_by_id(
+                    client.account_manager_id
+                )
+                if account_manager is not None and account_manager.is_active:
+                    groups.append(
+                        _to_assignable_group(ACCOUNT_MANAGER_ROLE_NAME, [account_manager])
+                    )
+
+        elif role_name == ACCOUNT_MANAGER_ROLE_NAME:
+            team_leads = await self.user_repository.list_active_by_role_and_category(
+                TEAM_LEAD_ROLE_NAME, ticket.ticket_type
+            )
+            team_leads = [tl for tl in team_leads if tl.manager_id == current_user.user_id]
+            groups.append(_to_assignable_group(TEAM_LEAD_ROLE_NAME, team_leads))
+
+        elif role_name == TEAM_LEAD_ROLE_NAME:
+            staff = await self.user_repository.list_active_by_role_and_category(
+                STAFF_ROLE_NAME, ticket.ticket_type
+            )
+            groups.append(_to_assignable_group(STAFF_ROLE_NAME, staff))
+
+        return AssignableAgentsResponse(
+            me=AssignableUserSummary(user_id=current_user.user_id, name=current_user.name),
+            groups=[g for g in groups if g.users],
+        )
 
     # ---------------------------------------------------------
     # Sweep hook — advance any ACTIVE escalation past its ack window

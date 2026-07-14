@@ -41,17 +41,6 @@ import { SlaBadge } from "@tw/components/sla/SlaBadge";
 type SortKey = "newest" | "oldest" | "sender";
 type SlaRiskFilter = "ALL" | SlaTier;
 
-// Bucket order for pinning risky pending mail to the top — Escalated
-// first, then Breached, then At Risk, then everything else (On
-// Track, or not a still-pending item at all, i.e. First Response
-// doesn't apply to it).
-const TIER_RANK: Record<SlaTier, number> = {
-  escalated: 0,
-  breached: 1,
-  at_risk: 2,
-  healthy: 3,
-};
-
 // Coarser than the single-message countdown's 1s tick (SlaFirstResponseBadge/
 // useFirstResponseCountdown) — this drives a whole list's sort/badges, not a
 // live per-second countdown, so a cheaper refresh is enough to stay honest.
@@ -212,10 +201,10 @@ export function MessageList({
 
   // Priority/category are now applied server-side (GET /inbox) —
   // `items` already reflects both filters, so unread/attachments/SLA
-  // risk and sort are applied here. SLA risk additionally buckets the
-  // sort itself (Escalated -> Breached -> At Risk -> everything else)
-  // ahead of the user's chosen sort, so the riskiest pending mail
-  // always floats to the top regardless of Newest/Oldest/Sender.
+  // risk and sort are applied here. SLA risk is filter-only — it no
+  // longer also reorders the list ahead of the user's chosen sort,
+  // since pinning Escalated/Breached/At Risk mail to the top buried
+  // genuinely new incoming mail underneath older escalated items.
   const filtered = useMemo(() => {
     let rows = items;
     if (unreadOnly) rows = rows.filter((item) => !openedIds.has(item.open_interaction_id ?? item.interaction_id));
@@ -225,10 +214,6 @@ export function MessageList({
     }
 
     return [...rows].sort((a, b) => {
-      const tierRankA = TIER_RANK[firstResponseTierFor(a) ?? "healthy"];
-      const tierRankB = TIER_RANK[firstResponseTierFor(b) ?? "healthy"];
-      if (tierRankA !== tierRankB) return tierRankA - tierRankB;
-
       if (sort === "sender") return a.client_name.localeCompare(b.client_name);
       const aTime = new Date(a.latest_at ?? a.received_at).getTime();
       const bTime = new Date(b.latest_at ?? b.received_at).getTime();

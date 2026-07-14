@@ -11,6 +11,7 @@ from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.first_response_sla_repository import (
     FirstResponseSLARepository,
 )
+from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.resolution_sla_repository import (
     ResolutionSLARepository,
 )
@@ -68,6 +69,7 @@ def build_sla_sweep_service(db: AsyncSession) -> SLASweepService:
         client_repository=ClientRepository(db),
         user_repository=UserRepository(db),
         notification_service=NotificationService(NotificationRepository(db)),
+        interaction_repository=InteractionRepository(db),
     )
 
 

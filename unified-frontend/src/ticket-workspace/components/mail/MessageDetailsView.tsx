@@ -230,11 +230,14 @@ export function MessageDetailsView({
   const [contacts, setContacts] = useState<ClientContact[]>([]);
 
   // "Assigned To" picker (Create Ticket dialog) — `assignedToChoice`
-  // is either "self" or one of assignableAgents.groups[].role;
+  // is "unassigned", "self", or one of assignableAgents.groups[].role;
   // `selectedAssigneeId` is only meaningful once a role group with
-  // more than one candidate is chosen.
+  // more than one candidate is chosen. Defaults to "unassigned" so a
+  // ticket created without deliberately picking an assignee lands in
+  // the Open Pool as team-scoped work, not silently claimed by its
+  // creator.
   const [assignableAgents, setAssignableAgents] = useState<AssignableAgentsResponse | null>(null);
-  const [assignedToChoice, setAssignedToChoice] = useState<string>("self");
+  const [assignedToChoice, setAssignedToChoice] = useState<string>("unassigned");
   const [selectedAssigneeId, setSelectedAssigneeId] = useState("");
 
   const isTicketed = Boolean(email.ticket_id);
@@ -287,9 +290,11 @@ export function MessageDetailsView({
   const assignedToGroup = assignableAgents?.groups.find((group) => group.role === assignedToChoice) ?? null;
   const needsAssigneePick = Boolean(assignedToGroup);
   const resolvedAgentId =
-    assignedToChoice === "self" || !assignedToGroup
-      ? assignableAgents?.me.user_id
-      : selectedAssigneeId || undefined;
+    assignedToChoice === "unassigned"
+      ? undefined
+      : assignedToChoice === "self" || !assignedToGroup
+        ? assignableAgents?.me.user_id
+        : selectedAssigneeId || undefined;
 
   async function handleSend(payload: {
     message: string;
@@ -716,57 +721,56 @@ export function MessageDetailsView({
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Assigned To</label>
-              {!assignableAgents || assignableAgents.groups.length === 0 ? (
-                <Input value={assignableAgents?.me.name ?? "Myself"} readOnly className="bg-muted/30" />
-              ) : (
-                <div className="flex flex-col gap-2">
-                  <Select
-                    value={assignedToChoice}
-                    onValueChange={(v) => {
-                      setAssignedToChoice(v);
-                      setSelectedAssigneeId("");
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
+              <div className="flex flex-col gap-2">
+                <Select
+                  value={assignedToChoice}
+                  onValueChange={(v) => {
+                    setAssignedToChoice(v);
+                    setSelectedAssigneeId("");
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="unassigned">Unassigned (Team)</SelectItem>
+                    {assignableAgents && (
                       <SelectItem value="self">Myself ({assignableAgents.me.name})</SelectItem>
-                      {assignableAgents.groups.map((group) => (
-                        <SelectItem key={group.role} value={group.role}>
-                          {group.role}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    )}
+                    {assignableAgents?.groups.map((group) => (
+                      <SelectItem key={group.role} value={group.role}>
+                        {group.role}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
-                  {assignedToGroup && (
-                    assignedToGroup.users.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        No {assignedToGroup.role} found in your reporting hierarchy.
-                      </p>
-                    ) : (
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                          Select {assignedToGroup.role}
-                        </label>
-                        <Select value={selectedAssigneeId} onValueChange={setSelectedAssigneeId}>
-                          <SelectTrigger>
-                            <SelectValue placeholder={`Choose a ${assignedToGroup.role}...`} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {assignedToGroup.users.map((user) => (
-                              <SelectItem key={user.user_id} value={user.user_id}>
-                                {user.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    )
-                  )}
-                </div>
-              )}
+                {assignedToGroup && (
+                  assignedToGroup.users.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No {assignedToGroup.role} found in your reporting hierarchy.
+                    </p>
+                  ) : (
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                        Select {assignedToGroup.role}
+                      </label>
+                      <Select value={selectedAssigneeId} onValueChange={setSelectedAssigneeId}>
+                        <SelectTrigger>
+                          <SelectValue placeholder={`Choose a ${assignedToGroup.role}...`} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {assignedToGroup.users.map((user) => (
+                            <SelectItem key={user.user_id} value={user.user_id}>
+                              {user.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )
+                )}
+              </div>
             </div>
           </div>
           <DialogFooter>

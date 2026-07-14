@@ -8,7 +8,6 @@ import { TicketActivityPanel, type ActivityTab } from "@tw/components/ticket/Tic
 import { TicketDetails } from "@tw/components/ticket/TicketDetails";
 import { EditAccessPanel } from "@tw/components/ticket/EditAccessPanel";
 import { SlaCard } from "@tw/components/sla/SlaCard";
-import { SlaTimeline } from "@tw/components/sla/SlaTimeline";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { getTicket, listEditAccessRequests } from "@tw/api/ticket";
 import { getTicketTimeline } from "@tw/api/interaction";
@@ -140,7 +139,6 @@ export function TicketDetailPage() {
                     currentAgentId={activeTicket.agent_id}
                     onActionComplete={refreshAll}
                   />
-                  <SlaTimeline ticketId={activeTicket.ticket_id} />
                   <EditAccessPanel onRequestsChanged={refreshEditAccessRequests} />
                 </div>
               </div>

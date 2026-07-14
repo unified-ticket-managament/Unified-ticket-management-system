@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import {
   BrowserRouter,
   Navigate,
@@ -41,19 +41,43 @@ import { AuditLogPage } from "@tw/pages/AuditLogPage";
 // react-router's location directly and are not routed through here.
 function RouterSync() {
   const nextPathname = usePathname();
+  // usePathname() alone excludes the query string — a Next-driven
+  // navigation carrying one (e.g. a notification link's own
+  // "?interaction_id=..."), synced with only the bare path, silently
+  // dropped it: react-router's location became query-string-free even
+  // though the address bar (and Next's own state) still had it,
+  // leaving InboxPage's own useSearchParams() with nothing to read.
+  //
+  // .toString() here is load-bearing, not cosmetic: next/navigation's
+  // useSearchParams() returns a new ReadonlyURLSearchParams instance
+  // on every render even when its content is unchanged. Putting that
+  // object straight into the effect's dependency array below made the
+  // effect re-fire on every render regardless of actual content —
+  // each firing called navigate(), which triggered another render,
+  // which produced another new object instance, forever — an infinite
+  // loop that called navigate() hundreds of times a second and never
+  // let react-router's own location settle to the new route, which is
+  // why the page content stayed stuck on the previous route even
+  // though the address bar showed the correct target URL. The
+  // stringified query is a stable primitive, so the dependency
+  // comparison only sees a real change when the query actually differs.
+  const nextSearchParams = useSearchParams().toString();
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
-    const relative = nextPathname.replace(/^\/dashboard/, "") || "/";
-    if (relative !== location.pathname) {
+    const relativePath = nextPathname.replace(/^\/dashboard/, "") || "/";
+    const relative = nextSearchParams ? `${relativePath}?${nextSearchParams}` : relativePath;
+    const current = `${location.pathname}${location.search}`;
+    if (relative !== current) {
       navigate(relative, { replace: true });
     }
-    // Deliberately only re-sync when Next's own pathname changes, not
-    // on every location change — re-running this on react-router's own
-    // location updates too would fight its own in-app navigation.
+    // Deliberately only re-sync when Next's own pathname/searchParams
+    // change, not on every location change — re-running this on
+    // react-router's own location updates too would fight its own
+    // in-app navigation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nextPathname]);
+  }, [nextPathname, nextSearchParams]);
 
   return null;
 }

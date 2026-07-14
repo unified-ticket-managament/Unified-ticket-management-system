@@ -56,7 +56,8 @@ const TICKET_WORKSPACE_ROUTES = ["/tickets", "/inbox", "/interactions", "/create
 function resolveNotificationHref(link: string | null): string | null {
   if (!link) return null;
   const isTicketWorkspaceRoute = TICKET_WORKSPACE_ROUTES.some(
-    (route) => link === route || link.startsWith(`${route}/`)
+    (route) =>
+      link === route || link.startsWith(`${route}/`) || link.startsWith(`${route}?`)
   );
   return isTicketWorkspaceRoute ? `/dashboard${link}` : link;
 }

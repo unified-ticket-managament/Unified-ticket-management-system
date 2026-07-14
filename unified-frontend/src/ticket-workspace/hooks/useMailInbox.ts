@@ -184,19 +184,23 @@ function matchesSearch(item: InboxItem, term: string): boolean {
 }
 
 type BaseTabKey = "pending" | "replied" | "ticketed" | "archived" | "all";
-type LoadKey = BaseTabKey | "sent" | "drafts" | "system";
+type LoadKey = BaseTabKey | "sent" | "drafts" | "system" | "mineTicketed";
 
 // Maps a view the agent is looking at to the underlying fetch(es) it
 // actually needs — "unassigned"/"mine" are client-derived slices of
 // "pending"(/"replied"), not separate backend views, so opening them
 // only ever needs to load their source tab(s), never a request of
-// their own.
+// their own. "mine" additionally needs its own dedicated
+// assigned-to-me ticketed fetch ("mineTicketed") — it can't reuse the
+// plain "ticketed" tab's cache, since that one is unfiltered (backs
+// the separate "Ticketed" folder showing every ticketed thread in
+// scope, not just this user's own).
 function baseKeysForView(view: MailViewKey): LoadKey[] {
   switch (view) {
     case "unassigned":
       return ["pending"];
     case "mine":
-      return ["pending", "replied"];
+      return ["pending", "replied", "mineTicketed"];
     default:
       return [view];
   }
@@ -237,6 +241,9 @@ export function useMailInbox() {
     all: [],
   });
   const [sentItems, setSentItems] = useState<InboxItem[]>([]);
+  // Ticketed threads assigned to the current user — the "My Claims"
+  // folder's post-ticket half (see fetchMyTicketedClaims below).
+  const [myTicketedClaims, setMyTicketedClaims] = useState<InboxItem[]>([]);
   const [draftItems, setDraftItems] = useState<InboxItem[]>([]);
   // System notices (SLA breach ladder + escalation workflow) — real
   // NotificationItem rows, not adapted into InboxItem shape like
@@ -454,6 +461,11 @@ export function useMailInbox() {
     setDraftItems(result.items.map(draftItemToInboxItem));
   }, []);
 
+  const fetchMyTicketedClaims = useCallback(async () => {
+    const result = await getInbox("ticketed", { assignedToMe: true });
+    setMyTicketedClaims(result.items);
+  }, []);
+
   const fetchSystemMail = useCallback(async () => {
     setIsSystemLoading(true);
     try {
@@ -469,9 +481,10 @@ export function useMailInbox() {
       if (key === "sent") return fetchSent();
       if (key === "drafts") return fetchDrafts();
       if (key === "system") return fetchSystemMail();
+      if (key === "mineTicketed") return fetchMyTicketedClaims();
       return fetchBaseTab(key);
     },
-    [fetchBaseTab, fetchSent, fetchDrafts, fetchSystemMail]
+    [fetchBaseTab, fetchSent, fetchDrafts, fetchSystemMail, fetchMyTicketedClaims]
   );
 
   // Fetches only whichever of `keys` haven't been loaded yet — used
@@ -728,15 +741,22 @@ export function useMailInbox() {
   );
 
   const unassigned = rowsByTab.pending.filter((item) => !item.claimed_by);
-  // De-duped by interaction_id: `pending` and `replied` are two
+  // De-duped by interaction_id: `pending`/`replied` are two
   // independently-fetched arrays (parallel requests in refresh()), so
   // an item whose status flips between those two fetches could
-  // otherwise land in both and duplicate here.
+  // otherwise land in both and duplicate here. `myTicketedClaims`
+  // comes from its own server-scoped ("assigned_to_me") fetch, so it
+  // never needs the `claimed_by` filter the pre-ticket half does —
+  // once ticketed, "claimed" means "the ticket is assigned to me,"
+  // not the pre-ticket `claimed_by` field.
   const mine = Array.from(
     new Map(
-      [...rowsByTab.pending, ...rowsByTab.replied]
-        .filter((item) => item.claimed_by === currentUser?.user_id)
-        .map((item) => [item.interaction_id, item])
+      [
+        ...[...rowsByTab.pending, ...rowsByTab.replied].filter(
+          (item) => item.claimed_by === currentUser?.user_id
+        ),
+        ...myTicketedClaims,
+      ].map((item) => [item.interaction_id, item])
     ).values()
   );
 
@@ -783,9 +803,10 @@ export function useMailInbox() {
 
   // Whether the currently active view's underlying base tab(s) have
   // more rows on the server than what's loaded so far — false for
-  // Sent/Drafts (kept unbounded; personal, inherently small lists).
+  // Sent/Drafts/mineTicketed (all kept unbounded; personal, inherently
+  // small lists).
   const hasMore = baseKeysForView(activeViewRaw).some((key) => {
-    if (key === "sent" || key === "drafts" || key === "system") return false;
+    if (key === "sent" || key === "drafts" || key === "system" || key === "mineTicketed") return false;
     return rowsByTab[key].length < tabTotals[key];
   });
 
@@ -799,6 +820,7 @@ export function useMailInbox() {
         key !== "sent" &&
         key !== "drafts" &&
         key !== "system" &&
+        key !== "mineTicketed" &&
         rowsByTab[key].length < tabTotals[key]
     );
     if (keys.length === 0) return;

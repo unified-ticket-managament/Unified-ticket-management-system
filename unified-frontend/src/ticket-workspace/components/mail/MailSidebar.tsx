@@ -47,6 +47,10 @@ interface MailSidebarProps {
   onCompose: () => void;
   counts: Partial<Record<MailViewKey, number>>;
   isSupervisor: boolean;
+  // "My Claims" is hidden specifically for Staff — every other role
+  // with a Mail tab keeps it (nothing else in this sidebar is
+  // role-gated per-item today).
+  hideMyClaims: boolean;
 }
 
 function CountBadge({ count }: { count: number }): ReactNode {
@@ -72,7 +76,9 @@ export const MailSidebar = memo(function MailSidebar({
   onCompose,
   counts,
   isSupervisor,
+  hideMyClaims,
 }: MailSidebarProps) {
+  const viewItems = hideMyClaims ? VIEW_ITEMS.filter((item) => item.key !== "mine") : VIEW_ITEMS;
   return (
     <aside className="flex w-full flex-col gap-4 overflow-y-auto rounded-xl border border-border bg-card p-3 shadow-card lg:sticky lg:top-0 lg:h-[calc(100vh-7rem)] lg:w-[248px] lg:flex-none">
       <Button
@@ -86,7 +92,7 @@ export const MailSidebar = memo(function MailSidebar({
       </Button>
 
       <nav className="flex flex-col gap-0.5">
-        {VIEW_ITEMS.map((item) => {
+        {viewItems.map((item) => {
           const Icon = item.icon;
           const isActive = !isComposing && activeView === item.key;
           return (
