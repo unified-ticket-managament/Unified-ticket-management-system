@@ -37,6 +37,7 @@ DEFAULT_PERMISSIONS = [
     ("communication:reply_internal", "Add a staff-only note on a communication"),
     ("communication:forward", "Forward a communication to someone else"),
     ("communication:convert_to_ticket", "Turn a communication into a formal ticket"),
+    ("communication:attach_to_ticket", "Attach a communication to an existing ticket"),
     ("communication:merge", "Merge a communication into an existing ticket"),
     ("communication:archive", "Close out a communication without a ticket"),
     ("communication:view_timeline", "See a communication's full history"),
@@ -66,14 +67,17 @@ DEFAULT_PERMISSIONS = [
     ("ticket:editown_ticket", "Edit tickets assigned to yourself"),
     ("ticket:editother_ticket", "Edit tickets assigned to other agents — lets more than one person work the same ticket"),
     ("ticket:update_status", "Change ticket status"),
-    ("ticket:close", "Close a ticket"),
+    ("ticket:close_ticket", "Close a ticket"),
     ("ticket:reopen", "Reopen a closed ticket"),
     ("ticket:escalate", "Flag a ticket as needing attention from someone more senior"),
-    ("ticket:manage_attachments", "Upload or delete ticket attachments"),
+    ("ticket:upload_attachment", "Upload a ticket attachment"),
+    ("ticket:archive_attachment", "Delete/archive a ticket attachment"),
     ("ticket:hide_interaction", "Hide (soft-delete) a ticket interaction"),
     ("ticket:view_audit_trail", "View a ticket's own audit trail"),
     ("ticket:view_global_audit_log", "View the global ticket audit log"),
     ("ticket:view_dashboard_kpis", "View ticket workspace dashboard KPIs"),
+    ("ticket:view_escalated", "View escalated tickets"),
+    ("ticket:acknowledge_escalation", "Acknowledge an escalated ticket"),
     ("ticket:manage_agents", "Activate or deactivate agent accounts"),
     ("ticket:manage_roles_permissions", "Manage roles and permissions for the ticket workspace"),
     ("ticket:system_config", "Configure ticket system and storage settings"),
@@ -121,15 +125,20 @@ DEFAULT_ROLES = {
         # Communication — full ownership of the client-facing inbox.
         "communication:create", "communication:view_all", "communication:view_assigned",
         "communication:reply_external", "communication:reply_internal", "communication:forward",
-        "communication:convert_to_ticket", "communication:merge", "communication:archive",
+        "communication:convert_to_ticket", "communication:attach_to_ticket", "communication:merge",
+        "communication:archive",
         "communication:view_timeline", "communication:assign", "communication:override_grant",
-        # Ticket — everything except deep system configuration.
+        # Ticket — everything except deep system configuration and the
+        # global (cross-ticket) audit log, which the RBAC matrix doc
+        # keeps override-only even for Account Manager.
         "ticket:create", "ticket:view_own", "ticket:view_unassigned", "ticket:view_others",
         "ticket:assign", "ticket:transfer", "ticket:change_priority", "ticket:change_category",
         "ticket:change_sla", "ticket:update_status", "ticket:reply",
         "ticket:editown_ticket", "ticket:editother_ticket",
-        "ticket:close", "ticket:reopen", "ticket:escalate", "ticket:manage_attachments", "ticket:hide_interaction",
-        "ticket:view_audit_trail", "ticket:view_global_audit_log", "ticket:view_dashboard_kpis",
+        "ticket:close_ticket", "ticket:reopen", "ticket:escalate",
+        "ticket:upload_attachment", "ticket:archive_attachment", "ticket:hide_interaction",
+        "ticket:view_audit_trail", "ticket:view_dashboard_kpis",
+        "ticket:view_escalated", "ticket:acknowledge_escalation",
         "ticket:manage_agents", "ticket:manage_roles_permissions",
         # User management — can manage Team Leads and Staff.
         "user:view", "user:create", "user:update", "user:disable", "user:reset_password",
@@ -138,21 +147,31 @@ DEFAULT_ROLES = {
         "role:view", "permission:view", "permission:override_grant", "permission:override_revoke",
     ],
     "Team Lead": [
-        "communication:view_assigned", "communication:reply_internal", "communication:forward",
-        "communication:view_timeline",
+        # close_ticket/reopen/hide_interaction/view_global_audit_log are
+        # deliberately absent here — the RBAC matrix doc keeps Team Lead
+        # override-only for all four (see REVOKED_GRANTS for the two
+        # that need an explicit one-time revocation on top of this).
+        "communication:view_assigned", "communication:reply_external", "communication:reply_internal",
+        "communication:forward", "communication:view_timeline",
         "ticket:view_own", "ticket:view_unassigned", "ticket:view_others", "ticket:assign",
         "ticket:transfer", "ticket:update_status", "ticket:reply",
         "ticket:editown_ticket", "ticket:editother_ticket",
-        "ticket:close", "ticket:escalate", "ticket:manage_attachments", "ticket:hide_interaction",
-        "ticket:view_audit_trail", "ticket:view_global_audit_log", "ticket:view_dashboard_kpis",
+        "ticket:escalate", "ticket:upload_attachment",
+        "ticket:view_audit_trail", "ticket:view_dashboard_kpis",
+        "ticket:view_escalated", "ticket:acknowledge_escalation",
         "user:view", "user:update",
         "role:view",
     ],
     "Staff": [
-        "communication:reply_internal",
-        "ticket:view_own", "ticket:update_status", "ticket:reply", "ticket:manage_attachments",
+        # hide_interaction is deliberately absent — override-only per
+        # the RBAC matrix doc (see REVOKED_GRANTS for the one-time
+        # revocation this needs on top of just not re-granting it here).
+        "communication:reply_external", "communication:reply_internal",
+        "communication:view_assigned", "communication:view_timeline",
+        "ticket:view_own", "ticket:view_unassigned", "ticket:view_others",
+        "ticket:update_status", "ticket:reply", "ticket:upload_attachment",
         "ticket:editown_ticket",
-        "ticket:hide_interaction", "ticket:view_audit_trail", "ticket:view_dashboard_kpis",
+        "ticket:view_audit_trail", "ticket:view_dashboard_kpis",
         "user:view",
     ],
     "Viewer": ["user:view", "role:view", "permission:view"],
@@ -412,6 +431,12 @@ DEPRECATED_PERMISSIONS = [
     # for this dev database, but re-grant anything real before running
     # this against data that matters.
     "ticket:edit_ticket",
+    # Renamed to match the RBAC matrix doc's exact permission name.
+    "ticket:close",
+    # Split into ticket:upload_attachment (Full for everyone per the
+    # doc) + ticket:archive_attachment (Override-only for Team Lead/
+    # Staff) — the combined permission couldn't express that split.
+    "ticket:manage_attachments",
 ]
 
 # Specific (role, permission) grants that existed under the old
@@ -422,11 +447,20 @@ DEPRECATED_PERMISSIONS = [
 # explicit one-time revocation instead of relying on that loop.
 REVOKED_GRANTS = [
     ("Staff", "ticket:create"),
-    ("Staff", "ticket:view_unassigned"),
     ("Staff", "ticket:transfer"),
     ("Staff", "ticket:reopen"),
     ("Staff", "user:update"),
     ("Team Lead", "ticket:reopen"),
+    # Account Manager/Team Lead previously had Full access to the
+    # global (cross-ticket) audit log and to hide_interaction; the
+    # RBAC matrix doc keeps both override-only for these two roles.
+    # Explicit revocation needed on top of removing them from
+    # DEFAULT_ROLES above, since the main seeding loop is
+    # additive-only and never claws back an existing grant on its own.
+    ("Account Manager", "ticket:view_global_audit_log"),
+    ("Team Lead", "ticket:view_global_audit_log"),
+    ("Team Lead", "ticket:hide_interaction"),
+    ("Staff", "ticket:hide_interaction"),
 ]
 
 

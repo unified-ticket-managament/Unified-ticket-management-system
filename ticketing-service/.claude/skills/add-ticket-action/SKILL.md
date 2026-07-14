@@ -115,11 +115,22 @@ action needs a new `AuditEventType` member.
        alone; `ensure_can_reassign_ticket` composes both — role check first, permission
        check as the fallback for anyone the role check didn't already clear — so a specific
        Staff member can be granted the capability without touching `SUPERVISOR_ROLE_NAMES`
-       at all. See `CLAUDE.md`'s "Permission-based enforcement" section before adding a new
-       `ticket:*` permission name — it must also exist in `unified-backend/scripts/rbac_seed/
-       seed.py`'s `DEFAULT_PERMISSIONS`/`DEFAULT_ROLES` or no one will ever hold it. If the new
-       permission should be grantable scoped to one specific ticket (not just a blanket
-       role/override grant), see `ticket:editother_ticket`'s `scope_ticket_id` pattern in
+       at all. `ensure_can_close_ticket`/`ensure_can_reopen_ticket`/`ensure_can_override_sla`
+       are further examples of this composed shape, each with their own narrower bypass set
+       (`CLOSE_REOPEN_BYPASS_ROLE_NAMES`/`GLOBAL_INBOX_ROLE_NAMES`, not the wider
+       `SUPERVISOR_ROLE_NAMES`) — check the RBAC permission-matrix doc's own Full/Override
+       column for the role you're bypassing before reaching for `SUPERVISOR_ROLE_NAMES` by
+       default; a 2026-07-14/15 audit found several of these had bypassed too widely (Team
+       Lead unconditionally, where the doc marks it Override-only) — see `CLAUDE.md`'s
+       "Permission-based enforcement" section for the full list of real call sites this now
+       has. See that same section before adding a new `ticket:*` permission name — it must
+       also exist in `unified-backend/scripts/rbac_seed/seed.py`'s
+       `DEFAULT_PERMISSIONS`/`DEFAULT_ROLES` or no one will ever hold it, and if a mutating
+       action reaches a `Ticket` row, also check whether `ensure_account_manager_owns_ticket_client`
+       needs calling alongside — several mutating actions had a permission check but no
+       Account-Manager-client-boundary check until that same audit. If the new permission
+       should be grantable scoped to one specific ticket (not just a blanket role/override
+       grant), see `ticket:editother_ticket`'s `scope_ticket_id` pattern in
        `unified-frontend/CLAUDE.md`'s "Per-user permission overrides" section rather than
        inventing a new scoping mechanism.
    - `actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(current_user)`

@@ -16,6 +16,7 @@ from app.rbac.schemas.user import (
     UserResponse,
     UserUpdate,
 )
+from app.rbac.services.access_control import ensure_has_permission
 from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.organization_service import OrganizationService
 from app.rbac.services.user_service import UserService
@@ -86,6 +87,8 @@ async def create_user(
     Create a new user.
     """
 
+    ensure_has_permission(current_user, "user:create")
+
     return await service.create_user(user_data, actor=current_user)
 
 
@@ -123,6 +126,8 @@ async def list_users(
     Returns paginated list of users, optionally filtered by category
     (e.g. to find every Staff/Team Lead who works a given category).
     """
+
+    ensure_has_permission(current_user, "user:view")
 
     users, total = await service.list_users(
         page=page,
@@ -179,6 +184,8 @@ async def get_user(
     Returns a user by ID.
     """
 
+    ensure_has_permission(current_user, "user:view")
+
     return await service.get_user(user_id)
 
 # --------------------------------------------------
@@ -201,6 +208,9 @@ async def update_user(
     """
     Update an existing user.
     """
+
+    ensure_has_permission(current_user, "user:update")
+
     return await service.update_user(
         user_id,
         user_data,
@@ -248,6 +258,9 @@ async def activate_user(
     """
     Activate a user account.
     """
+
+    ensure_has_permission(current_user, "user:disable")
+
     return await service.activate_user(user_id, actor=current_user)
 
 
@@ -270,4 +283,7 @@ async def deactivate_user(
     """
     Deactivate a user account.
     """
+
+    ensure_has_permission(current_user, "user:disable")
+
     return await service.deactivate_user(user_id, actor=current_user)

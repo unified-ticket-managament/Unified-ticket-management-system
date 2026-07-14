@@ -168,7 +168,6 @@ export function InboxPage() {
             <MessageDetailsView
               email={selectedEmail}
               folders={mail.folders}
-              isSupervisor={mail.isSupervisor}
               onBack={() => setSelectedEmail(null)}
               onRefreshList={mail.refresh}
               onForward={handleForward}

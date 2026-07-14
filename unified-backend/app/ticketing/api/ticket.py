@@ -124,6 +124,7 @@ async def create_ticket_from_interaction(
     ticket_repository = TicketRepository(db)
     interaction_repository = InteractionRepository(db)
     assignment_service = AssignmentService(UserRepository(db))
+    client_repository = ClientRepository(db)
 
     service = InboxTicketService(
         ticket_repository=ticket_repository,
@@ -132,6 +133,7 @@ async def create_ticket_from_interaction(
         sla_service=build_sla_service(
             db, notification_service=NotificationService(NotificationRepository(db))
         ),
+        client_repository=client_repository,
     )
 
     return await service.create_ticket_from_interaction(request, current_user=current_user)
@@ -156,6 +158,7 @@ async def attach_interaction_to_ticket(
 
     ticket_repository = TicketRepository(db)
     interaction_repository = InteractionRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InboxTicketService(
         ticket_repository=ticket_repository,
@@ -163,6 +166,7 @@ async def attach_interaction_to_ticket(
         sla_service=build_sla_service(
             db, notification_service=NotificationService(NotificationRepository(db))
         ),
+        client_repository=client_repository,
     )
 
     return await service.attach_to_existing_ticket(
@@ -192,6 +196,7 @@ async def get_ticket_interactions(
     user_repository = UserRepository(db)
     attachment_repository = AttachmentRepository(db)
     audit_log_repository = AuditLogRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
@@ -200,6 +205,7 @@ async def get_ticket_interactions(
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
         audit_log_repository=audit_log_repository,
+        client_repository=client_repository,
     )
 
     return await service.get_ticket_interactions(ticket_id, current_user=current_user)
@@ -233,12 +239,14 @@ async def get_ticket_audit_logs(
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     audit_log_repository = AuditLogRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         audit_log_repository=audit_log_repository,
+        client_repository=client_repository,
     )
 
     return await service.get_ticket_audit_logs(ticket_id, current_user=current_user)
@@ -264,12 +272,14 @@ async def add_internal_note(
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     edit_access_repository = TicketEditAccessRequestRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         edit_access_repository=edit_access_repository,
+        client_repository=client_repository,
     )
 
     return await service.add_internal_note(
@@ -383,6 +393,7 @@ async def change_ticket_status(
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     edit_access_repository = TicketEditAccessRequestRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
@@ -390,6 +401,7 @@ async def change_ticket_status(
         user_repository=user_repository,
         edit_access_repository=edit_access_repository,
         sla_service=build_sla_service(db),
+        client_repository=client_repository,
     )
 
     return await service.change_status(
@@ -422,12 +434,14 @@ async def change_ticket_priority(
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         sla_service=build_sla_service(db),
+        client_repository=client_repository,
     )
 
     return await service.change_priority(
@@ -462,12 +476,14 @@ async def upload_ticket_attachment(
     attachment_repository = AttachmentRepository(db)
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
+    client_repository = ClientRepository(db)
 
     service = AttachmentService(
         attachment_repository=attachment_repository,
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         storage_service=get_storage_service(),
+        client_repository=client_repository,
     )
 
     return await service.upload_attachment(
@@ -504,11 +520,13 @@ async def hide_ticket_interaction(
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        client_repository=client_repository,
     )
 
     return await service.hide_interaction(
@@ -544,6 +562,7 @@ async def transfer_ticket_agent(
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
@@ -553,6 +572,7 @@ async def transfer_ticket_agent(
         escalation_service=build_escalation_service(
             db, notification_service=NotificationService(NotificationRepository(db))
         ),
+        client_repository=client_repository,
     )
 
     return await service.transfer_agent(
@@ -586,6 +606,7 @@ async def close_ticket(
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     edit_access_repository = TicketEditAccessRequestRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
@@ -593,6 +614,7 @@ async def close_ticket(
         user_repository=user_repository,
         edit_access_repository=edit_access_repository,
         sla_service=build_sla_service(db),
+        client_repository=client_repository,
     )
 
     return await service.close_ticket(
@@ -625,6 +647,7 @@ async def reopen_ticket(
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     edit_access_repository = TicketEditAccessRequestRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
@@ -632,6 +655,7 @@ async def reopen_ticket(
         user_repository=user_repository,
         edit_access_repository=edit_access_repository,
         sla_service=build_sla_service(db),
+        client_repository=client_repository,
     )
 
     return await service.reopen_ticket(
@@ -945,6 +969,15 @@ async def list_all_ticket_audit_logs(
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
     search: str | None = Query(None),
+    centralized: bool = Query(
+        False,
+        description=(
+            "Request the unrestricted, company-wide audit log instead of the "
+            "caller's own role-scoped default. Gated by ticket:view_global_audit_log "
+            "for every role except Site Lead/Super Admin, who always get the "
+            "unrestricted view regardless of this flag."
+        ),
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -984,6 +1017,7 @@ async def list_all_ticket_audit_logs(
         date_from=date_from,
         date_to=date_to,
         search=search,
+        centralized=centralized,
     )
 
     if limit is not None:

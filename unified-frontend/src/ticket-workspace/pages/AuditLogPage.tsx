@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AlertTriangle, Lock, RefreshCw, Search, SlidersHorizontal } from "lucide-react";
+import { AlertTriangle, Globe, Lock, RefreshCw, Search, SlidersHorizontal } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { AuditLogDetailsDrawer } from "@tw/components/common/AuditLogDetailsDrawer";
 import { Badge } from "@tw/components/common/Badge";
@@ -68,6 +68,20 @@ export function AuditLogPage() {
   const { currentUser } = useAuthContext();
   const { agents } = useWorkflowContext();
 
+  // Super Admin/Site Lead always see the unrestricted, company-wide
+  // log — same as before this change, no button, no toggle. Everyone
+  // else (Account Manager/Team Lead/Staff) defaults to a scoped view
+  // (own clients / own team / own tickets — see the backend's
+  // list_all_audit_logs) and can only reach the centralized view by
+  // explicitly switching into it, and only once granted
+  // ticket:view_global_audit_log.
+  const isGlobalRole = isSupervisorRole(currentUser?.role);
+  const canViewGlobalAuditLog = (currentUser?.permissions ?? []).includes(
+    "ticket:view_global_audit_log"
+  );
+  const [centralizedMode, setCentralizedMode] = useState(false);
+  const effectiveCentralized = isGlobalRole || centralizedMode;
+
   // The current server page only (server-paginated/filtered now) —
   // this used to be every visible audit-log row ever written, fetched
   // and re-filtered/re-paginated client-side on every 15s poll tick,
@@ -113,6 +127,7 @@ export function AuditLogPage() {
           dateFrom: dateFrom ? new Date(dateFrom).toISOString() : undefined,
           dateTo: dateTo ? new Date(`${dateTo}T23:59:59`).toISOString() : undefined,
           search: debouncedSearch.trim() || undefined,
+          centralized: effectiveCentralized,
         });
 
         // A newer load already started (a filter/page change, manual
@@ -143,7 +158,7 @@ export function AuditLogPage() {
         if (requestId === requestIdRef.current) setIsLoading(false);
       }
     },
-    [entityFilter, eventFilter, agentFilter, dateFrom, dateTo, debouncedSearch]
+    [entityFilter, eventFilter, agentFilter, dateFrom, dateTo, debouncedSearch, effectiveCentralized]
   );
 
   // The poll interval below is only ever created once (on mount), but
@@ -166,8 +181,17 @@ export function AuditLogPage() {
   // fetch. Fetching unconditionally here would double-fetch: once for
   // the old page with the new filters, once more for page 1.
   const filterSignature = useMemo(
-    () => JSON.stringify([debouncedSearch, entityFilter, eventFilter, agentFilter, dateFrom, dateTo]),
-    [debouncedSearch, entityFilter, eventFilter, agentFilter, dateFrom, dateTo]
+    () =>
+      JSON.stringify([
+        debouncedSearch,
+        entityFilter,
+        eventFilter,
+        agentFilter,
+        dateFrom,
+        dateTo,
+        effectiveCentralized,
+      ]),
+    [debouncedSearch, entityFilter, eventFilter, agentFilter, dateFrom, dateTo, effectiveCentralized]
   );
   const prevFilterSignatureRef = useRef(filterSignature);
 
@@ -217,16 +241,47 @@ export function AuditLogPage() {
     navigate(`/tickets/${ticketId}`);
   }
 
+  const scopeDescription = isGlobalRole
+    ? "Immutable record of every ticket change across the system."
+    : effectiveCentralized
+      ? "Immutable record of every ticket change across the entire system (centralized view)."
+      : currentUser?.role === "Account Manager"
+        ? "Immutable record of every ticket change across your assigned clients."
+        : currentUser?.role === "Team Lead"
+          ? "Immutable record of every ticket change across your team."
+          : `Immutable record of every ticket change for tickets assigned to ${currentUser?.name}.`;
+
   return (
     <AppLayout
       title="Audit Logs"
-      description={
-        isSupervisorRole(currentUser?.role)
-          ? "Immutable record of every ticket change across the team."
-          : `Immutable record of every ticket change across tickets assigned to ${currentUser?.name}.`
+      description={scopeDescription}
+      action={
+        !isGlobalRole ? (
+          <Button
+            size="sm"
+            variant={centralizedMode ? "primary" : "secondary"}
+            className="gap-1.5"
+            disabled={!canViewGlobalAuditLog}
+            title={
+              canViewGlobalAuditLog
+                ? undefined
+                : "You don't have permission to view the centralized audit log."
+            }
+            onClick={() => setCentralizedMode((v) => !v)}
+          >
+            <Globe size={14} />
+            {centralizedMode ? "Back to My Scoped Audit Log" : "View Centralized Audit Log"}
+          </Button>
+        ) : undefined
       }
     >
       <div className="flex flex-col gap-4">
+        {!isGlobalRole && centralizedMode && (
+          <div>
+            <Badge tone="info">Centralized Audit View</Badge>
+          </div>
+        )}
+
         <div className="sticky top-0 z-20 flex flex-wrap items-center gap-2.5 rounded-md2 border border-border bg-surface p-3.5 shadow-xs">
           <div className="relative min-w-[220px] flex-1">
             <Search size={15} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted" />

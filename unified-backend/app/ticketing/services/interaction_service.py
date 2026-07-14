@@ -262,6 +262,9 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
 
         ensure_agent_can_view_ticket(ticket, current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
 
         interactions = (
             await self.interaction_repository
@@ -335,6 +338,10 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
 
         ensure_agent_can_view_ticket(ticket, current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_has_permission(current_user, "ticket:view_audit_trail")
 
         audit_logs = await self.audit_log_repository.list_by_ticket(ticket_id)
 
@@ -460,6 +467,11 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
         await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_has_permission(current_user, "ticket:reply")
+        ensure_has_permission(current_user, "communication:reply_internal")
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -525,6 +537,11 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
         await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_has_permission(current_user, "ticket:reply")
+        ensure_has_permission(current_user, "communication:reply_external")
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -654,6 +671,13 @@ class InteractionService:
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail="Interaction not found.",
             )
+
+        # This is the client-facing "reply on a not-yet-ticketed
+        # communication" action — previously had no authorization check
+        # of any kind (not even the pending-interaction visibility
+        # scoping every other pending-interaction action already has).
+        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        ensure_has_permission(current_user, "communication:reply_external")
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -879,6 +903,10 @@ class InteractionService:
         # now that a real Reopen action exists.
         ensure_ticket_not_closed(ticket)
         await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_has_permission(current_user, "ticket:update_status")
 
         old_status = ticket.current_status
         old_closed_at = ticket.closed_at
@@ -1020,6 +1048,9 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
         await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
         ensure_can_close_ticket(current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
@@ -1108,6 +1139,9 @@ class InteractionService:
             )
 
         await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
         ensure_can_reopen_ticket(current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
@@ -1182,6 +1216,19 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
+        # ensure_agent_can_view_ticket/ensure_account_manager_owns_ticket_client
+        # were previously missing here — change_priority deliberately
+        # skips the assigned-agent-only check (ensure_agent_can_act_on_ticket)
+        # per its own docstring ("any permission holder can change
+        # priority on any ticket in their visibility scope"), but the
+        # visibility-scope half of that sentence was never actually
+        # enforced: a Team Lead/Staff granted ticket:change_priority via
+        # override could reach a ticket outside their own category, and
+        # an Account Manager could reach any client's ticket.
+        ensure_agent_can_view_ticket(ticket, current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
         ensure_has_permission(current_user, "ticket:change_priority")
 
         old_priority = ticket.current_priority
@@ -1244,6 +1291,16 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
+        # Previously missing: transfer_agent had no category/client
+        # visibility check at all, only the role/permission gate below
+        # — a Team Lead could transfer a ticket outside their own
+        # category, and an Account Manager could reach any client's
+        # ticket. The approved matrix scopes ticket:transfer to "team"
+        # for Team Lead and "own clients" for Account Manager.
+        ensure_agent_can_view_ticket(ticket, current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
         ensure_can_reassign_ticket(current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
@@ -1543,6 +1600,7 @@ class InteractionService:
             )
 
         await self._ensure_can_act_on_pending_interaction(interaction, current_user)
+        ensure_has_permission(current_user, "communication:archive")
 
         archived = await self.interaction_repository.archive(interaction)
 
@@ -2026,6 +2084,8 @@ class InteractionService:
         else:
             await self._ensure_can_act_on_pending_interaction(root, current_user)
 
+        ensure_has_permission(current_user, "communication:view_timeline")
+
         replies = await self.interaction_repository.list_thread(root.interaction_id)
         ordered = [root, *replies]
 
@@ -2071,6 +2131,33 @@ class InteractionService:
         Soft-deletes (hides) an interaction that
         belongs to the given ticket.
         """
+
+        # Previously this method had NO authorization check of any
+        # kind — meaning any authenticated agent could hide any
+        # interaction, ticketed or not, by id. Now gated:
+        # - Ticketed (ticket_id is not None): same category/client
+        #   visibility scope every other ticket action uses, plus the
+        #   ticket:hide_interaction permission (Full for Super Admin/
+        #   Site Lead/Account Manager-own-clients, Override for Team
+        #   Lead/Staff — permission-only, like ticket:change_priority,
+        #   not an ownership gate).
+        # - Pre-ticket (ticket_id is None — POST /interactions/{id}/hide
+        #   can reach a still-pending inbox item): the existing pending-
+        #   interaction gate (own-client-scope-or-supervisor), since
+        #   ticket:hide_interaction is a Ticket-module permission with
+        #   no pre-ticket equivalent in the approved matrix.
+        if ticket_id is not None:
+            ticket = await self._get_ticket_or_404(ticket_id)
+            ensure_ticket_not_closed(ticket)
+            ensure_agent_can_view_ticket(ticket, current_user)
+            await ensure_account_manager_owns_ticket_client(
+                ticket, current_user, self.client_repository
+            )
+            ensure_has_permission(current_user, "ticket:hide_interaction")
+        else:
+            pending = await self.interaction_repository.get_by_id(interaction_id)
+            if pending is not None:
+                await self._ensure_can_act_on_pending_interaction(pending, current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user

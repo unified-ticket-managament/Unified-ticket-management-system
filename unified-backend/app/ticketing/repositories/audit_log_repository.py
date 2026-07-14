@@ -199,6 +199,7 @@ class AuditLogRepository:
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         search: str | None = None,
+        assigned_to: UUID | None = None,
     ) -> AuditLogVisiblePage:
         """
         The Audit Log page's query, collapsed the same way
@@ -239,6 +240,9 @@ class AuditLogRepository:
 
         if ticket_types is not None:
             conditions.append(Ticket.ticket_type.in_(ticket_types))
+
+        if assigned_to is not None:
+            conditions.append(Ticket.agent_id == assigned_to)
 
         if entity_type is not None:
             conditions.append(AuditLog.entity_type == entity_type)

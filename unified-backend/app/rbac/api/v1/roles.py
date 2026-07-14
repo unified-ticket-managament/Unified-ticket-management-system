@@ -13,6 +13,7 @@ from app.rbac.schemas.role import (
     RoleResponse,
     RoleUpdate,
 )
+from app.rbac.services.access_control import ensure_has_permission
 from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.role_service import RoleService
 
@@ -65,6 +66,8 @@ async def create_role(
     Create a new role.
     """
 
+    ensure_has_permission(current_user, "role:create")
+
     return await service.create_role(role_data, actor=current_user)
 
 
@@ -88,6 +91,8 @@ async def list_roles(
     """
     Returns paginated list of roles.
     """
+
+    ensure_has_permission(current_user, "role:view")
 
     roles, total = await service.list_roles(
         page=page,
@@ -120,6 +125,8 @@ async def get_role(
     Returns role details.
     """
 
+    ensure_has_permission(current_user, "role:view")
+
     return await service.get_role(role_id)
 
 
@@ -143,6 +150,8 @@ async def update_role(
     """
     Update role.
     """
+
+    ensure_has_permission(current_user, "role:update")
 
     return await service.update_role(
         role_id,
@@ -169,5 +178,7 @@ async def delete_role(
     """
     Delete role.
     """
+
+    ensure_has_permission(current_user, "role:delete")
 
     await service.delete_role(role_id, actor=current_user)

@@ -476,7 +476,14 @@ class EscalationService:
 
         is_owner = str(current_user.user_id) in escalation.owner_ids
         is_overseer = current_user.role.name in GLOBAL_INBOX_ROLE_NAMES
-        if not (is_owner or is_overseer):
+        # ticket:acknowledge_escalation — Full for Super Admin/Site Lead
+        # (as overseer) and Account Manager/Team Lead (as owner, which
+        # is already what is_owner captures structurally); Staff is
+        # Override-only, so a Staff member who isn't a listed owner can
+        # still acknowledge if individually granted this permission.
+        if not (is_owner or is_overseer or has_permission(
+            current_user, "ticket:acknowledge_escalation"
+        )):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only the current escalation owner can acknowledge it.",

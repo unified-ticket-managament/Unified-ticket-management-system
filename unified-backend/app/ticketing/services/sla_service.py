@@ -48,6 +48,7 @@ from app.ticketing.schemas.sla import (
 )
 from app.ticketing.schemas.ticket_action import TicketActionResponse
 from app.ticketing.services.access_control import (
+    ensure_account_manager_owns_ticket_client,
     ensure_can_manage_sla_policies,
     ensure_can_override_sla,
 )
@@ -597,6 +598,9 @@ class SLAService:
     ) -> TicketActionResponse:
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_can_override_sla(current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
 
         clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
         if clock is None or clock.status != SLAClockStatus.RUNNING:
@@ -652,6 +656,9 @@ class SLAService:
     ) -> TicketActionResponse:
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_can_override_sla(current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
 
         clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
         if clock is None or clock.status != SLAClockStatus.PAUSED:

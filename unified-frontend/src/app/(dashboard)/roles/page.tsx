@@ -94,9 +94,15 @@ export default function RolesPage() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
+  const hasPermission = useAuthStore((s) => s.hasPermission);
   const canManage = canManageRoles(currentUser?.role);
-  const canManagePermissions =
-    currentUser?.role === ROLE_NAMES.SUPER_ADMIN || currentUser?.role === ROLE_NAMES.ACCOUNT_MANAGER;
+  // Mirrors the backend's PUT /roles/{id}/permissions gate exactly
+  // (permission:update — Full for Super Admin/Site Lead, Override-only
+  // for everyone else, including Account Manager). Previously
+  // hardcoded to Super Admin/Account Manager only, which both missed
+  // Site Lead (who holds this permission by default) and over-granted
+  // Account Manager (who the RBAC matrix doc keeps override-only).
+  const canManagePermissions = hasPermission("permission:update");
 
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);

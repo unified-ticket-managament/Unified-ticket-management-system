@@ -133,6 +133,8 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   if (!activeTicket) return null;
 
   const isStaff = currentUser?.role === "Staff";
+  const isCloseReopenBypassRole =
+    currentUser?.role === "Site Lead" || currentUser?.role === "Super Admin";
   const canChangePriority = (currentUser?.permissions ?? []).includes(
     "ticket:change_priority"
   );
@@ -140,10 +142,16 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
     ? (currentUser?.permissions ?? []).includes("ticket:transfer")
     : true;
   // Mirrors the backend's ensure_can_close_ticket/ensure_can_reopen_ticket
-  // hybrid gates exactly: every non-Staff role bypasses via its
-  // supervisor role, Staff falls through to the permission.
-  const canClose = isStaff ? (currentUser?.permissions ?? []).includes("ticket:close") : true;
-  const canReopen = isStaff ? (currentUser?.permissions ?? []).includes("ticket:reopen") : true;
+  // hybrid gates exactly: only Site Lead/Super Admin bypass via role —
+  // Account Manager, Team Lead, and Staff all fall through to the real
+  // permission (Full for Account Manager, override-only for the other two,
+  // per the RBAC matrix doc).
+  const canClose = isCloseReopenBypassRole
+    ? true
+    : (currentUser?.permissions ?? []).includes("ticket:close_ticket");
+  const canReopen = isCloseReopenBypassRole
+    ? true
+    : (currentUser?.permissions ?? []).includes("ticket:reopen");
   const isUnclaimed = activeTicket.agent_id == null;
   // Excludes the caller themselves — self-assignment goes through the
   // dedicated Claim tile (POST /tickets/{id}/claim) so it's recorded as
