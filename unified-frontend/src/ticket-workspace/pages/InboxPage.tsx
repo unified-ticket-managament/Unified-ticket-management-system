@@ -156,22 +156,15 @@ export function InboxPage() {
               onSend={handleComposeSend}
               onDiscard={closeCompose}
             />
-          ) : mail.activeView === "system" ? (
-            mail.selectedSystemNotification ? (
-              <SystemMailDetailsView
-                notification={mail.selectedSystemNotification}
-                onBack={mail.clearSelectedSystemNotification}
-                onMarkRead={mail.markSystemNotificationRead}
-              />
-            ) : (
-              <SystemMailList
-                items={mail.systemNotifications}
-                isLoading={mail.isSystemLoading}
-                onOpen={mail.selectSystemNotification}
-                onRefresh={mail.refresh}
-              />
-            )
           ) : selectedEmail ? (
+            // Checked ahead of the System-folder branch below: opening a
+            // specific message (e.g. via the interaction_id query param a
+            // First Response SLA notification's "View Mail" link sets,
+            // handled by the effect above) must show that message even
+            // while activeView is still "system" from wherever the click
+            // originated — otherwise this branch never runs, since
+            // activeView doesn't change on its own and the System view
+            // would keep rendering in front of it.
             <MessageDetailsView
               email={selectedEmail}
               folders={mail.folders}
@@ -187,6 +180,21 @@ export function InboxPage() {
               onUpdateTags={mail.updateTags}
               onAssignFolder={mail.assignFolder}
             />
+          ) : mail.activeView === "system" ? (
+            mail.selectedSystemNotification ? (
+              <SystemMailDetailsView
+                notification={mail.selectedSystemNotification}
+                onBack={mail.clearSelectedSystemNotification}
+                onMarkRead={mail.markSystemNotificationRead}
+              />
+            ) : (
+              <SystemMailList
+                items={mail.systemNotifications}
+                isLoading={mail.isSystemLoading}
+                onOpen={mail.selectSystemNotification}
+                onRefresh={mail.refresh}
+              />
+            )
           ) : (
             <MessageList
               folderLabel={folderLabel}

@@ -19,8 +19,8 @@ interface SystemMailDetailsViewProps {
 // A deliberately narrower sibling of MessageDetailsView — a system
 // notice has no reply/forward/attachments/ticket-action toolbar, no
 // thread, and isn't tied to a real Interaction, so this only ever
-// renders Subject/From/Body/date plus a single "View Ticket" link (via
-// the notification's own `link` field) and Back. Auto-marks the
+// renders Subject/From/Body/date plus a single action link (via the
+// notification's own `link` field) and Back. Auto-marks the
 // notification read on open, same as opening an email thread already
 // implicitly marks it "opened" elsewhere in this Mail page.
 export function SystemMailDetailsView({
@@ -28,6 +28,14 @@ export function SystemMailDetailsView({
   onBack,
   onMarkRead,
 }: SystemMailDetailsViewProps) {
+  // First Response SLA notifications (and MAIL_RECEIVED) point at a
+  // still-pending email — `link` is an /inbox?interaction_id=... deep
+  // link, not a ticket, so the action should read "View Mail". Every
+  // other notification type (Resolution SLA, escalation, edit-access)
+  // is `related_entity_type === "ticket"` and genuinely opens a ticket.
+  const isMailLink = notification.related_entity_type === "interaction";
+  const actionLabel = isMailLink ? "View Mail" : "View Ticket";
+
   useEffect(() => {
     if (!notification.is_read) {
       onMarkRead(notification.notification_id);
@@ -65,7 +73,7 @@ export function SystemMailDetailsView({
         {notification.link && (
           <Button asChild size="sm" variant="ghost" className="gap-1.5 text-primary">
             <Link to={notification.link}>
-              View Ticket
+              {actionLabel}
               <ExternalLink className="h-3.5 w-3.5" />
             </Link>
           </Button>
