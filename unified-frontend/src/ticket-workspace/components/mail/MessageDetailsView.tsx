@@ -62,6 +62,7 @@ const PRIORITY_VARIANT: Record<TicketPriority, "success" | "warning" | "destruct
   LOW: "success",
   MEDIUM: "warning",
   HIGH: "destructive",
+  CRITICAL: "destructive",
 };
 
 const STATUS_META: Record<string, { label: string; variant: "warning" | "success" | "secondary" }> = {

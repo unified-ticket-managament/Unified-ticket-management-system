@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import axios from "axios";
 import {
-  acknowledgeTicketEscalation,
   escalateTicket,
   getTicketSla,
   listSlaPolicies,
@@ -29,9 +28,6 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
 
   const { run: runResume, isLoading: isResuming } = useApiAction(resumeTicketSla);
   const { run: runEscalate, isLoading: isEscalating } = useApiAction(escalateTicket);
-  const { run: runAcknowledge, isLoading: isAcknowledging } = useApiAction(
-    acknowledgeTicketEscalation
-  );
 
   const fetchSla = useCallback(async () => {
     if (!ticketId) return;
@@ -86,8 +82,12 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
     return () => window.clearInterval(tickId);
   }, []);
 
-  const targetMinutes =
-    policies?.find((p) => p.priority === ticketPriority)?.resolution_target_minutes ?? null;
+  // The one policy row applicable to this ticket's own priority — not
+  // the full matrix. `policies` itself is fetched once per mount (see
+  // above) and never re-fetched per ticket; this is a pure lookup, no
+  // extra network call.
+  const policy = policies?.find((p) => p.priority === ticketPriority) ?? null;
+  const targetMinutes = policy?.resolution_target_minutes ?? null;
 
   const resolution = sla?.resolution ?? null;
 
@@ -151,18 +151,12 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
     return result;
   }, [ticketId, runEscalate, fetchSla]);
 
-  const acknowledgeEscalation = useCallback(async () => {
-    if (!ticketId) return;
-    const result = await runAcknowledge(ticketId);
-    if (result) await fetchSla();
-    return result;
-  }, [ticketId, runAcknowledge, fetchSla]);
-
   return {
     sla,
     resolution,
     escalation: sla?.escalation ?? null,
     escalationHandlingSla: sla?.escalation_handling_sla ?? null,
+    policy,
     targetMinutes,
     elapsedFraction,
     remainingSeconds,
@@ -171,9 +165,7 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
     resume,
     isResuming,
     escalate,
-    acknowledgeEscalation,
     isEscalating,
-    isAcknowledging,
     refetch: fetchSla,
   };
 }

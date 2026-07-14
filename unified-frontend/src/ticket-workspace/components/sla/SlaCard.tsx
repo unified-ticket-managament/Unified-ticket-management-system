@@ -5,6 +5,8 @@ import { Button } from "@tw/components/common/Button";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useTicketSla } from "@tw/hooks/useTicketSla";
+import { useAcknowledgeAndAssign } from "@tw/hooks/useAcknowledgeAndAssign";
+import { AcknowledgeAssignModal } from "@tw/components/sla/AcknowledgeAssignModal";
 import { formatDateTime } from "@tw/lib/format";
 import { formatDurationShort, formatRemainingLabel } from "@tw/lib/slaMath";
 import { SlaBadge } from "@tw/components/sla/SlaBadge";
@@ -30,15 +32,22 @@ const ESCALATION_OVERSEER_ROLES = new Set(["Site Lead", "Super Admin"]);
 export function SlaCard({
   ticketId,
   ticketPriority,
+  ticketType,
+  currentAgentId,
+  onActionComplete,
 }: {
   ticketId: string;
   ticketPriority: TicketPriority;
+  ticketType: string;
+  currentAgentId: string | null;
+  onActionComplete: () => void;
 }) {
   const { currentUser } = useAuthContext();
   const {
     resolution,
     escalation,
     escalationHandlingSla,
+    policy,
     targetMinutes,
     elapsedFraction,
     remainingSeconds,
@@ -47,10 +56,11 @@ export function SlaCard({
     resume,
     isResuming,
     escalate,
-    acknowledgeEscalation,
     isEscalating,
-    isAcknowledging,
+    refetch,
   } = useTicketSla(ticketId, ticketPriority);
+
+  const acknowledgeAndAssign = useAcknowledgeAndAssign();
 
   const canOverride = currentUser?.role ? RESOLUTION_OVERRIDE_ROLES.has(currentUser.role) : false;
 
@@ -64,6 +74,31 @@ export function SlaCard({
     escalation?.status === "ACTIVE" &&
     (escalation.owner_ids.includes(currentUser.user_id) ||
       ESCALATION_OVERSEER_ROLES.has(currentUser.role));
+
+  async function handleConfirmAssign() {
+    const result = await acknowledgeAndAssign.confirm();
+    if (result.success) {
+      // Transfer/claim/acknowledge all changed something this hook's
+      // own SLA state doesn't already reflect — pull it fresh, then
+      // let the parent re-fetch the ticket itself (agent_id/agent_name).
+      await refetch();
+      onActionComplete();
+    }
+  }
+
+  // escalate() (from useTicketSla) only refreshes this card's own SLA
+  // state — it has no way to know about onActionComplete, since that
+  // prop only exists for the acknowledge+assign flow above. But
+  // escalating now also permanently bumps the ticket's own
+  // current_priority to CRITICAL (see EscalationService.
+  // _bump_priority_to_critical on the backend) — a ticket-level field
+  // that lives in the parent's activeTicket state, not this hook's own
+  // sla state, so the parent must re-fetch the ticket too or its
+  // header/properties card keeps showing the pre-escalation priority.
+  async function handleEscalate() {
+    const result = await escalate();
+    if (result) onActionComplete();
+  }
 
   if (isLoading) {
     return (
@@ -84,6 +119,7 @@ export function SlaCard({
   const badgeTier = resolution.status === "RUNNING" ? tier : null;
 
   return (
+    <>
     <Card
       title="Resolution SLA"
       eyebrow="Service level"
@@ -95,7 +131,7 @@ export function SlaCard({
             </Button>
           )}
           {canEscalate && (
-            <Button size="sm" variant="secondary" isLoading={isEscalating} onClick={() => escalate()}>
+            <Button size="sm" variant="secondary" isLoading={isEscalating} onClick={handleEscalate}>
               Escalate
             </Button>
           )}
@@ -154,6 +190,44 @@ export function SlaCard({
         </dl>
 
         {/*
+          Read-only config summary for THIS ticket's own priority only —
+          sourced from the same one-time listSlaPolicies() fetch
+          useTicketSla already does (filtered to ticketPriority, no
+          extra request), never the full Critical/High/Medium/Low
+          matrix (that lives only in Settings -> SLA Timing Matrix,
+          Super Admin only). Values here are the configured policy,
+          not this ticket's own live/running state, so they don't
+          change if the matrix is edited after this ticket started.
+        */}
+        {policy && (
+          <div className="flex flex-col gap-2 rounded-md2 border border-border bg-canvas p-3">
+            <span className="text-xs font-semibold text-slate-700">
+              SLA Configuration — {ticketPriority}
+            </span>
+            <dl className="grid grid-cols-2 gap-x-3 gap-y-3 text-xs">
+              <div>
+                <dt className="text-muted">Escalation Ack Window</dt>
+                <dd className="font-medium text-slate-800">
+                  {formatDurationShort(policy.escalation_ack_target_minutes * 60)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted">Handling SLA</dt>
+                <dd className="font-medium text-slate-800">
+                  {policy.handling_sla_percentage}% of Resolution SLA (
+                  {formatDurationShort(
+                    Math.round(
+                      policy.resolution_target_minutes * 60 * (policy.handling_sla_percentage / 100)
+                    )
+                  )}
+                  )
+                </dd>
+              </div>
+            </dl>
+          </div>
+        )}
+
+        {/*
           Internal escalation — deliberately its own section, visually
           separate from the Resolution SLA fields above, and never a
           second countdown/timer: escalating never restarts or
@@ -208,10 +282,11 @@ export function SlaCard({
               <Button
                 size="sm"
                 variant="primary"
-                isLoading={isAcknowledging}
-                onClick={() => acknowledgeEscalation()}
+                onClick={() =>
+                  acknowledgeAndAssign.open({ ticketId, ticketType, currentAgentId })
+                }
               >
-                Acknowledge
+                Acknowledge &amp; Assign
               </Button>
             )}
           </div>
@@ -286,5 +361,16 @@ export function SlaCard({
         )}
       </div>
     </Card>
+
+    <AcknowledgeAssignModal
+      open={acknowledgeAndAssign.isOpen}
+      onClose={acknowledgeAndAssign.close}
+      candidates={acknowledgeAndAssign.candidates}
+      selectedAgentId={acknowledgeAndAssign.selectedAgentId}
+      onSelectAgent={acknowledgeAndAssign.setSelectedAgentId}
+      onConfirm={handleConfirmAssign}
+      isSubmitting={acknowledgeAndAssign.isSubmitting}
+    />
+    </>
   );
 }

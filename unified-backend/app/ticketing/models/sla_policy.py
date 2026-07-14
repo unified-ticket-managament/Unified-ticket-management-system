@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Integer
+from sqlalchemy import Boolean, DateTime, Float, Integer
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -58,6 +58,37 @@ class SLAPolicy(Base):
     # rationale as the two targets above.
     escalation_ack_target_minutes: Mapped[int] = mapped_column(
         Integer,
+        nullable=False,
+    )
+
+    # What fraction of THIS priority's resolution_target_minutes the
+    # escalation-handling clock gets once an escalation is acknowledged
+    # (see EscalationHandlingSlaService.compute_escalation_handling_target_seconds,
+    # which now reads this column instead of a single hardcoded 0.25 for
+    # every priority). Stored as a whole percentage (25.0, not 0.25) to
+    # match the admin-facing SLA Timing Matrix UI directly.
+    handling_sla_percentage: Mapped[float] = mapped_column(
+        Float,
+        default=25.0,
+        nullable=False,
+    )
+
+    # Per-priority overrides for the sweep's HALF_ELAPSED/AT_RISK
+    # elapsed-fraction thresholds (see sla_escalation_rules.py's
+    # thresholds_reached) — BREACHED (100%) and ESCALATED (150%) stay
+    # fixed globally; only these two "warning" tiers are configurable
+    # per priority, matching the admin-facing SLA Timing Matrix's
+    # "Warning 1"/"Warning 2" columns. Whole percentages (50.0/80.0),
+    # same convention as handling_sla_percentage above.
+    warning_1_percentage: Mapped[float] = mapped_column(
+        Float,
+        default=50.0,
+        nullable=False,
+    )
+
+    warning_2_percentage: Mapped[float] = mapped_column(
+        Float,
+        default=80.0,
         nullable=False,
     )
 

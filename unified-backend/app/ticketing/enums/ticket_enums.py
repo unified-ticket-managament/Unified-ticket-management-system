@@ -17,8 +17,16 @@ class TicketStatus(str, Enum):
 class TicketPriority(str, Enum):
     """
     Ticket priority.
+
+    CRITICAL is deliberately not a manually-selectable tier — it is set
+    automatically, once, when a ticket's internal escalation workflow
+    creates its first escalation (see EscalationService), and stays
+    permanently thereafter (no reversion on acknowledge/close). Every
+    manual "Change Priority" surface must keep excluding it; only
+    display/filter surfaces should include it.
     """
 
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
+    CRITICAL = "CRITICAL"

@@ -13,9 +13,10 @@ import {
   listTicketsPage,
   type TicketViewCounts,
 } from "@tw/api/ticket";
-import { acknowledgeTicketEscalation } from "@tw/api/sla";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useDebouncedValue } from "@tw/hooks/useDebouncedValue";
+import { useAcknowledgeAndAssign } from "@tw/hooks/useAcknowledgeAndAssign";
+import { AcknowledgeAssignModal } from "@tw/components/sla/AcknowledgeAssignModal";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { useToast } from "@tw/context/ToastContext";
@@ -32,7 +33,10 @@ const STATUSES: TicketStatus[] = [
   "RESOLVED",
   "CLOSED",
 ];
-const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
+// A display/filter surface (not a manual-selection picker) — CRITICAL
+// belongs here so escalated tickets can be filtered to, even though
+// it's excluded from every "Change Priority"/"Create Ticket" picker.
+const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
 const PAGE_SIZE = 10;
 
 // Mirrors the backend's ESCALATION_TAB_ROLE_NAMES (access_control.py)
@@ -228,24 +232,38 @@ export function TicketsListPage() {
     }
   }
 
-  const { run: runAcknowledge, isLoading: isAcknowledging } = useApiAction(
-    acknowledgeTicketEscalation,
-    { successMessage: "Escalation acknowledged." }
-  );
-  const [acknowledgingId, setAcknowledgingId] = useState<string | null>(null);
+  // Acknowledging an escalation always also requires settling who owns
+  // the ticket going forward (self or another agent) — see
+  // useAcknowledgeAndAssign's own docstring for the full backend
+  // call/branch shape. `ackTargetId` tracks which row the currently
+  // open modal belongs to, since the hook itself only knows the
+  // ticket id it was opened with, not this page's own row array.
+  const acknowledgeAndAssign = useAcknowledgeAndAssign();
+  const [ackTargetId, setAckTargetId] = useState<string | null>(null);
 
-  async function handleAcknowledge(ticketId: string, e: React.MouseEvent) {
+  function openAcknowledge(ticket: TicketResponse, e: React.MouseEvent) {
     e.stopPropagation();
-    setAcknowledgingId(ticketId);
-    const result = await runAcknowledge(ticketId);
-    setAcknowledgingId(null);
-    // Acknowledging only ever flips this one escalation's own status —
-    // patch it in place instead of reloading the whole page/tab, same
-    // targeted-refresh convention handleClaim above already follows.
-    if (result) {
+    setAckTargetId(ticket.ticket_id);
+    acknowledgeAndAssign.open({
+      ticketId: ticket.ticket_id,
+      ticketType: ticket.ticket_type,
+      currentAgentId: ticket.agent_id,
+    });
+  }
+
+  async function handleConfirmAcknowledge() {
+    const result = await acknowledgeAndAssign.confirm();
+    if (result.success && ackTargetId) {
       setTickets((prev) =>
         prev.map((t) =>
-          t.ticket_id === ticketId ? { ...t, escalation_status: "ACKNOWLEDGED" } : t
+          t.ticket_id === ackTargetId
+            ? {
+                ...t,
+                escalation_status: "ACKNOWLEDGED",
+                agent_id: result.agentId ?? t.agent_id,
+                agent_name: result.agentName ?? t.agent_name,
+              }
+            : t
         )
       );
       loadViewCounts();
@@ -301,6 +319,7 @@ export function TicketsListPage() {
   const canSeeEscalatedTab = !!currentUser && ESCALATION_TAB_ROLES.has(currentUser.role);
 
   return (
+    <>
     <AppLayout
       title="Tickets"
       description={
@@ -546,14 +565,15 @@ export function TicketsListPage() {
                       </td>
                       <td className="px-5 py-3.5">
                         <div className="flex items-center gap-1.5">
-                          {ticket.is_escalated ? (
-                            <Badge tone="danger" icon={<ShieldAlert size={11} />}>
-                              CRITICAL
-                            </Badge>
-                          ) : (
-                            <Badge tone={priorityTone[ticket.current_priority]}>
-                              {ticket.current_priority}
-                            </Badge>
+                          <Badge tone={priorityTone[ticket.current_priority]}>
+                            {ticket.current_priority}
+                          </Badge>
+                          {ticket.is_escalated && (
+                            <ShieldAlert
+                              size={14}
+                              className="text-danger"
+                              aria-label="Escalated"
+                            />
                           )}
                         </div>
                       </td>
@@ -607,8 +627,7 @@ export function TicketsListPage() {
                             <Button
                               size="sm"
                               variant="primary"
-                              isLoading={isAcknowledging && acknowledgingId === ticket.ticket_id}
-                              onClick={(e) => handleAcknowledge(ticket.ticket_id, e)}
+                              onClick={(e) => openAcknowledge(ticket, e)}
                             >
                               Acknowledge
                             </Button>
@@ -679,5 +698,15 @@ export function TicketsListPage() {
         )}
       </div>
     </AppLayout>
+    <AcknowledgeAssignModal
+      open={acknowledgeAndAssign.isOpen}
+      onClose={acknowledgeAndAssign.close}
+      candidates={acknowledgeAndAssign.candidates}
+      selectedAgentId={acknowledgeAndAssign.selectedAgentId}
+      onSelectAgent={acknowledgeAndAssign.setSelectedAgentId}
+      onConfirm={handleConfirmAcknowledge}
+      isSubmitting={acknowledgeAndAssign.isSubmitting}
+    />
+    </>
   );
 }

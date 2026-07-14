@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ticketing.enums import TicketPriority
 from app.ticketing.models.escalation_handling_sla import EscalationHandlingSLA
 from app.ticketing.models.resolution_sla import ResolutionSLA
+from app.ticketing.models.sla_policy import SLAPolicy
 from app.ticketing.models.ticket import Ticket
 from app.ticketing.models.ticket_escalation import TicketEscalation
 from app.ticketing.repositories.escalation_handling_sla_repository import (
@@ -16,27 +17,29 @@ from app.ticketing.repositories.sla_policy_repository import SLAPolicyRepository
 
 #escalation_handling_sla_service.py
 
-# The escalation-handling SLA's target is this fixed fraction of the
-# ORIGINAL Resolution SLA's configured target duration — computed from
-# the configured target, never from remaining/overdue time (see this
-# module's own compute function). Not a per-policy column: every
-# priority uses the same fraction today, and the one formula lives
-# here, not duplicated at each call site.
+# Fallback only — used if a policy row somehow has no
+# handling_sla_percentage (shouldn't happen once the column's own
+# NOT NULL + default are in place, but kept as a safe default rather
+# than a crash). The real, per-priority value now lives on
+# SLAPolicy.handling_sla_percentage (see the admin-facing SLA Timing
+# Matrix), not a single global fraction.
 ESCALATION_HANDLING_SLA_FRACTION = 0.25
 
 
-def compute_escalation_handling_target_seconds(original_target_minutes: int) -> int:
+def compute_escalation_handling_target_seconds(
+    original_target_minutes: int, fraction: float = ESCALATION_HANDLING_SLA_FRACTION
+) -> int:
     """
-    Pure function — 25% of the original (configured) Resolution SLA
-    target, expressed in seconds. `round()` (not truncation) is this
-    codebase's existing duration-precision convention (whole minutes
-    in, whole seconds out) — for this app's actual policy values
-    (HIGH=4320min, MEDIUM=7200min, LOW=10080min) every result is
-    already an exact whole number of seconds, but `round()` keeps this
-    well-defined even if a future policy value doesn't divide evenly.
+    Pure function — `fraction` of the original (configured) Resolution
+    SLA target, expressed in seconds. `round()` (not truncation) is
+    this codebase's existing duration-precision convention (whole
+    minutes in, whole seconds out) — for this app's actual policy
+    values (HIGH=4320min, MEDIUM=7200min, LOW=10080min) at the default
+    25% every result is already an exact whole number of seconds, but
+    `round()` keeps this well-defined for any configured fraction.
     """
 
-    return round(original_target_minutes * 60 * ESCALATION_HANDLING_SLA_FRACTION)
+    return round(original_target_minutes * 60 * fraction)
 
 
 class EscalationHandlingSlaService:
@@ -60,23 +63,24 @@ class EscalationHandlingSlaService:
         self.resolution_sla_repository = resolution_sla_repository
         self.sla_policy_repository = sla_policy_repository
 
-    async def _resolve_original_target_minutes(
+    async def _resolve_policy(
         self,
         *,
         ticket: Ticket,
-    ) -> int | None:
+    ) -> SLAPolicy | None:
         """
-        "Original SLA target" means the Resolution SLA's own
-        configured per-priority target — resolved from the priority
-        ResolutionSLA snapshotted at ticket-creation time when that
-        clock still exists (the common case; a ticket has at most one
-        ResolutionSLA row, ever, so looking it up by ticket_id always
-        returns the same row `escalation.resolution_sla_id` denormalizes),
-        falling back to the ticket's current priority only if the
-        ticket somehow never had a Resolution clock at all (see
-        ResolutionSLARepository/SLAService for when that can happen).
-        Never derived from remaining/overdue time — only ever the
-        configured target.
+        Resolves the SLA policy whose `resolution_target_minutes` (and,
+        as of this method's rename, `handling_sla_percentage`) apply to
+        this ticket — from the priority ResolutionSLA snapshotted at
+        ticket-creation time when that clock still exists (the common
+        case; a ticket has at most one ResolutionSLA row, ever, so
+        looking it up by ticket_id always returns the same row
+        `escalation.resolution_sla_id` denormalizes), falling back to
+        the ticket's current priority only if the ticket somehow never
+        had a Resolution clock at all (see ResolutionSLARepository/
+        SLAService for when that can happen). The resolution target
+        itself is never derived from remaining/overdue time — only
+        ever the configured target.
         """
 
         resolution_clock = await self.resolution_sla_repository.get_by_ticket_id(
@@ -86,8 +90,7 @@ class EscalationHandlingSlaService:
             resolution_clock.priority if resolution_clock is not None else ticket.current_priority
         )
 
-        policy = await self.sla_policy_repository.get_by_priority(priority)
-        return policy.resolution_target_minutes if policy is not None else None
+        return await self.sla_policy_repository.get_by_priority(priority)
 
     async def start_if_not_started(
         self,
@@ -114,11 +117,13 @@ class EscalationHandlingSlaService:
         if existing is not None:
             return existing
 
-        target_minutes = await self._resolve_original_target_minutes(ticket=ticket)
-        if target_minutes is None:
+        policy = await self._resolve_policy(ticket=ticket)
+        if policy is None:
             return None
 
-        target_seconds = compute_escalation_handling_target_seconds(target_minutes)
+        target_seconds = compute_escalation_handling_target_seconds(
+            policy.resolution_target_minutes, policy.handling_sla_percentage / 100
+        )
         started_at = datetime.now(timezone.utc)
         due_at = started_at + timedelta(seconds=target_seconds)
 

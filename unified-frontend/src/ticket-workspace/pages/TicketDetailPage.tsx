@@ -133,7 +133,13 @@ export function TicketDetailPage() {
               <div>
                 <div className="flex flex-col gap-5 lg:sticky lg:top-0">
                   <TicketDetails onRelatedChanged={refreshAll} />
-                  <SlaCard ticketId={activeTicket.ticket_id} ticketPriority={activeTicket.current_priority} />
+                  <SlaCard
+                    ticketId={activeTicket.ticket_id}
+                    ticketPriority={activeTicket.current_priority}
+                    ticketType={activeTicket.ticket_type}
+                    currentAgentId={activeTicket.agent_id}
+                    onActionComplete={refreshAll}
+                  />
                   <SlaTimeline ticketId={activeTicket.ticket_id} />
                   <EditAccessPanel onRequestsChanged={refreshEditAccessRequests} />
                 </div>

@@ -29,6 +29,7 @@ from app.ticketing.repositories.ticket_escalation_repository import (
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.sla import TicketEscalationState
+from app.ticketing.schemas.ticket import TicketUpdate
 from app.ticketing.schemas.ticket_action import TicketActionResponse
 from app.ticketing.services.access_control import (
     GLOBAL_INBOX_ROLE_NAMES,
@@ -71,13 +72,17 @@ class EscalationService:
     active) and advances only if the current owner ignores their
     acknowledgment window.
 
-    Deliberately never touches ResolutionSLA's own started_at/due_at/
-    status — every method here only reads a ResolutionSLA (to snapshot
-    resolution_sla_id for display, or to resolve the escalation's ack
-    window off the ticket's priority-matched SLAPolicy row), never
-    writes one. This is what makes "the original Resolution SLA never
-    restarts after escalation" true by construction: there is simply
-    no code path in this class capable of writing to that table.
+    Never touches ResolutionSLA's own started_at/status, and never
+    invents its own reshift math — the one deliberate exception is
+    _bump_priority_to_critical (called once, from _create_escalation):
+    a ticket's priority permanently becomes CRITICAL the first time it
+    escalates (manual or automatic), which reshifts the clock's
+    due_at/priority through the exact same SLAService method a manual
+    Change Priority action already uses, not a parallel code path
+    invented here. Every other method in this class only reads a
+    ResolutionSLA (to snapshot resolution_sla_id for display, or to
+    resolve the escalation's ack window off the ticket's priority-
+    matched SLAPolicy row).
     """
 
     def __init__(
@@ -348,6 +353,55 @@ class EscalationService:
 
         return True
 
+    async def _bump_priority_to_critical(self, ticket: Ticket) -> None:
+        """
+        A ticket's priority permanently becomes CRITICAL the first
+        time it escalates — a real, filterable/sortable priority tier
+        (see TicketPriority's own docstring), not just a display badge,
+        and it never reverts even after the escalation is acknowledged
+        or closed. No-op if already CRITICAL (idempotent — re-escalating
+        an already-critical ticket, e.g. after an ack-window advance,
+        must never re-reshift the clock a second time).
+
+        Reshifts the Resolution SLA clock through
+        SLAService.reshift_resolution_clock_for_priority_change — the
+        exact same method a manual Change Priority action already
+        uses — rather than inventing a parallel code path, so the
+        sweep's own elapsed-fraction math (keyed off
+        ResolutionSLA.priority, not Ticket.current_priority) stays
+        internally consistent instead of measuring a now-CRITICAL-
+        looking ticket against a stale, looser target. Deferred import
+        to avoid a circular import (sla_service.py imports
+        build_escalation_service from this module at module level).
+        """
+
+        if ticket.current_priority == TicketPriority.CRITICAL:
+            return
+
+        old_priority = ticket.current_priority
+        await self.ticket_repository.update(
+            ticket, TicketUpdate(current_priority=TicketPriority.CRITICAL)
+        )
+
+        from app.ticketing.services.sla_service import build_sla_service
+
+        sla_service = build_sla_service(self.ticket_repository.db)
+        await sla_service.reshift_resolution_clock_for_priority_change(
+            ticket_id=ticket.ticket_id, new_priority=TicketPriority.CRITICAL
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket.ticket_id,
+            event_type=AuditEventType.PRIORITY_CHANGED,
+            actor_id=None,
+            actor_name="Escalation workflow",
+            actor_role=ActorRole.SYSTEM,
+            old_values={"current_priority": old_priority.value},
+            new_values={"current_priority": TicketPriority.CRITICAL.value, "reason": "escalated"},
+        )
+
     async def _create_escalation(
         self,
         *,
@@ -356,10 +410,15 @@ class EscalationService:
         triggered_by: str,
         triggered_by_user_id: UUID | None,
     ) -> TicketEscalation:
+        await self._bump_priority_to_critical(ticket)
+
         now = datetime.now(timezone.utc)
         level, owner_ids = await self._resolve_owners_with_fallback(
             starting_level=EscalationLevel.TEAM_LEAD, ticket=ticket
         )
+        # Read after the bump above, so a newly-escalated ticket's own
+        # escalation gets CRITICAL's (tighter) ack window immediately,
+        # not the ack window its previous priority would have used.
         ack_minutes = await self._ack_target_minutes(ticket.current_priority)
 
         return await self.ticket_escalation_repository.create(

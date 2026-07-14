@@ -1,13 +1,20 @@
 # test_escalation_service.py
 #
 # Regression coverage for the internal escalation workflow
-# (TicketEscalation / EscalationService) — the core requirement this
-# feature was built to satisfy is that escalating a ticket must NEVER
-# restart, recalculate, or otherwise touch its Resolution SLA clock's
-# own started_at/due_at/status columns. Every test below that mutates
-# an escalation re-reads the Resolution SLA row afterward and asserts
-# started_at/due_at/status are byte-identical to what they were before
-# any escalation activity happened.
+# (TicketEscalation / EscalationService). The original core
+# requirement — escalating must never restart/recalculate the
+# Resolution SLA clock — now has one deliberate, tested exception:
+# the ticket's priority permanently becomes CRITICAL the first time it
+# escalates (manual or automatic), which does reshift the clock's own
+# due_at/priority columns, through the same SLAService method a manual
+# Change Priority action already uses (see
+# EscalationService._bump_priority_to_critical). started_at/status are
+# still never touched by ANYTHING in this file, and due_at is still
+# never touched by any action *after* escalation creation itself
+# (acknowledge/evaluate_overdue/close_for_ticket_resolution) — every
+# test below that exercises one of those later actions captures
+# "original_due_at" *after* the escalating call, specifically to keep
+# asserting that narrower, still-true invariant.
 #
 # Runs against the real (dev) database inside a transaction that is
 # always rolled back at the end — same convention as
@@ -141,11 +148,12 @@ async def _reload_resolution_sla(session, resolution_sla_id) -> ResolutionSLA:
     return result.scalar_one()
 
 
-async def test_manual_escalate_never_touches_resolution_sla(db_session):
+async def test_manual_escalate_bumps_priority_to_critical_and_reshifts_due_at(db_session):
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
     original_started_at = resolution_sla.started_at
     original_due_at = resolution_sla.due_at
     original_status = resolution_sla.status
+    assert ticket.current_priority == TicketPriority.MEDIUM
 
     team_lead.permissions = ["ticket:escalate"]  # transient JWT-claim attribute, see access_control.has_permission
 
@@ -161,10 +169,18 @@ async def test_manual_escalate_never_touches_resolution_sla(db_session):
     assert escalation.status == EscalationStatus.ACTIVE
     assert str(team_lead.user_id) in escalation.owner_ids
 
+    # The one deliberate exception: escalating permanently bumps the
+    # ticket's priority to CRITICAL, which reshifts due_at/priority
+    # through the same mechanism a manual Change Priority action uses
+    # — started_at/status are still never touched.
+    reloaded_ticket = await service.ticket_repository.get_by_id(ticket.ticket_id)
+    assert reloaded_ticket.current_priority == TicketPriority.CRITICAL
+
     reloaded = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    assert reloaded.priority == TicketPriority.CRITICAL
     assert reloaded.started_at == original_started_at
-    assert reloaded.due_at == original_due_at
     assert reloaded.status == original_status
+    assert reloaded.due_at != original_due_at
 
 
 async def test_escalating_twice_is_rejected_not_a_second_chain(db_session):
@@ -183,11 +199,18 @@ async def test_escalating_twice_is_rejected_not_a_second_chain(db_session):
 
 async def test_acknowledge_by_owner_stops_auto_advance_and_leaves_sla_untouched(db_session):
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    original_due_at = resolution_sla.due_at
     team_lead.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    # Captured *after* escalating, not before — escalation creation
+    # itself now reshifts due_at once (see
+    # test_manual_escalate_bumps_priority_to_critical_and_reshifts_due_at).
+    # This test is only about whether ACKNOWLEDGE itself touches it further.
+    original_due_at = (
+        await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    ).due_at
 
     result = await service.acknowledge(ticket.ticket_id, team_lead)
     assert result.ticket_id == ticket.ticket_id
@@ -224,11 +247,15 @@ async def test_acknowledge_by_non_owner_is_forbidden(db_session):
 
 async def test_overdue_active_escalation_advances_without_touching_sla(db_session):
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    original_due_at = resolution_sla.due_at
     team_lead.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    # Captured *after* escalating — see the acknowledge test above for why.
+    original_due_at = (
+        await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    ).due_at
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -255,11 +282,15 @@ async def test_overdue_active_escalation_advances_without_touching_sla(db_sessio
 
 async def test_close_for_ticket_resolution_closes_escalation_only(db_session):
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    original_due_at = resolution_sla.due_at
     team_lead.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    # Captured *after* escalating — see the acknowledge test above for why.
+    original_due_at = (
+        await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    ).due_at
 
     await service.close_for_ticket_resolution(ticket.ticket_id)
 

@@ -43,6 +43,7 @@ const PRIORITY_VARIANT: Record<TicketPriority, "success" | "warning" | "destruct
   LOW: "success",
   MEDIUM: "warning",
   HIGH: "destructive",
+  CRITICAL: "destructive",
 };
 
 function statusMeta(item: InboxItem): { label: string; variant: "warning" | "success" | "secondary" | "default" } {

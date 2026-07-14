@@ -66,24 +66,6 @@ export function InboxPage() {
     [setSelectedEmail, mail.setActiveView]
   );
 
-  const handleSelectFolder = useCallback(
-    (folderId: string | null) => {
-      setComposeOpen(false);
-      setSelectedEmail(null);
-      mail.setActiveFolder(folderId);
-    },
-    [setSelectedEmail, mail.setActiveFolder]
-  );
-
-  const handleSelectCategory = useCallback(
-    (category: string | null) => {
-      setComposeOpen(false);
-      setSelectedEmail(null);
-      mail.setActiveCategory(category);
-    },
-    [setSelectedEmail, mail.setActiveCategory]
-  );
-
   async function handleOpen(interactionId: string) {
     setComposeOpen(false);
     await mail.openThread(interactionId);
@@ -112,17 +94,7 @@ export function InboxPage() {
     return result;
   }
 
-  const folderLabelBase = mail.activeCategory
-    ? mail.activeCategory
-    : mail.activeFolder
-      ? mail.folders.find((f) => f.folder_id === mail.activeFolder)?.name ?? "Folder"
-      : VIEW_LABELS[mail.activeView];
-  const folderCount = mail.activeCategory
-    ? mail.categoryCounts[mail.activeCategory] ?? 0
-    : mail.activeFolder
-      ? mail.folderCounts[mail.activeFolder] ?? 0
-      : mail.viewCounts[mail.activeView] ?? 0;
-  const folderLabel = `${folderLabelBase} (${folderCount})`;
+  const folderLabel = `${VIEW_LABELS[mail.activeView]} (${mail.viewCounts[mail.activeView] ?? 0})`;
 
   return (
     <AppLayout>
@@ -146,16 +118,6 @@ export function InboxPage() {
           onCompose={handleComposeClick}
           counts={mail.viewCounts}
           isSupervisor={mail.isSupervisor}
-          folders={mail.folders}
-          folderCounts={mail.folderCounts}
-          activeFolder={mail.activeFolder}
-          onSelectFolder={handleSelectFolder}
-          onCreateFolder={mail.createFolder}
-          onDeleteFolder={mail.deleteFolder}
-          categories={mail.categories}
-          categoryCounts={mail.categoryCounts}
-          activeCategory={mail.activeCategory}
-          onSelectCategory={handleSelectCategory}
         />
 
         <div className="min-h-[560px] min-w-0 flex-1">

@@ -539,6 +539,9 @@ class SLAService:
             first_response_target_minutes=request.first_response_target_minutes,
             resolution_target_minutes=request.resolution_target_minutes,
             escalation_ack_target_minutes=request.escalation_ack_target_minutes,
+            handling_sla_percentage=request.handling_sla_percentage,
+            warning_1_percentage=request.warning_1_percentage,
+            warning_2_percentage=request.warning_2_percentage,
             is_active=request.is_active,
         )
 

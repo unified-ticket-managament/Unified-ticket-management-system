@@ -172,13 +172,26 @@ async def _reload_resolution_sla(session, resolution_sla_id) -> ResolutionSLA:
 
 async def test_acknowledge_starts_handling_sla_at_25_percent_of_original_target(db_session):
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    original_started_at = resolution_sla.started_at
-    original_due_at = resolution_sla.due_at
-    original_status = resolution_sla.status
     team_lead.permissions = ["ticket:escalate"]
 
     service = _build_escalation_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    # Captured *after* escalating, not before — escalating itself now
+    # permanently bumps the ticket's priority to CRITICAL and reshifts
+    # due_at/priority once (see test_escalation_service.py's
+    # test_manual_escalate_bumps_priority_to_critical_and_reshifts_due_at).
+    # This test is only about whether ACKNOWLEDGE (starting the
+    # handling clock) touches the Resolution SLA any further, and
+    # "the original target" the handling clock is 25% of is now
+    # CRITICAL's, since that's the effective priority at
+    # acknowledgment time.
+    post_escalate = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    original_started_at = post_escalate.started_at
+    original_due_at = post_escalate.due_at
+    original_status = post_escalate.status
+    assert post_escalate.priority == TicketPriority.CRITICAL
+
     await service.acknowledge(ticket.ticket_id, team_lead)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
@@ -188,16 +201,16 @@ async def test_acknowledge_starts_handling_sla_at_25_percent_of_original_target(
     assert handling_sla is not None
     assert handling_sla.status == SLAClockStatus.RUNNING
 
-    policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
+    policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.CRITICAL)
     expected_target_seconds = compute_escalation_handling_target_seconds(
-        policy.resolution_target_minutes
+        policy.resolution_target_minutes, policy.handling_sla_percentage / 100
     )
     assert handling_sla.target_seconds == expected_target_seconds
     assert (handling_sla.due_at - handling_sla.started_at).total_seconds() == pytest.approx(
         expected_target_seconds, abs=1
     )
 
-    # The original Resolution SLA must be completely untouched.
+    # ACKNOWLEDGE itself must not touch the Resolution SLA any further.
     reloaded = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     assert reloaded.started_at == original_started_at
     assert reloaded.due_at == original_due_at
@@ -246,11 +259,15 @@ async def test_acknowledging_twice_never_restarts_the_handling_sla(db_session):
 
 async def test_assignment_implied_acknowledgment_starts_handling_sla_exactly_once(db_session):
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    original_due_at = resolution_sla.due_at
     team_lead.permissions = ["ticket:escalate"]
 
     service = _build_escalation_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    # Captured *after* escalating — see the test above for why.
+    original_due_at = (
+        await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    ).due_at
 
     # Simulate a supervisor assigning the ticket out (acceptance) before
     # anyone clicked a literal Acknowledge button.
@@ -278,11 +295,16 @@ async def test_assignment_implied_acknowledgment_starts_handling_sla_exactly_onc
 
 async def test_handling_sla_breach_advances_escalation_and_preserves_both_histories(db_session):
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    original_due_at = resolution_sla.due_at
     team_lead.permissions = ["ticket:escalate"]
 
     service = _build_escalation_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    # Captured *after* escalating — see the test above for why.
+    original_due_at = (
+        await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    ).due_at
+
     await service.acknowledge(ticket.ticket_id, team_lead)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(

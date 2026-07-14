@@ -24,10 +24,29 @@ THRESHOLDS = (
 )
 
 
-def thresholds_reached(elapsed_fraction: float) -> list[str]:
-    """Pure classification — every named threshold `elapsed_fraction` has met or passed."""
+def thresholds_reached(
+    elapsed_fraction: float,
+    *,
+    half_elapsed: float = 0.5,
+    at_risk: float = 0.8,
+) -> list[str]:
+    """
+    Pure classification — every named threshold `elapsed_fraction` has
+    met or passed. `half_elapsed`/`at_risk` default to the same 0.5/0.8
+    every clock used before per-priority "Warning 1"/"Warning 2"
+    cutoffs existed (SLAPolicy.warning_1_percentage/warning_2_percentage,
+    see the admin-facing SLA Timing Matrix) — callers with a resolved
+    policy pass those in instead. BREACHED (1.0) and ESCALATED (1.5)
+    stay fixed globally; only the two warning tiers are configurable.
+    """
 
-    return [name for name, cutoff in THRESHOLDS if elapsed_fraction >= cutoff]
+    cutoffs = (
+        ("HALF_ELAPSED", half_elapsed),
+        ("AT_RISK", at_risk),
+        ("BREACHED", 1.0),
+        ("ESCALATED", 1.5),
+    )
+    return [name for name, cutoff in cutoffs if elapsed_fraction >= cutoff]
 
 
 # ---------------------------------------------------------------------

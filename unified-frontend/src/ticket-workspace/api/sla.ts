@@ -1,6 +1,7 @@
 import { apiClient } from "./client";
 import type {
   SLAPolicyResponse,
+  SLAPolicyUpdatePayload,
   TicketActionResponse,
   TicketSLAResponse,
 } from "@tw/types";
@@ -51,5 +52,19 @@ export async function acknowledgeTicketEscalation(
 // GET /sla/policies — open to any authenticated user.
 export async function listSlaPolicies(signal?: AbortSignal): Promise<SLAPolicyResponse[]> {
   const { data } = await apiClient.get<SLAPolicyResponse[]>("/sla/policies", { signal });
+  return data;
+}
+
+// PATCH /sla/policies/{policy_id} — Super Admin/Site Lead only on the
+// backend (sla:manage_policies); used by the Settings -> SLA Timing
+// Matrix page.
+export async function updateSlaPolicy(
+  policyId: string,
+  payload: SLAPolicyUpdatePayload
+): Promise<SLAPolicyResponse> {
+  const { data } = await apiClient.patch<SLAPolicyResponse>(
+    `/sla/policies/${policyId}`,
+    payload
+  );
   return data;
 }

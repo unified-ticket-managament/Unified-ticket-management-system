@@ -18,6 +18,7 @@ import {
   Settings,
   Shield,
   Ticket,
+  Timer,
   UserCircle,
   Users,
 } from "lucide-react";
@@ -99,6 +100,11 @@ const menuItems: {
     title: "Ticket Audit Log",
     href: "/dashboard/audit-logs",
     icon: History,
+  },
+  {
+    title: "SLA Timing Matrix",
+    href: "/settings/sla-timing-matrix",
+    icon: Timer,
   },
   {
     title: "Permission Requests",

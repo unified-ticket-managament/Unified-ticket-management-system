@@ -15,7 +15,13 @@ export type TicketStatus =
   | "RESOLVED"
   | "CLOSED";
 
-export type TicketPriority = "LOW" | "MEDIUM" | "HIGH";
+// CRITICAL is deliberately not manually selectable anywhere — it's set
+// automatically, once, when a ticket's escalation workflow creates its
+// first escalation, and stays permanently thereafter. Every manual
+// "Change Priority"/"Create Ticket" priority picker must keep using
+// its own narrower LOW/MEDIUM/HIGH-only list rather than this full
+// union; only display/filter surfaces should show CRITICAL.
+export type TicketPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
 // ==========================================================
 // Categories — work-specialization categories (Eligibility, AR,
@@ -724,7 +730,21 @@ export interface SLAPolicyResponse {
   first_response_target_minutes: number;
   resolution_target_minutes: number;
   escalation_ack_target_minutes: number;
+  handling_sla_percentage: number;
+  warning_1_percentage: number;
+  warning_2_percentage: number;
   is_active: boolean;
   created_at: string;
   updated_at: string;
+}
+
+// PATCH /sla/policies/{id} — every field optional (partial update).
+export interface SLAPolicyUpdatePayload {
+  first_response_target_minutes?: number;
+  resolution_target_minutes?: number;
+  escalation_ack_target_minutes?: number;
+  handling_sla_percentage?: number;
+  warning_1_percentage?: number;
+  warning_2_percentage?: number;
+  is_active?: boolean;
 }

@@ -142,6 +142,11 @@ class SLASweepService:
         policies = await self.sla_policy_repository.list_all()
         target_by_priority_fr = {p.priority: p.first_response_target_minutes for p in policies}
         target_by_priority_res = {p.priority: p.resolution_target_minutes for p in policies}
+        # Per-priority "Warning 1"/"Warning 2" overrides (see SLAPolicy.
+        # warning_1_percentage/warning_2_percentage and the admin-facing
+        # SLA Timing Matrix) — BREACHED/ESCALATED stay fixed globally,
+        # only these two warning tiers vary per priority.
+        policy_by_priority = {p.priority: p for p in policies}
 
         counts = {
             "first_response_half_elapsed": 0,
@@ -191,7 +196,16 @@ class SLASweepService:
             fraction = compute_elapsed_fraction(
                 due_at=clock.due_at, target_minutes=target_minutes, at=now
             )
-            reached = thresholds_reached(fraction)
+            policy = policy_by_priority.get(clock.priority)
+            reached = (
+                thresholds_reached(
+                    fraction,
+                    half_elapsed=policy.warning_1_percentage / 100,
+                    at_risk=policy.warning_2_percentage / 100,
+                )
+                if policy is not None
+                else thresholds_reached(fraction)
+            )
             if "HALF_ELAPSED" in reached:
                 counts["first_response_half_elapsed"] += 1
             if "AT_RISK" in reached:
@@ -236,7 +250,16 @@ class SLASweepService:
             fraction = compute_elapsed_fraction(
                 due_at=clock.due_at, target_minutes=target_minutes, at=now
             )
-            reached = thresholds_reached(fraction)
+            policy = policy_by_priority.get(clock.priority)
+            reached = (
+                thresholds_reached(
+                    fraction,
+                    half_elapsed=policy.warning_1_percentage / 100,
+                    at_risk=policy.warning_2_percentage / 100,
+                )
+                if policy is not None
+                else thresholds_reached(fraction)
+            )
             if "HALF_ELAPSED" in reached:
                 counts["resolution_half_elapsed"] += 1
             if "AT_RISK" in reached:

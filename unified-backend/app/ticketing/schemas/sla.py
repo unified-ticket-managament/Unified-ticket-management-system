@@ -16,6 +16,9 @@ class SLAPolicyResponse(ORMBase):
     first_response_target_minutes: int
     resolution_target_minutes: int
     escalation_ack_target_minutes: int
+    handling_sla_percentage: float
+    warning_1_percentage: float
+    warning_2_percentage: float
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -30,6 +33,9 @@ class SLAPolicyUpdate(BaseModel):
     first_response_target_minutes: int | None = Field(default=None, gt=0)
     resolution_target_minutes: int | None = Field(default=None, gt=0)
     escalation_ack_target_minutes: int | None = Field(default=None, gt=0)
+    handling_sla_percentage: float | None = Field(default=None, ge=1, le=100)
+    warning_1_percentage: float | None = Field(default=None, ge=1, le=100)
+    warning_2_percentage: float | None = Field(default=None, ge=1, le=100)
     is_active: bool | None = None
 
 
