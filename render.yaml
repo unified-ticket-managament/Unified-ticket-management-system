@@ -96,6 +96,31 @@ services:
   # different, free scheduler. See that workflow file's own comments
   # for the required repo secrets and its timing-granularity trade-off.
   # ---------------------------------------------------------------------
+<<<<<<< Updated upstream
+=======
+  - type: cron
+    name: sla-sweep
+    runtime: python
+    # No `plan` field here — Render's Blueprint schema rejects `plan: free`
+    # (or any plan value) on `type: cron` services outright ("services[N].plan
+    # free not a valid plan for service type cron", hit during an actual
+    # Blueprint sync). Cron jobs have no dyno/tier concept to select, same
+    # underlying reason `type: static` omits it below, even though the error
+    # message for each is different.
+    rootDir: unified-backend
+    schedule: "*/2 * * * *"
+    buildCommand: pip install requests
+    startCommand: python scripts/sla_sweep_ping.py
+    envVars:
+      # SECOND PASS: real unified-backend URL + /internal/sla/sweep,
+      # once that's known after the first deploy.
+      - key: SLA_SWEEP_URL
+        sync: false
+      # Must be byte-identical to unified-backend's own
+      # SLA_SWEEP_SHARED_SECRET above.
+      - key: SLA_SWEEP_SHARED_SECRET
+        sync: false
+>>>>>>> Stashed changes
 
   - type: web
     name: unified-frontend

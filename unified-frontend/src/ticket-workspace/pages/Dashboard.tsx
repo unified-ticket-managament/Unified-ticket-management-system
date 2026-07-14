@@ -20,15 +20,20 @@ import { Card } from "@tw/components/common/Card";
 import { Badge } from "@tw/components/common/Badge";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
+<<<<<<< Updated upstream
 import { getViewCounts } from "@tw/api/inbox";
-import { getDashboardStats, listTickets, type DashboardStats } from "@tw/api/ticket";
+import { getDashboardStats, type DashboardStats } from "@tw/api/ticket";
+=======
+import { getInbox } from "@tw/api/inbox";
+import { listTickets } from "@tw/api/ticket";
+>>>>>>> Stashed changes
 import { useDashboardSlaCounts } from "@tw/hooks/useDashboardSlaCounts";
 import { useToast } from "@tw/context/ToastContext";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { formatDateTime } from "@tw/lib/format";
 import { statusTone } from "@tw/lib/ticketTone";
-import type { TicketResponse } from "@tw/types";
 
+<<<<<<< Updated upstream
 // No SLA contract field exists on the ticket model yet, so "SLA Risk"
 // is defined transparently here as a derived heuristic — open tickets
 // that have gone untouched past this threshold — rather than a
@@ -48,6 +53,17 @@ const EMPTY_STATS: DashboardStats = {
   recent_tickets: [],
   critical_tickets: [],
 };
+=======
+function isToday(iso: string) {
+  const d = new Date(iso);
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+>>>>>>> Stashed changes
 
 function StatCard({
   icon,
@@ -121,31 +137,12 @@ export function Dashboard() {
   const [isLoading, setIsLoading] = useState(true);
 
   // Independent of the bounded getDashboardStats()/getViewCounts()
-  // calls above — there's no real SLA-aggregation endpoint yet, so
-  // this still fetches the raw ticket list itself and aggregates
-  // client-side via useDashboardSlaCounts (same approach used in the
-  // shell's SlaOverviewSection, src/components/dashboard/). Kept
-  // separate from `stats` deliberately: swapping this for a real
-  // aggregate endpoint later shouldn't need to touch the
-  // getDashboardStats() call above at all.
-  const [slaTickets, setSlaTickets] = useState<TicketResponse[] | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    listTickets()
-      .then((data) => {
-        if (!cancelled) setSlaTickets(data);
-      })
-      .catch(() => {
-        // Silent on failure, same convention as the rest of this
-        // page's polling/loading — the SLA Overview section just
-        // shows zeros rather than an error toast on top of the one
-        // the main stats load() below would already show.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  const { counts: slaCounts } = useDashboardSlaCounts(slaTickets);
+  // calls above — one grouped GET /tickets/sla-overview-counts query
+  // (see useDashboardSlaCounts, also used by the shell's own
+  // SlaOverviewSection, src/components/dashboard/). Kept separate from
+  // `stats` deliberately: this endpoint has its own refresh cadence and
+  // its own loading state.
+  const { counts: slaCounts } = useDashboardSlaCounts();
 
   useEffect(() => {
     let cancelled = false;
@@ -185,6 +182,7 @@ export function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+<<<<<<< Updated upstream
   const {
     assigned: assignedCount,
     open: openCount,
@@ -197,6 +195,32 @@ export function Dashboard() {
     recent_tickets: recentTickets,
     critical_tickets: criticalTickets,
   } = stats;
+=======
+  const assignedCount = tickets.filter((t) => t.agent_id).length;
+  const openCount = tickets.filter((t) => OPEN_STATUSES.includes(t.current_status)).length;
+  const inProgressCount = tickets.filter((t) => t.current_status === "IN_PROGRESS").length;
+  const resolvedCount = tickets.filter(
+    (t) => t.current_status === "RESOLVED" || t.current_status === "CLOSED"
+  ).length;
+  const resolvedTodayCount = tickets.filter(
+    (t) =>
+      (t.current_status === "RESOLVED" || t.current_status === "CLOSED") &&
+      isToday(t.updated_at)
+  ).length;
+  const closedCount = tickets.filter((t) => t.current_status === "CLOSED").length;
+  const criticalCount = tickets.filter(
+    (t) => t.current_priority === "HIGH" && OPEN_STATUSES.includes(t.current_status)
+  ).length;
+  const { counts: slaCounts } = useDashboardSlaCounts(tickets);
+
+  const recentTickets = [...tickets]
+    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+    .slice(0, 6);
+
+  const criticalTickets = tickets
+    .filter((t) => t.current_priority === "HIGH" && OPEN_STATUSES.includes(t.current_status))
+    .slice(0, 5);
+>>>>>>> Stashed changes
 
   const funnelStages = [
     { label: "Pending Inbox", count: pendingInboxCount },
@@ -235,7 +259,11 @@ export function Dashboard() {
             tone="bg-danger/10"
             hint="High priority tickets still open"
           />
+<<<<<<< Updated upstream
            <StatCard
+=======
+          <StatCard
+>>>>>>> Stashed changes
             icon={<CheckCircle2 size={19} className="text-success" />}
             label="Resolved Today"
             value={resolvedTodayCount}
@@ -261,9 +289,14 @@ export function Dashboard() {
           <p className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted">
             SLA Overview
           </p>
+<<<<<<< Updated upstream
+          {/* Server-aggregated via GET /tickets/sla-overview-counts —
+              see useDashboardSlaCounts. */}
+=======
           {/* Aggregated client-side from the per-ticket SLA endpoint —
               see useDashboardSlaCounts for why (no aggregate endpoint
               exists yet). */}
+>>>>>>> Stashed changes
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
             <StatCard
               icon={<Timer size={19} className="text-accent" />}

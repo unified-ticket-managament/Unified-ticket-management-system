@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import Category, CategoryName, Role, User
 
 from app.auth.jwt import decode_token
-from app.core.rbac_cache import get_rbac_cache
+from app.core.rbac_cache import get_rbac_cache, resolution_lock
 from app.core.request_timing import timed_stage
 from app.database.session import get_db
 # Deliberately ticketing's UserRepository, not rbac's, for this one
@@ -120,37 +120,49 @@ async def get_current_user(
         if permission_version is not None and cache.is_valid(user_id, permission_version):
             user = _build_transient_user(payload)
         else:
-            user = await UserRepository(db).get_by_id(UUID(user_id))
+            # A burst of concurrent requests for the same user_id (many
+            # duplicate calls, or simply several requests landing at
+            # once right after login/a cache-TTL expiry) would otherwise
+            # all miss here and all independently hit Postgres for the
+            # identical row. resolution_lock serializes that: only the
+            # first caller through actually resolves; everyone else
+            # waits, then re-checks the cache below, which the first
+            # caller has by then populated.
+            async with resolution_lock(user_id):
+                if permission_version is not None and cache.is_valid(user_id, permission_version):
+                    user = _build_transient_user(payload)
+                else:
+                    user = await UserRepository(db).get_by_id(UUID(user_id))
 
-            if user is None:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="User not found.",
-                )
+                    if user is None:
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="User not found.",
+                        )
 
-            if not user.is_active:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="User account is inactive.",
-                )
+                    if not user.is_active:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN,
+                            detail="User account is inactive.",
+                        )
 
-            if (
-                permission_version is not None
-                and user.permission_version != permission_version
-            ):
-                # The DB has moved on to a newer authorization state
-                # than this token was issued under (role/category/team
-                # changed, permission granted/revoked, or the token's
-                # own role's permission set changed) — reject rather
-                # than silently trust stale role/category/permission
-                # claims for the rest of this token's natural TTL.
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Session outdated — please sign in again.",
-                )
+                    if (
+                        permission_version is not None
+                        and user.permission_version != permission_version
+                    ):
+                        # The DB has moved on to a newer authorization state
+                        # than this token was issued under (role/category/team
+                        # changed, permission granted/revoked, or the token's
+                        # own role's permission set changed) — reject rather
+                        # than silently trust stale role/category/permission
+                        # claims for the rest of this token's natural TTL.
+                        raise HTTPException(
+                            status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Session outdated — please sign in again.",
+                        )
 
-            if permission_version is not None:
-                cache.mark_valid(user_id, permission_version)
+                    if permission_version is not None:
+                        cache.mark_valid(user_id, permission_version)
 
     # Transient attribute, not a mapped column — same pattern as
     # TicketService._attach_names, so SQLAlchemy never tries to

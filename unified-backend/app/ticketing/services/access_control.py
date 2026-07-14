@@ -46,6 +46,16 @@ CATEGORY_SCOPED_ROLE_NAMES = {"Team Lead", "Staff"}
 # Account Manager stays client-scoped for Mail specifically.
 GLOBAL_INBOX_ROLE_NAMES = {"Site Lead", "Super Admin"}
 
+# Who can receive or manage an internal escalation, and therefore who
+# the ticket-list page's "Escalated" tab is shown to at all — Account
+# Manager/Team Lead (the two roles TicketEscalation's own ownership
+# chain can name as an owner) plus Site Lead/Super Admin (company-wide
+# overseers, same as GLOBAL_INBOX_ROLE_NAMES elsewhere). Staff is
+# deliberately excluded: an escalated ticket assigned to Staff still
+# shows up in their own My Tickets tab (see the escalated-first
+# ordering there), just not this separate oversight view.
+ESCALATION_TAB_ROLE_NAMES = {"Account Manager", "Team Lead", "Site Lead", "Super Admin"}
+
 # The only role allowed to use the internal "Create Dummy Mail"
 # simulator (POST /emails/dummy) — a testing/demo tool, not the real
 # inbound-email transport route (POST /emails/incoming, which stays

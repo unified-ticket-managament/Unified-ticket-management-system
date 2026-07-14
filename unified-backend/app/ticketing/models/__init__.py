@@ -15,6 +15,7 @@ from .resolution_sla_pause_interval import ResolutionSLAPauseInterval
 from .sla_breach_notification import SLABreachNotification
 from .message_read_receipt import MessageReadReceipt
 from .ticket_escalation import TicketEscalation
+from .escalation_handling_sla import EscalationHandlingSLA
 
 __all__ = [
     "Base",
@@ -33,4 +34,5 @@ __all__ = [
     "SLABreachNotification",
     "MessageReadReceipt",
     "TicketEscalation",
+    "EscalationHandlingSLA",
 ]

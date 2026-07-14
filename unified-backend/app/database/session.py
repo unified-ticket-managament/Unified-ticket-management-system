@@ -16,8 +16,24 @@ engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    # DATABASE_URL points at Neon's pooled (PgBouncer) endpoint
+    # (hostname contains "-pooler"), which itself fronts a much smaller
+    # number of real Postgres backend connections — this app-level pool
+    # is a second, independent limit on top of that, not a duplicate of
+    # it. Raised from 10/20 (30 total) after a frontend request-
+    # duplication bug was found flooding this app with 200-300
+    # concurrent requests at once, which queued for a free connection
+    # near SQLAlchemy's default 30s pool_timeout — explaining "26-48s"
+    # responses on trivially cheap queries (e.g. a 3-row SLA policy
+    # list) that could never really take that long to execute. The
+    # frontend bug is now fixed, so this is headroom against future
+    # bursts rather than the primary fix; pool_timeout is set explicitly
+    # (shorter than the previous implicit 30s default) so a genuine
+    # overload fails fast with a clear error instead of a request
+    # hanging near the old default.
+    pool_size=20,
+    max_overflow=30,
+    pool_timeout=10,
     pool_recycle=1800,
 )
 

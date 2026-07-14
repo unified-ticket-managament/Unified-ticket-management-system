@@ -32,9 +32,15 @@ from app.ticketing.schemas.sla import TicketEscalationState
 from app.ticketing.schemas.ticket_action import TicketActionResponse
 from app.ticketing.services.access_control import (
     GLOBAL_INBOX_ROLE_NAMES,
+    SUPERVISOR_ROLE_NAMES,
     ensure_agent_can_view_ticket,
     ensure_has_permission,
     ensure_ticket_not_closed,
+    has_permission,
+)
+from app.ticketing.services.escalation_handling_sla_service import (
+    EscalationHandlingSlaService,
+    build_escalation_handling_sla_service,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
 from app.ticketing.services.escalation_rules import next_level, resolve_manager_ids
@@ -83,6 +89,7 @@ class EscalationService:
         sla_policy_repository: SLAPolicyRepository,
         user_repository: UserRepository,
         notification_service: NotificationService | None = None,
+        escalation_handling_sla_service: EscalationHandlingSlaService | None = None,
     ):
         self.ticket_escalation_repository = ticket_escalation_repository
         self.ticket_repository = ticket_repository
@@ -90,6 +97,12 @@ class EscalationService:
         self.sla_policy_repository = sla_policy_repository
         self.user_repository = user_repository
         self.notification_service = notification_service
+        # Optional so existing callers/tests that construct this
+        # service directly (see tests/test_escalation_service.py) keep
+        # working unchanged — every call site below no-ops the
+        # handling-SLA side effect when this is None, same convention
+        # as notification_service above.
+        self.escalation_handling_sla_service = escalation_handling_sla_service
 
     # ---------------------------------------------------------
     # Owner resolution
@@ -417,12 +430,98 @@ class EscalationService:
             new_values={"level": escalation.level.value},
         )
 
+        # Starts the escalation-handling SLA — idempotent (see
+        # EscalationHandlingSlaService.start_if_not_started's own
+        # docstring), so this is safe even though acknowledge() itself
+        # already rejects a second call via the `updated is None` 400
+        # above; the idempotency lives here too since
+        # acknowledge_via_assignment (below) can also reach this same
+        # start call for the same escalation.
+        if self.escalation_handling_sla_service is not None:
+            await self.escalation_handling_sla_service.start_if_not_started(
+                escalation=updated, ticket=ticket
+            )
+
         return TicketActionResponse(
             interaction_id=None,
             ticket_id=ticket_id,
             message="Escalation acknowledged.",
             created_at=now,
         )
+
+    # ---------------------------------------------------------
+    # Acknowledge via assignment — a supervisor assigning an escalated
+    # ticket to staff is treated as accepting it, same as a literal
+    # Acknowledge click (see the plan's "assignment represents
+    # acceptance" rule). Deliberately more permissive than acknowledge()
+    # itself: the assigning supervisor need not already be a listed
+    # escalation owner, since the act of assigning is itself the
+    # acceptance signal — mirrors ensure_can_reassign_ticket's own
+    # authorization (supervisor role, or ticket:transfer permission).
+    # ---------------------------------------------------------
+
+    async def acknowledge_via_assignment(
+        self, ticket_id: UUID, current_user: User
+    ) -> None:
+        """
+        Called from InteractionService.transfer_agent after a
+        successful staff assignment. A no-op — never raises — if
+        there's no active escalation to acknowledge, or it's already
+        past ACTIVE (already acknowledged, or closed): assigning a
+        ticket that happens to have no/already-handled escalation is
+        completely ordinary, not an error. Unlike acknowledge(), this
+        does not gate on the caller already being a resolved owner —
+        transfer_agent's own ensure_can_reassign_ticket call already
+        authorized this actor to reassign the ticket in the first
+        place, and assigning it out from under an escalation chain is
+        exactly the kind of "took ownership" act acknowledging is
+        meant to capture.
+        """
+
+        if current_user.role.name not in SUPERVISOR_ROLE_NAMES and not has_permission(
+            current_user, "ticket:transfer"
+        ):
+            return
+
+        escalation = await self.ticket_escalation_repository.get_active_by_ticket_id(
+            ticket_id
+        )
+        if escalation is None or escalation.status != EscalationStatus.ACTIVE:
+            return
+
+        ticket = await self.ticket_repository.get_by_id(ticket_id)
+        if ticket is None:
+            return
+
+        now = datetime.now(timezone.utc)
+        updated = await self.ticket_escalation_repository.acknowledge(
+            escalation, acknowledged_by=current_user.user_id, at=now
+        )
+        if updated is None:
+            # Already acknowledged/closed by the time we got here (a
+            # race with a concurrent literal Acknowledge click, say) —
+            # no-op, not an error; start_if_not_started below still
+            # runs defensively but will itself no-op if already started.
+            updated = escalation
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.ESCALATION_ACKNOWLEDGED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            new_values={"level": escalation.level.value, "via": "assignment"},
+        )
+
+        if self.escalation_handling_sla_service is not None:
+            await self.escalation_handling_sla_service.start_if_not_started(
+                escalation=updated, ticket=ticket
+            )
 
     # ---------------------------------------------------------
     # Sweep hook — advance any ACTIVE escalation past its ack window
@@ -496,6 +595,95 @@ class EscalationService:
         return advanced
 
     # ---------------------------------------------------------
+    # Sweep hook — advance ownership when the *handling* SLA (not the
+    # ack window evaluate_overdue above guards) breaches
+    # ---------------------------------------------------------
+
+    async def advance_for_handling_sla_breach(self, ticket_id: UUID) -> bool:
+        """
+        Called from SLASweepService once per ticket whose
+        EscalationHandlingSLA has just been marked breached (see
+        EscalationHandlingSlaService.evaluate_breaches) — a distinct
+        trigger from evaluate_overdue's ack-window check above (a
+        handling-SLA breach means "acknowledged, but not actually
+        resolved in time," not "never acknowledged at all"), so it's
+        kept as its own method rather than folded into that one.
+        Mirrors evaluate_overdue's own per-item advance shape (next
+        level, re-notify at terminal SITE_LEAD) rather than sharing
+        code with it, since the two are triggered by different
+        deadlines and evaluate_overdue's exact behavior is directly
+        asserted by tests/test_escalation_service.py — safer to keep
+        them independent than risk changing that method's behavior.
+
+        No-op (returns False) if the ticket's escalation is no longer
+        active (already closed — e.g. the ticket was resolved in the
+        same window) or doesn't exist at all.
+        """
+
+        escalation = await self.ticket_escalation_repository.get_active_by_ticket_id(
+            ticket_id
+        )
+        if escalation is None:
+            return False
+
+        ticket = await self.ticket_repository.get_by_id(ticket_id)
+        if ticket is None:
+            return False
+
+        now = datetime.now(timezone.utc)
+        old_level = escalation.level
+        upcoming = next_level(old_level)
+        target_level = upcoming if upcoming is not None else old_level
+
+        new_level, owner_ids = await self._resolve_owners_with_fallback(
+            starting_level=target_level, ticket=ticket
+        )
+        ack_minutes = await self._ack_target_minutes(ticket.current_priority)
+        new_ack_due_at = now + timedelta(minutes=ack_minutes)
+
+        await self.ticket_escalation_repository.advance(
+            escalation,
+            new_level=new_level,
+            owner_ids=owner_ids,
+            ack_due_at=new_ack_due_at,
+            now=now,
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket.ticket_id,
+            event_type=AuditEventType.ESCALATION_ADVANCED,
+            actor_id=None,
+            actor_name="SLA Sweep",
+            actor_role=ActorRole.SYSTEM,
+            old_values={"level": old_level.value},
+            new_values={
+                "level": new_level.value,
+                "owner_ids": [str(u) for u in owner_ids],
+                "reason": "escalation_handling_sla_breach",
+            },
+        )
+
+        await self._notify_owners(
+            ticket=ticket,
+            owner_ids=owner_ids,
+            notification_type=NotificationType.ESCALATION_ADVANCED,
+            title=f"Escalation Handling SLA Breached: {ticket.title}",
+            message=(
+                f"Ticket \"{ticket.title}\" ({ticket.current_priority.value} priority) was "
+                f"acknowledged but not resolved within its escalation-handling window. "
+                f"Ownership has advanced from {old_level.value.replace('_', ' ').title()} "
+                f"to {new_level.value.replace('_', ' ').title()}.\n\n"
+                f"Please acknowledge by {new_ack_due_at.strftime('%Y-%m-%d %H:%M UTC')} "
+                "— if this isn't acknowledged in time, it will automatically "
+                "advance further."
+            ),
+        )
+
+        return True
+
+    # ---------------------------------------------------------
     # Close — hooked off Resolution SLA completion, never off a
     # timer of its own
     # ---------------------------------------------------------
@@ -531,6 +719,16 @@ class EscalationService:
             actor_role=ActorRole.SYSTEM,
             new_values={"reason": CLOSED_REASON_TICKET_RESOLVED},
         )
+
+        # Closing the escalation also completes its handling clock, if
+        # one was ever started — no-op otherwise (see
+        # EscalationHandlingSlaService.complete_for_escalation's own
+        # docstring). This never touches ResolutionSLA itself, same as
+        # every other line in this method.
+        if self.escalation_handling_sla_service is not None:
+            await self.escalation_handling_sla_service.complete_for_escalation(
+                escalation.escalation_id
+            )
 
     # ---------------------------------------------------------
     # Read state
@@ -585,4 +783,5 @@ def build_escalation_service(
         sla_policy_repository=SLAPolicyRepository(db),
         user_repository=UserRepository(db),
         notification_service=notification_service,
+        escalation_handling_sla_service=build_escalation_handling_sla_service(db),
     )

@@ -187,6 +187,30 @@ export interface InboxResponse {
   items: InboxItem[];
 }
 
+// ==========================================================
+// Notifications — reused by both the topbar bell (in-app alerts) and
+// the Mail page's "System" folder (same GET /notifications data,
+// rendered in a mail-style read view — see useMailInbox.ts).
+// ==========================================================
+
+export interface NotificationItem {
+  notification_id: string;
+  notification_type: string;
+  title: string;
+  message: string;
+  link: string | null;
+  related_entity_type: string | null;
+  related_entity_id: string | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+export interface NotificationListResponse {
+  total: number;
+  unread_count: number;
+  items: NotificationItem[];
+}
+
 export interface InteractionClaimResponse {
   interaction_id: string;
   claimed_by: string | null;
@@ -342,6 +366,18 @@ export interface TicketResponse {
   agent_name: string | null;
   created_by_name: string | null;
   related_tickets: RelatedTicketSummary[];
+
+  // Escalation display fields — LEFT JOIN-sourced on the backend
+  // (TicketRepository.list_visible_page), never a second per-row
+  // lookup. `is_escalated` is the one signal the ticket-list page
+  // needs to render the Critical/escalation badge and float a row to
+  // the top of My Tickets — it never means the ticket's own
+  // `current_priority` was overwritten; that field is untouched by
+  // escalation state (see the backend schema's own docstring).
+  is_escalated?: boolean;
+  escalation_level?: EscalationLevel | null;
+  escalation_status?: EscalationStatus | null;
+  escalation_ack_due_at?: string | null;
 }
 
 export interface RelateTicketRequest {
@@ -575,6 +611,7 @@ export type AuditEventType =
   | "SLA_MANUALLY_PAUSED"
   | "SLA_MANUALLY_RESUMED"
   | "SLA_BREACH_DETECTED"
+<<<<<<< Updated upstream
   | "SLA_ESCALATED"
   // Internal escalation workflow (TicketEscalation) — distinct from
   // SLA_ESCALATED above, which is the Resolution SLA's own
@@ -583,6 +620,9 @@ export type AuditEventType =
   | "ESCALATION_ACKNOWLEDGED"
   | "ESCALATION_ADVANCED"
   | "ESCALATION_CLOSED";
+=======
+  | "SLA_ESCALATED";
+>>>>>>> Stashed changes
 
 export type ActorRole = "AGENT" | "CLIENT" | "SYSTEM";
 
@@ -630,6 +670,50 @@ export interface FirstResponseSLAState {
   elapsed_fraction: number;
 }
 
+<<<<<<< Updated upstream
+// Internal escalation ownership/acknowledgment chain — entirely
+// separate from (and never reflects a restart of) the Resolution SLA
+// above. TEAM_LEAD is always the first level; SITE_LEAD is terminal.
+export type EscalationLevel = "TEAM_LEAD" | "MANAGER" | "SITE_LEAD";
+export type EscalationStatus = "ACTIVE" | "ACKNOWLEDGED" | "CLOSED";
+
+export interface TicketEscalationState {
+  escalation_id: string;
+  level: EscalationLevel;
+  status: EscalationStatus;
+  owner_ids: string[];
+  owner_names: string[];
+  triggered_by: string;
+  created_at: string;
+  level_started_at: string;
+  ack_due_at: string;
+  acknowledged_at: string | null;
+  closed_at: string | null;
+  closed_reason: string | null;
+  overdue_seconds: number;
+}
+
+// Internal escalation-handling clock — a second, wholly separate timer
+// from `resolution` above, measuring time-to-actually-resolve once the
+// current escalation owner has acknowledged (or been assigned) it.
+// Its target is always 25% of the original Resolution SLA's configured
+// target duration (see EscalationHandlingSlaService.compute_escalation_
+// handling_target_seconds) — never derived from remaining/overdue time,
+// and it never overwrites `resolution`'s own started_at/due_at/status.
+export type EscalationHandlingSLAStatus = "PENDING" | "RUNNING" | "PAUSED" | "COMPLETED";
+
+export interface EscalationHandlingSLAState {
+  status: EscalationHandlingSLAStatus;
+  target_seconds: number;
+  started_at: string;
+  due_at: string;
+  breached_at: string | null;
+  completed_at: string | null;
+  remaining_seconds: number;
+}
+
+=======
+>>>>>>> Stashed changes
 // GET /tickets/{ticket_id}/sla — first_response is always null here by
 // backend design (that clock lives on the originating interaction, not
 // the ticket) — see SLAService.get_ticket_sla_state's own docstring.
@@ -637,10 +721,15 @@ export interface TicketSLAResponse {
   ticket_id: string;
   first_response: FirstResponseSLAState | null;
   resolution: ResolutionSLAState | null;
+<<<<<<< Updated upstream
+  escalation: TicketEscalationState | null;
+  escalation_handling_sla: EscalationHandlingSLAState | null;
+=======
 }
 
 export interface SLAPauseRequest {
   reason: string;
+>>>>>>> Stashed changes
 }
 
 export interface SLAPolicyResponse {
@@ -648,6 +737,10 @@ export interface SLAPolicyResponse {
   priority: TicketPriority;
   first_response_target_minutes: number;
   resolution_target_minutes: number;
+<<<<<<< Updated upstream
+  escalation_ack_target_minutes: number;
+=======
+>>>>>>> Stashed changes
   is_active: boolean;
   created_at: string;
   updated_at: string;

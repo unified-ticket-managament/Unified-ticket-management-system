@@ -6,6 +6,8 @@ import { ComposeView, type ComposeInitialValues } from "@tw/components/mail/Comp
 import { MailSidebar } from "@tw/components/mail/MailSidebar";
 import { MessageDetailsView } from "@tw/components/mail/MessageDetailsView";
 import { MessageList } from "@tw/components/mail/MessageList";
+import { SystemMailDetailsView } from "@tw/components/mail/SystemMailDetailsView";
+import { SystemMailList } from "@tw/components/mail/SystemMailList";
 import { useMailInbox, type MailViewKey } from "@tw/hooks/useMailInbox";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 
@@ -19,6 +21,7 @@ const VIEW_LABELS: Record<MailViewKey, string> = {
   ticketed: "Ticketed",
   archived: "Archived",
   all: "All Inboxes",
+  system: "System",
 };
 
 // The entire Mail page: a fixed left folder sidebar and a dynamic
@@ -164,6 +167,21 @@ export function InboxPage() {
               onSend={handleComposeSend}
               onDiscard={closeCompose}
             />
+          ) : mail.activeView === "system" ? (
+            mail.selectedSystemNotification ? (
+              <SystemMailDetailsView
+                notification={mail.selectedSystemNotification}
+                onBack={mail.clearSelectedSystemNotification}
+                onMarkRead={mail.markSystemNotificationRead}
+              />
+            ) : (
+              <SystemMailList
+                items={mail.systemNotifications}
+                isLoading={mail.isSystemLoading}
+                onOpen={mail.selectSystemNotification}
+                onRefresh={mail.refresh}
+              />
+            )
           ) : selectedEmail ? (
             <MessageDetailsView
               email={selectedEmail}

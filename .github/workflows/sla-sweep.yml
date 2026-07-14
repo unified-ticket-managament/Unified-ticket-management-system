@@ -27,10 +27,40 @@ on:
 jobs:
   sweep:
     runs-on: ubuntu-latest
+    # Safety net for the same reason curl now gets --max-time below: a
+    # run that got stuck "in_progress" for ~2 hours (confirmed via the
+    # GitHub API) with no explanation other than a stalled network
+    # request is what this guards against — GitHub's own default job
+    # timeout is 6 hours, far too long to notice a hang like that.
+    timeout-minutes: 3
     steps:
       - name: Trigger SLA breach-detection sweep
         run: |
+          # Fails with a clear, actionable message instead of curl's own
+          # cryptic exit code 3 ("URL malformed") when a repo secret is
+          # missing/empty — GitHub Actions `run:` steps use `set -e`, so
+          # an empty SLA_SWEEP_URL otherwise aborts the whole step with
+          # no indication of which secret is the actual problem.
+          if [ -z "${{ secrets.SLA_SWEEP_URL }}" ]; then
+            echo "::error::SLA_SWEEP_URL repo secret is not set (Settings -> Secrets and variables -> Actions)."
+            exit 1
+          fi
+          if [ -z "${{ secrets.SLA_SWEEP_SHARED_SECRET }}" ]; then
+            echo "::error::SLA_SWEEP_SHARED_SECRET repo secret is not set (Settings -> Secrets and variables -> Actions)."
+            exit 1
+          fi
+
+          # --connect-timeout: max time to establish the TCP connection
+          # (covers a Render free-tier cold start taking unusually long
+          # to even start accepting connections).
+          # --max-time: hard ceiling on the whole request including
+          # response body transfer — without this, curl has NO default
+          # timeout at all and will wait forever on a stalled
+          # connection, which is exactly what left a previous run stuck
+          # "in_progress" for ~2 hours with nothing but GitHub's own
+          # 6-hour job ceiling to eventually stop it.
           http_status=$(curl -s -o /tmp/sweep_response.json -w "%{http_code}" \
+            --connect-timeout 30 --max-time 90 \
             -X POST "${{ secrets.SLA_SWEEP_URL }}" \
             -H "X-SLA-Sweep-Secret: ${{ secrets.SLA_SWEEP_SHARED_SECRET }}")
 

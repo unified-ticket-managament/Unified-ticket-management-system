@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getTicketSla, listSlaPolicies, pauseTicketSla, resumeTicketSla } from "@tw/api/sla";
+import axios from "axios";
+import {
+  acknowledgeTicketEscalation,
+  escalateTicket,
+  getTicketSla,
+  listSlaPolicies,
+  resumeTicketSla,
+} from "@tw/api/sla";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useToast } from "@tw/context/ToastContext";
 import { classifyTier, computeElapsedFraction, computeRemainingSeconds, type SlaTier } from "@tw/lib/slaMath";
@@ -18,40 +25,48 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
   const [now, setNow] = useState(() => new Date());
   const [isLoading, setIsLoading] = useState(true);
   const lastTierRef = useRef<SlaTier | null>(null);
+  const slaAbortRef = useRef<AbortController | null>(null);
 
-  const { run: runPause, isLoading: isPausing } = useApiAction(pauseTicketSla);
   const { run: runResume, isLoading: isResuming } = useApiAction(resumeTicketSla);
+  const { run: runEscalate, isLoading: isEscalating } = useApiAction(escalateTicket);
+  const { run: runAcknowledge, isLoading: isAcknowledging } = useApiAction(
+    acknowledgeTicketEscalation
+  );
 
   const fetchSla = useCallback(async () => {
     if (!ticketId) return;
+    // Cancel any still-in-flight poll/refetch for the previous ticket
+    // (or a superseded tick) at the network layer, rather than letting
+    // it complete and race a newer response into setSla.
+    slaAbortRef.current?.abort();
+    const controller = new AbortController();
+    slaAbortRef.current = controller;
     try {
-      const data = await getTicketSla(ticketId);
+      const data = await getTicketSla(ticketId, controller.signal);
       setSla(data);
-    } catch {
+    } catch (error) {
+      if (axios.isCancel(error)) return;
       // Same silent-on-poll-failure convention as the notification
       // bell — a transient failure just means this tick shows
       // slightly stale data, not an error banner.
     } finally {
-      setIsLoading(false);
+      if (slaAbortRef.current === controller) setIsLoading(false);
     }
   }, [ticketId]);
 
   // Policies rarely change — fetched once per mount, not on the
   // 8-second poll interval.
   useEffect(() => {
-    let cancelled = false;
-    listSlaPolicies()
-      .then((data) => {
-        if (!cancelled) setPolicies(data);
-      })
-      .catch(() => {
+    const controller = new AbortController();
+    listSlaPolicies(controller.signal)
+      .then((data) => setPolicies(data))
+      .catch((error) => {
+        if (axios.isCancel(error)) return;
         // No policy data just means target minutes stay unknown and
         // the tier can't be computed — SlaCard handles that as an
         // empty state rather than crashing.
       });
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -60,7 +75,10 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
     setIsLoading(true);
     fetchSla();
     const pollId = window.setInterval(fetchSla, POLL_INTERVAL_MS);
-    return () => window.clearInterval(pollId);
+    return () => {
+      window.clearInterval(pollId);
+      slaAbortRef.current?.abort();
+    };
   }, [fetchSla]);
 
   useEffect(() => {
@@ -119,16 +137,6 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
     }
   }, [tier, pushToast]);
 
-  const pause = useCallback(
-    async (reason: string) => {
-      if (!ticketId) return;
-      const result = await runPause(ticketId, { reason });
-      if (result) await fetchSla();
-      return result;
-    },
-    [ticketId, runPause, fetchSla]
-  );
-
   const resume = useCallback(async () => {
     if (!ticketId) return;
     const result = await runResume(ticketId);
@@ -136,18 +144,36 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
     return result;
   }, [ticketId, runResume, fetchSla]);
 
+  const escalate = useCallback(async () => {
+    if (!ticketId) return;
+    const result = await runEscalate(ticketId);
+    if (result) await fetchSla();
+    return result;
+  }, [ticketId, runEscalate, fetchSla]);
+
+  const acknowledgeEscalation = useCallback(async () => {
+    if (!ticketId) return;
+    const result = await runAcknowledge(ticketId);
+    if (result) await fetchSla();
+    return result;
+  }, [ticketId, runAcknowledge, fetchSla]);
+
   return {
     sla,
     resolution,
+    escalation: sla?.escalation ?? null,
+    escalationHandlingSla: sla?.escalation_handling_sla ?? null,
     targetMinutes,
     elapsedFraction,
     remainingSeconds,
     tier,
     isLoading,
-    pause,
     resume,
-    isPausing,
     isResuming,
+    escalate,
+    acknowledgeEscalation,
+    isEscalating,
+    isAcknowledging,
     refetch: fetchSla,
   };
 }

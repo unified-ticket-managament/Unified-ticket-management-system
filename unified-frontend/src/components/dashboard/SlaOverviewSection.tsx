@@ -1,46 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { CheckCircle2, Flame, PauseCircle, ShieldAlert, Timer, TriangleAlert } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatCard } from "@/components/shared/stats";
-import { listTickets } from "@tw/api/ticket";
 import { useDashboardSlaCounts, type DashboardSlaCounts } from "@tw/hooks/useDashboardSlaCounts";
-import type { TicketResponse } from "@tw/types";
 
 // Deliberately independent of this dashboard's own `tickets` prop
 // (MOCK_TICKETS / getTicketsFor***, see super-admin-dashboard.tsx) —
-// those are fictional records with no real backend ticket_id, so the
-// real GET /tickets/{id}/sla calls this section makes couldn't run
-// against them at all. This fetches the real ticket list itself,
-// entirely separately, so the existing mock-data KPIs/charts above are
-// completely untouched by this addition.
-//
-// Modularity note (for when a real aggregation endpoint exists):
-// useDashboardSlaCounts is the one and only place that currently does
-// the N-calls-per-ticket client-side aggregation — this component only
-// consumes its returned `DashboardSlaCounts` shape. Swapping that
-// hook's internals for a single real aggregate-endpoint call (once the
-// backend has one) requires no change here at all.
+// those are fictional records with no real backend ticket_id, so a
+// real per-ticket SLA lookup couldn't run against them at all.
+// useDashboardSlaCounts calls GET /tickets/sla-overview-counts, one
+// grouped server-side query under the caller's real visibility
+// scoping, entirely independent of the mock-data KPIs/charts above.
 export function SlaOverviewSection() {
-  const [tickets, setTickets] = useState<TicketResponse[] | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    listTickets()
-      .then((data) => {
-        if (!cancelled) setTickets(data);
-      })
-      .catch(() => {
-        if (!cancelled) setTickets([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const { counts, isLoading } = useDashboardSlaCounts(tickets);
+  const { counts, isLoading } = useDashboardSlaCounts();
 
   const items: Array<{
     key: keyof DashboardSlaCounts;
@@ -72,7 +46,7 @@ export function SlaOverviewSection() {
             <StatCard
               key={item.key}
               title={item.title}
-              value={tickets === null || isLoading ? "…" : counts[item.key]}
+              value={isLoading ? "…" : counts[item.key]}
               subtitle={item.subtitle}
               icon={item.icon}
               tone={item.tone}

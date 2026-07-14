@@ -88,6 +88,26 @@ class TicketEscalationState(BaseModel):
     overdue_seconds: float
 
 
+class EscalationHandlingSLAState(BaseModel):
+    """
+    Current state of the internal escalation-handling clock — a
+    second, entirely separate timer from `resolution` above, measuring
+    how long the current escalation owner has to actually resolve (not
+    just acknowledge) the ticket. `target_seconds` is the resolved
+    25%-of-original-target duration snapshotted at start time (see
+    EscalationHandlingSLA's own model docstring for why it's stored,
+    not re-derived from the live policy on every read).
+    """
+
+    status: SLAClockStatus
+    target_seconds: int
+    started_at: datetime
+    due_at: datetime
+    breached_at: datetime | None
+    completed_at: datetime | None
+    remaining_seconds: float
+
+
 class TicketSLAResponse(BaseModel):
     """GET /tickets/{ticket_id}/sla — both clocks for a single ticket."""
 
@@ -95,6 +115,7 @@ class TicketSLAResponse(BaseModel):
     first_response: FirstResponseSLAState | None
     resolution: ResolutionSLAState | None
     escalation: TicketEscalationState | None = None
+    escalation_handling_sla: EscalationHandlingSLAState | None = None
 
 
 class SLAPauseRequest(BaseModel):
@@ -119,4 +140,5 @@ class SLASweepResponse(BaseModel):
     notifications_sent: int
     escalations_created: int
     escalations_advanced: int
+    escalation_handling_sla_breaches: int
     errors: int

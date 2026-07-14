@@ -56,6 +56,12 @@ OWNED_TABLES = {
     "resolution_slas",
     "resolution_sla_pause_intervals",
     "sla_breach_notifications",
+    # Added here — was missing despite the table/model already existing
+    # (a7c9e1f3b5d6_add_ticket_escalations.py created it without this
+    # update, the exact "OWNED_TABLES gotcha" this file's own docstring
+    # warns about).
+    "ticket_escalations",
+    "escalation_handling_slas",
 }
 
 
