@@ -134,8 +134,14 @@ export function TicketDetailPage() {
                 <div className="flex flex-col gap-5 lg:sticky lg:top-0">
                   <TicketDetails onRelatedChanged={refreshAll} />
                   <SlaCard ticketId={activeTicket.ticket_id} ticketPriority={activeTicket.current_priority} />
+<<<<<<< Updated upstream
                   <SlaTimeline ticketId={activeTicket.ticket_id} />
                   <EditAccessPanel onRequestsChanged={refreshEditAccessRequests} />
+=======
+                  <TicketActions onActionComplete={refreshAll} onOpenComposer={setComposerMode} />
+                  <SlaTimeline ticketId={activeTicket.ticket_id} />
+                  <EditAccessPanel />
+>>>>>>> Stashed changes
                 </div>
               </div>
             </div>
