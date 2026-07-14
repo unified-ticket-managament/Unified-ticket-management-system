@@ -41,26 +41,6 @@ const SLA_NOTIFICATION_DOT: Record<string, string> = {
   SLA_ESCALATED: "bg-danger",
 };
 
-// Every notification `link` the backend generates (see
-// unified-backend/app/notifications/service.py's `notify()` call sites)
-// is written as if the ticket workspace were mounted at the app root —
-// "/tickets/{id}", "/inbox" — because that's where it lives in the
-// standalone ticketing-service frontend. In this unified app, that same
-// page tree is instead mounted under react-router's basename="/dashboard"
-// (see TicketWorkspaceApp.tsx), so pushing the raw link 404s: there is no
-// top-level Next.js route for "/tickets" or "/inbox". This prefixes only
-// the paths that actually belong to that embedded subtree, leaving
-// RBAC-native root links (e.g. "/permission-requests") untouched.
-const TICKET_WORKSPACE_ROUTES = ["/tickets", "/inbox", "/interactions", "/create-mail", "/audit-logs"];
-
-function resolveNotificationHref(link: string | null): string | null {
-  if (!link) return null;
-  const isTicketWorkspaceRoute = TICKET_WORKSPACE_ROUTES.some(
-    (route) => link === route || link.startsWith(`${route}/`)
-  );
-  return isTicketWorkspaceRoute ? `/dashboard${link}` : link;
-}
-
 function timeAgo(isoString: string): string {
   const seconds = Math.max(0, (Date.now() - new Date(isoString).getTime()) / 1000);
   if (seconds < 60) return "just now";
