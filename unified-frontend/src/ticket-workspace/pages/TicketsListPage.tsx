@@ -7,6 +7,7 @@ import { Badge } from "@tw/components/common/Badge";
 import { Button } from "@tw/components/common/Button";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
+import { SlaBadge } from "@tw/components/sla/SlaBadge";
 import {
   claimTicket,
   getTicketViewCounts,
@@ -564,7 +565,7 @@ export function TicketsListPage() {
                         </Badge>
                       </td>
                       <td className="px-5 py-3.5">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
                           <Badge tone={priorityTone[ticket.current_priority]}>
                             {ticket.current_priority}
                           </Badge>
@@ -574,6 +575,15 @@ export function TicketsListPage() {
                               className="text-danger"
                               aria-label="Escalated"
                             />
+                          )}
+                          {/* Independent of the escalation badge above —
+                              this is the Resolution SLA clock's own risk
+                              tier, not the escalation ownership chain's
+                              state. A ticket can be at_risk with no
+                              active escalation, or escalated with a
+                              healthy-looking clock. */}
+                          {ticket.resolution_sla_tier && ticket.resolution_sla_tier !== "healthy" && (
+                            <SlaBadge tier={ticket.resolution_sla_tier} />
                           )}
                         </div>
                       </td>

@@ -114,6 +114,7 @@ export type DashboardTicketSummary = Pick<
   | "current_status"
   | "current_priority"
   | "updated_at"
+  | "resolution_sla_tier"
 >;
 
 export interface DashboardStats {

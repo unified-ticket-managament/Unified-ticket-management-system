@@ -19,6 +19,11 @@ cryptography==49.0.0
 httpx==0.28.1
 boto3==1.43.39
 
+# In-process SLA sweep scheduler (app/core/sla_scheduler.py) — replaces
+# the external GitHub Actions cron trigger. 3.x is the stable,
+# production-proven line; 4.x is still a pre-release rewrite.
+APScheduler==3.11.3
+
 # rbac-only additions
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1

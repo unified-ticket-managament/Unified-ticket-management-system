@@ -384,6 +384,14 @@ export interface TicketResponse {
   escalation_level?: EscalationLevel | null;
   escalation_status?: EscalationStatus | null;
   escalation_ack_due_at?: string | null;
+
+  // Resolution SLA clock's own risk tier — same LEFT JOIN-sourced,
+  // display-only shape as the escalation fields above, but an
+  // independent signal (see lib/slaMath.ts's SlaTier — kept as an
+  // inline literal here rather than importing from lib/, matching
+  // this file's existing types-only role). None when there's no
+  // active Resolution SLA clock or no matching policy.
+  resolution_sla_tier?: "healthy" | "at_risk" | "breached" | "escalated" | null;
 }
 
 export interface RelateTicketRequest {
@@ -617,7 +625,6 @@ export type AuditEventType =
   | "SLA_MANUALLY_PAUSED"
   | "SLA_MANUALLY_RESUMED"
   | "SLA_BREACH_DETECTED"
-<<<<<<< Updated upstream
   | "SLA_ESCALATED"
   // Internal escalation workflow (TicketEscalation) — distinct from
   // SLA_ESCALATED above, which is the Resolution SLA's own
@@ -626,9 +633,6 @@ export type AuditEventType =
   | "ESCALATION_ACKNOWLEDGED"
   | "ESCALATION_ADVANCED"
   | "ESCALATION_CLOSED";
-=======
-  | "SLA_ESCALATED";
->>>>>>> Stashed changes
 
 export type ActorRole = "AGENT" | "CLIENT" | "SYSTEM";
 
@@ -676,7 +680,6 @@ export interface FirstResponseSLAState {
   elapsed_fraction: number;
 }
 
-<<<<<<< Updated upstream
 // Internal escalation ownership/acknowledgment chain — entirely
 // separate from (and never reflects a restart of) the Resolution SLA
 // above. TEAM_LEAD is always the first level; SITE_LEAD is terminal.
@@ -718,8 +721,6 @@ export interface EscalationHandlingSLAState {
   remaining_seconds: number;
 }
 
-=======
->>>>>>> Stashed changes
 // GET /tickets/{ticket_id}/sla — first_response is always null here by
 // backend design (that clock lives on the originating interaction, not
 // the ticket) — see SLAService.get_ticket_sla_state's own docstring.
@@ -727,15 +728,8 @@ export interface TicketSLAResponse {
   ticket_id: string;
   first_response: FirstResponseSLAState | null;
   resolution: ResolutionSLAState | null;
-<<<<<<< Updated upstream
   escalation: TicketEscalationState | null;
   escalation_handling_sla: EscalationHandlingSLAState | null;
-=======
-}
-
-export interface SLAPauseRequest {
-  reason: string;
->>>>>>> Stashed changes
 }
 
 export interface SLAPolicyResponse {
@@ -743,16 +737,10 @@ export interface SLAPolicyResponse {
   priority: TicketPriority;
   first_response_target_minutes: number;
   resolution_target_minutes: number;
-<<<<<<< Updated upstream
   escalation_ack_target_minutes: number;
-<<<<<<< HEAD
   handling_sla_percentage: number;
   warning_1_percentage: number;
   warning_2_percentage: number;
-=======
-=======
->>>>>>> Stashed changes
->>>>>>> 66c6b1920bdf7ab52225f572ff774a11934d20d7
   is_active: boolean;
   created_at: string;
   updated_at: string;

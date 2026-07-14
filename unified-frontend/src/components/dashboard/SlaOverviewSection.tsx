@@ -1,10 +1,14 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import Link from "next/link";
 import { CheckCircle2, Flame, PauseCircle, ShieldAlert, Timer, TriangleAlert } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatCard } from "@/components/shared/stats";
 import { useDashboardSlaCounts, type DashboardSlaCounts } from "@tw/hooks/useDashboardSlaCounts";
+import { getDashboardStats, type DashboardTicketSummary } from "@tw/api/ticket";
+import { SlaBadge } from "@tw/components/sla/SlaBadge";
 
 // Deliberately independent of this dashboard's own `tickets` prop
 // (MOCK_TICKETS / getTicketsFor***, see super-admin-dashboard.tsx) —
@@ -15,6 +19,30 @@ import { useDashboardSlaCounts, type DashboardSlaCounts } from "@tw/hooks/useDas
 // scoping, entirely independent of the mock-data KPIs/charts above.
 export function SlaOverviewSection() {
   const { counts, isLoading } = useDashboardSlaCounts();
+
+  // Same data source (and same real-ticket-id caveat) as the counts
+  // above — GET /tickets/dashboard-stats, the identical endpoint the
+  // ticket-workspace's own embedded Dashboard uses for its "Needs
+  // Attention" card. Fetched independently here too, since that
+  // embedded page is unreachable from this shell dashboard's own
+  // routing (Super Admin/Site Lead/every other role lands here
+  // instead) — this is the one place that page's real-data badges
+  // actually get seen.
+  const [criticalTickets, setCriticalTickets] = useState<DashboardTicketSummary[] | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getDashboardStats()
+      .then((data) => {
+        if (!cancelled) setCriticalTickets(data.critical_tickets);
+      })
+      .catch(() => {
+        if (!cancelled) setCriticalTickets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const items: Array<{
     key: keyof DashboardSlaCounts;
@@ -53,6 +81,32 @@ export function SlaOverviewSection() {
             />
           ))}
         </div>
+
+        {criticalTickets && criticalTickets.length > 0 && (
+          <div className="mt-6">
+            <h3 className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Needs Attention
+            </h3>
+            <ul className="flex flex-col gap-2">
+              {criticalTickets.map((ticket) => (
+                <li key={ticket.ticket_id}>
+                  <Link
+                    href={`/dashboard/tickets/${ticket.ticket_id}`}
+                    className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm transition-colors hover:bg-muted/50"
+                  >
+                    <span className="min-w-0 flex-1 truncate font-medium">{ticket.title}</span>
+                    <div className="flex flex-none items-center gap-1.5">
+                      {ticket.resolution_sla_tier && ticket.resolution_sla_tier !== "healthy" && (
+                        <SlaBadge tier={ticket.resolution_sla_tier} />
+                      )}
+                      <span className="text-xs text-muted-foreground">{ticket.current_priority}</span>
+                    </div>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

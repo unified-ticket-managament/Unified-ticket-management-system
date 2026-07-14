@@ -49,23 +49,17 @@ async def verify_sla_sweep_secret(
         )
 
 
-@router.post(
-    "/sweep",
-    response_model=SLASweepResponse,
-    status_code=status.HTTP_200_OK,
-    dependencies=[Depends(verify_sla_sweep_secret)],
-)
-async def run_sla_sweep(
-    db: AsyncSession = Depends(get_db),
-):
+def build_sla_sweep_service(db: AsyncSession) -> SLASweepService:
     """
-    The Render Cron Job's target — runs one breach-detection pass over
-    every active SLA clock, firing at-risk/breached/escalated
-    notifications idempotently. See SLASweepService for the full
-    threshold/recipient logic.
+    Single place that wires up a SLASweepService from a session —
+    shared by this endpoint and app/core/sla_scheduler.py's in-process
+    APScheduler job, so the two callers can never drift into
+    constructing it differently. Pure wiring, no business logic of its
+    own: SLASweepService.__init__ still builds its own
+    EscalationService/EscalationHandlingSlaService internally.
     """
 
-    service = SLASweepService(
+    return SLASweepService(
         sla_policy_repository=SLAPolicyRepository(db),
         first_response_sla_repository=FirstResponseSLARepository(db),
         resolution_sla_repository=ResolutionSLARepository(db),
@@ -76,4 +70,26 @@ async def run_sla_sweep(
         notification_service=NotificationService(NotificationRepository(db)),
     )
 
+
+@router.post(
+    "/sweep",
+    response_model=SLASweepResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(verify_sla_sweep_secret)],
+)
+async def run_sla_sweep(
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Manual/on-demand trigger — runs one breach-detection pass over
+    every active SLA clock, firing at-risk/breached/escalated
+    notifications idempotently. See SLASweepService for the full
+    threshold/recipient logic. The primary trigger is now
+    app/core/sla_scheduler.py's in-process APScheduler job (see
+    SLA_SWEEP_INTERVAL_MINUTES); this endpoint stays available for
+    manual/emergency use, both calling the identical
+    build_sla_sweep_service() wiring above.
+    """
+
+    service = build_sla_sweep_service(db)
     return await service.run_sweep()

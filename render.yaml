@@ -76,25 +76,32 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      # Shared secret POST /internal/sla/sweep checks against — must be
-      # byte-identical to the SLA_SWEEP_SHARED_SECRET repo secret in
-      # .github/workflows/sla-sweep.yml (paste the same generated value
-      # into both when applying this Blueprint).
+      # Shared secret POST /internal/sla/sweep checks against — still
+      # needed for the manual-trigger fallback (see the comment above),
+      # even though the in-process scheduler below doesn't go over HTTP
+      # and so doesn't need this secret itself. Must stay byte-identical
+      # to the SLA_SWEEP_SHARED_SECRET repo secret in
+      # .github/workflows/sla-sweep.yml.
       - key: SLA_SWEEP_SHARED_SECRET
         sync: false
+      # How often app/core/sla_scheduler.py's in-process APScheduler
+      # job calls SLASweepService.run_sweep(). Plain value, not a
+      # secret — override here if a deployed environment ever needs a
+      # different cadence than the app's own default.
+      - key: SLA_SWEEP_INTERVAL_MINUTES
+        value: "1"
 
   # ---------------------------------------------------------------------
-  # There used to be a `type: cron` "sla-sweep" service here, hitting
-  # POST /internal/sla/sweep on its own schedule. Render Cron Jobs
-  # require a paid plan — this whole Blueprint is on the free tier, so
-  # that service was removed and replaced with a free equivalent:
-  # .github/workflows/sla-sweep.yml, a GitHub Actions scheduled
-  # workflow that does the same authenticated POST. Same target
-  # endpoint, same shared-secret check, same "external trigger, not an
-  # in-process scheduler" shape (still avoids double-firing if
-  # unified-backend is ever scaled to more than one instance) — just a
-  # different, free scheduler. See that workflow file's own comments
-  # for the required repo secrets and its timing-granularity trade-off.
+  # There used to be a `type: cron` "sla-sweep" service here (Render
+  # Cron Jobs require a paid plan, this Blueprint is on the free tier),
+  # then a free GitHub Actions scheduled-workflow replacement
+  # (.github/workflows/sla-sweep.yml). Both are gone/disabled now — the
+  # sweep runs in-process inside unified-backend itself instead
+  # (app/core/sla_scheduler.py, an APScheduler job started from
+  # app/main.py's lifespan, interval set by SLA_SWEEP_INTERVAL_MINUTES
+  # below), so no separate scheduling service/workflow is needed at
+  # all. The GitHub Actions workflow file is kept, `schedule` trigger
+  # removed, as a manual/emergency-only fallback.
   # ---------------------------------------------------------------------
 
   - type: web

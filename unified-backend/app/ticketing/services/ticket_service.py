@@ -526,6 +526,7 @@ class TicketService:
                     escalation_level=escalation_level,
                     escalation_status=escalation_status,
                     escalation_ack_due_at=escalation_ack_due_at,
+                    resolution_sla_tier=resolution_sla_tier,
                 )
                 for (
                     ticket,
@@ -536,6 +537,7 @@ class TicketService:
                     escalation_level,
                     escalation_status,
                     escalation_ack_due_at,
+                    resolution_sla_tier,
                     *_,
                 ) in page.items
             ]
@@ -661,6 +663,7 @@ class TicketService:
                 escalation_level,
                 escalation_status,
                 escalation_ack_due_at,
+                resolution_sla_tier,
                 *_,
             ) = row
             return TicketListItemResponse(
@@ -685,6 +688,7 @@ class TicketService:
                 escalation_level=escalation_level,
                 escalation_status=escalation_status,
                 escalation_ack_due_at=escalation_ack_due_at,
+                resolution_sla_tier=resolution_sla_tier,
             )
 
         return {

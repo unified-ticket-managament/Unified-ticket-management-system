@@ -8,6 +8,7 @@ from starlette.datastructures import MutableHeaders
 
 from app.core.config import get_settings
 from app.core.request_timing import get_stage_times, reset_stage_times
+from app.core.sla_scheduler import shutdown_scheduler, start_scheduler
 from app.database.timing import get_db_time_ms, reset_db_time
 from app.notifications.routes import router as notifications_router
 from app.rbac.api.v1.api_router import api_router as rbac_api_router
@@ -32,7 +33,9 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Starting Unified Backend (RBAC + Ticketing)...")
+    start_scheduler()
     yield
+    shutdown_scheduler()
     print("Stopping Unified Backend...")
 
 
