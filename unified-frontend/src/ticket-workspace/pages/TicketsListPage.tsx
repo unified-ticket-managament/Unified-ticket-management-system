@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import axios from "axios";
 import { AlertTriangle, ArrowUpDown, MessagesSquare, Search, UserPlus } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { Badge } from "@tw/components/common/Badge";
@@ -114,7 +115,10 @@ export function TicketsListPage() {
         setLoadError(null);
       } catch (error) {
         if (requestId !== requestIdRef.current) return;
-        if (error instanceof Error && error.name === "CanceledError") return;
+        // axios.isCancel, not error.name/instanceof — api/client.ts's
+        // interceptor rewraps every rejection into a plain Error, so a
+        // canceled request's .name is "Error", never "CanceledError".
+        if (axios.isCancel(error)) return;
         setLoadError(error instanceof Error ? error.message : "Failed to load tickets.");
       } finally {
         if (requestId === requestIdRef.current) setIsLoading(false);

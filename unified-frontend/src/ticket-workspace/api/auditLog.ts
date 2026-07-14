@@ -6,12 +6,26 @@ import type {
   TicketAuditLogResponse,
 } from "@tw/types";
 
+// SlaTimeline and TicketAuditLog both independently call this for the
+// same ticket (one always-mounted, one tab-gated but often mounted at
+// the same moment a ticket detail page first opens) — coalescing only
+// genuinely *concurrent* calls into one request here, and clearing the
+// entry the instant it settles, means TicketAuditLog's own 10s poll
+// always gets a fresh request rather than a stale cached one.
+const inFlightByTicketId = new Map<string, Promise<AuditLogResponse[]>>();
+
 // GET /tickets/{ticket_id}/audit-logs
 export async function getTicketAuditLogs(ticketId: string): Promise<AuditLogResponse[]> {
-  const { data } = await apiClient.get<AuditLogResponse[]>(
-    `/tickets/${ticketId}/audit-logs`
-  );
-  return data;
+  const existing = inFlightByTicketId.get(ticketId);
+  if (existing) return existing;
+
+  const promise = apiClient
+    .get<AuditLogResponse[]>(`/tickets/${ticketId}/audit-logs`)
+    .then(({ data }) => data)
+    .finally(() => inFlightByTicketId.delete(ticketId));
+
+  inFlightByTicketId.set(ticketId, promise);
+  return promise;
 }
 
 export interface ListTicketAuditLogsParams {

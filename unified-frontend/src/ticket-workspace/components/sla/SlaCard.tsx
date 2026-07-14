@@ -23,6 +23,11 @@ import type { TicketPriority } from "@tw/types";
 // directly against the API earlier (Team Lead: 200, Staff: 403).
 const RESOLUTION_OVERRIDE_ROLES = new Set(["Team Lead", "Account Manager", "Site Lead", "Super Admin"]);
 
+// GLOBAL_INBOX_ROLE_NAMES on the backend (access_control.py) — Site
+// Lead/Super Admin can acknowledge any escalation as company-wide
+// overseers, not just the resolved owner.
+const ESCALATION_OVERSEER_ROLES = new Set(["Site Lead", "Super Admin"]);
+
 export function SlaCard({
   ticketId,
   ticketPriority,
@@ -33,6 +38,7 @@ export function SlaCard({
   const { currentUser } = useAuthContext();
   const {
     resolution,
+    escalation,
     targetMinutes,
     elapsedFraction,
     remainingSeconds,
@@ -42,12 +48,27 @@ export function SlaCard({
     resume,
     isPausing,
     isResuming,
+    escalate,
+    acknowledgeEscalation,
+    isEscalating,
+    isAcknowledging,
   } = useTicketSla(ticketId, ticketPriority);
 
   const [showPauseInput, setShowPauseInput] = useState(false);
   const [pauseReason, setPauseReason] = useState("");
 
   const canOverride = currentUser?.role ? RESOLUTION_OVERRIDE_ROLES.has(currentUser.role) : false;
+
+  const canEscalate =
+    !!currentUser?.permissions.includes("ticket:escalate") &&
+    !escalation &&
+    resolution?.status !== "COMPLETED";
+
+  const canAcknowledge =
+    !!currentUser &&
+    escalation?.status === "ACTIVE" &&
+    (escalation.owner_ids.includes(currentUser.user_id) ||
+      ESCALATION_OVERSEER_ROLES.has(currentUser.role));
 
   if (isLoading) {
     return (
@@ -72,15 +93,23 @@ export function SlaCard({
       title="Resolution SLA"
       eyebrow="Service level"
       actions={
-        canOverride && resolution.status === "PAUSED" ? (
-          <Button size="sm" variant="secondary" isLoading={isResuming} onClick={() => resume()}>
-            Resume
-          </Button>
-        ) : canOverride && resolution.status === "RUNNING" && !showPauseInput ? (
-          <Button size="sm" variant="secondary" onClick={() => setShowPauseInput(true)}>
-            Pause
-          </Button>
-        ) : undefined
+        <div className="flex items-center gap-2">
+          {canOverride && resolution.status === "PAUSED" && (
+            <Button size="sm" variant="secondary" isLoading={isResuming} onClick={() => resume()}>
+              Resume
+            </Button>
+          )}
+          {canOverride && resolution.status === "RUNNING" && !showPauseInput && (
+            <Button size="sm" variant="secondary" onClick={() => setShowPauseInput(true)}>
+              Pause
+            </Button>
+          )}
+          {canEscalate && (
+            <Button size="sm" variant="secondary" isLoading={isEscalating} onClick={() => escalate()}>
+              Escalate
+            </Button>
+          )}
+        </div>
       }
     >
       <div className="flex flex-col gap-4">
@@ -133,6 +162,70 @@ export function SlaCard({
             </dd>
           </div>
         </dl>
+
+        {/*
+          Internal escalation — deliberately its own section, visually
+          separate from the Resolution SLA fields above, and never a
+          second countdown/timer: escalating never restarts or
+          recalculates the Resolution SLA (started_at/due_at above are
+          exactly what they'd be if this section didn't exist at all).
+          This only shows who currently owns following up and when
+          they must acknowledge.
+        */}
+        {escalation && (
+          <div className="flex flex-col gap-3 rounded-md2 border border-border bg-canvas p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-700">Escalation</span>
+              <span className="rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
+                {escalation.status === "ACTIVE"
+                  ? "Awaiting acknowledgment"
+                  : escalation.status === "ACKNOWLEDGED"
+                    ? "Acknowledged"
+                    : "Closed"}
+              </span>
+            </div>
+
+            <dl className="grid grid-cols-2 gap-x-3 gap-y-3 text-xs">
+              <div>
+                <dt className="text-muted">Current Level</dt>
+                <dd className="font-medium text-slate-800">
+                  {escalation.level.replace("_", " ")}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted">Escalation Owner</dt>
+                <dd className="font-medium text-slate-800">
+                  {escalation.owner_names.length > 0 ? escalation.owner_names.join(", ") : "—"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted">Acknowledgment Due</dt>
+                <dd className="font-medium text-slate-800">
+                  {formatDateTime(escalation.ack_due_at)}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-muted">Overdue Duration</dt>
+                <dd className="font-medium text-slate-800">
+                  {escalation.overdue_seconds > 0
+                    ? formatDurationShort(escalation.overdue_seconds)
+                    : "Not overdue"}
+                </dd>
+              </div>
+            </dl>
+
+            {canAcknowledge && (
+              <Button
+                size="sm"
+                variant="primary"
+                isLoading={isAcknowledging}
+                onClick={() => acknowledgeEscalation()}
+              >
+                Acknowledge
+              </Button>
+            )}
+          </div>
+        )}
 
         {showPauseInput && (
           <div className="flex flex-col gap-2 rounded-md2 border border-border bg-canvas p-3">

@@ -19,6 +19,7 @@ import {
 } from "@tw/api/inbox";
 import { deleteAttachment } from "@tw/api/interaction";
 import { createMailFolder, deleteMailFolder, listMailFolders } from "@tw/api/mailFolder";
+import { getNotifications, markNotificationRead } from "@tw/api/notifications";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
@@ -28,8 +29,27 @@ import type {
   InboxItem,
   InboxView,
   MailFolder,
+  NotificationItem,
   SentItem,
 } from "@tw/types";
+
+// Every notification_type the "System" folder shows — internal,
+// system-generated notices (SLA breach ladder + the escalation
+// ownership workflow), deliberately excluding MAIL_RECEIVED/
+// CLIENT_REPLY (those are real client mail, already shown in the
+// regular Inbox) and the unrelated PERMISSION_*/EDIT_ACCESS_*/
+// TICKET_ASSIGNED types (a different notification concern, still only
+// surfaced via the topbar bell for now).
+export const SYSTEM_NOTIFICATION_TYPES = [
+  "SLA_HALF_ELAPSED",
+  "SLA_AT_RISK",
+  "SLA_BREACHED",
+  "SLA_ESCALATED",
+  "ESCALATION_CREATED",
+  "ESCALATION_ACKNOWLEDGED",
+  "ESCALATION_ADVANCED",
+  "ESCALATION_CLOSED",
+];
 
 const SUPERVISOR_ROLES = ["Site Lead", "Super Admin"];
 
@@ -48,8 +68,9 @@ const MAIL_TAB_FETCH_SIZE = 200;
 // derived client-side from the "pending" set (claimed_by null vs.
 // mine), same data, no extra network round-trip. "sent"/"drafts" are
 // their own endpoints (GET /inbox/sent, GET /inbox/drafts), not one
-// of the backend's `view` values.
-export type MailViewKey = InboxView | "unassigned" | "mine" | "sent" | "drafts";
+// of the backend's `view` values. "system" is a third such sibling —
+// GET /notifications, not GET /inbox at all — see fetchSystemMail.
+export type MailViewKey = InboxView | "unassigned" | "mine" | "sent" | "drafts" | "system";
 
 // A sent reply carries no subject/client_name/status of its own (see
 // SentItemResponse) — adapted into InboxItem shape so the existing
@@ -164,7 +185,7 @@ function matchesSearch(item: InboxItem, term: string): boolean {
 }
 
 type BaseTabKey = "pending" | "replied" | "ticketed" | "archived" | "all";
-type LoadKey = BaseTabKey | "sent" | "drafts";
+type LoadKey = BaseTabKey | "sent" | "drafts" | "system";
 
 // Maps a view the agent is looking at to the underlying fetch(es) it
 // actually needs — "unassigned"/"mine" are client-derived slices of
@@ -219,6 +240,19 @@ export function useMailInbox() {
   });
   const [sentItems, setSentItems] = useState<InboxItem[]>([]);
   const [draftItems, setDraftItems] = useState<InboxItem[]>([]);
+  // System notices (SLA breach ladder + escalation workflow) — real
+  // NotificationItem rows, not adapted into InboxItem shape like
+  // sent/draft rows are: forcing a notification through InboxItem's
+  // ticket-mail vocabulary (status/priority/attachments) would either
+  // need meaningless placeholder values or produce a misleading badge
+  // (e.g. "Replied"/"Archived" on a system notice), so this folder
+  // gets its own dedicated list/detail components instead of reusing
+  // MessageList/MessageDetailsView — see SystemMailList/
+  // SystemMailDetailsView.
+  const [systemNotifications, setSystemNotifications] = useState<NotificationItem[]>([]);
+  const [selectedSystemNotification, setSelectedSystemNotification] =
+    useState<NotificationItem | null>(null);
+  const [isSystemLoading, setIsSystemLoading] = useState(false);
   // The server's own filtered total per base tab (from GET /inbox's
   // `total`) — lets `hasMore` below tell "there's another batch to
   // load" apart from "this tab just happens to have exactly
@@ -323,6 +357,7 @@ export function useMailInbox() {
     setActiveFolderRaw(null);
     setActiveCategoryRaw(null);
     setActiveViewRaw(view);
+    setSelectedSystemNotification(null);
   }, []);
 
   const setActiveFolder = useCallback((folderId: string | null) => {
@@ -435,13 +470,24 @@ export function useMailInbox() {
     setDraftItems(result.items.map(draftItemToInboxItem));
   }, []);
 
+  const fetchSystemMail = useCallback(async () => {
+    setIsSystemLoading(true);
+    try {
+      const result = await getNotifications({ types: SYSTEM_NOTIFICATION_TYPES, limit: 100 });
+      setSystemNotifications(result.items);
+    } finally {
+      setIsSystemLoading(false);
+    }
+  }, []);
+
   const fetchKey = useCallback(
     (key: LoadKey) => {
       if (key === "sent") return fetchSent();
       if (key === "drafts") return fetchDrafts();
+      if (key === "system") return fetchSystemMail();
       return fetchBaseTab(key);
     },
-    [fetchBaseTab, fetchSent, fetchDrafts]
+    [fetchBaseTab, fetchSent, fetchDrafts, fetchSystemMail]
   );
 
   // Fetches only whichever of `keys` haven't been loaded yet — used
@@ -808,19 +854,29 @@ export function useMailInbox() {
     mine,
     sent: sentItems,
     drafts: draftItems,
+    // Never actually read for rendering (InboxPage branches to
+    // SystemMailList/SystemMailDetailsView, backed by
+    // `systemNotifications` directly, before touching filteredItems
+    // below) — present only so this record stays total over
+    // MailViewKey and hasMore/loadMore's lookups below never crash.
+    system: [],
   };
 
   // Pending/Replied/Ticketed/Archived/All come from the eager
   // aggregate query (accurate even before that tab's row data has
   // been fetched); Unassigned/Mine/Sent/Drafts are narrower derived
   // views with no aggregate of their own, so their badge counts
-  // reflect whatever's actually been loaded so far.
+  // reflect whatever's actually been loaded so far. System's count is
+  // deliberately unread-count (not total), matching the topbar bell's
+  // own "badge = needs attention" convention, not the other tabs'
+  // "badge = how many items" one.
   const viewCounts: Record<MailViewKey, number> = {
     ...baseViewCounts,
     unassigned: unassigned.length,
     mine: mine.length,
     sent: sentItems.length,
     drafts: draftItems.length,
+    system: systemNotifications.filter((n) => !n.is_read).length,
   };
 
   const filteredItems = activeCategory
@@ -841,7 +897,7 @@ export function useMailInbox() {
     !activeFolder &&
     !activeCategory &&
     baseKeysForView(activeViewRaw).some((key) => {
-      if (key === "sent" || key === "drafts") return false;
+      if (key === "sent" || key === "drafts" || key === "system") return false;
       return rowsByTab[key].length < tabTotals[key];
     });
 
@@ -852,11 +908,36 @@ export function useMailInbox() {
   const loadMore = useCallback(async () => {
     const keys = baseKeysForView(activeViewRaw).filter(
       (key): key is BaseTabKey =>
-        key !== "sent" && key !== "drafts" && rowsByTab[key].length < tabTotals[key]
+        key !== "sent" &&
+        key !== "drafts" &&
+        key !== "system" &&
+        rowsByTab[key].length < tabTotals[key]
     );
     if (keys.length === 0) return;
     await Promise.all(keys.map((key) => loadMoreBaseTab(key)));
   }, [activeViewRaw, rowsByTab, tabTotals, loadMoreBaseTab]);
+
+  const selectSystemNotification = useCallback((notification: NotificationItem) => {
+    setSelectedSystemNotification(notification);
+  }, []);
+
+  const clearSelectedSystemNotification = useCallback(() => {
+    setSelectedSystemNotification(null);
+  }, []);
+
+  // Optimistically updates local state instead of re-fetching the
+  // whole System folder — same pattern as updateTags/assignFolder
+  // above for the regular Mail list.
+  const markSystemNotificationRead = useCallback(async (notificationId: string) => {
+    const updated = await markNotificationRead(notificationId);
+    setSystemNotifications((prev) =>
+      prev.map((n) => (n.notification_id === notificationId ? updated : n))
+    );
+    setSelectedSystemNotification((prev) =>
+      prev?.notification_id === notificationId ? updated : prev
+    );
+    return updated;
+  }, []);
 
   return {
     isSupervisor,
@@ -903,5 +984,11 @@ export function useMailInbox() {
     removeDraftAttachment,
     composeEmail,
     isComposing,
+    systemNotifications,
+    isSystemLoading,
+    selectedSystemNotification,
+    selectSystemNotification,
+    clearSelectedSystemNotification,
+    markSystemNotificationRead,
   };
 }

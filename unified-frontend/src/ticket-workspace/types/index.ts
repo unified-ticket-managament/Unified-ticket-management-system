@@ -187,6 +187,30 @@ export interface InboxResponse {
   items: InboxItem[];
 }
 
+// ==========================================================
+// Notifications — reused by both the topbar bell (in-app alerts) and
+// the Mail page's "System" folder (same GET /notifications data,
+// rendered in a mail-style read view — see useMailInbox.ts).
+// ==========================================================
+
+export interface NotificationItem {
+  notification_id: string;
+  notification_type: string;
+  title: string;
+  message: string;
+  link: string | null;
+  related_entity_type: string | null;
+  related_entity_id: string | null;
+  is_read: boolean;
+  created_at: string;
+}
+
+export interface NotificationListResponse {
+  total: number;
+  unread_count: number;
+  items: NotificationItem[];
+}
+
 export interface InteractionClaimResponse {
   interaction_id: string;
   claimed_by: string | null;
@@ -630,6 +654,28 @@ export interface FirstResponseSLAState {
   elapsed_fraction: number;
 }
 
+// Internal escalation ownership/acknowledgment chain — entirely
+// separate from (and never reflects a restart of) the Resolution SLA
+// above. TEAM_LEAD is always the first level; SITE_LEAD is terminal.
+export type EscalationLevel = "TEAM_LEAD" | "MANAGER" | "SITE_LEAD";
+export type EscalationStatus = "ACTIVE" | "ACKNOWLEDGED" | "CLOSED";
+
+export interface TicketEscalationState {
+  escalation_id: string;
+  level: EscalationLevel;
+  status: EscalationStatus;
+  owner_ids: string[];
+  owner_names: string[];
+  triggered_by: string;
+  created_at: string;
+  level_started_at: string;
+  ack_due_at: string;
+  acknowledged_at: string | null;
+  closed_at: string | null;
+  closed_reason: string | null;
+  overdue_seconds: number;
+}
+
 // GET /tickets/{ticket_id}/sla — first_response is always null here by
 // backend design (that clock lives on the originating interaction, not
 // the ticket) — see SLAService.get_ticket_sla_state's own docstring.
@@ -637,6 +683,7 @@ export interface TicketSLAResponse {
   ticket_id: string;
   first_response: FirstResponseSLAState | null;
   resolution: ResolutionSLAState | null;
+  escalation: TicketEscalationState | null;
 }
 
 export interface SLAPauseRequest {
@@ -648,6 +695,7 @@ export interface SLAPolicyResponse {
   priority: TicketPriority;
   first_response_target_minutes: number;
   resolution_target_minutes: number;
+  escalation_ack_target_minutes: number;
   is_active: boolean;
   created_at: string;
   updated_at: string;
