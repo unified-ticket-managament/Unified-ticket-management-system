@@ -2,17 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowLeftRight,
+  CheckCircle2,
   ChevronDown,
   Flame,
+  Lock,
   MessagesSquare,
   Paperclip,
+  RotateCcw,
   Settings2,
   ShieldCheck,
   UserPlus,
 } from "lucide-react";
 import { Button } from "@tw/components/common/Button";
 import { Modal } from "@tw/components/common/Modal";
-import { SelectInput } from "@tw/components/common/FormField";
+import { SelectInput, TextArea } from "@tw/components/common/FormField";
 import { FileDropzone } from "@tw/components/common/FileDropzone";
 import { EditAccessPanel } from "@tw/components/ticket/EditAccessPanel";
 import { validateFiles } from "@tw/lib/attachmentMeta";
@@ -23,23 +26,34 @@ import {
   uploadAttachment,
 } from "@tw/api/interaction";
 import { listAgents } from "@tw/api/agent";
-import { claimTicket, transferTicketAgent } from "@tw/api/ticket";
+import { claimTicket, closeTicket, reopenTicket, transferTicketAgent } from "@tw/api/ticket";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import type { AgentSummary, TicketPriority, TicketStatus } from "@tw/types";
 
+// CLOSED is deliberately absent — closing a ticket only happens via
+// the dedicated Close Ticket action (More menu), never through this
+// dropdown. Reopening is likewise its own dedicated Reopen Ticket
+// action, not a status value picked here.
 const STATUSES: TicketStatus[] = [
   "OPEN",
   "IN_PROGRESS",
   "PENDING",
   "WAITING_FOR_CLIENT",
   "RESOLVED",
-  "CLOSED",
 ];
 
 const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
 
-type ActiveModal = "status" | "priority" | "transfer" | "attachment" | "editAccess" | null;
+type ActiveModal =
+  | "status"
+  | "priority"
+  | "transfer"
+  | "attachment"
+  | "editAccess"
+  | "close"
+  | "reopen"
+  | null;
 
 interface TicketActionsProps {
   onActionComplete: () => void;
@@ -67,6 +81,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   const [newPriority, setNewPriority] = useState<TicketPriority>("HIGH");
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [newAgentId, setNewAgentId] = useState("");
+  const [transferReason, setTransferReason] = useState("");
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
 
   const { run: runStatus, isLoading: isStatusLoading } = useApiAction(changeTicketStatus, {
@@ -86,6 +101,12 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   const { run: runUpload, isLoading: isUploadLoading } = useApiAction(uploadAttachment, {
     successMessage: (res) =>
       `${res.attachments.length} file${res.attachments.length === 1 ? "" : "s"} uploaded.`,
+  });
+  const { run: runClose, isLoading: isCloseLoading } = useApiAction(closeTicket, {
+    successMessage: (res) => res.message,
+  });
+  const { run: runReopen, isLoading: isReopenLoading } = useApiAction(reopenTicket, {
+    successMessage: (res) => res.message,
   });
 
   useEffect(() => {
@@ -118,6 +139,11 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   const canTransfer = isStaff
     ? (currentUser?.permissions ?? []).includes("ticket:transfer")
     : true;
+  // Mirrors the backend's ensure_can_close_ticket/ensure_can_reopen_ticket
+  // hybrid gates exactly: every non-Staff role bypasses via its
+  // supervisor role, Staff falls through to the permission.
+  const canClose = isStaff ? (currentUser?.permissions ?? []).includes("ticket:close") : true;
+  const canReopen = isStaff ? (currentUser?.permissions ?? []).includes("ticket:reopen") : true;
   const isUnclaimed = activeTicket.agent_id == null;
   // Excludes the caller themselves — self-assignment goes through the
   // dedicated Claim tile (POST /tickets/{id}/claim) so it's recorded as
@@ -127,8 +153,9 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   const transferCandidates = agents.filter(
     (a) => a.user_id !== activeTicket.agent_id && a.user_id !== currentUser?.user_id
   );
-  // Closed is terminal for every action except Change Status itself —
-  // that's the only way to reopen a closed ticket, so it stays enabled.
+  // Closed is now terminal for every action, including Change Status —
+  // Reopen Ticket (its own dedicated, permission-gated action) is the
+  // only way off CLOSED.
   const isTicketClosed = activeTicket.current_status === "CLOSED";
 
   // Mirrors the backend's ensure_agent_can_act_on_ticket: the assigned
@@ -166,6 +193,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
 
   function openTransferModal() {
     setNewAgentId(transferCandidates[0]?.user_id ?? "");
+    setTransferReason("");
     openMoreItem("transfer");
   }
 
@@ -193,9 +221,13 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   }
 
   async function handleTransferAgent() {
-    if (!newAgentId) return;
-    const result = await runTransfer(activeTicket!.ticket_id, { new_agent_id: newAgentId });
+    if (!newAgentId || !transferReason.trim()) return;
+    const result = await runTransfer(activeTicket!.ticket_id, {
+      new_agent_id: newAgentId,
+      reason: transferReason.trim(),
+    });
     if (result) {
+      setTransferReason("");
       closeModal();
       onActionComplete();
     }
@@ -210,6 +242,22 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
     }
   }
 
+  async function handleClose() {
+    const result = await runClose(activeTicket!.ticket_id);
+    if (result) {
+      closeModal();
+      onActionComplete();
+    }
+  }
+
+  async function handleReopen() {
+    const result = await runReopen(activeTicket!.ticket_id);
+    if (result) {
+      closeModal();
+      onActionComplete();
+    }
+  }
+
   const menuItemClass =
     "flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-[13px] font-medium text-slate-700 transition-colors hover:bg-surfaceHover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent";
 
@@ -219,8 +267,8 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
         <Button
           variant="secondary"
           size="sm"
-          disabled={!canActOnTicket}
-          title={noAccessTitle}
+          disabled={isTicketClosed || !canActOnTicket}
+          title={isTicketClosed ? "This ticket is closed" : noAccessTitle}
           onClick={() => setModal("status")}
         >
           <Settings2 size={14} />
@@ -271,15 +319,18 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
                   type="button"
                   className={menuItemClass}
                   disabled={isTicketClosed}
+                  title={isTicketClosed ? "This ticket is closed" : undefined}
                   onClick={openTransferModal}
                 >
                   <ArrowLeftRight size={14} className="text-muted" />
-                  {isUnclaimed ? "Assign to Staff" : "Transfer Agent"}
+                  {isUnclaimed ? "Assign to Staff" : "Transfer Ticket"}
                 </button>
               )}
               <button
                 type="button"
                 className={menuItemClass}
+                disabled={isTicketClosed}
+                title={isTicketClosed ? "This ticket is closed" : undefined}
                 onClick={() => openMoreItem("editAccess")}
               >
                 <ShieldCheck size={14} className="text-muted" />
@@ -296,6 +347,26 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
                 <MessagesSquare size={14} className="text-muted" />
                 Interactions
               </button>
+              {!isTicketClosed && (!isStaff || canClose) && (
+                <button
+                  type="button"
+                  className={menuItemClass}
+                  onClick={() => openMoreItem("close")}
+                >
+                  <Lock size={14} className="text-muted" />
+                  Close Ticket
+                </button>
+              )}
+              {isTicketClosed && (!isStaff || canReopen) && (
+                <button
+                  type="button"
+                  className={menuItemClass}
+                  onClick={() => openMoreItem("reopen")}
+                >
+                  <RotateCcw size={14} className="text-muted" />
+                  Reopen Ticket
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -354,14 +425,14 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
 
       <Modal
         open={modal === "transfer"}
-        title={isUnclaimed ? "Assign to Staff" : "Transfer Agent"}
+        title={isUnclaimed ? "Assign to Staff" : "Transfer Ticket"}
         onClose={closeModal}
         footer={
           <Button
             variant="primary"
             size="sm"
             isLoading={isTransferLoading}
-            disabled={!newAgentId}
+            disabled={!newAgentId || !transferReason.trim()}
             onClick={handleTransferAgent}
           >
             {isUnclaimed ? "Assign" : "Transfer"}
@@ -374,9 +445,17 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
             {isUnclaimed ? " assign this to" : " transfer to"}.
           </p>
         ) : (
-          <>
+          <div className="flex flex-col gap-3">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">
+                Current Assignee
+              </p>
+              <p className="mt-1 text-[13px] font-medium text-slate-800">
+                {activeTicket.agent_name ?? "Unassigned"}
+              </p>
+            </div>
             <SelectInput
-              label={isUnclaimed ? "Assign to" : "Transfer to"}
+              label={isUnclaimed ? "Assign to" : "New Staff"}
               value={newAgentId}
               onChange={(e) => setNewAgentId(e.target.value)}
             >
@@ -386,12 +465,19 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
                 </option>
               ))}
             </SelectInput>
-            <p className="mt-2 text-[11px] text-muted">
+            <TextArea
+              label="Reason"
+              hint="Why is this ticket being transferred? Recorded on the audit log."
+              value={transferReason}
+              onChange={(e) => setTransferReason(e.target.value)}
+              placeholder="e.g. Workload balancing"
+            />
+            <p className="text-[11px] text-muted">
               {isUnclaimed
                 ? `Only Staff in the "${activeTicket.ticket_type}" category are listed.`
                 : `${activeTicket.agent_name ?? "The current agent"} will lose all access to this ticket the moment it's transferred — ownership moves fully to the new agent.`}
             </p>
-          </>
+          </div>
         )}
       </Modal>
 
@@ -416,6 +502,52 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
 
       <Modal open={modal === "editAccess"} title="Edit Access" onClose={closeModal}>
         <EditAccessPanel embedded onRequestsChanged={onActionComplete} />
+      </Modal>
+
+      <Modal
+        open={modal === "close"}
+        title="Close Ticket"
+        onClose={closeModal}
+        footer={
+          <>
+            <Button variant="ghost" size="sm" onClick={closeModal}>
+              Cancel
+            </Button>
+            <Button variant="danger" size="sm" isLoading={isCloseLoading} onClick={handleClose}>
+              Close Ticket
+            </Button>
+          </>
+        }
+      >
+        <p className="flex items-start gap-2 text-sm text-slate-700">
+          <Lock size={15} className="mt-0.5 flex-none text-muted" />
+          <span>
+            Are you sure you want to close this ticket?
+            <br />
+            Closed tickets become read-only until reopened.
+          </span>
+        </p>
+      </Modal>
+
+      <Modal
+        open={modal === "reopen"}
+        title="Reopen Ticket"
+        onClose={closeModal}
+        footer={
+          <>
+            <Button variant="ghost" size="sm" onClick={closeModal}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" isLoading={isReopenLoading} onClick={handleReopen}>
+              Reopen Ticket
+            </Button>
+          </>
+        }
+      >
+        <p className="flex items-start gap-2 text-sm text-slate-700">
+          <CheckCircle2 size={15} className="mt-0.5 flex-none text-muted" />
+          Reopen this ticket?
+        </p>
       </Modal>
     </>
   );

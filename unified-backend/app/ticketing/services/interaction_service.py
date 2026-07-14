@@ -64,6 +64,7 @@ from app.ticketing.services.access_control import (
     ensure_can_close_ticket,
     ensure_can_compose_for_client,
     ensure_can_reassign_ticket,
+    ensure_can_reopen_ticket,
     ensure_has_permission,
     ensure_ticket_not_closed,
 )
@@ -869,32 +870,41 @@ class InteractionService:
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
+
+        # A closed ticket is read-only, including via this generic
+        # status-change route — Reopen Ticket (a dedicated, permission-
+        # gated action, see reopen_ticket below) is now the only way
+        # off CLOSED. This used to be exempt specifically so a plain
+        # status change could reopen a ticket; that carve-out is gone
+        # now that a real Reopen action exists.
+        ensure_ticket_not_closed(ticket)
         await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
 
         old_status = ticket.current_status
         old_closed_at = ticket.closed_at
         new_status = request.new_status
 
-        # Only a supervisor may close a ticket — added specifically so
-        # the Resolution SLA's "ends only when a Manager verifies and
-        # closes" requirement is actually enforced, not just
-        # aspirational (see access_control.ensure_can_close_ticket's
-        # own docstring). Moving to RESOLVED is unaffected.
+        # Closing must go through the dedicated Close Ticket action
+        # (close_ticket below) — never this generic status-change
+        # route — so it gets its own TICKET_CLOSED audit event,
+        # closed_by stamp, and confirmation-dialog UX instead of being
+        # just another status value.
         if new_status == TicketStatus.CLOSED:
-            ensure_can_close_ticket(current_user)
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Closing a ticket must be done via the Close Ticket action, not a status change.",
+            )
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
         )
 
-        # Resolving or closing a ticket stamps `closed_at`; reopening
-        # one (moving off RESOLVED/CLOSED) clears it back to None.
-        # Moving between RESOLVED and CLOSED leaves the original stamp
-        # alone — this is the single place that ever sets or clears
-        # it, since the dedicated "Resolve" action was folded in here
-        # to avoid two ways of doing the same thing.
-        was_closed = old_status in (TicketStatus.RESOLVED, TicketStatus.CLOSED)
-        will_be_closed = new_status in (TicketStatus.RESOLVED, TicketStatus.CLOSED)
+        # Resolving a ticket stamps `closed_at`; moving off RESOLVED
+        # clears it back to None — this is the single place that ever
+        # sets or clears it for a non-CLOSED transition (close_ticket/
+        # reopen_ticket own the CLOSED case now).
+        was_closed = old_status == TicketStatus.RESOLVED
+        will_be_closed = new_status == TicketStatus.RESOLVED
 
         update_fields: dict[str, Any] = {"current_status": new_status}
         if not was_closed and will_be_closed:
@@ -931,12 +941,13 @@ class InteractionService:
         )
 
         # ---------------------------------------------------------
-        # Resolution SLA — pause/resume/complete all key off this
-        # single chokepoint, matching this repo's existing "change_status
-        # is the one place status transitions happen" principle.
-        # Entering RESOLVED deliberately never completes the clock —
-        # only a supervisor-gated transition into CLOSED does (see the
-        # gate above and ResolutionSLA's own docstring).
+        # Resolution SLA — pause/resume key off this chokepoint,
+        # matching this repo's existing "change_status is the one place
+        # status transitions happen" principle. Entering RESOLVED
+        # deliberately never completes the clock; entering CLOSED is no
+        # longer reachable through this method at all (see the gate
+        # above) — close_ticket below is the only place the clock is
+        # ever completed now.
         # ---------------------------------------------------------
 
         if self.sla_service is not None:
@@ -970,13 +981,6 @@ class InteractionService:
                     ticket_id=ticket_id,
                     triggering_interaction_id=None,
                 )
-                # Audit row only for the two statuses the spec calls
-                # out (work resuming) — a transition to CLOSED still
-                # resumes the clock (so complete_resolution_clock below
-                # runs against a correctly-unpaused clock) but is
-                # already covered by TICKET_RESOLVED/ESCALATION_CLOSED
-                # semantics, so it doesn't also need its own SLA_RESUMED
-                # row.
                 if new_status in (TicketStatus.IN_PROGRESS, TicketStatus.RESOLVED):
                     await AuditLogService.log_event(
                         self.ticket_repository.db,
@@ -989,13 +993,175 @@ class InteractionService:
                         new_values={"new_status": new_status.value},
                     )
 
-            if new_status == TicketStatus.CLOSED and old_status != TicketStatus.CLOSED:
-                await self.sla_service.complete_resolution_clock(ticket_id=ticket_id)
-
         return TicketActionResponse(
             interaction_id=None,
             ticket_id=ticket_id,
             message="Ticket status updated successfully.",
+            created_at=datetime.now(timezone.utc),
+        )
+
+    # ---------------------------------------------------------
+    # Close Ticket
+    # ---------------------------------------------------------
+
+    async def close_ticket(
+        self,
+        ticket_id: UUID,
+        current_user: User,
+    ) -> TicketActionResponse:
+        """
+        Closes a ticket — the only transition that completes the
+        Resolution SLA clock. Split out of change_status into its own
+        action (own permission gate, own audit event, own closed_by
+        stamp) rather than treating CLOSED as just another status
+        value.
+        """
+
+        ticket = await self._get_ticket_or_404(ticket_id)
+        ensure_ticket_not_closed(ticket)
+        await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        ensure_can_close_ticket(current_user)
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        old_status = ticket.current_status
+        old_closed_at = ticket.closed_at
+        old_closed_by = ticket.closed_by
+        now = datetime.now(timezone.utc)
+
+        await self.ticket_repository.update(
+            ticket,
+            TicketUpdate(
+                current_status=TicketStatus.CLOSED,
+                closed_at=now,
+                closed_by=current_user.user_id,
+            ),
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.TICKET_CLOSED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={
+                "current_status": old_status,
+                "closed_at": old_closed_at,
+                "closed_by": old_closed_by,
+            },
+            new_values={
+                "current_status": TicketStatus.CLOSED,
+                "closed_at": now,
+                "closed_by": current_user.user_id,
+                "closed_by_name": current_user.name,
+            },
+        )
+
+        # Same Resolution SLA chokepoint change_status used to drive
+        # for a CLOSED target: unpause first if the ticket happened to
+        # be WAITING_FOR_CLIENT (so complete_resolution_clock below runs
+        # against a correctly-unpaused clock), then complete it. No
+        # separate SLA_RESUMED audit row here, matching change_status's
+        # own prior behavior for this exact transition.
+        if self.sla_service is not None:
+            if old_status == TicketStatus.WAITING_FOR_CLIENT:
+                await self.sla_service.resume_resolution_clock(
+                    ticket_id=ticket_id,
+                    triggering_interaction_id=None,
+                )
+            await self.sla_service.complete_resolution_clock(ticket_id=ticket_id)
+
+        return TicketActionResponse(
+            interaction_id=None,
+            ticket_id=ticket_id,
+            message="Ticket closed successfully.",
+            created_at=now,
+        )
+
+    # ---------------------------------------------------------
+    # Reopen Ticket
+    # ---------------------------------------------------------
+
+    async def reopen_ticket(
+        self,
+        ticket_id: UUID,
+        current_user: User,
+    ) -> TicketActionResponse:
+        """
+        Reopens a closed ticket, restoring it to OPEN and clearing
+        closed_at/closed_by. This is the only way off CLOSED now that
+        change_status refuses the transition (see ensure_ticket_not_closed
+        there) — every other action's own ensure_ticket_not_closed guard
+        starts working again for this ticket the instant this completes.
+        """
+
+        ticket = await self._get_ticket_or_404(ticket_id)
+
+        if ticket.current_status != TicketStatus.CLOSED:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Only a closed ticket can be reopened.",
+            )
+
+        await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        ensure_can_reopen_ticket(current_user)
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        old_closed_at = ticket.closed_at
+        old_closed_by = ticket.closed_by
+
+        await self.ticket_repository.update(
+            ticket,
+            TicketUpdate(
+                current_status=TicketStatus.OPEN,
+                closed_at=None,
+                closed_by=None,
+            ),
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.TICKET_REOPENED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={
+                "current_status": TicketStatus.CLOSED,
+                "closed_at": old_closed_at,
+                "closed_by": old_closed_by,
+            },
+            new_values={
+                "current_status": TicketStatus.OPEN,
+                "closed_at": None,
+                "closed_by": None,
+            },
+        )
+
+        # Deliberately does NOT touch the Resolution SLA clock:
+        # SLAService.create_or_resume_resolution_clock's own docstring
+        # is explicit that a COMPLETED clock is never resurrected
+        # ("never resurrect a clock on a closed ticket"), and closing
+        # this ticket already completed it (see close_ticket above).
+        # Reopening restores the ticket's own workflow state — edit
+        # capability, replies, status/priority changes, transfer — but
+        # not a past SLA measurement or the internal escalation
+        # workflow (if one was closed alongside the original
+        # completion); a future breach on the reopened ticket would
+        # create a new escalation rather than resuming the old one.
+
+        return TicketActionResponse(
+            interaction_id=None,
+            ticket_id=ticket_id,
+            message="Ticket reopened successfully.",
             created_at=datetime.now(timezone.utc),
         )
 
@@ -1164,6 +1330,7 @@ class InteractionService:
             new_values={
                 "agent_id": new_agent.user_id,
                 "agent_name": new_agent.name,
+                "reason": request.reason,
             },
         )
 

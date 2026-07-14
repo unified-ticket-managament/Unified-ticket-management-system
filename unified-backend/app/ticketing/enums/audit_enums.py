@@ -27,6 +27,12 @@ class AuditEventType(str, Enum):
     STATUS_CHANGED = "STATUS_CHANGED"
     PRIORITY_CHANGED = "PRIORITY_CHANGED"
     AGENT_TRANSFERRED = "AGENT_TRANSFERRED"
+    # Closing/reopening used to be logged as a generic STATUS_CHANGED
+    # row — these are dedicated events for the new Close Ticket/Reopen
+    # Ticket actions (InteractionService.close_ticket/reopen_ticket),
+    # distinct from an ordinary status change.
+    TICKET_CLOSED = "TICKET_CLOSED"
+    TICKET_REOPENED = "TICKET_REOPENED"
     INTERACTION_HIDDEN = "INTERACTION_HIDDEN"
     ATTACHMENT_UPLOADED = "ATTACHMENT_UPLOADED"
     NOTE_ADDED = "NOTE_ADDED"

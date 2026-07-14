@@ -563,6 +563,84 @@ async def transfer_ticket_agent(
 
 
 # =========================================================
+# Close Ticket
+# =========================================================
+
+@router.post(
+    "/{ticket_id}/close",
+    response_model=TicketActionResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def close_ticket(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Closes a ticket — the only transition that completes the
+    Resolution SLA clock. A closed ticket becomes read-only until
+    reopened (see POST /tickets/{ticket_id}/reopen).
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    edit_access_repository = TicketEditAccessRequestRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        edit_access_repository=edit_access_repository,
+        sla_service=build_sla_service(db),
+    )
+
+    return await service.close_ticket(
+        ticket_id=ticket_id,
+        current_user=current_user,
+    )
+
+
+# =========================================================
+# Reopen Ticket
+# =========================================================
+
+@router.post(
+    "/{ticket_id}/reopen",
+    response_model=TicketActionResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def reopen_ticket(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Reopens a closed ticket, restoring every action a closed ticket
+    otherwise blocks (reply, notes, attachments, status/priority
+    changes, transfer).
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    edit_access_repository = TicketEditAccessRequestRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        edit_access_repository=edit_access_repository,
+        sla_service=build_sla_service(db),
+    )
+
+    return await service.reopen_ticket(
+        ticket_id=ticket_id,
+        current_user=current_user,
+    )
+
+
+# =========================================================
 # Related Tickets
 # =========================================================
 

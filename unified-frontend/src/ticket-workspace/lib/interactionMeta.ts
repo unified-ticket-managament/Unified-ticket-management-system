@@ -19,6 +19,8 @@ const TYPE_META: Record<string, InteractionTypeMeta> = {
   EDIT_ACCESS_REQUESTED: { icon: "🙏", label: "Edit Access Requested", tone: "warning" },
   EDIT_ACCESS_APPROVED: { icon: "🤝", label: "Edit Access Approved", tone: "success" },
   EDIT_ACCESS_REJECTED: { icon: "🚫", label: "Edit Access Rejected", tone: "danger" },
+  TICKET_CLOSED: { icon: "🔒", label: "Ticket Closed", tone: "default" },
+  TICKET_REOPENED: { icon: "🔓", label: "Ticket Reopened", tone: "info" },
 };
 
 export function metaFor(type: string): InteractionTypeMeta {
@@ -39,6 +41,8 @@ export const RETIRED_INTERACTION_TYPES = new Set([
   "EDIT_ACCESS_REQUESTED",
   "EDIT_ACCESS_APPROVED",
   "EDIT_ACCESS_REJECTED",
+  "TICKET_CLOSED",
+  "TICKET_REOPENED",
 ]);
 
 export function summarize(interaction: InteractionResponse): string {
@@ -61,8 +65,10 @@ export function summarize(interaction: InteractionResponse): string {
       const count = (payload.file_count as number) ?? interaction.attachments?.length ?? 1;
       return `${count} file${count === 1 ? "" : "s"} uploaded`;
     }
-    case "AGENT_TRANSFER":
-      return `${payload.from_agent_name ?? "Unassigned"} → ${payload.to_agent_name ?? "?"}`;
+    case "AGENT_TRANSFER": {
+      const base = `${payload.from_agent_name ?? "Unassigned"} → ${payload.to_agent_name ?? "?"}`;
+      return payload.reason ? `${base} (${payload.reason as string})` : base;
+    }
     case "CLAIM":
       return `Claimed by ${(payload.agent_name as string) ?? "Unknown"}`;
     case "EDIT_ACCESS_REQUESTED":
@@ -71,6 +77,10 @@ export function summarize(interaction: InteractionResponse): string {
       return "Edit access approved";
     case "EDIT_ACCESS_REJECTED":
       return (payload.review_note as string) || "Edit access rejected";
+    case "TICKET_CLOSED":
+      return `Closed by ${(payload.closed_by_name as string) ?? "Unknown"}`;
+    case "TICKET_REOPENED":
+      return "Ticket reopened";
     default:
       return JSON.stringify(payload);
   }

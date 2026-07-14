@@ -25,6 +25,8 @@ const EVENT_META: Record<AuditEventType, AuditEventMeta> = {
   EDIT_ACCESS_REQUESTED: { icon: "🙏", label: "Edit Access Requested", tone: "warning" },
   EDIT_ACCESS_APPROVED: { icon: "🤝", label: "Edit Access Approved", tone: "success" },
   EDIT_ACCESS_REJECTED: { icon: "🚫", label: "Edit Access Rejected", tone: "danger" },
+  TICKET_CLOSED: { icon: "🔒", label: "Ticket Closed", tone: "default" },
+  TICKET_REOPENED: { icon: "🔓", label: "Ticket Reopened", tone: "info" },
   SLA_PAUSED: { icon: "⏸", label: "SLA Paused", tone: "warning" },
   SLA_RESUMED: { icon: "▶", label: "SLA Resumed", tone: "info" },
   SLA_BREACH_DETECTED: { icon: "⚠", label: "SLA Breached", tone: "danger" },

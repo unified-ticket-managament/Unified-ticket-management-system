@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Paperclip, X } from "lucide-react";
+import { Lock, Paperclip, X } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
 import { EnvelopePreview } from "@tw/components/common/EnvelopePreview";
@@ -167,6 +167,7 @@ export function TicketComposer({
 
   const isReply = activeMode === "reply";
   const isLoading = isReply ? isReplyLoading : isNoteLoading;
+  const isTicketClosed = activeTicket.current_status === "CLOSED";
 
   async function handleSend() {
     if (!activeTicket || !message.trim()) return;
@@ -218,6 +219,12 @@ export function TicketComposer({
         </button>
       }
     >
+      {isTicketClosed ? (
+        <p className="flex items-center gap-2 text-sm text-muted">
+          <Lock size={14} className="flex-none" />
+          This ticket is closed — reopen it to reply or add a note.
+        </p>
+      ) : (
       <div className="flex flex-col gap-3">
         {!lockMode && (
           <div className="flex rounded-md2 border border-border p-0.5 text-xs font-semibold">
@@ -367,6 +374,7 @@ export function TicketComposer({
           </Button>
         </div>
       </div>
+      )}
     </Card>
   );
 }

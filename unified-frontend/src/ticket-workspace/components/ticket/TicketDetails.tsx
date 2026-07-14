@@ -41,6 +41,7 @@ export function TicketDetails({ onRelatedChanged }: TicketDetailsProps) {
 
   if (!activeTicket) return null;
 
+  const isTicketClosed = activeTicket.current_status === "CLOSED";
   const relatedIds = new Set(activeTicket.related_tickets.map((related) => related.ticket_id));
   const pickableTickets = allTickets.filter(
     (t) => t.ticket_id !== activeTicket.ticket_id && !relatedIds.has(t.ticket_id)
@@ -70,13 +71,15 @@ export function TicketDetails({ onRelatedChanged }: TicketDetailsProps) {
     <Card
       title="Related Tickets"
       actions={
-        <button
-          onClick={() => setIsPicking((prev) => !prev)}
-          title="Link a related ticket"
-          className="rounded p-0.5 text-muted/70 hover:bg-surfaceHover hover:text-slate-900"
-        >
-          {isPicking ? <X size={13} /> : <Plus size={13} />}
-        </button>
+        !isTicketClosed && (
+          <button
+            onClick={() => setIsPicking((prev) => !prev)}
+            title="Link a related ticket"
+            className="rounded p-0.5 text-muted/70 hover:bg-surfaceHover hover:text-slate-900"
+          >
+            {isPicking ? <X size={13} /> : <Plus size={13} />}
+          </button>
+        )
       }
     >
       <div>
@@ -124,13 +127,15 @@ export function TicketDetails({ onRelatedChanged }: TicketDetailsProps) {
                 <Badge tone={statusTone[related.current_status]} dot>
                   {related.current_status}
                 </Badge>
-                <button
-                  onClick={() => handleUnlink(related.ticket_id)}
-                  title="Unlink"
-                  className="flex-none rounded p-0.5 text-muted/50 opacity-0 hover:text-danger group-hover:opacity-100"
-                >
-                  <X size={13} />
-                </button>
+                {!isTicketClosed && (
+                  <button
+                    onClick={() => handleUnlink(related.ticket_id)}
+                    title="Unlink"
+                    className="flex-none rounded p-0.5 text-muted/50 opacity-0 hover:text-danger group-hover:opacity-100"
+                  >
+                    <X size={13} />
+                  </button>
+                )}
               </li>
             ))}
           </ul>

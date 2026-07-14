@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+import { Lock } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { TicketHeader } from "@tw/components/ticket/TicketHeader";
@@ -112,6 +113,15 @@ export function TicketDetailPage() {
         activeTicket && (
           <div className="flex flex-col gap-5">
             <TicketHeader ticket={activeTicket} onActionComplete={refreshAll} />
+            {activeTicket.current_status === "CLOSED" && (
+              <div className="flex items-center gap-2.5 rounded-md2 border border-border bg-canvas/60 px-4 py-3 text-sm text-slate-700">
+                <Lock size={15} className="flex-none text-muted" />
+                <span>
+                  This ticket has been closed. No further modifications are allowed unless the
+                  ticket is reopened.
+                </span>
+              </div>
+            )}
             <TicketPropertiesCard ticket={activeTicket} />
 
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_320px]">

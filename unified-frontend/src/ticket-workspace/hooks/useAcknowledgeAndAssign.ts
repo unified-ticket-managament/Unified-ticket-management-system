@@ -93,7 +93,15 @@ export function useAcknowledgeAndAssign() {
       const claimed = await runClaim(target.ticketId);
       if (claimed) success = Boolean(await runAcknowledge(target.ticketId));
     } else {
-      const transferred = await runTransfer(target.ticketId, { new_agent_id: selectedAgentId });
+      const transferred = await runTransfer(target.ticketId, {
+        new_agent_id: selectedAgentId,
+        // This flow has no free-text reason input of its own (see this
+        // hook's own docstring — assigning here is a side effect of
+        // acknowledging an escalation, not the dedicated Transfer
+        // Ticket action), so a fixed, descriptive reason satisfies the
+        // now-required field without adding a UI prompt to this modal.
+        reason: "Reassigned via Acknowledge & Assign (escalation)",
+      });
       success = Boolean(transferred);
     }
 

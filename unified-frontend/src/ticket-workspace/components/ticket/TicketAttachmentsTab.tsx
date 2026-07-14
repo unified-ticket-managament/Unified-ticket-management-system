@@ -65,14 +65,17 @@ export function TicketAttachmentsTab({ onChanged, flat = false }: TicketAttachme
   if (!activeTicket) return null;
 
   // Mirrors TicketActions' own canActOnTicket check — the same actor
-  // set allowed to upload is allowed to delete.
+  // set allowed to upload is allowed to delete. A closed ticket is
+  // read-only regardless of ownership/grants — deleting an attachment
+  // is an edit operation like any other.
   const isOwnTicket = activeTicket.agent_id === currentUser?.user_id;
   const hasEditOther =
     (currentUser?.permissions ?? []).includes("ticket:editother_ticket") ||
     (currentUser?.scoped_permissions?.["ticket:editother_ticket"] ?? []).includes(
       activeTicket.ticket_id
     );
-  const canDelete = isOwnTicket || hasEditOther || hasActiveEditAccessGrant;
+  const isTicketClosed = activeTicket.current_status === "CLOSED";
+  const canDelete = !isTicketClosed && (isOwnTicket || hasEditOther || hasActiveEditAccessGrant);
 
   const attachments: FlatAttachment[] = timeline
     .flatMap((interaction) =>

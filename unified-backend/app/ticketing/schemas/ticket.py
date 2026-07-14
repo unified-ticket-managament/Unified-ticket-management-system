@@ -62,6 +62,8 @@ class TicketUpdate(BaseModel):
 
     closed_at: datetime | None = None
 
+    closed_by: UUID | None = None
+
 
 class RelatedTicketSummary(BaseModel):
     """
@@ -102,6 +104,7 @@ class TicketResponse(ORMBase):
     custom_fields: dict[str, Any]
     version: int
     closed_at: datetime | None
+    closed_by: UUID | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -112,6 +115,7 @@ class TicketResponse(ORMBase):
     client_company_name: str | None = None
     agent_name: str | None = None
     created_by_name: str | None = None
+    closed_by_name: str | None = None
 
     # Populated only on GET /tickets/{id} (not the list view, to
     # avoid an N+1 lookup per row) — see TicketService._attach_related_tickets.

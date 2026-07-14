@@ -112,6 +112,9 @@ class TicketService:
         user_ids.update(
             ticket.created_by for ticket in tickets if ticket.created_by is not None
         )
+        user_ids.update(
+            ticket.closed_by for ticket in tickets if ticket.closed_by is not None
+        )
 
         company_ids: set[UUID] = set()
         if self.client_repository is not None:
@@ -167,6 +170,9 @@ class TicketService:
             )
             ticket.created_by_name = (
                 names.get(ticket.created_by) if ticket.created_by else None
+            )
+            ticket.closed_by_name = (
+                names.get(ticket.closed_by) if ticket.closed_by else None
             )
 
     # ---------------------------------------------------------

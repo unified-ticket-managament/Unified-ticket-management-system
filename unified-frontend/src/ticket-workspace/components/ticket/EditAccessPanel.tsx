@@ -48,6 +48,7 @@ export function EditAccessPanel({ onRequestsChanged, embedded = false }: EditAcc
 
   if (!activeTicket || !currentUser) return null;
 
+  const isTicketClosed = activeTicket.current_status === "CLOSED";
   const canReview = currentUser.permissions.includes("ticket:editother_ticket");
   const myPendingRequest = requests.find(
     (r) => r.requested_by === currentUser.user_id && r.status === "PENDING"
@@ -91,6 +92,8 @@ export function EditAccessPanel({ onRequestsChanged, embedded = false }: EditAcc
           size="sm"
           variant="secondary"
           className="w-full justify-center"
+          disabled={isTicketClosed}
+          title={isTicketClosed ? "This ticket is closed" : undefined}
           onClick={() => setIsRequestModalOpen(true)}
         >
           <UserPlus2 size={14} />
@@ -123,6 +126,7 @@ export function EditAccessPanel({ onRequestsChanged, embedded = false }: EditAcc
                   size="sm"
                   variant="primary"
                   isLoading={isApproving}
+                  disabled={isTicketClosed}
                   onClick={() => handleApprove(request.request_id)}
                 >
                   Approve
@@ -131,6 +135,7 @@ export function EditAccessPanel({ onRequestsChanged, embedded = false }: EditAcc
                   size="sm"
                   variant="ghost"
                   isLoading={isRejecting}
+                  disabled={isTicketClosed}
                   onClick={() => handleReject(request.request_id)}
                 >
                   Reject

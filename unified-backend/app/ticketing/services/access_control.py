@@ -359,21 +359,40 @@ def ensure_can_review_edit_access(
 
 def ensure_can_close_ticket(current_user: User) -> None:
     """
-    Only a supervisor may move a ticket into CLOSED
-    (InteractionService.change_status) — added specifically so the
+    Gates the dedicated Close Ticket action
+    (InteractionService.close_ticket) — added specifically so the
     Resolution SLA's "ends only when a Manager verifies and closes"
     requirement is actually true rather than aspirational: without
-    this gate, an agent's own status change to CLOSED would silently
-    end the SLA clock with no manager involved at all. Moving to
-    RESOLVED (an agent's own proposed fix) is unaffected by this gate
-    and remains open to whoever could already change status.
+    this gate, an agent could otherwise silently end the SLA clock
+    with no manager involved at all. Moving to RESOLVED (an agent's
+    own proposed fix) is unaffected by this gate and remains open to
+    whoever could already change status.
+
+    Supervisors (SUPERVISOR_ROLE_NAMES) bypass unconditionally, same
+    as ensure_can_reassign_ticket; anyone else falls through to the
+    ticket:close permission, so a Staff member individually granted it
+    via a personal override can close too.
     """
 
-    if current_user.role.name not in SUPERVISOR_ROLE_NAMES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only a supervisor can close a ticket.",
-        )
+    if current_user.role.name in SUPERVISOR_ROLE_NAMES:
+        return
+
+    ensure_has_permission(current_user, "ticket:close")
+
+
+def ensure_can_reopen_ticket(current_user: User) -> None:
+    """
+    Gates the dedicated Reopen Ticket action
+    (InteractionService.reopen_ticket) — mirrors ensure_can_close_ticket
+    exactly (supervisor bypass, ticket:reopen permission fallback for
+    everyone else), since reopening undoes the same close a supervisor
+    was required to perform in the first place.
+    """
+
+    if current_user.role.name in SUPERVISOR_ROLE_NAMES:
+        return
+
+    ensure_has_permission(current_user, "ticket:reopen")
 
 
 def ensure_can_override_sla(current_user: User) -> None:
