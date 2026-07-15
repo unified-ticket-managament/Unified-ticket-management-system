@@ -34,6 +34,7 @@ from app.ticketing.schemas.payloads import EmailPayload
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
     GLOBAL_INBOX_ROLE_NAMES,
+    ensure_has_permission,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,15 +86,24 @@ class InboxService:
         self.edit_access_repository = edit_access_repository
         self.read_receipt_repository = read_receipt_repository
 
-    async def _resolve_scope(self, current_user: User) -> tuple[
-        UUID | None, str | None, UUID | None, list[UUID] | None
-    ]:
+    async def _resolve_scope(
+        self, current_user: User, *, assigned_to_me: bool = False
+    ) -> tuple[UUID | None, str | None, UUID | None, list[UUID] | None]:
         """
         Resolves the same role-based scoping tuple
         (account_manager_id, ticket_type, assigned_agent_id,
         extra_ticket_ids) `get_inbox` and `get_folder_counts` both
         need, so the two can never drift into applying different
         visibility rules for the same user.
+
+        `assigned_to_me` layers an additional "assigned_agent_id = me"
+        condition on top of whatever the role already resolved (never
+        replacing it) — backs the Mail page's "My Claims" ticketed
+        section for roles other than Staff, whose own scope already
+        always means this. See `list_inbox`: `account_manager_id`/
+        `ticket_type`/`assigned_agent_id` are independent, ANDed
+        conditions, so this correctly narrows within the caller's
+        existing scope rather than widening it.
         """
 
         role_name = current_user.role.name
@@ -135,6 +145,9 @@ class InboxService:
             # same as an Account Manager with no clients.
             account_manager_id = current_user.user_id
 
+        if assigned_to_me:
+            assigned_agent_id = current_user.user_id
+
         return account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids
 
     async def get_inbox(
@@ -150,6 +163,7 @@ class InboxService:
         cursor: str | None = None,
         category_filter: str | None = None,
         priority_filter: TicketPriority | None = None,
+        assigned_to_me: bool = False,
     ) -> InboxResponse:
         """
         Returns the role-scoped inbox for the current user.
@@ -180,6 +194,21 @@ class InboxService:
         of pagination.
         """
 
+        # communication:view_all (Full for Super Admin/Site Lead/Account
+        # Manager — own clients) vs. communication:view_assigned (Full
+        # for everyone, but Team Lead/Staff are structurally limited to
+        # their own team's scope regardless — see _resolve_scope above).
+        # Both are Full by default for every role that reaches this
+        # branch today, so this doesn't change existing behavior; it
+        # gives the permission itself a real enforcement point.
+        if (
+            current_user.role.name in GLOBAL_INBOX_ROLE_NAMES
+            or current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME
+        ):
+            ensure_has_permission(current_user, "communication:view_all")
+        else:
+            ensure_has_permission(current_user, "communication:view_assigned")
+
         decoded_cursor: tuple | None = None
         if cursor is not None and limit is not None:
             try:
@@ -191,7 +220,7 @@ class InboxService:
                 ) from exc
 
         account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids = (
-            await self._resolve_scope(current_user)
+            await self._resolve_scope(current_user, assigned_to_me=assigned_to_me)
         )
 
         interactions, total = await self.interaction_repository.list_inbox(

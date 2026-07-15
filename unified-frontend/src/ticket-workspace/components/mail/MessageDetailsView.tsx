@@ -39,6 +39,7 @@ import { listAssignableAgents } from "@tw/api/agent";
 import { listClientContacts } from "@tw/api/clients";
 import { replyToClient, uploadAttachment } from "@tw/api/interaction";
 import { attachInteractionToTicket, createTicketFromInteraction, listTickets } from "@tw/api/ticket";
+import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { formatDateTime } from "@tw/lib/format";
 import { buildForwardHtml, linkifyPlainText } from "@tw/lib/richText";
@@ -62,6 +63,7 @@ const PRIORITY_VARIANT: Record<TicketPriority, "success" | "warning" | "destruct
   LOW: "success",
   MEDIUM: "warning",
   HIGH: "destructive",
+  CRITICAL: "destructive",
 };
 
 const STATUS_META: Record<string, { label: string; variant: "warning" | "success" | "secondary" }> = {
@@ -176,7 +178,6 @@ function Bubble({ data }: { data: BubbleData }) {
 interface MessageDetailsViewProps {
   email: OpenEmailResponse;
   folders: MailFolder[];
-  isSupervisor: boolean;
   onBack: () => void;
   onRefreshList: () => void;
   onForward: (values: { clientId: string | null; toEmail: string; subject: string; bodyHtml: string }) => void;
@@ -200,7 +201,6 @@ interface MessageDetailsViewProps {
 export function MessageDetailsView({
   email,
   folders,
-  isSupervisor,
   onBack,
   onRefreshList,
   onForward,
@@ -217,6 +217,17 @@ export function MessageDetailsView({
   // shared, session-wide lookup data fetched once by WorkflowContext
   // instead (see that context's own comment).
   const { setSelectedEmail, categories } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
+  const canConvertToTicket = !!currentUser?.permissions.includes(
+    "communication:convert_to_ticket"
+  );
+  const canAttachToTicket = !!currentUser?.permissions.includes(
+    "communication:attach_to_ticket"
+  );
+  const canArchive = !!currentUser?.permissions.includes("communication:archive");
+  const canReplyExternal = !!currentUser?.permissions.includes(
+    "communication:reply_external"
+  );
   const [replyMode, setReplyMode] = useState<"reply" | "replyAll" | null>(null);
   const [newTag, setNewTag] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -229,11 +240,14 @@ export function MessageDetailsView({
   const [contacts, setContacts] = useState<ClientContact[]>([]);
 
   // "Assigned To" picker (Create Ticket dialog) — `assignedToChoice`
-  // is either "self" or one of assignableAgents.groups[].role;
+  // is "unassigned", "self", or one of assignableAgents.groups[].role;
   // `selectedAssigneeId` is only meaningful once a role group with
-  // more than one candidate is chosen.
+  // more than one candidate is chosen. Defaults to "unassigned" so a
+  // ticket created without deliberately picking an assignee lands in
+  // the Open Pool as team-scoped work, not silently claimed by its
+  // creator.
   const [assignableAgents, setAssignableAgents] = useState<AssignableAgentsResponse | null>(null);
-  const [assignedToChoice, setAssignedToChoice] = useState<string>("self");
+  const [assignedToChoice, setAssignedToChoice] = useState<string>("unassigned");
   const [selectedAssigneeId, setSelectedAssigneeId] = useState("");
 
   const isTicketed = Boolean(email.ticket_id);
@@ -286,9 +300,11 @@ export function MessageDetailsView({
   const assignedToGroup = assignableAgents?.groups.find((group) => group.role === assignedToChoice) ?? null;
   const needsAssigneePick = Boolean(assignedToGroup);
   const resolvedAgentId =
-    assignedToChoice === "self" || !assignedToGroup
-      ? assignableAgents?.me.user_id
-      : selectedAssigneeId || undefined;
+    assignedToChoice === "unassigned"
+      ? undefined
+      : assignedToChoice === "self" || !assignedToGroup
+        ? assignableAgents?.me.user_id
+        : selectedAssigneeId || undefined;
 
   async function handleSend(payload: {
     message: string;
@@ -603,14 +619,18 @@ export function MessageDetailsView({
 
       {/* Action Toolbar — pinned below the scrolling content, never scrolls out of view */}
       <div className="flex flex-wrap items-center gap-1.5 border-t border-border bg-muted/20 px-5 py-2.5">
-        <Button size="sm" className="gap-1.5" disabled={isClosed} onClick={() => setReplyMode("reply")}>
-          <ReplyIcon className="h-3.5 w-3.5" />
-          Reply
-        </Button>
-        <Button size="sm" variant="outline" className="gap-1.5" disabled={isClosed} onClick={() => setReplyMode("replyAll")}>
-          <ReplyAll className="h-3.5 w-3.5" />
-          Reply All
-        </Button>
+        {canReplyExternal && (
+          <>
+            <Button size="sm" className="gap-1.5" disabled={isClosed} onClick={() => setReplyMode("reply")}>
+              <ReplyIcon className="h-3.5 w-3.5" />
+              Reply
+            </Button>
+            <Button size="sm" variant="outline" className="gap-1.5" disabled={isClosed} onClick={() => setReplyMode("replyAll")}>
+              <ReplyAll className="h-3.5 w-3.5" />
+              Reply All
+            </Button>
+          </>
+        )}
         <Button size="sm" variant="outline" className="gap-1.5" onClick={handleForwardClick}>
           <ForwardIcon className="h-3.5 w-3.5" />
           Forward
@@ -626,16 +646,20 @@ export function MessageDetailsView({
             </Link>
           </Button>
         ) : (
-          <Button size="sm" variant="outline" className="gap-1.5" disabled={isCreating} onClick={() => setCreateOpen(true)}>
-            <FilePlus className="h-3.5 w-3.5" />
-            Create Ticket
-          </Button>
+          (canConvertToTicket || canAttachToTicket) && (
+            <Button size="sm" variant="outline" className="gap-1.5" disabled={isCreating} onClick={() => setCreateOpen(true)}>
+              <FilePlus className="h-3.5 w-3.5" />
+              Create Ticket
+            </Button>
+          )
         )}
 
-        <Button size="sm" variant="outline" className="gap-1.5" disabled={archiveDisabled} onClick={handleArchive}>
-          <Archive className="h-3.5 w-3.5" />
-          Archive
-        </Button>
+        {canArchive && (
+          <Button size="sm" variant="outline" className="gap-1.5" disabled={archiveDisabled} onClick={handleArchive}>
+            <Archive className="h-3.5 w-3.5" />
+            Archive
+          </Button>
+        )}
 
         <div className="ml-auto flex items-center gap-1.5">
           <Button size="sm" variant="ghost" className="gap-1.5" onClick={onBack}>
@@ -715,57 +739,56 @@ export function MessageDetailsView({
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Assigned To</label>
-              {!assignableAgents || assignableAgents.groups.length === 0 ? (
-                <Input value={assignableAgents?.me.name ?? "Myself"} readOnly className="bg-muted/30" />
-              ) : (
-                <div className="flex flex-col gap-2">
-                  <Select
-                    value={assignedToChoice}
-                    onValueChange={(v) => {
-                      setAssignedToChoice(v);
-                      setSelectedAssigneeId("");
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
+              <div className="flex flex-col gap-2">
+                <Select
+                  value={assignedToChoice}
+                  onValueChange={(v) => {
+                    setAssignedToChoice(v);
+                    setSelectedAssigneeId("");
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="unassigned">Unassigned (Team)</SelectItem>
+                    {assignableAgents && (
                       <SelectItem value="self">Myself ({assignableAgents.me.name})</SelectItem>
-                      {assignableAgents.groups.map((group) => (
-                        <SelectItem key={group.role} value={group.role}>
-                          {group.role}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    )}
+                    {assignableAgents?.groups.map((group) => (
+                      <SelectItem key={group.role} value={group.role}>
+                        {group.role}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
 
-                  {assignedToGroup && (
-                    assignedToGroup.users.length === 0 ? (
-                      <p className="text-xs text-muted-foreground">
-                        No {assignedToGroup.role} found in your reporting hierarchy.
-                      </p>
-                    ) : (
-                      <div>
-                        <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                          Select {assignedToGroup.role}
-                        </label>
-                        <Select value={selectedAssigneeId} onValueChange={setSelectedAssigneeId}>
-                          <SelectTrigger>
-                            <SelectValue placeholder={`Choose a ${assignedToGroup.role}...`} />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {assignedToGroup.users.map((user) => (
-                              <SelectItem key={user.user_id} value={user.user_id}>
-                                {user.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    )
-                  )}
-                </div>
-              )}
+                {assignedToGroup && (
+                  assignedToGroup.users.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">
+                      No {assignedToGroup.role} found in your reporting hierarchy.
+                    </p>
+                  ) : (
+                    <div>
+                      <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                        Select {assignedToGroup.role}
+                      </label>
+                      <Select value={selectedAssigneeId} onValueChange={setSelectedAssigneeId}>
+                        <SelectTrigger>
+                          <SelectValue placeholder={`Choose a ${assignedToGroup.role}...`} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {assignedToGroup.users.map((user) => (
+                            <SelectItem key={user.user_id} value={user.user_id}>
+                              {user.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )
+                )}
+              </div>
             </div>
           </div>
           <DialogFooter>

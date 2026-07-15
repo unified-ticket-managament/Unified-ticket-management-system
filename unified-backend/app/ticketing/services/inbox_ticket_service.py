@@ -17,6 +17,10 @@ from app.ticketing.schemas.ticket_from_interaction import (
     TicketFromInteractionCreate,
     TicketFromInteractionResponse,
 )
+from app.ticketing.services.access_control import (
+    ensure_account_manager_owns_ticket_client,
+    ensure_has_permission,
+)
 from app.ticketing.services.assignment_service import AssignmentService
 from app.ticketing.services.audit_log_service import AuditLogService
 from app.ticketing.services.sla_service import SLAService
@@ -37,11 +41,13 @@ class InboxTicketService:
         interaction_repository: InteractionRepository,
         assignment_service: AssignmentService | None = None,
         sla_service: SLAService | None = None,
+        client_repository=None,
     ):
         self.ticket_repository = ticket_repository
         self.interaction_repository = interaction_repository
         self.assignment_service = assignment_service
         self.sla_service = sla_service
+        self.client_repository = client_repository
 
     # ---------------------------------------------------------
     # Shared Validation
@@ -87,6 +93,8 @@ class InboxTicketService:
         request: TicketFromInteractionCreate,
         current_user: User,
     ) -> TicketFromInteractionResponse:
+
+        ensure_has_permission(current_user, "communication:convert_to_ticket")
 
         interaction = await self._get_pending_interaction(
             request.interaction_id
@@ -186,6 +194,8 @@ class InboxTicketService:
         current_user: User,
     ) -> AttachInteractionResponse:
 
+        ensure_has_permission(current_user, "communication:attach_to_ticket")
+
         # Validate interaction
         interaction = await self._get_pending_interaction(
             request.interaction_id
@@ -201,6 +211,10 @@ class InboxTicketService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Ticket not found.",
             )
+
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
 
         # Attach the interaction AND every reply already filed
         # under it (if this was already a thread) to the ticket.

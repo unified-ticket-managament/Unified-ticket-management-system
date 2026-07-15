@@ -114,6 +114,7 @@ export type DashboardTicketSummary = Pick<
   | "current_status"
   | "current_priority"
   | "updated_at"
+  | "resolution_sla_tier"
 >;
 
 export interface DashboardStats {
@@ -225,6 +226,29 @@ export async function claimTicket(
 ): Promise<TicketActionResponse> {
   const { data } = await apiClient.post<TicketActionResponse>(
     `/tickets/${ticketId}/claim`
+  );
+  return data;
+}
+
+// POST /tickets/{ticket_id}/close — the only transition that
+// completes the Resolution SLA clock. Ticket becomes read-only until
+// reopened.
+export async function closeTicket(
+  ticketId: string
+): Promise<TicketActionResponse> {
+  const { data } = await apiClient.post<TicketActionResponse>(
+    `/tickets/${ticketId}/close`
+  );
+  return data;
+}
+
+// POST /tickets/{ticket_id}/reopen — the only way off CLOSED; restores
+// every action a closed ticket otherwise blocks.
+export async function reopenTicket(
+  ticketId: string
+): Promise<TicketActionResponse> {
+  const { data } = await apiClient.post<TicketActionResponse>(
+    `/tickets/${ticketId}/reopen`
   );
   return data;
 }

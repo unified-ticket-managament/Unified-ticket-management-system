@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -62,6 +62,8 @@ class TicketUpdate(BaseModel):
 
     closed_at: datetime | None = None
 
+    closed_by: UUID | None = None
+
 
 class RelatedTicketSummary(BaseModel):
     """
@@ -102,6 +104,7 @@ class TicketResponse(ORMBase):
     custom_fields: dict[str, Any]
     version: int
     closed_at: datetime | None
+    closed_by: UUID | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -112,6 +115,7 @@ class TicketResponse(ORMBase):
     client_company_name: str | None = None
     agent_name: str | None = None
     created_by_name: str | None = None
+    closed_by_name: str | None = None
 
     # Populated only on GET /tickets/{id} (not the list view, to
     # avoid an N+1 lookup per row) — see TicketService._attach_related_tickets.
@@ -129,6 +133,15 @@ class TicketResponse(ORMBase):
     escalation_level: EscalationLevel | None = None
     escalation_status: EscalationStatus | None = None
     escalation_ack_due_at: datetime | None = None
+
+    # Resolution SLA clock's own risk tier — sourced from a LEFT JOIN
+    # against resolution_slas/sla_policies (see TicketRepository.
+    # list_visible_page / _resolution_sla_tier_case), independent of
+    # is_escalated above: a ticket can be at_risk with no active
+    # escalation, or escalated with a healthy-looking clock (already
+    # acknowledged, handling-SLA still fresh). None when there's no
+    # active Resolution SLA clock or no matching policy.
+    resolution_sla_tier: Literal["healthy", "at_risk", "breached", "escalated"] | None = None
 
 
 class TicketListItemResponse(ORMBase):
@@ -171,6 +184,9 @@ class TicketListItemResponse(ORMBase):
     escalation_level: EscalationLevel | None = None
     escalation_status: EscalationStatus | None = None
     escalation_ack_due_at: datetime | None = None
+
+    # See TicketResponse's own matching field for the full rationale.
+    resolution_sla_tier: Literal["healthy", "at_risk", "breached", "escalated"] | None = None
 
 
 class DashboardStatsResponse(BaseModel):

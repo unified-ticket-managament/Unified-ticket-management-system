@@ -21,6 +21,7 @@ from app.ticketing.enums import (
 from app.ticketing.models.resolution_sla import ResolutionSLA
 from app.ticketing.models.ticket import Ticket
 from app.ticketing.models.ticket_escalation import TicketEscalation
+from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.resolution_sla_repository import ResolutionSLARepository
 from app.ticketing.repositories.sla_policy_repository import SLAPolicyRepository
 from app.ticketing.repositories.ticket_escalation_repository import (
@@ -28,9 +29,16 @@ from app.ticketing.repositories.ticket_escalation_repository import (
 )
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
+from app.ticketing.schemas.assignment import (
+    AssignableAgentsResponse,
+    AssignableGroup,
+    AssignableUserSummary,
+)
 from app.ticketing.schemas.sla import TicketEscalationState
+from app.ticketing.schemas.ticket import TicketUpdate
 from app.ticketing.schemas.ticket_action import TicketActionResponse
 from app.ticketing.services.access_control import (
+    ACCOUNT_MANAGER_ROLE_NAME,
     GLOBAL_INBOX_ROLE_NAMES,
     SUPERVISOR_ROLE_NAMES,
     ensure_agent_can_view_ticket,
@@ -38,6 +46,7 @@ from app.ticketing.services.access_control import (
     ensure_ticket_not_closed,
     has_permission,
 )
+from app.ticketing.services.assignment_service import STAFF_ROLE_NAME
 from app.ticketing.services.escalation_handling_sla_service import (
     EscalationHandlingSlaService,
     build_escalation_handling_sla_service,
@@ -55,6 +64,15 @@ from app.ticketing.services.sla_escalation_rules import (
     resolve_team_lead,
 )
 
+
+def _to_assignable_group(role_name: str, users: list[User]) -> AssignableGroup:
+    return AssignableGroup(
+        role=role_name,
+        users=[
+            AssignableUserSummary(user_id=u.user_id, name=u.name) for u in users
+        ],
+    )
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_ACK_TARGET_MINUTES = 30
@@ -71,13 +89,17 @@ class EscalationService:
     active) and advances only if the current owner ignores their
     acknowledgment window.
 
-    Deliberately never touches ResolutionSLA's own started_at/due_at/
-    status — every method here only reads a ResolutionSLA (to snapshot
-    resolution_sla_id for display, or to resolve the escalation's ack
-    window off the ticket's priority-matched SLAPolicy row), never
-    writes one. This is what makes "the original Resolution SLA never
-    restarts after escalation" true by construction: there is simply
-    no code path in this class capable of writing to that table.
+    Never touches ResolutionSLA's own started_at/status, and never
+    invents its own reshift math — the one deliberate exception is
+    _bump_priority_to_critical (called once, from _create_escalation):
+    a ticket's priority permanently becomes CRITICAL the first time it
+    escalates (manual or automatic), which reshifts the clock's
+    due_at/priority through the exact same SLAService method a manual
+    Change Priority action already uses, not a parallel code path
+    invented here. Every other method in this class only reads a
+    ResolutionSLA (to snapshot resolution_sla_id for display, or to
+    resolve the escalation's ack window off the ticket's priority-
+    matched SLAPolicy row).
     """
 
     def __init__(
@@ -194,9 +216,19 @@ class EscalationService:
         if not owner_ids:
             return
 
+        # Super Admin/Site Lead see every escalation regardless of
+        # which level currently owns it (Super Admin: "All
+        # escalations"; Site Lead: "Escalations") — not just once the
+        # ladder happens to reach SITE_LEAD. Reuses the same
+        # already-established GLOBAL_INBOX resolver the SITE_LEAD
+        # level itself uses (`_resolve_owners_for_level` above); the
+        # set union means an owner who's also in this set (e.g. the
+        # ladder has already reached SITE_LEAD) isn't notified twice.
+        recipient_ids = owner_ids | await resolve_global_inbox_user_ids(self.user_repository)
+
         if self.notification_service is not None:
             await self.notification_service.notify(
-                owner_ids,
+                recipient_ids,
                 notification_type,
                 title=title,
                 message=message,
@@ -206,7 +238,7 @@ class EscalationService:
             )
 
         await send_notification_emails(
-            recipient_ids=owner_ids,
+            recipient_ids=recipient_ids,
             subject=title,
             body=f"{message}\n\nView it here: {build_absolute_link(f'/tickets/{ticket.ticket_id}')}",
             user_repository=self.user_repository,
@@ -348,6 +380,55 @@ class EscalationService:
 
         return True
 
+    async def _bump_priority_to_critical(self, ticket: Ticket) -> None:
+        """
+        A ticket's priority permanently becomes CRITICAL the first
+        time it escalates — a real, filterable/sortable priority tier
+        (see TicketPriority's own docstring), not just a display badge,
+        and it never reverts even after the escalation is acknowledged
+        or closed. No-op if already CRITICAL (idempotent — re-escalating
+        an already-critical ticket, e.g. after an ack-window advance,
+        must never re-reshift the clock a second time).
+
+        Reshifts the Resolution SLA clock through
+        SLAService.reshift_resolution_clock_for_priority_change — the
+        exact same method a manual Change Priority action already
+        uses — rather than inventing a parallel code path, so the
+        sweep's own elapsed-fraction math (keyed off
+        ResolutionSLA.priority, not Ticket.current_priority) stays
+        internally consistent instead of measuring a now-CRITICAL-
+        looking ticket against a stale, looser target. Deferred import
+        to avoid a circular import (sla_service.py imports
+        build_escalation_service from this module at module level).
+        """
+
+        if ticket.current_priority == TicketPriority.CRITICAL:
+            return
+
+        old_priority = ticket.current_priority
+        await self.ticket_repository.update(
+            ticket, TicketUpdate(current_priority=TicketPriority.CRITICAL)
+        )
+
+        from app.ticketing.services.sla_service import build_sla_service
+
+        sla_service = build_sla_service(self.ticket_repository.db)
+        await sla_service.reshift_resolution_clock_for_priority_change(
+            ticket_id=ticket.ticket_id, new_priority=TicketPriority.CRITICAL
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket.ticket_id,
+            event_type=AuditEventType.PRIORITY_CHANGED,
+            actor_id=None,
+            actor_name="Escalation workflow",
+            actor_role=ActorRole.SYSTEM,
+            old_values={"current_priority": old_priority.value},
+            new_values={"current_priority": TicketPriority.CRITICAL.value, "reason": "escalated"},
+        )
+
     async def _create_escalation(
         self,
         *,
@@ -356,10 +437,15 @@ class EscalationService:
         triggered_by: str,
         triggered_by_user_id: UUID | None,
     ) -> TicketEscalation:
+        await self._bump_priority_to_critical(ticket)
+
         now = datetime.now(timezone.utc)
         level, owner_ids = await self._resolve_owners_with_fallback(
             starting_level=EscalationLevel.TEAM_LEAD, ticket=ticket
         )
+        # Read after the bump above, so a newly-escalated ticket's own
+        # escalation gets CRITICAL's (tighter) ack window immediately,
+        # not the ack window its previous priority would have used.
         ack_minutes = await self._ack_target_minutes(ticket.current_priority)
 
         return await self.ticket_escalation_repository.create(
@@ -400,7 +486,14 @@ class EscalationService:
 
         is_owner = str(current_user.user_id) in escalation.owner_ids
         is_overseer = current_user.role.name in GLOBAL_INBOX_ROLE_NAMES
-        if not (is_owner or is_overseer):
+        # ticket:acknowledge_escalation — Full for Super Admin/Site Lead
+        # (as overseer) and Account Manager/Team Lead (as owner, which
+        # is already what is_owner captures structurally); Staff is
+        # Override-only, so a Staff member who isn't a listed owner can
+        # still acknowledge if individually granted this permission.
+        if not (is_owner or is_overseer or has_permission(
+            current_user, "ticket:acknowledge_escalation"
+        )):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only the current escalation owner can acknowledge it.",
@@ -522,6 +615,78 @@ class EscalationService:
             await self.escalation_handling_sla_service.start_if_not_started(
                 escalation=updated, ticket=ticket
             )
+
+    # ---------------------------------------------------------
+    # Acknowledge candidates — who the caller may hand this escalated
+    # ticket to, role-scoped (see the plan's own role table): the
+    # candidate set is a different concept per acting role, not one
+    # flat list everyone shares.
+    # ---------------------------------------------------------
+
+    async def get_acknowledge_candidates(
+        self, ticket_id: UUID, current_user: User
+    ) -> AssignableAgentsResponse:
+        """
+        Site Lead/Super Admin choose between the ticket's category Team
+        Lead(s) and the Account Manager who owns the ticket's client
+        (Client.account_manager_id — client ownership is the only real
+        AM-scoping concept in this data model, there is no "AM of a
+        category"). Account Manager chooses among their own reporting
+        Team Leads who also match the ticket's category. Team Lead
+        chooses among the ticket's category Staff — identical to the
+        flat listAgents(category) list this replaced, just reshaped
+        into a role-labeled group. The caller's own "assign to myself"
+        option is the separate `me` field, never included in `groups`.
+        """
+
+        ticket = await self.ticket_repository.get_by_id(ticket_id)
+        if ticket is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found."
+            )
+        ensure_agent_can_view_ticket(ticket, current_user)
+
+        groups: list[AssignableGroup] = []
+        role_name = current_user.role.name
+
+        if role_name in GLOBAL_INBOX_ROLE_NAMES:
+            team_leads = await self.user_repository.list_active_by_role_and_category(
+                TEAM_LEAD_ROLE_NAME, ticket.ticket_type
+            )
+            groups.append(_to_assignable_group(TEAM_LEAD_ROLE_NAME, team_leads))
+
+            client_repository = ClientRepository(self.ticket_repository.db)
+            client = (
+                await client_repository.get_by_id(ticket.client_company_id)
+                if ticket.client_company_id is not None
+                else None
+            )
+            if client is not None:
+                account_manager = await self.user_repository.get_by_id(
+                    client.account_manager_id
+                )
+                if account_manager is not None and account_manager.is_active:
+                    groups.append(
+                        _to_assignable_group(ACCOUNT_MANAGER_ROLE_NAME, [account_manager])
+                    )
+
+        elif role_name == ACCOUNT_MANAGER_ROLE_NAME:
+            team_leads = await self.user_repository.list_active_by_role_and_category(
+                TEAM_LEAD_ROLE_NAME, ticket.ticket_type
+            )
+            team_leads = [tl for tl in team_leads if tl.manager_id == current_user.user_id]
+            groups.append(_to_assignable_group(TEAM_LEAD_ROLE_NAME, team_leads))
+
+        elif role_name == TEAM_LEAD_ROLE_NAME:
+            staff = await self.user_repository.list_active_by_role_and_category(
+                STAFF_ROLE_NAME, ticket.ticket_type
+            )
+            groups.append(_to_assignable_group(STAFF_ROLE_NAME, staff))
+
+        return AssignableAgentsResponse(
+            me=AssignableUserSummary(user_id=current_user.user_id, name=current_user.name),
+            groups=[g for g in groups if g.users],
+        )
 
     # ---------------------------------------------------------
     # Sweep hook — advance any ACTIVE escalation past its ack window

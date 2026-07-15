@@ -10,6 +10,7 @@ from shared_models.models import User
 from app.database.session import get_db
 from app.dependencies.auth import get_current_agent, get_current_user
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
+from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.schemas.attachment import AttachmentMetadata
@@ -28,6 +29,7 @@ def _build_service(db: AsyncSession) -> AttachmentService:
         interaction_repository=InteractionRepository(db),
         ticket_repository=TicketRepository(db),
         storage_service=get_storage_service(),
+        client_repository=ClientRepository(db),
     )
 
 

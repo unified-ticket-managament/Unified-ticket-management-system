@@ -37,6 +37,9 @@ class SLAPolicyRepository:
         first_response_target_minutes: int | None = None,
         resolution_target_minutes: int | None = None,
         escalation_ack_target_minutes: int | None = None,
+        handling_sla_percentage: float | None = None,
+        warning_1_percentage: float | None = None,
+        warning_2_percentage: float | None = None,
         is_active: bool | None = None,
     ) -> SLAPolicy:
         if first_response_target_minutes is not None:
@@ -45,6 +48,12 @@ class SLAPolicyRepository:
             policy.resolution_target_minutes = resolution_target_minutes
         if escalation_ack_target_minutes is not None:
             policy.escalation_ack_target_minutes = escalation_ack_target_minutes
+        if handling_sla_percentage is not None:
+            policy.handling_sla_percentage = handling_sla_percentage
+        if warning_1_percentage is not None:
+            policy.warning_1_percentage = warning_1_percentage
+        if warning_2_percentage is not None:
+            policy.warning_2_percentage = warning_2_percentage
         if is_active is not None:
             policy.is_active = is_active
 

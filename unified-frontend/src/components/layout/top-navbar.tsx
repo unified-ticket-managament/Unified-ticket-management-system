@@ -41,7 +41,6 @@ const SLA_NOTIFICATION_DOT: Record<string, string> = {
   SLA_ESCALATED: "bg-danger",
 };
 
-<<<<<<< Updated upstream
 // Every notification `link` the backend generates (see
 // unified-backend/app/notifications/service.py's `notify()` call sites)
 // is written as if the ticket workspace were mounted at the app root —
@@ -57,13 +56,12 @@ const TICKET_WORKSPACE_ROUTES = ["/tickets", "/inbox", "/interactions", "/create
 function resolveNotificationHref(link: string | null): string | null {
   if (!link) return null;
   const isTicketWorkspaceRoute = TICKET_WORKSPACE_ROUTES.some(
-    (route) => link === route || link.startsWith(`${route}/`)
+    (route) =>
+      link === route || link.startsWith(`${route}/`) || link.startsWith(`${route}?`)
   );
   return isTicketWorkspaceRoute ? `/dashboard${link}` : link;
 }
 
-=======
->>>>>>> Stashed changes
 function timeAgo(isoString: string): string {
   const seconds = Math.max(0, (Date.now() - new Date(isoString).getTime()) / 1000);
   if (seconds < 60) return "just now";

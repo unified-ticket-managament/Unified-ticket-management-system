@@ -11,6 +11,7 @@ from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.first_response_sla_repository import (
     FirstResponseSLARepository,
 )
+from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.resolution_sla_repository import (
     ResolutionSLARepository,
 )
@@ -49,6 +50,29 @@ async def verify_sla_sweep_secret(
         )
 
 
+def build_sla_sweep_service(db: AsyncSession) -> SLASweepService:
+    """
+    Single place that wires up a SLASweepService from a session —
+    shared by this endpoint and app/core/sla_scheduler.py's in-process
+    APScheduler job, so the two callers can never drift into
+    constructing it differently. Pure wiring, no business logic of its
+    own: SLASweepService.__init__ still builds its own
+    EscalationService/EscalationHandlingSlaService internally.
+    """
+
+    return SLASweepService(
+        sla_policy_repository=SLAPolicyRepository(db),
+        first_response_sla_repository=FirstResponseSLARepository(db),
+        resolution_sla_repository=ResolutionSLARepository(db),
+        sla_breach_notification_repository=SLABreachNotificationRepository(db),
+        ticket_repository=TicketRepository(db),
+        client_repository=ClientRepository(db),
+        user_repository=UserRepository(db),
+        notification_service=NotificationService(NotificationRepository(db)),
+        interaction_repository=InteractionRepository(db),
+    )
+
+
 @router.post(
     "/sweep",
     response_model=SLASweepResponse,
@@ -59,21 +83,15 @@ async def run_sla_sweep(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    The Render Cron Job's target — runs one breach-detection pass over
+    Manual/on-demand trigger — runs one breach-detection pass over
     every active SLA clock, firing at-risk/breached/escalated
     notifications idempotently. See SLASweepService for the full
-    threshold/recipient logic.
+    threshold/recipient logic. The primary trigger is now
+    app/core/sla_scheduler.py's in-process APScheduler job (see
+    SLA_SWEEP_INTERVAL_MINUTES); this endpoint stays available for
+    manual/emergency use, both calling the identical
+    build_sla_sweep_service() wiring above.
     """
 
-    service = SLASweepService(
-        sla_policy_repository=SLAPolicyRepository(db),
-        first_response_sla_repository=FirstResponseSLARepository(db),
-        resolution_sla_repository=ResolutionSLARepository(db),
-        sla_breach_notification_repository=SLABreachNotificationRepository(db),
-        ticket_repository=TicketRepository(db),
-        client_repository=ClientRepository(db),
-        user_repository=UserRepository(db),
-        notification_service=NotificationService(NotificationRepository(db)),
-    )
-
+    service = build_sla_sweep_service(db)
     return await service.run_sweep()

@@ -34,6 +34,7 @@ from app.ticketing.services.attachment_service import (
 )
 from app.ticketing.services.audit_log_service import AuditLogService
 from app.ticketing.services.sla_service import SLAService
+from app.ticketing.services.sla_escalation_rules import RecipientContext, resolve_team_lead
 from app.notifications.service import NotificationService, NotificationType
 
 logger = logging.getLogger(__name__)
@@ -368,8 +369,22 @@ class EmailService:
                 ticket = await self.ticket_repository.get_by_id(ticket_id)
 
                 if ticket is not None and ticket.agent_id is not None:
+                    reply_recipient_ids = {ticket.agent_id}
+
+                    # Also notify the agent's own Team Lead — matches
+                    # Team Lead's "Replies" notification bullet.
+                    # Deliberately not fanned out to Site Lead/Super
+                    # Admin here too: every single client reply would
+                    # flood their bell at any real ticket volume (see
+                    # this repo's CLAUDE.md on the notification
+                    # hierarchy's scope decisions).
+                    if self.user_repository is not None:
+                        assigned_agent = await self.user_repository.get_by_id(ticket.agent_id)
+                        team_lead_ctx = RecipientContext(assigned_agent=assigned_agent)
+                        reply_recipient_ids |= resolve_team_lead(team_lead_ctx)
+
                     await self.notification_service.notify(
-                        ticket.agent_id,
+                        reply_recipient_ids,
                         NotificationType.CLIENT_REPLY,
                         title=f"New reply from {client.name}",
                         message=email.subject or "(no subject)",

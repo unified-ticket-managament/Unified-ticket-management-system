@@ -9,6 +9,7 @@ from app.ticketing.schemas.assignment import (
     AssignableGroup,
     AssignableUserSummary,
 )
+from app.ticketing.services.access_control import ensure_has_permission
 
 ACCOUNT_MANAGER_ROLE_NAME = "Account Manager"
 TEAM_LEAD_ROLE_NAME = "Team Lead"
@@ -126,6 +127,15 @@ class AssignmentService:
 
         if agent_id == current_user.user_id:
             return agent_id
+
+        # Assigning to someone other than yourself is ticket:assign —
+        # Full by default for Super Admin/Site Lead/Account Manager
+        # (own clients)/Team Lead (team), Override-only for Staff. The
+        # reporting-hierarchy check below already independently blocks
+        # Staff from reaching anyone (their own groups are always
+        # empty), but this makes the permission itself the enforcement
+        # point rather than a side effect of hierarchy shape.
+        ensure_has_permission(current_user, "ticket:assign")
 
         response = await self.get_assignable_groups(current_user)
         allowed_ids = {user.user_id for group in response.groups for user in group.users}

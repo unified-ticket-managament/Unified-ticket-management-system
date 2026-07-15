@@ -200,6 +200,7 @@ class AuditLogRepository:
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         search: str | None = None,
+        assigned_to: UUID | None = None,
     ) -> AuditLogVisiblePage:
         """
         The Audit Log page's query, collapsed the same way
@@ -233,7 +234,11 @@ class AuditLogRepository:
         scoping — see TicketService._resolve_audit_log_agent_ids —
         narrower than and independent of `ticket_types`'s existing
         category-pool meaning; a caller passes one or the other, never
-        both, for the same role.
+        both, for the same role. `assigned_to` (optional) is a
+        separate, user-chosen single-agent filter applied on top of
+        whatever `agent_ids`/`ticket_types`/`account_manager_id`
+        already restrict visibility to — narrowing, never widening,
+        what the caller's role can already see.
         """
 
         conditions = [AuditLog.ticket_id.isnot(None)]
@@ -254,6 +259,14 @@ class AuditLogRepository:
             # "unrestricted", same convention as the two conditions
             # above.
             conditions.append(Ticket.agent_id.in_(agent_ids))
+
+        # `assigned_to` is an independent, user-chosen filter (narrow
+        # down to one specific agent's rows) layered on top of — not a
+        # replacement for — `agent_ids`'s own role-based visibility
+        # scoping above; a Team Lead filtering by one of their own
+        # reports still can't reach a row `agent_ids` already excludes.
+        if assigned_to is not None:
+            conditions.append(Ticket.agent_id == assigned_to)
 
         if entity_type is not None:
             conditions.append(AuditLog.entity_type == entity_type)

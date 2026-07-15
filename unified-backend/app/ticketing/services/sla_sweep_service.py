@@ -10,6 +10,7 @@ from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.first_response_sla_repository import (
     FirstResponseSLARepository,
 )
+from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.resolution_sla_repository import (
     ResolutionSLARepository,
 )
@@ -102,6 +103,7 @@ class SLASweepService:
         client_repository: ClientRepository,
         user_repository: UserRepository,
         notification_service: NotificationService | None = None,
+        interaction_repository: InteractionRepository | None = None,
     ):
         self.sla_policy_repository = sla_policy_repository
         self.first_response_sla_repository = first_response_sla_repository
@@ -111,6 +113,7 @@ class SLASweepService:
         self.client_repository = client_repository
         self.user_repository = user_repository
         self.notification_service = notification_service
+        self.interaction_repository = interaction_repository
         # Extends this same background worker to also evaluate the
         # internal escalation workflow (create on first breach,
         # auto-advance an ignored acknowledgment) rather than standing
@@ -142,6 +145,11 @@ class SLASweepService:
         policies = await self.sla_policy_repository.list_all()
         target_by_priority_fr = {p.priority: p.first_response_target_minutes for p in policies}
         target_by_priority_res = {p.priority: p.resolution_target_minutes for p in policies}
+        # Per-priority "Warning 1"/"Warning 2" overrides (see SLAPolicy.
+        # warning_1_percentage/warning_2_percentage and the admin-facing
+        # SLA Timing Matrix) — BREACHED/ESCALATED stay fixed globally,
+        # only these two warning tiers vary per priority.
+        policy_by_priority = {p.priority: p for p in policies}
 
         counts = {
             "first_response_half_elapsed": 0,
@@ -183,6 +191,19 @@ class SLASweepService:
             c.client_id: c for c in await self.client_repository.list_by_ids(list(fr_client_ids))
         }
 
+        # Same batching for the underlying email itself (subject/body) —
+        # needed so a breach notification can name the specific email
+        # instead of a generic "an inbound email" message.
+        fr_interaction_ids = [c.interaction_id for c in first_response_clocks]
+        fr_interactions_by_id = (
+            {
+                i.interaction_id: i
+                for i in await self.interaction_repository.list_by_ids(fr_interaction_ids)
+            }
+            if self.interaction_repository is not None
+            else {}
+        )
+
         for clock in first_response_clocks:
             target_minutes = target_by_priority_fr.get(clock.priority)
             if target_minutes is None:
@@ -191,7 +212,16 @@ class SLASweepService:
             fraction = compute_elapsed_fraction(
                 due_at=clock.due_at, target_minutes=target_minutes, at=now
             )
-            reached = thresholds_reached(fraction)
+            policy = policy_by_priority.get(clock.priority)
+            reached = (
+                thresholds_reached(
+                    fraction,
+                    half_elapsed=policy.warning_1_percentage / 100,
+                    at_risk=policy.warning_2_percentage / 100,
+                )
+                if policy is not None
+                else thresholds_reached(fraction)
+            )
             if "HALF_ELAPSED" in reached:
                 counts["first_response_half_elapsed"] += 1
             if "AT_RISK" in reached:
@@ -236,7 +266,16 @@ class SLASweepService:
             fraction = compute_elapsed_fraction(
                 due_at=clock.due_at, target_minutes=target_minutes, at=now
             )
-            reached = thresholds_reached(fraction)
+            policy = policy_by_priority.get(clock.priority)
+            reached = (
+                thresholds_reached(
+                    fraction,
+                    half_elapsed=policy.warning_1_percentage / 100,
+                    at_risk=policy.warning_2_percentage / 100,
+                )
+                if policy is not None
+                else thresholds_reached(fraction)
+            )
             if "HALF_ELAPSED" in reached:
                 counts["resolution_half_elapsed"] += 1
             if "AT_RISK" in reached:
@@ -269,6 +308,7 @@ class SLASweepService:
                             threshold,
                             global_inbox_ids,
                             fr_clients_by_id,
+                            fr_interactions_by_id,
                         )
                     else:
                         sent, escalation_created = await self._notify_resolution(
@@ -348,6 +388,7 @@ class SLASweepService:
         threshold: str,
         global_inbox_ids: set[UUID],
         clients_by_id: dict,
+        interactions_by_id: dict,
     ) -> bool:
         """
         Only ever called for a triple try_record_many just confirmed
@@ -359,11 +400,13 @@ class SLASweepService:
         """
 
         client = clients_by_id.get(clock.client_id) if clock.client_id is not None else None
+        interaction = interactions_by_id.get(clock.interaction_id)
 
         return await notify_first_response_threshold(
             clock=clock,
             threshold=threshold,
             client=client,
+            interaction=interaction,
             global_inbox_ids=global_inbox_ids,
             notification_service=self.notification_service,
             user_repository=self.user_repository,

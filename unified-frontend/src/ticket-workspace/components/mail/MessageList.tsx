@@ -26,10 +26,25 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { TIME_FILTERS, type TimeFilterKey } from "@tw/hooks/useMailInbox";
 import { formatRelativeTime } from "@/lib/utils";
-import type { CategoryResponse, ClientResponse, InboxItem, TicketPriority } from "@tw/types";
+import type { CategoryResponse, ClientResponse, InboxItem, SLAPolicyResponse, TicketPriority } from "@tw/types";
 import { MailEmptyState } from "@tw/components/mail/MailEmptyState";
+import { listSlaPolicies } from "@tw/api/sla";
+import {
+  classifyTier,
+  computeElapsedFraction,
+  computeFirstResponseDueAt,
+  SLA_TIER_LABEL,
+  type SlaTier,
+} from "@tw/lib/slaMath";
+import { SlaBadge } from "@tw/components/sla/SlaBadge";
 
 type SortKey = "newest" | "oldest" | "sender";
+type SlaRiskFilter = "ALL" | SlaTier;
+
+// Coarser than the single-message countdown's 1s tick (SlaFirstResponseBadge/
+// useFirstResponseCountdown) — this drives a whole list's sort/badges, not a
+// live per-second countdown, so a cheaper refresh is enough to stay honest.
+const TIER_REFRESH_INTERVAL_MS = 30_000;
 
 const PAGE_SIZE = 10;
 
@@ -43,6 +58,7 @@ const PRIORITY_VARIANT: Record<TicketPriority, "success" | "warning" | "destruct
   LOW: "success",
   MEDIUM: "warning",
   HIGH: "destructive",
+  CRITICAL: "destructive",
 };
 
 function statusMeta(item: InboxItem): { label: string; variant: "warning" | "success" | "secondary" | "default" } {
@@ -140,16 +156,62 @@ export function MessageList({
   // is currently loaded, same as before.
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [attachmentsOnly, setAttachmentsOnly] = useState(false);
+  const [slaRiskFilter, setSlaRiskFilter] = useState<SlaRiskFilter>("ALL");
   const [page, setPage] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
 
+  // First Response SLA tier, computed client-side — no dedicated read
+  // endpoint exists (same reason SlaFirstResponseBadge/
+  // useFirstResponseCountdown recompute it), so this fetches the one
+  // shared MEDIUM target once for the whole list rather than per row.
+  const [policies, setPolicies] = useState<SLAPolicyResponse[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    listSlaPolicies()
+      .then((data) => {
+        if (!cancelled) setPolicies(data);
+      })
+      .catch(() => {
+        // No policy data -> firstResponseTierFor returns null for
+        // every row, same "just don't render/sort/filter by it yet"
+        // degrade-safe behavior as the single-message badge.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(new Date()), TIER_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const targetMinutes = policies?.find((p) => p.priority === "MEDIUM")?.first_response_target_minutes ?? null;
+
+  // Only a still-pending, not-yet-ticketed message has a First
+  // Response clock to show — same gate SlaFirstResponseBadge's own
+  // `enabled` prop already uses. A ticketed row's relevant clock is
+  // Resolution SLA instead, tracked on the Tickets page, not here.
+  function firstResponseTierFor(item: InboxItem): SlaTier | null {
+    if (item.ticket_id || item.status !== "PENDING" || targetMinutes == null) return null;
+    const dueAt = computeFirstResponseDueAt(item.received_at, targetMinutes);
+    return classifyTier(computeElapsedFraction({ dueAt, targetMinutes, now }));
+  }
+
   // Priority/category are now applied server-side (GET /inbox) —
-  // `items` already reflects both filters, so only unread/attachments
-  // and sort are applied here.
+  // `items` already reflects both filters, so unread/attachments/SLA
+  // risk and sort are applied here. SLA risk is filter-only — it no
+  // longer also reorders the list ahead of the user's chosen sort,
+  // since pinning Escalated/Breached/At Risk mail to the top buried
+  // genuinely new incoming mail underneath older escalated items.
   const filtered = useMemo(() => {
     let rows = items;
     if (unreadOnly) rows = rows.filter((item) => !openedIds.has(item.open_interaction_id ?? item.interaction_id));
     if (attachmentsOnly) rows = rows.filter((item) => item.has_attachments);
+    if (slaRiskFilter !== "ALL") {
+      rows = rows.filter((item) => firstResponseTierFor(item) === slaRiskFilter);
+    }
 
     return [...rows].sort((a, b) => {
       if (sort === "sender") return a.client_name.localeCompare(b.client_name);
@@ -157,11 +219,23 @@ export function MessageList({
       const bTime = new Date(b.latest_at ?? b.received_at).getTime();
       return sort === "oldest" ? aTime - bTime : bTime - aTime;
     });
-  }, [items, unreadOnly, attachmentsOnly, sort, openedIds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, unreadOnly, attachmentsOnly, sort, openedIds, slaRiskFilter, targetMinutes, now]);
 
   useEffect(() => {
     setPage(0);
-  }, [search, priorityFilter, unreadOnly, attachmentsOnly, categoryFilter, sort, timeFilter, clientFilter, folderLabel]);
+  }, [
+    search,
+    priorityFilter,
+    unreadOnly,
+    attachmentsOnly,
+    categoryFilter,
+    slaRiskFilter,
+    sort,
+    timeFilter,
+    clientFilter,
+    folderLabel,
+  ]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const clampedPage = Math.min(page, totalPages - 1);
@@ -191,6 +265,7 @@ export function MessageList({
     attachmentsOnly,
     categoryFilter !== "ALL",
     timeFilter !== "ALL",
+    slaRiskFilter !== "ALL",
   ].filter(Boolean).length;
 
   return (
@@ -279,6 +354,20 @@ export function MessageList({
               </SelectContent>
             </Select>
 
+            <DropdownMenuLabel className="mt-3 px-0 py-0 text-xs">SLA risk</DropdownMenuLabel>
+            <Select value={slaRiskFilter} onValueChange={(v) => setSlaRiskFilter(v as SlaRiskFilter)}>
+              <SelectTrigger className="mt-1.5 h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">Any</SelectItem>
+                <SelectItem value="escalated">{SLA_TIER_LABEL.escalated}</SelectItem>
+                <SelectItem value="breached">{SLA_TIER_LABEL.breached}</SelectItem>
+                <SelectItem value="at_risk">{SLA_TIER_LABEL.at_risk}</SelectItem>
+                <SelectItem value="healthy">{SLA_TIER_LABEL.healthy}</SelectItem>
+              </SelectContent>
+            </Select>
+
             <DropdownMenuLabel className="mt-3 px-0 py-0 text-xs">Date received</DropdownMenuLabel>
             <Select value={timeFilter} onValueChange={(v) => onTimeFilterChange(v as TimeFilterKey)}>
               <SelectTrigger className="mt-1.5 h-8 text-xs">
@@ -312,6 +401,7 @@ export function MessageList({
                   onCategoryFilterChange("ALL");
                   setUnreadOnly(false);
                   setAttachmentsOnly(false);
+                  setSlaRiskFilter("ALL");
                   onTimeFilterChange("ALL");
                 }}
                 className="mt-2 w-full rounded-md border border-border py-1.5 text-[11.5px] font-medium text-muted-foreground hover:bg-muted"
@@ -342,6 +432,7 @@ export function MessageList({
               const status = statusMeta(item);
               const isOpening = openingId === openId;
               const preview = previewOf(item.latest_message);
+              const slaTier = firstResponseTierFor(item);
 
               return (
                 <li key={item.interaction_id}>
@@ -389,6 +480,13 @@ export function MessageList({
                     </div>
 
                     <div className="flex flex-none flex-col items-end gap-1.5 pl-1">
+                      {/* First Response SLA tier — only a still-pending
+                          message has one; a ticketed row's relevant
+                          clock is Resolution SLA, shown on the Tickets
+                          page instead. On Track isn't shown here, same
+                          "only the tiers worth flagging" convention as
+                          the Tickets page's own badge. */}
+                      {slaTier && slaTier !== "healthy" && <SlaBadge tier={slaTier} />}
                       {item.ticket_priority && (
                         <Badge variant={PRIORITY_VARIANT[item.ticket_priority]} className="text-[10px]">
                           {item.ticket_priority}

@@ -64,6 +64,7 @@ from app.ticketing.services.access_control import (
     ensure_can_close_ticket,
     ensure_can_compose_for_client,
     ensure_can_reassign_ticket,
+    ensure_can_reopen_ticket,
     ensure_has_permission,
     ensure_ticket_not_closed,
 )
@@ -77,6 +78,12 @@ from app.ticketing.services.escalation_service import EscalationService
 from app.ticketing.services.interaction_summary import trim_payload_for_list
 from app.ticketing.services.outbound_dispatcher import OutboundDispatcher
 from app.ticketing.services.sla_service import SLAService
+from app.ticketing.services.sla_escalation_rules import (
+    RecipientContext,
+    resolve_account_manager,
+    resolve_assigned_agent,
+    resolve_team_lead,
+)
 
 from app.ticketing.enums import (
     AuditEntityType,
@@ -177,6 +184,37 @@ class InteractionService:
         self.sla_service = sla_service
         self.escalation_service = escalation_service
 
+    async def _resolve_ticket_stakeholder_ids(
+        self,
+        ticket,
+        exclude_user_id: UUID | None = None,
+    ) -> set[UUID]:
+        """
+        "Who has a stake in this ticket" for the core ticket-lifecycle
+        notification triggers (status change, priority change,
+        resolution, internal note added) — the ticket's own assigned
+        agent, that agent's Team Lead, and the client's Account
+        Manager. Reuses the exact recipient-resolver functions the SLA
+        sweep already established (sla_escalation_rules.py) instead of
+        re-deriving the same hierarchy traversal a second time.
+        `exclude_user_id` drops whoever performed the action, so an
+        actor never gets notified about their own change.
+        """
+
+        client = None
+        if self.client_repository is not None and ticket.client_company_id is not None:
+            client = await self.client_repository.get_by_id(ticket.client_company_id)
+
+        assigned_agent = None
+        if ticket.agent_id is not None:
+            assigned_agent = await self.user_repository.get_by_id(ticket.agent_id)
+
+        ctx = RecipientContext(client=client, assigned_agent=assigned_agent)
+        ids = resolve_account_manager(ctx) | resolve_team_lead(ctx) | resolve_assigned_agent(ctx)
+        if exclude_user_id is not None:
+            ids.discard(exclude_user_id)
+        return ids
+
     # ---------------------------------------------------------
     # Create Interaction
     # ---------------------------------------------------------
@@ -261,6 +299,9 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
 
         ensure_agent_can_view_ticket(ticket, current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
 
         interactions = (
             await self.interaction_repository
@@ -334,6 +375,10 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
 
         ensure_agent_can_view_ticket(ticket, current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_has_permission(current_user, "ticket:view_audit_trail")
 
         audit_logs = await self.audit_log_repository.list_by_ticket(ticket_id)
 
@@ -459,6 +504,11 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
         await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_has_permission(current_user, "ticket:reply")
+        ensure_has_permission(current_user, "communication:reply_internal")
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -487,6 +537,21 @@ class InteractionService:
             actor_role=actor_role,
             new_values={"ticket_id": ticket_id},
         )
+
+        if self.notification_service is not None:
+            stakeholder_ids = await self._resolve_ticket_stakeholder_ids(
+                ticket, exclude_user_id=current_user.user_id
+            )
+            if stakeholder_ids:
+                await self.notification_service.notify(
+                    stakeholder_ids,
+                    NotificationType.INTERNAL_NOTE_ADDED,
+                    title="A new internal note was added",
+                    message=f"{ticket.title}: {request.subject}",
+                    link=f"/tickets/{ticket_id}",
+                    related_entity_type="ticket",
+                    related_entity_id=ticket_id,
+                )
 
         return InternalNoteResponse(
 
@@ -524,6 +589,11 @@ class InteractionService:
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
         await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_has_permission(current_user, "ticket:reply")
+        ensure_has_permission(current_user, "communication:reply_external")
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -653,6 +723,13 @@ class InteractionService:
                 status_code=http_status.HTTP_404_NOT_FOUND,
                 detail="Interaction not found.",
             )
+
+        # This is the client-facing "reply on a not-yet-ticketed
+        # communication" action — previously had no authorization check
+        # of any kind (not even the pending-interaction visibility
+        # scoping every other pending-interaction action already has).
+        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        ensure_has_permission(current_user, "communication:reply_external")
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -869,32 +946,45 @@ class InteractionService:
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
+
+        # A closed ticket is read-only, including via this generic
+        # status-change route — Reopen Ticket (a dedicated, permission-
+        # gated action, see reopen_ticket below) is now the only way
+        # off CLOSED. This used to be exempt specifically so a plain
+        # status change could reopen a ticket; that carve-out is gone
+        # now that a real Reopen action exists.
+        ensure_ticket_not_closed(ticket)
         await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_has_permission(current_user, "ticket:update_status")
 
         old_status = ticket.current_status
         old_closed_at = ticket.closed_at
         new_status = request.new_status
 
-        # Only a supervisor may close a ticket — added specifically so
-        # the Resolution SLA's "ends only when a Manager verifies and
-        # closes" requirement is actually enforced, not just
-        # aspirational (see access_control.ensure_can_close_ticket's
-        # own docstring). Moving to RESOLVED is unaffected.
+        # Closing must go through the dedicated Close Ticket action
+        # (close_ticket below) — never this generic status-change
+        # route — so it gets its own TICKET_CLOSED audit event,
+        # closed_by stamp, and confirmation-dialog UX instead of being
+        # just another status value.
         if new_status == TicketStatus.CLOSED:
-            ensure_can_close_ticket(current_user)
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Closing a ticket must be done via the Close Ticket action, not a status change.",
+            )
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
         )
 
-        # Resolving or closing a ticket stamps `closed_at`; reopening
-        # one (moving off RESOLVED/CLOSED) clears it back to None.
-        # Moving between RESOLVED and CLOSED leaves the original stamp
-        # alone — this is the single place that ever sets or clears
-        # it, since the dedicated "Resolve" action was folded in here
-        # to avoid two ways of doing the same thing.
-        was_closed = old_status in (TicketStatus.RESOLVED, TicketStatus.CLOSED)
-        will_be_closed = new_status in (TicketStatus.RESOLVED, TicketStatus.CLOSED)
+        # Resolving a ticket stamps `closed_at`; moving off RESOLVED
+        # clears it back to None — this is the single place that ever
+        # sets or clears it for a non-CLOSED transition (close_ticket/
+        # reopen_ticket own the CLOSED case now).
+        was_closed = old_status == TicketStatus.RESOLVED
+        will_be_closed = new_status == TicketStatus.RESOLVED
 
         update_fields: dict[str, Any] = {"current_status": new_status}
         if not was_closed and will_be_closed:
@@ -931,12 +1021,13 @@ class InteractionService:
         )
 
         # ---------------------------------------------------------
-        # Resolution SLA — pause/resume/complete all key off this
-        # single chokepoint, matching this repo's existing "change_status
-        # is the one place status transitions happen" principle.
-        # Entering RESOLVED deliberately never completes the clock —
-        # only a supervisor-gated transition into CLOSED does (see the
-        # gate above and ResolutionSLA's own docstring).
+        # Resolution SLA — pause/resume key off this chokepoint,
+        # matching this repo's existing "change_status is the one place
+        # status transitions happen" principle. Entering RESOLVED
+        # deliberately never completes the clock; entering CLOSED is no
+        # longer reachable through this method at all (see the gate
+        # above) — close_ticket below is the only place the clock is
+        # ever completed now.
         # ---------------------------------------------------------
 
         if self.sla_service is not None:
@@ -952,6 +1043,16 @@ class InteractionService:
                     reason="WAITING_FOR_CLIENT_STATUS",
                     triggering_interaction_id=None,
                 )
+                await AuditLogService.log_event(
+                    self.ticket_repository.db,
+                    entity_type=AuditEntityType.TICKET,
+                    entity_id=ticket_id,
+                    event_type=AuditEventType.SLA_PAUSED,
+                    actor_id=actor_id,
+                    actor_name=actor_name,
+                    actor_role=actor_role,
+                    new_values={"reason": "WAITING_FOR_CLIENT_STATUS"},
+                )
             elif (
                 old_status == TicketStatus.WAITING_FOR_CLIENT
                 and new_status != TicketStatus.WAITING_FOR_CLIENT
@@ -960,14 +1061,226 @@ class InteractionService:
                     ticket_id=ticket_id,
                     triggering_interaction_id=None,
                 )
+                if new_status in (TicketStatus.IN_PROGRESS, TicketStatus.RESOLVED):
+                    await AuditLogService.log_event(
+                        self.ticket_repository.db,
+                        entity_type=AuditEntityType.TICKET,
+                        entity_id=ticket_id,
+                        event_type=AuditEventType.SLA_RESUMED,
+                        actor_id=actor_id,
+                        actor_name=actor_name,
+                        actor_role=actor_role,
+                        new_values={"new_status": new_status.value},
+                    )
 
-            if new_status == TicketStatus.CLOSED and old_status != TicketStatus.CLOSED:
-                await self.sla_service.complete_resolution_clock(ticket_id=ticket_id)
+        if self.notification_service is not None:
+            stakeholder_ids = await self._resolve_ticket_stakeholder_ids(
+                ticket, exclude_user_id=current_user.user_id
+            )
+            if stakeholder_ids:
+                # A transition into RESOLVED fires TICKET_RESOLVED
+                # instead of the generic TICKET_STATUS_CHANGED — not
+                # both, so the same transition never produces two
+                # notifications for one event. CLOSED can no longer be
+                # reached through this method at all (see the gate
+                # above) — close_ticket has its own audit event but no
+                # notify trigger yet, same as reopen_ticket.
+                if will_be_closed and not was_closed:
+                    await self.notification_service.notify(
+                        stakeholder_ids,
+                        NotificationType.TICKET_RESOLVED,
+                        title="A ticket was resolved",
+                        message=ticket.title,
+                        link=f"/tickets/{ticket_id}",
+                        related_entity_type="ticket",
+                        related_entity_id=ticket_id,
+                    )
+                else:
+                    await self.notification_service.notify(
+                        stakeholder_ids,
+                        NotificationType.TICKET_STATUS_CHANGED,
+                        title="A ticket's status changed",
+                        message=f"{ticket.title}: {old_status.value} → {new_status.value}",
+                        link=f"/tickets/{ticket_id}",
+                        related_entity_type="ticket",
+                        related_entity_id=ticket_id,
+                    )
 
         return TicketActionResponse(
             interaction_id=None,
             ticket_id=ticket_id,
             message="Ticket status updated successfully.",
+            created_at=datetime.now(timezone.utc),
+        )
+
+    # ---------------------------------------------------------
+    # Close Ticket
+    # ---------------------------------------------------------
+
+    async def close_ticket(
+        self,
+        ticket_id: UUID,
+        current_user: User,
+    ) -> TicketActionResponse:
+        """
+        Closes a ticket — the only transition that completes the
+        Resolution SLA clock. Split out of change_status into its own
+        action (own permission gate, own audit event, own closed_by
+        stamp) rather than treating CLOSED as just another status
+        value.
+        """
+
+        ticket = await self._get_ticket_or_404(ticket_id)
+        ensure_ticket_not_closed(ticket)
+        await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_can_close_ticket(current_user)
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        old_status = ticket.current_status
+        old_closed_at = ticket.closed_at
+        old_closed_by = ticket.closed_by
+        now = datetime.now(timezone.utc)
+
+        await self.ticket_repository.update(
+            ticket,
+            TicketUpdate(
+                current_status=TicketStatus.CLOSED,
+                closed_at=now,
+                closed_by=current_user.user_id,
+            ),
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.TICKET_CLOSED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={
+                "current_status": old_status,
+                "closed_at": old_closed_at,
+                "closed_by": old_closed_by,
+            },
+            new_values={
+                "current_status": TicketStatus.CLOSED,
+                "closed_at": now,
+                "closed_by": current_user.user_id,
+                "closed_by_name": current_user.name,
+            },
+        )
+
+        # Same Resolution SLA chokepoint change_status used to drive
+        # for a CLOSED target: unpause first if the ticket happened to
+        # be WAITING_FOR_CLIENT (so complete_resolution_clock below runs
+        # against a correctly-unpaused clock), then complete it. No
+        # separate SLA_RESUMED audit row here, matching change_status's
+        # own prior behavior for this exact transition.
+        if self.sla_service is not None:
+            if old_status == TicketStatus.WAITING_FOR_CLIENT:
+                await self.sla_service.resume_resolution_clock(
+                    ticket_id=ticket_id,
+                    triggering_interaction_id=None,
+                )
+            await self.sla_service.complete_resolution_clock(ticket_id=ticket_id)
+
+        return TicketActionResponse(
+            interaction_id=None,
+            ticket_id=ticket_id,
+            message="Ticket closed successfully.",
+            created_at=now,
+        )
+
+    # ---------------------------------------------------------
+    # Reopen Ticket
+    # ---------------------------------------------------------
+
+    async def reopen_ticket(
+        self,
+        ticket_id: UUID,
+        current_user: User,
+    ) -> TicketActionResponse:
+        """
+        Reopens a closed ticket, restoring it to OPEN and clearing
+        closed_at/closed_by. This is the only way off CLOSED now that
+        change_status refuses the transition (see ensure_ticket_not_closed
+        there) — every other action's own ensure_ticket_not_closed guard
+        starts working again for this ticket the instant this completes.
+        """
+
+        ticket = await self._get_ticket_or_404(ticket_id)
+
+        if ticket.current_status != TicketStatus.CLOSED:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Only a closed ticket can be reopened.",
+            )
+
+        await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_can_reopen_ticket(current_user)
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        old_closed_at = ticket.closed_at
+        old_closed_by = ticket.closed_by
+
+        await self.ticket_repository.update(
+            ticket,
+            TicketUpdate(
+                current_status=TicketStatus.OPEN,
+                closed_at=None,
+                closed_by=None,
+            ),
+        )
+
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket_id,
+            event_type=AuditEventType.TICKET_REOPENED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={
+                "current_status": TicketStatus.CLOSED,
+                "closed_at": old_closed_at,
+                "closed_by": old_closed_by,
+            },
+            new_values={
+                "current_status": TicketStatus.OPEN,
+                "closed_at": None,
+                "closed_by": None,
+            },
+        )
+
+        # Deliberately does NOT touch the Resolution SLA clock:
+        # SLAService.create_or_resume_resolution_clock's own docstring
+        # is explicit that a COMPLETED clock is never resurrected
+        # ("never resurrect a clock on a closed ticket"), and closing
+        # this ticket already completed it (see close_ticket above).
+        # Reopening restores the ticket's own workflow state — edit
+        # capability, replies, status/priority changes, transfer — but
+        # not a past SLA measurement or the internal escalation
+        # workflow (if one was closed alongside the original
+        # completion); a future breach on the reopened ticket would
+        # create a new escalation rather than resuming the old one.
+
+        return TicketActionResponse(
+            interaction_id=None,
+            ticket_id=ticket_id,
+            message="Ticket reopened successfully.",
             created_at=datetime.now(timezone.utc),
         )
 
@@ -988,6 +1301,19 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
+        # ensure_agent_can_view_ticket/ensure_account_manager_owns_ticket_client
+        # were previously missing here — change_priority deliberately
+        # skips the assigned-agent-only check (ensure_agent_can_act_on_ticket)
+        # per its own docstring ("any permission holder can change
+        # priority on any ticket in their visibility scope"), but the
+        # visibility-scope half of that sentence was never actually
+        # enforced: a Team Lead/Staff granted ticket:change_priority via
+        # override could reach a ticket outside their own category, and
+        # an Account Manager could reach any client's ticket.
+        ensure_agent_can_view_ticket(ticket, current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
         ensure_has_permission(current_user, "ticket:change_priority")
 
         old_priority = ticket.current_priority
@@ -1023,6 +1349,21 @@ class InteractionService:
                 new_priority=request.new_priority,
             )
 
+        if self.notification_service is not None:
+            stakeholder_ids = await self._resolve_ticket_stakeholder_ids(
+                ticket, exclude_user_id=current_user.user_id
+            )
+            if stakeholder_ids:
+                await self.notification_service.notify(
+                    stakeholder_ids,
+                    NotificationType.TICKET_PRIORITY_CHANGED,
+                    title="A ticket's priority changed",
+                    message=f"{ticket.title}: {old_priority.value} → {request.new_priority.value}",
+                    link=f"/tickets/{ticket_id}",
+                    related_entity_type="ticket",
+                    related_entity_id=ticket_id,
+                )
+
         return TicketActionResponse(
             interaction_id=None,
             ticket_id=ticket_id,
@@ -1050,6 +1391,16 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
+        # Previously missing: transfer_agent had no category/client
+        # visibility check at all, only the role/permission gate below
+        # — a Team Lead could transfer a ticket outside their own
+        # category, and an Account Manager could reach any client's
+        # ticket. The approved matrix scopes ticket:transfer to "team"
+        # for Team Lead and "own clients" for Account Manager.
+        ensure_agent_can_view_ticket(ticket, current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
         ensure_can_reassign_ticket(current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
@@ -1136,6 +1487,7 @@ class InteractionService:
             new_values={
                 "agent_id": new_agent.user_id,
                 "agent_name": new_agent.name,
+                "reason": request.reason,
             },
         )
 
@@ -1149,6 +1501,31 @@ class InteractionService:
                 related_entity_type="ticket",
                 related_entity_id=ticket_id,
             )
+
+            # Also notify the hierarchy that owns this ticket/agent —
+            # the client's Account Manager and the new agent's own
+            # Team Lead — so assignment/reassignment is visible beyond
+            # just the new assignee. Reuses the same recipient-
+            # resolution primitives the SLA sweep already established
+            # rather than re-deriving them a second time.
+            client = None
+            if self.client_repository is not None and ticket.client_company_id is not None:
+                client = await self.client_repository.get_by_id(ticket.client_company_id)
+            new_agent_with_role = await self.user_repository.get_by_id(new_agent.user_id)
+            stakeholder_ctx = RecipientContext(client=client, assigned_agent=new_agent_with_role)
+            stakeholder_ids = (
+                resolve_account_manager(stakeholder_ctx) | resolve_team_lead(stakeholder_ctx)
+            ) - {new_agent.user_id}
+            if stakeholder_ids:
+                await self.notification_service.notify(
+                    stakeholder_ids,
+                    NotificationType.TICKET_ASSIGNED,
+                    title="A ticket was reassigned" if old_agent_id is not None else "A ticket was assigned",
+                    message=f"{ticket.title} — assigned to {new_agent.name}",
+                    link=f"/tickets/{ticket_id}",
+                    related_entity_type="ticket",
+                    related_entity_id=ticket_id,
+                )
 
         # Assigning an escalated ticket is treated as accepting it —
         # same rule a literal Acknowledge click follows, applied here
@@ -1348,6 +1725,7 @@ class InteractionService:
             )
 
         await self._ensure_can_act_on_pending_interaction(interaction, current_user)
+        ensure_has_permission(current_user, "communication:archive")
 
         archived = await self.interaction_repository.archive(interaction)
 
@@ -1831,6 +2209,8 @@ class InteractionService:
         else:
             await self._ensure_can_act_on_pending_interaction(root, current_user)
 
+        ensure_has_permission(current_user, "communication:view_timeline")
+
         replies = await self.interaction_repository.list_thread(root.interaction_id)
         ordered = [root, *replies]
 
@@ -1876,6 +2256,33 @@ class InteractionService:
         Soft-deletes (hides) an interaction that
         belongs to the given ticket.
         """
+
+        # Previously this method had NO authorization check of any
+        # kind — meaning any authenticated agent could hide any
+        # interaction, ticketed or not, by id. Now gated:
+        # - Ticketed (ticket_id is not None): same category/client
+        #   visibility scope every other ticket action uses, plus the
+        #   ticket:hide_interaction permission (Full for Super Admin/
+        #   Site Lead/Account Manager-own-clients, Override for Team
+        #   Lead/Staff — permission-only, like ticket:change_priority,
+        #   not an ownership gate).
+        # - Pre-ticket (ticket_id is None — POST /interactions/{id}/hide
+        #   can reach a still-pending inbox item): the existing pending-
+        #   interaction gate (own-client-scope-or-supervisor), since
+        #   ticket:hide_interaction is a Ticket-module permission with
+        #   no pre-ticket equivalent in the approved matrix.
+        if ticket_id is not None:
+            ticket = await self._get_ticket_or_404(ticket_id)
+            ensure_ticket_not_closed(ticket)
+            ensure_agent_can_view_ticket(ticket, current_user)
+            await ensure_account_manager_owns_ticket_client(
+                ticket, current_user, self.client_repository
+            )
+            ensure_has_permission(current_user, "ticket:hide_interaction")
+        else:
+            pending = await self.interaction_repository.get_by_id(interaction_id)
+            if pending is not None:
+                await self._ensure_can_act_on_pending_interaction(pending, current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user

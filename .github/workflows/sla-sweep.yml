@@ -1,28 +1,25 @@
 name: SLA Sweep
 
-# Replaces the Render Cron Job approach (render.yaml's old `sla-sweep`
-# service) — Render Cron Jobs require a paid plan; this hits the same
-# shared-secret-protected POST /internal/sla/sweep on unified-backend
-# for free, via GitHub's own scheduler.
+# DISABLED as the scheduling mechanism — the SLA sweep now runs
+# in-process inside unified-backend itself (app/core/sla_scheduler.py,
+# an APScheduler job started from app/main.py's lifespan, interval
+# configured via SLA_SWEEP_INTERVAL_MINUTES). This workflow's
+# `schedule` trigger has been removed on purpose so it can no longer
+# fire on its own; `workflow_dispatch` is kept so it still exists as a
+# manual/emergency fallback (Actions tab -> SLA Sweep -> Run workflow)
+# if the in-process scheduler is ever suspected of not running, without
+# needing to re-author this whole file from scratch.
 #
-# Required repo secrets (Settings -> Secrets and variables -> Actions):
+# Required repo secrets, still needed for that manual fallback
+# (Settings -> Secrets and variables -> Actions):
 #   SLA_SWEEP_URL             — unified-backend's real root URL +
 #                               /internal/sla/sweep (no /api/v1)
 #   SLA_SWEEP_SHARED_SECRET   — must be byte-identical to
 #                               unified-backend's own env var of the
 #                               same name
-#
-# GitHub does not guarantee exact timing on `schedule` triggers (its
-# own docs: runs "may be delayed during periods of high load") — 5
-# minutes is the practical floor for reliability, not a hard platform
-# minimum. Tighten only if you've confirmed runs are landing close to
-# on-time; going below ~5 minutes risks skipped/coalesced runs under
-# GitHub's own scheduling load.
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
-  workflow_dispatch: {} # manual "Run workflow" button, for on-demand testing
+  workflow_dispatch: {} # manual "Run workflow" button, for on-demand/emergency use only
 
 jobs:
   sweep:

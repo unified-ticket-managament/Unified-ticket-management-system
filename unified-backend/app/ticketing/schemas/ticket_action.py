@@ -93,6 +93,13 @@ class TransferAgentRequest(BaseModel):
 
     new_agent_id: UUID
 
+    reason: str = Field(
+        ...,
+        min_length=1,
+        max_length=1000,
+        description="Why the ticket is being transferred, recorded on the audit log.",
+    )
+
 
 class TicketActionResponse(ORMBase):
     """

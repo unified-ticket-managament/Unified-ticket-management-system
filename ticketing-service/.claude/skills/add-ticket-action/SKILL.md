@@ -47,6 +47,23 @@ into `EscalationService` directly for anything other than reading state; the int
 escalation workflow is a *consumer* of Resolution SLA breach events (via the sweep), not
 something ticket actions mutate directly.
 
+**Check whether the new action should also notify anyone** — a second cross-cutting concern
+alongside the SLA one above, not a fourth pattern. `InteractionService._resolve_ticket_stakeholder_ids(ticket, exclude_user_id=None)`
+(added for the status/priority/resolved/internal-note triggers) already resolves "who has a
+stake in this ticket" — the assigned agent, that agent's Team Lead, and the client's Account
+Manager — by reusing `sla_escalation_rules.py`'s `RecipientContext`/`resolve_account_manager`/
+`resolve_team_lead`/`resolve_assigned_agent` resolvers; call it and
+`self.notification_service.notify(...)` (guarded with `if self.notification_service is not None:`,
+same optional-dependency convention as `sla_service`) rather than inventing a new
+recipient-resolution shape or hardcoding a single recipient. Always pass
+`exclude_user_id=current_user.user_id` so the actor never gets notified about their own change.
+If the action is itself a status transition into `RESOLVED`/`CLOSED`, fire a distinct
+`NotificationType` for it (see `TICKET_RESOLVED` vs. the generic `TICKET_STATUS_CHANGED`) rather
+than both, to avoid a duplicate pair of notifications for one event. See
+`unified-frontend/CLAUDE.md`'s "Notification hierarchy" section for the full before/after and the
+deliberate scope decision *not* to fan every routine event out to Super Admin/Site Lead (their
+broad visibility comes from ticket lists/audit logs, not a flooded bell).
+
 **Three further variants exist for shapes that don't fit either pattern above** — see
 `CLAUDE.md` for the full detail, summarized here:
 - **A thread-scoped, upsertable action** (Drafts): if the action should have "at most one
@@ -115,11 +132,22 @@ action needs a new `AuditEventType` member.
        alone; `ensure_can_reassign_ticket` composes both — role check first, permission
        check as the fallback for anyone the role check didn't already clear — so a specific
        Staff member can be granted the capability without touching `SUPERVISOR_ROLE_NAMES`
-       at all. See `CLAUDE.md`'s "Permission-based enforcement" section before adding a new
-       `ticket:*` permission name — it must also exist in `unified-backend/scripts/rbac_seed/
-       seed.py`'s `DEFAULT_PERMISSIONS`/`DEFAULT_ROLES` or no one will ever hold it. If the new
-       permission should be grantable scoped to one specific ticket (not just a blanket
-       role/override grant), see `ticket:editother_ticket`'s `scope_ticket_id` pattern in
+       at all. `ensure_can_close_ticket`/`ensure_can_reopen_ticket`/`ensure_can_override_sla`
+       are further examples of this composed shape, each with their own narrower bypass set
+       (`CLOSE_REOPEN_BYPASS_ROLE_NAMES`/`GLOBAL_INBOX_ROLE_NAMES`, not the wider
+       `SUPERVISOR_ROLE_NAMES`) — check the RBAC permission-matrix doc's own Full/Override
+       column for the role you're bypassing before reaching for `SUPERVISOR_ROLE_NAMES` by
+       default; a 2026-07-14/15 audit found several of these had bypassed too widely (Team
+       Lead unconditionally, where the doc marks it Override-only) — see `CLAUDE.md`'s
+       "Permission-based enforcement" section for the full list of real call sites this now
+       has. See that same section before adding a new `ticket:*` permission name — it must
+       also exist in `unified-backend/scripts/rbac_seed/seed.py`'s
+       `DEFAULT_PERMISSIONS`/`DEFAULT_ROLES` or no one will ever hold it, and if a mutating
+       action reaches a `Ticket` row, also check whether `ensure_account_manager_owns_ticket_client`
+       needs calling alongside — several mutating actions had a permission check but no
+       Account-Manager-client-boundary check until that same audit. If the new permission
+       should be grantable scoped to one specific ticket (not just a blanket role/override
+       grant), see `ticket:editother_ticket`'s `scope_ticket_id` pattern in
        `unified-frontend/CLAUDE.md`'s "Per-user permission overrides" section rather than
        inventing a new scoping mechanism.
    - `actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(current_user)`

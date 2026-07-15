@@ -27,6 +27,12 @@ class AuditEventType(str, Enum):
     STATUS_CHANGED = "STATUS_CHANGED"
     PRIORITY_CHANGED = "PRIORITY_CHANGED"
     AGENT_TRANSFERRED = "AGENT_TRANSFERRED"
+    # Closing/reopening used to be logged as a generic STATUS_CHANGED
+    # row — these are dedicated events for the new Close Ticket/Reopen
+    # Ticket actions (InteractionService.close_ticket/reopen_ticket),
+    # distinct from an ordinary status change.
+    TICKET_CLOSED = "TICKET_CLOSED"
+    TICKET_REOPENED = "TICKET_REOPENED"
     INTERACTION_HIDDEN = "INTERACTION_HIDDEN"
     ATTACHMENT_UPLOADED = "ATTACHMENT_UPLOADED"
     NOTE_ADDED = "NOTE_ADDED"
@@ -45,8 +51,13 @@ class AuditEventType(str, Enum):
     EDIT_ACCESS_REQUESTED = "EDIT_ACCESS_REQUESTED"
     EDIT_ACCESS_APPROVED = "EDIT_ACCESS_APPROVED"
     EDIT_ACCESS_REJECTED = "EDIT_ACCESS_REJECTED"
-    SLA_MANUALLY_PAUSED = "SLA_MANUALLY_PAUSED"
-    SLA_MANUALLY_RESUMED = "SLA_MANUALLY_RESUMED"
+    # Fired whenever the Resolution SLA clock pauses/resumes — the
+    # automatic WAITING_FOR_CLIENT-driven case (InteractionService.
+    # change_status) as well as a supervisor's manual override
+    # (SLAService.manual_pause/manual_resume, tagged "trigger":
+    # "manual_override" in new_values to distinguish it).
+    SLA_PAUSED = "SLA_PAUSED"
+    SLA_RESUMED = "SLA_RESUMED"
     SLA_BREACH_DETECTED = "SLA_BREACH_DETECTED"
     SLA_ESCALATED = "SLA_ESCALATED"
     # Internal escalation workflow (TicketEscalation) — distinct from

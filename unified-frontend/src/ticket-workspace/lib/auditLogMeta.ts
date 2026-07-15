@@ -25,17 +25,16 @@ const EVENT_META: Record<AuditEventType, AuditEventMeta> = {
   EDIT_ACCESS_REQUESTED: { icon: "🙏", label: "Edit Access Requested", tone: "warning" },
   EDIT_ACCESS_APPROVED: { icon: "🤝", label: "Edit Access Approved", tone: "success" },
   EDIT_ACCESS_REJECTED: { icon: "🚫", label: "Edit Access Rejected", tone: "danger" },
-  SLA_MANUALLY_PAUSED: { icon: "⏸", label: "SLA Manually Paused", tone: "warning" },
-  SLA_MANUALLY_RESUMED: { icon: "▶", label: "SLA Manually Resumed", tone: "info" },
+  TICKET_CLOSED: { icon: "🔒", label: "Ticket Closed", tone: "default" },
+  TICKET_REOPENED: { icon: "🔓", label: "Ticket Reopened", tone: "info" },
+  SLA_PAUSED: { icon: "⏸", label: "SLA Paused", tone: "warning" },
+  SLA_RESUMED: { icon: "▶", label: "SLA Resumed", tone: "info" },
   SLA_BREACH_DETECTED: { icon: "⚠", label: "SLA Breached", tone: "danger" },
   SLA_ESCALATED: { icon: "🔺", label: "SLA Escalated", tone: "danger" },
-<<<<<<< Updated upstream
   ESCALATION_CREATED: { icon: "📣", label: "Escalation Created", tone: "warning" },
   ESCALATION_ACKNOWLEDGED: { icon: "👀", label: "Escalation Acknowledged", tone: "info" },
   ESCALATION_ADVANCED: { icon: "⬆️", label: "Escalation Advanced", tone: "warning" },
   ESCALATION_CLOSED: { icon: "✅", label: "Escalation Closed", tone: "success" },
-=======
->>>>>>> Stashed changes
 };
 
 export function auditMetaFor(type: AuditEventType): AuditEventMeta {

@@ -1,8 +1,8 @@
 # ticket_repository.py
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import and_, case, exists, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from shared_models.models import User
@@ -27,6 +27,36 @@ OPEN_STATUSES = (
     TicketStatus.PENDING,
     TicketStatus.WAITING_FOR_CLIENT,
 )
+
+
+def _resolution_sla_tier_case(now: datetime):
+    """
+    Classifies a ticket's Resolution SLA clock into the same 4 tiers
+    (escalated/breached/at_risk/healthy) the frontend's slaMath.ts and
+    sla_overview_counts below already use — same remaining-seconds-vs-
+    target-seconds comparisons as sla_overview_counts (not a fraction
+    division, which would divide by zero for a policy-less ticket),
+    just returning a per-row label instead of aggregate counts. Caller
+    must join ResolutionSLA and outerjoin SLAPolicy (on
+    SLAPolicy.priority == ResolutionSLA.priority) first.
+
+    NULL when there's no active (RUNNING) clock, or no matching policy
+    row — deliberately not "healthy" in either case, since neither
+    means the ticket is actually on track, just that there's nothing
+    to classify yet.
+    """
+
+    remaining_seconds = func.extract("epoch", ResolutionSLA.due_at - now)
+    target_seconds = SLAPolicy.resolution_target_minutes * 60
+
+    return case(
+        (ResolutionSLA.status != SLAClockStatus.RUNNING, None),
+        (SLAPolicy.resolution_target_minutes.is_(None), None),
+        (remaining_seconds <= target_seconds * -0.5, "escalated"),
+        (remaining_seconds <= 0, "breached"),
+        (remaining_seconds <= target_seconds * 0.2, "at_risk"),
+        else_="healthy",
+    )
 
 
 class TicketVisiblePage:
@@ -219,6 +249,12 @@ class TicketRepository:
         if view == "pool":
             conditions.append(Ticket.agent_id.is_(None))
             conditions.append(Ticket.current_status == TicketStatus.OPEN)
+            # See list_visible_page's matching pool branch — an
+            # unclaimed, escalated ticket is excluded here too, for the
+            # same reason (it now has an owner via the escalation
+            # chain), keeping this method's counts/results consistent
+            # with that one's.
+            conditions.append(not_(self._escalated_exists_condition()))
         elif view == "mine" and assigned_to is not None:
             conditions.append(Ticket.agent_id == assigned_to)
         elif view == "escalated":
@@ -504,9 +540,20 @@ class TicketRepository:
         actively escalated tickets, 2) HIGH-priority tickets, 3)
         nearest Resolution SLA deadline, 4) the caller's own chosen
         sort column/direction, 5) `ticket_id` as a final, deterministic
-        tie-breaker — every other view keeps the plain column sort
-        unchanged.
+        tie-breaker. `view == "pool"` gets its own fixed ordering too —
+        strictly by Resolution SLA tier (Escalated -> Breached -> At
+        Risk -> Healthy/unknown), then HIGH-priority, then nearest due
+        date, then the caller's chosen sort, then `ticket_id` — a
+        deliberately different shape from `mine`'s (tier-first rather
+        than escalation-flag-first), since surfacing at-risk pool
+        tickets to whoever might claim them is the point of this view.
+        Every other view keeps the plain column sort unchanged. Also
+        LEFT JOINs `sla_policies` (on priority) so every row can carry
+        a `resolution_sla_tier` output column (the same tier used for
+        `pool`'s own ordering) regardless of view.
         """
+
+        now = datetime.now(timezone.utc)
 
         conditions = self._visibility_conditions(
             account_manager_id=account_manager_id, ticket_types=ticket_types
@@ -515,6 +562,14 @@ class TicketRepository:
         if view == "pool":
             conditions.append(Ticket.agent_id.is_(None))
             conditions.append(Ticket.current_status == TicketStatus.OPEN)
+            # An unclaimed ticket that's escalated is excluded here,
+            # never auto-assigned — it now has an owner via the
+            # escalation chain (Team Lead/Manager/Site Lead), exactly
+            # mirroring how an already-claimed escalated ticket is
+            # already invisible in this view (agent_id is set). Reaches
+            # whoever's meant to act on it only through the Escalated
+            # tab's own Acknowledge & Assign flow.
+            conditions.append(TicketEscalation.escalation_id.is_(None))
         elif view == "mine" and assigned_to is not None:
             conditions.append(Ticket.agent_id == assigned_to)
         elif view == "escalated":
@@ -536,9 +591,26 @@ class TicketRepository:
         sort_column = self._SORT_COLUMNS.get(sort_by, Ticket.created_at)
         chosen_order = sort_column.asc() if sort_dir == "asc" else sort_column.desc()
 
+        resolution_sla_tier = _resolution_sla_tier_case(now)
+
         if view == "mine":
             order_clauses = (
                 case((TicketEscalation.escalation_id.isnot(None), 0), else_=1).asc(),
+                case((Ticket.current_priority == TicketPriority.HIGH, 0), else_=1).asc(),
+                ResolutionSLA.due_at.asc().nullslast(),
+                chosen_order,
+                Ticket.ticket_id.asc(),
+            )
+        elif view == "pool":
+            tier_rank = case(
+                (resolution_sla_tier == "escalated", 0),
+                (resolution_sla_tier == "breached", 1),
+                (resolution_sla_tier == "at_risk", 2),
+                (resolution_sla_tier == "healthy", 3),
+                else_=4,
+            )
+            order_clauses = (
+                tier_rank.asc(),
                 case((Ticket.current_priority == TicketPriority.HIGH, 0), else_=1).asc(),
                 ResolutionSLA.due_at.asc().nullslast(),
                 chosen_order,
@@ -562,6 +634,7 @@ class TicketRepository:
                     TicketEscalation.level.label("escalation_level"),
                     TicketEscalation.status.label("escalation_status"),
                     TicketEscalation.ack_due_at.label("escalation_ack_due_at"),
+                    resolution_sla_tier.label("resolution_sla_tier"),
                     *extra_columns,
                 )
                 .outerjoin(ClientUser, ClientUser.user_id == Ticket.client_id)
@@ -576,6 +649,7 @@ class TicketRepository:
                     ),
                 )
                 .outerjoin(ResolutionSLA, ResolutionSLA.ticket_id == Ticket.ticket_id)
+                .outerjoin(SLAPolicy, SLAPolicy.priority == ResolutionSLA.priority)
                 .where(*conditions)
             )
 

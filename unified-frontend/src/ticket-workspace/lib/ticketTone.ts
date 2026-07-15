@@ -15,4 +15,9 @@ export const priorityTone: Record<TicketPriority, Tone> = {
   LOW: "default",
   MEDIUM: "warning",
   HIGH: "danger",
+  // Same tone as HIGH — this design system has no dedicated "more
+  // urgent than danger" tone — but CRITICAL tickets are already
+  // visually distinguished further by the escalation flag icon next
+  // to this badge (see TicketsListPage.tsx).
+  CRITICAL: "danger",
 };

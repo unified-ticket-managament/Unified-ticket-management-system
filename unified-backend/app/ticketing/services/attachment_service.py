@@ -26,8 +26,10 @@ from app.ticketing.schemas.attachment import (
 from app.ticketing.schemas.interaction import InteractionCreate
 from app.ticketing.services.access_control import (
     SUPERVISOR_ROLE_NAMES,
+    ensure_account_manager_owns_ticket_client,
     ensure_agent_can_act_on_ticket,
     ensure_agent_can_view_ticket,
+    ensure_has_permission,
     ensure_ticket_not_closed,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
@@ -130,11 +132,13 @@ class AttachmentService:
         interaction_repository: InteractionRepository,
         ticket_repository: TicketRepository,
         storage_service: StorageService,
+        client_repository=None,
     ):
         self.attachment_repository = attachment_repository
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
         self.storage_service = storage_service
+        self.client_repository = client_repository
 
     # ---------------------------------------------------------
     # Shared validation + storage choke point
@@ -220,7 +224,16 @@ class AttachmentService:
             )
 
         ensure_ticket_not_closed(ticket)
-        ensure_agent_can_act_on_ticket(ticket, current_user)
+        # This was previously called without `await` — since
+        # ensure_agent_can_act_on_ticket is async, that silently created
+        # a coroutine object and never ran it, meaning this check never
+        # actually executed and any authenticated agent could upload to
+        # any ticket regardless of category/ownership. Fixed here.
+        await ensure_agent_can_act_on_ticket(ticket, current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_has_permission(current_user, "ticket:upload_attachment")
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -301,6 +314,9 @@ class AttachmentService:
             ticket = await self.ticket_repository.get_by_id(interaction.ticket_id)
             if ticket is not None:
                 ensure_agent_can_view_ticket(ticket, current_user)
+                await ensure_account_manager_owns_ticket_client(
+                    ticket, current_user, self.client_repository
+                )
         elif current_user.role.name not in SUPERVISOR_ROLE_NAMES:
             # Not yet attached to a ticket — falls back to the
             # inbox's own scoping (the agent it was assigned to).
@@ -339,5 +355,11 @@ class AttachmentService:
         current_user: User,
     ) -> None:
         attachment = await self._resolve_and_authorize(attachment_id, current_user)
+        # Removing an attachment (as opposed to viewing/downloading one,
+        # which _resolve_and_authorize alone already gates) is the
+        # ticket:archive_attachment permission — Full for Super Admin/
+        # Site Lead/Account Manager (own clients, checked above), a
+        # personal override for everyone else.
+        ensure_has_permission(current_user, "ticket:archive_attachment")
         await self.storage_service.delete(object_key=attachment.storage_key)
         await self.attachment_repository.delete(attachment)

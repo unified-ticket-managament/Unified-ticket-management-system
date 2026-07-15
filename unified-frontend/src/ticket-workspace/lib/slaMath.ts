@@ -34,7 +34,7 @@ export function classifyTier(fraction: number): SlaTier {
 }
 
 export const SLA_TIER_LABEL: Record<SlaTier, string> = {
-  healthy: "Healthy",
+  healthy: "On Track",
   at_risk: "At Risk",
   breached: "Breached",
   escalated: "Escalated",

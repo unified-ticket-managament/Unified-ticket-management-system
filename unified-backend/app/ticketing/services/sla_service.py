@@ -48,6 +48,7 @@ from app.ticketing.schemas.sla import (
 )
 from app.ticketing.schemas.ticket_action import TicketActionResponse
 from app.ticketing.services.access_control import (
+    ensure_account_manager_owns_ticket_client,
     ensure_can_manage_sla_policies,
     ensure_can_override_sla,
 )
@@ -245,6 +246,11 @@ class SLAService:
                         if clock.client_id is not None and self.client_repository is not None
                         else None
                     )
+                    interaction = (
+                        await self.interaction_repository.get_by_id(clock.interaction_id)
+                        if self.interaction_repository is not None
+                        else None
+                    )
                     global_inbox_ids = (
                         await resolve_global_inbox_user_ids(self.user_repository)
                         if self.user_repository is not None
@@ -255,6 +261,7 @@ class SLAService:
                             clock=clock,
                             threshold=threshold,
                             client=client,
+                            interaction=interaction,
                             global_inbox_ids=global_inbox_ids,
                             notification_service=self.notification_service,
                             user_repository=self.user_repository,
@@ -539,6 +546,9 @@ class SLAService:
             first_response_target_minutes=request.first_response_target_minutes,
             resolution_target_minutes=request.resolution_target_minutes,
             escalation_ack_target_minutes=request.escalation_ack_target_minutes,
+            handling_sla_percentage=request.handling_sla_percentage,
+            warning_1_percentage=request.warning_1_percentage,
+            warning_2_percentage=request.warning_2_percentage,
             is_active=request.is_active,
         )
 
@@ -588,6 +598,9 @@ class SLAService:
     ) -> TicketActionResponse:
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_can_override_sla(current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
 
         clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
         if clock is None or clock.status != SLAClockStatus.RUNNING:
@@ -618,11 +631,15 @@ class SLAService:
             self.ticket_repository.db,
             entity_type=AuditEntityType.TICKET,
             entity_id=ticket_id,
-            event_type=AuditEventType.SLA_MANUALLY_PAUSED,
+            event_type=AuditEventType.SLA_PAUSED,
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            new_values={"reason": request.reason, "interaction_id": interaction.interaction_id},
+            new_values={
+                "reason": request.reason,
+                "interaction_id": interaction.interaction_id,
+                "trigger": "manual_override",
+            },
         )
 
         return TicketActionResponse(
@@ -639,6 +656,9 @@ class SLAService:
     ) -> TicketActionResponse:
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_can_override_sla(current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
 
         clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
         if clock is None or clock.status != SLAClockStatus.PAUSED:
@@ -668,11 +688,14 @@ class SLAService:
             self.ticket_repository.db,
             entity_type=AuditEntityType.TICKET,
             entity_id=ticket_id,
-            event_type=AuditEventType.SLA_MANUALLY_RESUMED,
+            event_type=AuditEventType.SLA_RESUMED,
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            new_values={"interaction_id": interaction.interaction_id},
+            new_values={
+                "interaction_id": interaction.interaction_id,
+                "trigger": "manual_override",
+            },
         )
 
         return TicketActionResponse(

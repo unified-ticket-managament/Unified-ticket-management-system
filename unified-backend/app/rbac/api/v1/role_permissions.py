@@ -12,6 +12,7 @@ from app.rbac.repositories.role_repository import RoleRepository
 from app.rbac.repositories.user_repository import UserRepository
 from app.rbac.schemas.permission import PermissionResponse
 from app.rbac.schemas.role_permission import AssignPermissionsRequest
+from app.rbac.services.access_control import ensure_has_permission
 from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.role_permission_service import RolePermissionService
 
@@ -64,6 +65,8 @@ async def get_role_permissions(
     Returns the permissions currently assigned to a role.
     """
 
+    ensure_has_permission(current_user, "permission:view")
+
     return await service.get_role_permissions(role_id)
 
 
@@ -87,6 +90,8 @@ async def update_role_permissions(
     """
     Replaces the full set of permissions assigned to a role.
     """
+
+    ensure_has_permission(current_user, "permission:update")
 
     await service.replace_permissions(
         role_id,

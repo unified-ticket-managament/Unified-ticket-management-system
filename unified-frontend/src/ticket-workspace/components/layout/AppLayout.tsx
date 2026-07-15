@@ -4,6 +4,7 @@ import { PageHeader } from "@/components/layout/dashboard-shell";
 interface AppLayoutProps {
   title?: string;
   description?: string;
+  action?: ReactNode;
   children: ReactNode;
 }
 
@@ -24,10 +25,10 @@ interface AppLayoutProps {
 // bar entirely — omitting it renders no PageHeader at all, not one
 // with an empty heading, so no leftover margin/whitespace is left
 // behind where the header used to be.
-export function AppLayout({ title, description, children }: AppLayoutProps) {
+export function AppLayout({ title, description, action, children }: AppLayoutProps) {
   return (
     <div>
-      {title && <PageHeader title={title} description={description} />}
+      {title && <PageHeader title={title} description={description} action={action} />}
       {children}
     </div>
   );

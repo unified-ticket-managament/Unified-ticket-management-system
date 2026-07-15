@@ -12,6 +12,7 @@ from app.rbac.schemas.permission import (
     PermissionResponse,
     PermissionUpdate,
 )
+from app.rbac.services.access_control import ensure_has_permission
 from app.rbac.services.permission_service import PermissionService
 
 router = APIRouter(
@@ -85,6 +86,8 @@ async def list_permissions(
     Returns paginated list of permissions.
     """
 
+    ensure_has_permission(current_user, "permission:view")
+
     permissions, total = await service.list_permissions(
         page=page,
         page_size=page_size,
@@ -115,6 +118,8 @@ async def get_permission(
     """
     Returns permission details.
     """
+
+    ensure_has_permission(current_user, "permission:view")
 
     return await service.get_permission(
         permission_id,

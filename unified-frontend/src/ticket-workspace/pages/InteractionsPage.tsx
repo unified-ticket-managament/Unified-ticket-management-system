@@ -17,7 +17,7 @@ import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { shortId, formatDateTime } from "@tw/lib/format";
 import { RETIRED_INTERACTION_TYPES, metaFor, summarize } from "@tw/lib/interactionMeta";
 import { isSupervisorRole } from "@/lib/role-access";
-import type { InteractionDirection, InteractionResponse, InteractionStatus, OpenEmailResponse, ThreadResponse } from "@tw/types";
+import type { InteractionDirection, InteractionResponse, InteractionStatus } from "@tw/types";
 
 const PAGE_SIZE = 20;
 
@@ -64,7 +64,7 @@ const selectClass =
 export function InteractionsPage() {
   const navigate = useNavigate();
   const { currentUser } = useAuthContext();
-  const { agents } = useWorkflowContext();
+  const { agents, interactionDrawer, setInteractionDrawer } = useWorkflowContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const ticketIdParam = searchParams.get("ticketId");
 
@@ -114,10 +114,18 @@ export function InteractionsPage() {
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
 
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [drawerRow, setDrawerRow] = useState<InteractionRow | null>(null);
-  const [drawerEmail, setDrawerEmail] = useState<OpenEmailResponse | null>(null);
-  const [drawerThread, setDrawerThread] = useState<ThreadResponse | null>(null);
+  // interactionDrawer/setInteractionDrawer come from WorkflowContext
+  // (not local useState) so it survives the Expand -> FullInteractionPage
+  // -> Minimize round trip — see WorkflowContext.tsx's own comment on
+  // `interactionDrawer` for why that round trip would otherwise reset
+  // local state.
+  const { open: drawerOpen, row: drawerRow, email: drawerEmail, thread: drawerThread } =
+    interactionDrawer;
+  // True only for the one render right after mount where a saved
+  // scroll position (restored from a Minimize round trip) still needs
+  // applying — reset once consumed so a later, unrelated re-render
+  // doesn't re-apply a stale offset.
+  const pendingScrollRestoreRef = useRef(interactionDrawer.scrollY > 0);
   const { run: runOpenEmail, isLoading: isLoadingEmail } = useApiAction(openInboxThread);
   const { run: runGetThread, isLoading: isLoadingThread } = useApiAction(getInteractionThread);
   const { run: runHide, isLoading: isHiding } = useApiAction(hideInteractionById, {
@@ -326,6 +334,20 @@ export function InteractionsPage() {
     };
   }, []);
 
+  // Restores the scroll position `handleExpand` stashed before
+  // navigating to the full-page view, once this list has re-rendered
+  // with data after remounting (Minimize, or a plain Back). Only ever
+  // applies once per mount — the ref guard is set at mount time from
+  // whatever scrollY was saved, and cleared the moment it's consumed,
+  // so a later, unrelated re-render never re-applies a stale offset.
+  useEffect(() => {
+    if (!isLoading && pendingScrollRestoreRef.current) {
+      pendingScrollRestoreRef.current = false;
+      window.scrollTo(0, interactionDrawer.scrollY);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading]);
+
   // Upgrades each ticket-linked row's shortId-fallback `agent` to the
   // real display name once `agents` (fetched independently, on its
   // own schedule, by WorkflowContext) resolves — purely an in-memory
@@ -402,17 +424,16 @@ export function InteractionsPage() {
 
   async function handleRowClick(row: InteractionRow) {
     const requestId = ++drawerRequestIdRef.current;
-    setDrawerRow(row);
-    setDrawerEmail(null);
-    setDrawerThread(null);
-    setDrawerOpen(true);
+    setInteractionDrawer({ open: true, row, email: null, thread: null, scrollY: 0 });
 
     // Pending inbox rows only carry a summary until opened — fetch
     // the full email (same endpoint the inbox page already uses).
     if (!row.ticketId) {
       const detail = await runOpenEmail(row.id);
       if (requestId !== drawerRequestIdRef.current) return;
-      if (detail) setDrawerEmail(detail);
+      if (detail) {
+        setInteractionDrawer({ open: true, row, email: detail, thread: null, scrollY: 0 });
+      }
       return;
     }
 
@@ -438,27 +459,32 @@ export function InteractionsPage() {
     // now-stale response rather than overwrite the drawer with the
     // wrong conversation.
     if (requestId !== drawerRequestIdRef.current) return;
-    if (thread) setDrawerThread(thread);
+    if (thread) {
+      setInteractionDrawer({ open: true, row, email: null, thread, scrollY: 0 });
+    }
   }
 
   function closeDrawer() {
-    setDrawerOpen(false);
+    setInteractionDrawer({ ...interactionDrawer, open: false });
   }
 
   // Full-page view for the same row — passes along whatever's already
   // loaded for the drawer (row metadata + thread/email) via router
   // state so the destination page renders instantly with zero extra
   // requests; it only re-fetches if that state is ever missing (e.g.
-  // a direct link/refresh on the full-page URL).
+  // a direct link/refresh on the full-page URL). Also stashes the
+  // current scroll offset in context so Minimize (on the full-page
+  // view) can restore this exact spot in the list on the way back.
   function handleExpand() {
     if (!drawerRow) return;
+    setInteractionDrawer({ ...interactionDrawer, scrollY: window.scrollY });
     navigate(`/interactions/${drawerRow.id}`, {
       state: { row: drawerRow, email: drawerEmail, thread: drawerThread },
     });
   }
 
   function handleViewTicket(ticketId: string) {
-    setDrawerOpen(false);
+    setInteractionDrawer({ ...interactionDrawer, open: false });
     navigate(`/tickets/${ticketId}`);
   }
 

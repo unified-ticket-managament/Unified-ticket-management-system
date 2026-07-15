@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { Paperclip, X } from "lucide-react";
+import { Lock, Paperclip, X } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
 import { EnvelopePreview } from "@tw/components/common/EnvelopePreview";
 import { FileDropzone } from "@tw/components/common/FileDropzone";
 import { SelectInput, TextArea, TextInput } from "@tw/components/common/FormField";
+import { UserMultiSelect } from "@tw/components/common/UserMultiSelect";
 import { validateFiles } from "@tw/lib/attachmentMeta";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { listClientContacts } from "@tw/api/clients";
@@ -68,12 +69,17 @@ export function TicketComposer({
   // ReplyComposer already uses for POST /tickets/{id}/attachments).
   const [replyFiles, setReplyFiles] = useState<File[]>([]);
 
-  // Internal Note "To" — UI-only enhancement (see TicketComposer's
-  // task notes): addInternalNote has no recipient concept on the
-  // backend, so this never gets sent with the request. It just lets
-  // the author indicate who the note is really meant for.
+  // Internal Note To/CC/BCC — UI-only enhancement: addInternalNote has
+  // no recipient concept on the backend, so none of these three ever
+  // get sent with the request. They just let the author indicate who
+  // the note is really meant for, mirroring the Reply tab's envelope
+  // fields in shape (not in implementation — Reply's own CC/BCC are
+  // plain free-text; these are searchable multi-selects restricted to
+  // internal org members).
   const [toRoleGroups, setToRoleGroups] = useState<Record<string, RbacUserSummary[]>>({});
-  const [toUserId, setToUserId] = useState("");
+  const [noteToIds, setNoteToIds] = useState<string[]>([]);
+  const [noteCcIds, setNoteCcIds] = useState<string[]>([]);
+  const [noteBccIds, setNoteBccIds] = useState<string[]>([]);
 
   // Internal Note "Attach Files" — reuses the exact same ticket
   // attachment upload the "Upload Attachment" action already uses,
@@ -167,6 +173,7 @@ export function TicketComposer({
 
   const isReply = activeMode === "reply";
   const isLoading = isReply ? isReplyLoading : isNoteLoading;
+  const isTicketClosed = activeTicket.current_status === "CLOSED";
 
   async function handleSend() {
     if (!activeTicket || !message.trim()) return;
@@ -190,6 +197,9 @@ export function TicketComposer({
       setReplyCc("");
       setReplyBcc("");
       setReplyFiles([]);
+      setNoteToIds([]);
+      setNoteCcIds([]);
+      setNoteBccIds([]);
       onSent();
     }
   }
@@ -218,6 +228,12 @@ export function TicketComposer({
         </button>
       }
     >
+      {isTicketClosed ? (
+        <p className="flex items-center gap-2 text-sm text-muted">
+          <Lock size={14} className="flex-none" />
+          This ticket is closed — reopen it to reply or add a note.
+        </p>
+      ) : (
       <div className="flex flex-col gap-3">
         {!lockMode && (
           <div className="flex rounded-md2 border border-border p-0.5 text-xs font-semibold">
@@ -285,23 +301,28 @@ export function TicketComposer({
               placeholder="Short summary shown on the timeline…"
               autoFocus
             />
-            <SelectInput
+            <UserMultiSelect
               label="To"
               hint="Who this note is meant for — informational only, doesn't change who can see it."
-              value={toUserId}
-              onChange={(e) => setToUserId(e.target.value)}
-            >
-              <option value="">Select a recipient…</option>
-              {TO_ROLE_ORDER.filter((role) => (toRoleGroups[role]?.length ?? 0) > 0).map((role) => (
-                <optgroup key={role} label={role}>
-                  {toRoleGroups[role].map((user) => (
-                    <option key={user.user_id} value={user.user_id}>
-                      {user.name}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </SelectInput>
+              groups={toRoleGroups}
+              roleOrder={TO_ROLE_ORDER}
+              selectedIds={noteToIds}
+              onChange={setNoteToIds}
+            />
+            <UserMultiSelect
+              label="CC (Optional)"
+              groups={toRoleGroups}
+              roleOrder={TO_ROLE_ORDER}
+              selectedIds={noteCcIds}
+              onChange={setNoteCcIds}
+            />
+            <UserMultiSelect
+              label="BCC (Optional)"
+              groups={toRoleGroups}
+              roleOrder={TO_ROLE_ORDER}
+              selectedIds={noteBccIds}
+              onChange={setNoteBccIds}
+            />
           </>
         )}
 
@@ -329,7 +350,7 @@ export function TicketComposer({
               onClick={() => setShowAttach((prev) => !prev)}
             >
               <Paperclip size={13} />
-              Attach Files{attachFiles.length > 0 ? ` (${attachFiles.length})` : ""}
+              Attachments{attachFiles.length > 0 ? ` (${attachFiles.length})` : ""}
             </Button>
 
             {showAttach && (
@@ -367,6 +388,7 @@ export function TicketComposer({
           </Button>
         </div>
       </div>
+      )}
     </Card>
   );
 }

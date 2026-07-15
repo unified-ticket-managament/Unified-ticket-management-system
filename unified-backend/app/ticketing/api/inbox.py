@@ -89,6 +89,7 @@ async def get_inbox(
     cursor: str | None = Query(default=None),
     category: str | None = Query(default=None),
     priority: TicketPriority | None = Query(default=None),
+    assigned_to_me: bool = Query(default=False),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
@@ -107,6 +108,14 @@ async def get_inbox(
     `scope="all"` is the "All Inboxes" escape hatch — every client's
     mail, not just this user's own. Only takes effect for Team Lead /
     Account Manager / Site Lead / Super Admin; ignored for anyone else.
+
+    `assigned_to_me=true` additionally narrows to threads whose ticket
+    is assigned to the caller — composes with (never replaces) the
+    caller's own role-based scope, e.g. an Account Manager gets "my
+    owned clients' tickets assigned to me," not company-wide. Backs the
+    Mail page's "My Claims" ticketed section (see InboxService.
+    _resolve_scope) — has no effect for Staff, whose scope already
+    always means "assigned to me."
 
     `limit`/`offset`/`search` are all optional and additive — omitting
     `limit` returns the exact same unbounded response this endpoint
@@ -150,6 +159,7 @@ async def get_inbox(
         cursor=cursor,
         category_filter=category,
         priority_filter=priority,
+        assigned_to_me=assigned_to_me,
     )
 
 

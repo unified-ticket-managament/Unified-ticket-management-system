@@ -6,12 +6,9 @@ import type {
   TicketAuditLogResponse,
 } from "@tw/types";
 
-// SlaTimeline and TicketAuditLog both independently call this for the
-// same ticket (one always-mounted, one tab-gated but often mounted at
-// the same moment a ticket detail page first opens) — coalescing only
-// genuinely *concurrent* calls into one request here, and clearing the
-// entry the instant it settles, means TicketAuditLog's own 10s poll
-// always gets a fresh request rather than a stale cached one.
+// Coalesces genuinely *concurrent* calls for the same ticket into one
+// request, clearing the entry the instant it settles, so TicketAuditLog's
+// own 10s poll always gets a fresh request rather than a stale cached one.
 const inFlightByTicketId = new Map<string, Promise<AuditLogResponse[]>>();
 
 // GET /tickets/{ticket_id}/audit-logs
@@ -37,6 +34,10 @@ export interface ListTicketAuditLogsParams {
   dateFrom?: string;
   dateTo?: string;
   search?: string;
+  // Requests the unrestricted, company-wide audit log instead of the
+  // caller's own role-scoped default — backend-gated by
+  // ticket:view_global_audit_log regardless of what this is set to.
+  centralized?: boolean;
 }
 
 export interface ListTicketAuditLogsResult {
@@ -65,6 +66,7 @@ export async function getAllTicketAuditLogs(
         date_from: params.dateFrom,
         date_to: params.dateTo,
         search: params.search,
+        centralized: params.centralized,
       },
     }
   );

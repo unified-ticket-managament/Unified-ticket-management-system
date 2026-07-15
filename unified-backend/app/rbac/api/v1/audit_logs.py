@@ -11,6 +11,7 @@ from app.rbac.schemas.audit_log import (
     AuditLogListResponse,
     AuditLogResponse,
 )
+from app.rbac.services.access_control import ensure_has_permission
 from app.rbac.services.audit_log_service import AuditLogService
 
 router = APIRouter(
@@ -131,6 +132,8 @@ async def get_audit_log(
     Returns audit log details.
     """
 
+    ensure_has_permission(current_user, "audit:view")
+
     return await service.get_log(
         audit_log_id,
     )
@@ -155,6 +158,8 @@ async def get_user_audit_logs(
     """
     Returns all audit logs for a user.
     """
+
+    ensure_has_permission(current_user, "audit:view")
 
     return await service.get_user_logs(
         user_id,

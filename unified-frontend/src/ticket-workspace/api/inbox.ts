@@ -32,6 +32,7 @@ export async function getInbox(
     offset?: number;
     category?: string;
     priority?: string;
+    assignedToMe?: boolean;
   },
   signal?: AbortSignal
 ): Promise<InboxResponse> {
@@ -46,6 +47,7 @@ export async function getInbox(
       offset: options?.offset,
       category: options?.category,
       priority: options?.priority,
+      assigned_to_me: options?.assignedToMe,
     },
     signal,
   });

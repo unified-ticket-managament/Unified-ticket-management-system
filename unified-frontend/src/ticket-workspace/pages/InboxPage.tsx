@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { ComposeView, type ComposeInitialValues } from "@tw/components/mail/ComposeView";
 import { MailSidebar } from "@tw/components/mail/MailSidebar";
@@ -10,6 +11,7 @@ import { SystemMailDetailsView } from "@tw/components/mail/SystemMailDetailsView
 import { SystemMailList } from "@tw/components/mail/SystemMailList";
 import { useMailInbox, type MailViewKey } from "@tw/hooks/useMailInbox";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import { useAuthContext } from "@tw/context/AuthContext";
 
 const VIEW_LABELS: Record<MailViewKey, string> = {
   pending: "Inbox",
@@ -34,8 +36,10 @@ const VIEW_LABELS: Record<MailViewKey, string> = {
 export function InboxPage() {
   const mail = useMailInbox();
   const { selectedEmail, setSelectedEmail } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeInitialValues, setComposeInitialValues] = useState<ComposeInitialValues | undefined>(undefined);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // useCallback below (rather than plain function declarations) is
   // required for MailSidebar's React.memo to actually skip re-renders
@@ -66,28 +70,32 @@ export function InboxPage() {
     [setSelectedEmail, mail.setActiveView]
   );
 
-  const handleSelectFolder = useCallback(
-    (folderId: string | null) => {
-      setComposeOpen(false);
-      setSelectedEmail(null);
-      mail.setActiveFolder(folderId);
-    },
-    [setSelectedEmail, mail.setActiveFolder]
-  );
-
-  const handleSelectCategory = useCallback(
-    (category: string | null) => {
-      setComposeOpen(false);
-      setSelectedEmail(null);
-      mail.setActiveCategory(category);
-    },
-    [setSelectedEmail, mail.setActiveCategory]
-  );
-
   async function handleOpen(interactionId: string) {
     setComposeOpen(false);
     await mail.openThread(interactionId);
   }
+
+  // A First Response SLA notification (topbar bell or the Mail
+  // "System" folder) links here as "/inbox?interaction_id=<id>" so
+  // clicking it opens the specific message instead of leaving the
+  // recipient to find it themselves — see sla_breach_notifier.py's
+  // notify_first_response_threshold. The param is consumed once, then
+  // cleared, so navigating away and back (or refreshing) doesn't
+  // re-open it.
+  useEffect(() => {
+    const interactionId = searchParams.get("interaction_id");
+    if (!interactionId) return;
+    handleOpen(interactionId);
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("interaction_id");
+        return next;
+      },
+      { replace: true }
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   function handleForward(values: { clientId: string | null; toEmail: string; subject: string; bodyHtml: string }) {
     openCompose({
@@ -112,17 +120,7 @@ export function InboxPage() {
     return result;
   }
 
-  const folderLabelBase = mail.activeCategory
-    ? mail.activeCategory
-    : mail.activeFolder
-      ? mail.folders.find((f) => f.folder_id === mail.activeFolder)?.name ?? "Folder"
-      : VIEW_LABELS[mail.activeView];
-  const folderCount = mail.activeCategory
-    ? mail.categoryCounts[mail.activeCategory] ?? 0
-    : mail.activeFolder
-      ? mail.folderCounts[mail.activeFolder] ?? 0
-      : mail.viewCounts[mail.activeView] ?? 0;
-  const folderLabel = `${folderLabelBase} (${folderCount})`;
+  const folderLabel = `${VIEW_LABELS[mail.activeView]} (${mail.viewCounts[mail.activeView] ?? 0})`;
 
   return (
     <AppLayout>
@@ -146,16 +144,7 @@ export function InboxPage() {
           onCompose={handleComposeClick}
           counts={mail.viewCounts}
           isSupervisor={mail.isSupervisor}
-          folders={mail.folders}
-          folderCounts={mail.folderCounts}
-          activeFolder={mail.activeFolder}
-          onSelectFolder={handleSelectFolder}
-          onCreateFolder={mail.createFolder}
-          onDeleteFolder={mail.deleteFolder}
-          categories={mail.categories}
-          categoryCounts={mail.categoryCounts}
-          activeCategory={mail.activeCategory}
-          onSelectCategory={handleSelectCategory}
+          hideMyClaims={currentUser?.role === "Staff"}
         />
 
         <div className="min-h-[560px] min-w-0 flex-1">
@@ -166,6 +155,29 @@ export function InboxPage() {
               isSending={mail.isComposing}
               onSend={handleComposeSend}
               onDiscard={closeCompose}
+            />
+          ) : selectedEmail ? (
+            // Checked ahead of the System-folder branch below: opening a
+            // specific message (e.g. via the interaction_id query param a
+            // First Response SLA notification's "View Mail" link sets,
+            // handled by the effect above) must show that message even
+            // while activeView is still "system" from wherever the click
+            // originated — otherwise this branch never runs, since
+            // activeView doesn't change on its own and the System view
+            // would keep rendering in front of it.
+            <MessageDetailsView
+              email={selectedEmail}
+              folders={mail.folders}
+              onBack={() => setSelectedEmail(null)}
+              onRefreshList={mail.refresh}
+              onForward={handleForward}
+              onSaveDraft={mail.saveDraftMessage}
+              onSendDraft={mail.sendDraftMessage}
+              onDiscardDraft={mail.discardDraftMessage}
+              onUploadDraftAttachment={mail.uploadDraftAttachment}
+              onRemoveDraftAttachment={mail.removeDraftAttachment}
+              onUpdateTags={mail.updateTags}
+              onAssignFolder={mail.assignFolder}
             />
           ) : mail.activeView === "system" ? (
             mail.selectedSystemNotification ? (
@@ -182,22 +194,6 @@ export function InboxPage() {
                 onRefresh={mail.refresh}
               />
             )
-          ) : selectedEmail ? (
-            <MessageDetailsView
-              email={selectedEmail}
-              folders={mail.folders}
-              isSupervisor={mail.isSupervisor}
-              onBack={() => setSelectedEmail(null)}
-              onRefreshList={mail.refresh}
-              onForward={handleForward}
-              onSaveDraft={mail.saveDraftMessage}
-              onSendDraft={mail.sendDraftMessage}
-              onDiscardDraft={mail.discardDraftMessage}
-              onUploadDraftAttachment={mail.uploadDraftAttachment}
-              onRemoveDraftAttachment={mail.removeDraftAttachment}
-              onUpdateTags={mail.updateTags}
-              onAssignFolder={mail.assignFolder}
-            />
           ) : (
             <MessageList
               folderLabel={folderLabel}
