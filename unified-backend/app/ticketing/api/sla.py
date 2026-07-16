@@ -159,6 +159,31 @@ async def acknowledge_ticket_escalation(
     return await escalation_service.acknowledge(ticket_id, current_user)
 
 
+@ticket_sla_router.post(
+    "/{ticket_id}/escalation/confirm-assignment",
+    response_model=TicketActionResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def confirm_ticket_escalation_assignment(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Settles the "assign" half of Acknowledge & Assign for the one case
+    that never calls claim_ticket/transfer_agent: the acknowledging
+    supervisor confirms the ticket should stay with its current
+    assignee rather than reassigning it. This is what actually starts
+    the Resolution SLA/escalation-handling SLA in that branch — see
+    EscalationService.confirm_assignment's own docstring.
+    """
+
+    escalation_service = build_escalation_service(
+        db, notification_service=NotificationService(NotificationRepository(db))
+    )
+    return await escalation_service.confirm_assignment(ticket_id, current_user)
+
+
 @ticket_sla_router.get(
     "/{ticket_id}/escalation/acknowledge-candidates",
     response_model=AssignableAgentsResponse,

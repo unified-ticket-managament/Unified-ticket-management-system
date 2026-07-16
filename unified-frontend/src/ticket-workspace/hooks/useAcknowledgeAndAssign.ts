@@ -1,5 +1,9 @@
 import { useState } from "react";
-import { acknowledgeTicketEscalation, getAcknowledgeCandidates } from "@tw/api/sla";
+import {
+  acknowledgeTicketEscalation,
+  confirmEscalationAssignment,
+  getAcknowledgeCandidates,
+} from "@tw/api/sla";
 import { claimTicket, transferTicketAgent } from "@tw/api/ticket";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
@@ -17,33 +21,46 @@ interface ConfirmResult {
   agentName?: string;
 }
 
+export type AcknowledgeAssignStep = "acknowledge" | "assign";
+
 /**
  * Shared by SlaCard.tsx (the ticket detail page's Escalation section)
  * and TicketsListPage.tsx (the Escalated tab's row action) — both
- * places an escalation can be acknowledged. Acknowledging always also
- * settles who owns the ticket going forward (self or another agent),
- * never a bare "OK, seen it" click — see each call site's own comment
- * for the product reasoning.
+ * places an escalation can be acknowledged. Both call sites only ever
+ * open this for an escalation that's still ACTIVE (not yet
+ * acknowledged) — see each call site's own canAcknowledge/
+ * canAcknowledgeRow gate — so this always starts at the "acknowledge"
+ * step.
  *
- * Three pre-existing backend calls cover every case, no backend change
- * needed: if the chosen agent already IS the assigned agent, the
- * ticket itself isn't changing, so only the plain acknowledge endpoint
- * fires; if the ticket is unclaimed and the chosen agent is the
- * caller, claiming records a CLAIM (not a TRANSFER) event, matching
- * TicketActions.tsx's own convention, but claim_ticket doesn't
- * auto-acknowledge (only transfer_agent does), so an explicit
- * acknowledge call follows it; every other case (assigning to someone
- * else, or reassigning away from the current agent to anyone
- * including the caller) goes through transfer_agent, which
- * acknowledges automatically as a side effect
- * (EscalationService.acknowledge_via_assignment) — never fires the
- * plain acknowledge call itself, since that would 400 on an
- * already-acknowledged escalation.
+ * Two explicit, sequential steps, not one fused action: the ticket's
+ * escalation must actually be acknowledged before assignment becomes
+ * possible at all, matching the required workflow ("first see an
+ * Acknowledge button — until acknowledged, cannot assign"). Step 1
+ * calls the plain acknowledge endpoint alone; only once that succeeds
+ * does step 2 (assign to self/another agent) become reachable.
+ *
+ * Step 2 covers every case across four backend calls: if the chosen
+ * agent already IS the assigned agent, confirmEscalationAssignment is
+ * called explicitly — this is the one branch that never reaches
+ * claim_ticket/transfer_agent, so without it the Resolution SLA and
+ * escalation-handling SLA would never start at all for a "keep the
+ * current owner" confirmation (acknowledging in step 1 alone
+ * deliberately does NOT start either clock — see
+ * EscalationService.acknowledge's own docstring); if the ticket is
+ * unclaimed and the chosen agent is the caller, claim_ticket records a
+ * CLAIM (not a TRANSFER) event, matching TicketActions.tsx's own
+ * convention; every other case (assigning to someone else, or
+ * reassigning away from the current agent) goes through
+ * transfer_agent. claim_ticket and transfer_agent both also call
+ * EscalationService.acknowledge_via_assignment, which is where the
+ * Resolution SLA/handling SLA actually start for those two branches —
+ * idempotent whether or not step 1's Acknowledge click already ran.
  */
 export function useAcknowledgeAndAssign() {
   const { currentUser } = useAuthContext();
   const [isOpen, setIsOpen] = useState(false);
   const [target, setTarget] = useState<TargetTicket | null>(null);
+  const [step, setStep] = useState<AcknowledgeAssignStep>("acknowledge");
   // Role-scoped groups from the backend (see
   // EscalationService.get_acknowledge_candidates) — who appears here
   // differs by the caller's own role, e.g. a Site Lead sees Team
@@ -56,10 +73,15 @@ export function useAcknowledgeAndAssign() {
   );
   const { run: runClaim, isLoading: isClaiming } = useApiAction(claimTicket);
   const { run: runTransfer, isLoading: isTransferring } = useApiAction(transferTicketAgent);
-  const isSubmitting = isAcknowledging || isClaiming || isTransferring;
+  const { run: runConfirmAssignment, isLoading: isConfirmingAssignment } = useApiAction(
+    confirmEscalationAssignment
+  );
+  const isSubmitting =
+    isAcknowledging || isClaiming || isTransferring || isConfirmingAssignment;
 
   function open(ticket: TargetTicket) {
     setTarget(ticket);
+    setStep("acknowledge");
     setSelectedAgentId(ticket.currentAgentId ?? currentUser?.user_id ?? "");
     setIsOpen(true);
     getAcknowledgeCandidates(ticket.ticketId)
@@ -72,10 +94,10 @@ export function useAcknowledgeAndAssign() {
   }
 
   // Flat, id-keyed view of every selectable person (self + every
-  // group's users) — used only for the confirm()/name-lookup logic
-  // below, which doesn't care which role group an id came from. The
-  // modal itself renders `groups` as separate <optgroup>s, plus "Myself"
-  // on its own.
+  // group's users) — used only for the confirmAssignment()/name-lookup
+  // logic below, which doesn't care which role group an id came from.
+  // The modal itself renders `groups` as separate <optgroup>s, plus
+  // "Myself" on its own.
   const allUsers: AssignableUserSummary[] = currentUser
     ? [
         { user_id: currentUser.user_id, name: currentUser.name },
@@ -83,18 +105,36 @@ export function useAcknowledgeAndAssign() {
       ]
     : groups.flatMap((g) => g.users);
 
-  async function confirm(): Promise<ConfirmResult> {
+  // Step 1 — acknowledge alone, no assignment decision yet. Advances
+  // to step 2 on success; leaves the modal open (on "acknowledge") on
+  // failure so the user can retry, same convention confirmAssignment
+  // below already follows.
+  async function confirmAcknowledge(): Promise<boolean> {
+    if (!target) return false;
+    const result = await runAcknowledge(target.ticketId);
+    if (result) {
+      setStep("assign");
+      return true;
+    }
+    return false;
+  }
+
+  // Step 2 — only reachable after step 1 succeeded. Settles who owns
+  // the ticket going forward.
+  async function confirmAssignment(): Promise<ConfirmResult> {
     if (!target || !selectedAgentId) return { success: false };
 
     let success = false;
     if (selectedAgentId === target.currentAgentId) {
-      success = Boolean(await runAcknowledge(target.ticketId));
+      // No reassignment requested — this never reaches claim_ticket
+      // or transfer_agent, so it's the one branch that must call the
+      // backend explicitly to actually start the Resolution SLA/
+      // handling SLA (acknowledging in step 1 alone never does).
+      success = Boolean(await runConfirmAssignment(target.ticketId));
     } else if (!target.currentAgentId && selectedAgentId === currentUser?.user_id) {
-      const claimed = await runClaim(target.ticketId);
-      if (claimed) success = Boolean(await runAcknowledge(target.ticketId));
+      success = Boolean(await runClaim(target.ticketId));
     } else {
-      const transferred = await runTransfer(target.ticketId, { new_agent_id: selectedAgentId });
-      success = Boolean(transferred);
+      success = Boolean(await runTransfer(target.ticketId, { new_agent_id: selectedAgentId }));
     }
 
     if (success) {
@@ -117,16 +157,19 @@ export function useAcknowledgeAndAssign() {
     isOpen,
     open,
     close,
+    step,
     // "Myself" is a real, explicit option here (unlike TicketActions'
     // own Transfer picker, which excludes the caller in favor of a
-    // separate Claim button) — acknowledging an escalation is exactly
-    // the moment a supervisor decides whether to take it on personally
-    // or delegate it.
+    // separate Claim button) — assigning an already-acknowledged
+    // escalation is exactly the moment a supervisor decides whether to
+    // take it on personally or delegate it.
     me: currentUser ? { user_id: currentUser.user_id, name: currentUser.name } : null,
     groups,
     selectedAgentId,
     setSelectedAgentId,
-    confirm,
+    confirmAcknowledge,
+    confirmAssignment,
+    isAcknowledging,
     isSubmitting,
   };
 }

@@ -130,6 +130,20 @@ class TicketResponse(ORMBase):
     escalation_status: EscalationStatus | None = None
     escalation_ack_due_at: datetime | None = None
 
+    # True only when the *viewing* user's own id is currently listed in
+    # the escalation's owner_ids — i.e. the chain has actually reached
+    # them, not just "this ticket happens to be escalated to someone."
+    # Frontend gates the Acknowledge/Assign action on this rather than
+    # on is_escalated alone: a ticket escalated from Staff to Team Lead
+    # is still visible to an Account Manager on the unrestricted "All"
+    # tab (that tab shows everything, by design), but they are not yet
+    # a real owner, and an Acknowledge click from them would 403 — this
+    # field lets the UI simply not offer that action instead of showing
+    # a button that's guaranteed to fail. Deliberately per-viewer, so
+    # it is NOT cacheable/shared across different users' requests for
+    # the same ticket.
+    is_escalation_owner: bool = False
+
     # Resolution SLA clock's own risk tier — sourced from a LEFT JOIN
     # against resolution_slas/sla_policies (see TicketRepository.
     # list_visible_page / _resolution_sla_tier_case), independent of
@@ -180,6 +194,11 @@ class TicketListItemResponse(ORMBase):
     escalation_level: EscalationLevel | None = None
     escalation_status: EscalationStatus | None = None
     escalation_ack_due_at: datetime | None = None
+
+    # See TicketResponse's own matching field for the full rationale —
+    # whether the *viewing* user is a current owner of this ticket's
+    # escalation, not just whether it's escalated at all.
+    is_escalation_owner: bool = False
 
     # See TicketResponse's own matching field for the full rationale.
     resolution_sla_tier: Literal["healthy", "at_risk", "breached", "escalated"] | None = None

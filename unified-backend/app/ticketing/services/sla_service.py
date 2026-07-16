@@ -540,6 +540,37 @@ class SLAService:
                 detail="SLA policy not found.",
             )
 
+        # Cross-field validation the per-field Pydantic bounds on
+        # SLAPolicyUpdate can't express on their own: Warning 1 ("Half
+        # Elapsed") must fire before Warning 2 ("At Risk") as elapsed
+        # time increases toward the fixed Breached (100%) threshold.
+        # Computed against the EFFECTIVE final values (the incoming
+        # request's value if provided, else the policy's current
+        # stored one) rather than just the request in isolation — a
+        # request that only touches warning_1_percentage must still be
+        # rejected if it would leave the stored warning_2_percentage
+        # inverted; SLAPolicyUpdate's own model_validator only catches
+        # the case where both are supplied together in one request.
+        effective_warning_1 = (
+            request.warning_1_percentage
+            if request.warning_1_percentage is not None
+            else policy.warning_1_percentage
+        )
+        effective_warning_2 = (
+            request.warning_2_percentage
+            if request.warning_2_percentage is not None
+            else policy.warning_2_percentage
+        )
+        if effective_warning_1 >= effective_warning_2:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Warning 1 ({effective_warning_1:g}%) must be less than "
+                    f"Warning 2 ({effective_warning_2:g}%) — Warning 1 fires "
+                    "first as elapsed time increases."
+                ),
+            )
+
         updated = await self.sla_policy_repository.update(
             policy,
             first_response_target_minutes=request.first_response_target_minutes,

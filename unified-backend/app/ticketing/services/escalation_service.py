@@ -87,19 +87,49 @@ class EscalationService:
     (manually via ticket:escalate, or automatically the first time its
     Resolution SLA crosses BREACHED/ESCALATED with nothing already
     active) and advances only if the current owner ignores their
-    acknowledgment window.
+    acknowledgment window (waiting the full ack window at each level
+    before moving to the next, via evaluate_overdue below).
 
-    Never touches ResolutionSLA's own started_at/status, and never
-    invents its own reshift math — the one deliberate exception is
-    _bump_priority_to_critical (called once, from _create_escalation):
-    a ticket's priority permanently becomes CRITICAL the first time it
-    escalates (manual or automatic), which reshifts the clock's
-    due_at/priority through the exact same SLAService method a manual
-    Change Priority action already uses, not a parallel code path
-    invented here. Every other method in this class only reads a
-    ResolutionSLA (to snapshot resolution_sla_id for display, or to
-    resolve the escalation's ack window off the ticket's priority-
-    matched SLAPolicy row).
+    The STARTING level is not always TEAM_LEAD — see
+    _resolve_starting_level: a Staff-owned (or unclaimed) ticket starts
+    at TEAM_LEAD as usual, but a ticket already assigned to a Team Lead
+    themselves starts one level up at MANAGER (Account Manager)
+    instead, and one assigned to an Account Manager starts at
+    SITE_LEAD — escalating "to" whoever already owns the ticket and
+    isn't acting on it would just re-notify the same person.
+
+    Never invents its own reshift math for the Resolution SLA clock —
+    the two deliberate exceptions, split into three separate moments on
+    purpose, are _set_ticket_priority_to_critical, acknowledge(), and
+    _complete_acceptance (via _reshift_sla_for_escalation_acceptance):
+
+    - _set_ticket_priority_to_critical runs immediately in
+      _create_escalation (manual_escalate/auto_escalate_if_needed) — a
+      ticket's priority (and every Critical badge/filter it drives)
+      becomes CRITICAL the instant it escalates, full stop. This is a
+      plain Ticket.current_priority write; it never touches the
+      Resolution SLA clock itself.
+    - acknowledge() only stops the ack-window auto-advance
+      (evaluate_overdue only considers ACTIVE escalations) — it does
+      NOT reshift the Resolution SLA and does NOT start the
+      escalation-handling SLA. Acknowledging alone means "someone is
+      looking at this," not "someone has taken it on."
+    - _complete_acceptance (called from acknowledge_via_assignment —
+      i.e. claim_ticket/transfer_agent — and from confirm_assignment)
+      is the one place both the Resolution SLA reshift and the
+      escalation-handling SLA's start actually happen, once a
+      supervisor has *also* settled who the ticket is assigned to.
+      This is the "Resolution SLA starts only after Acknowledge AND
+      Assign" requirement: acknowledging and then never assigning
+      anyone leaves the clock parked at its pre-escalation target
+      indefinitely, by design.
+
+    Escalating a ticket, and even acknowledging it, must leave the
+    Resolution SLA's own started_at/due_at/status completely untouched
+    until assignment is also settled; every other method in this class
+    only reads a ResolutionSLA (to snapshot resolution_sla_id for
+    display, or to resolve the escalation's ack window off the
+    ticket's priority-matched SLAPolicy row).
     """
 
     def __init__(
@@ -370,26 +400,28 @@ class EscalationService:
 
         return True
 
-    async def _bump_priority_to_critical(self, ticket: Ticket) -> None:
+    async def _set_ticket_priority_to_critical(self, ticket: Ticket) -> None:
         """
-        A ticket's priority permanently becomes CRITICAL the first
-        time it escalates — a real, filterable/sortable priority tier
-        (see TicketPriority's own docstring), not just a display badge,
-        and it never reverts even after the escalation is acknowledged
-        or closed. No-op if already CRITICAL (idempotent — re-escalating
-        an already-critical ticket, e.g. after an ack-window advance,
-        must never re-reshift the clock a second time).
+        A ticket's priority permanently becomes CRITICAL the moment it
+        escalates (manual or automatic) — immediately, not deferred to
+        acknowledgment. This is a plain display/filterable-priority
+        change only: it deliberately does NOT touch the Resolution SLA
+        clock (started_at/due_at/priority) — see
+        _reshift_sla_for_escalation_acceptance below for that, which is
+        the one piece still deferred to acknowledge()/
+        acknowledge_via_assignment(). Splitting these two used to be
+        one combined action; they're split because "the ticket shows as
+        Critical/escalated right away" and "the SLA timer actually
+        restarts against the Critical target" are different moments in
+        the required workflow — the ticket's own priority label (and
+        the Critical badge it drives everywhere in the UI) must reflect
+        reality the instant escalation happens, while the clock itself
+        must keep measuring time honestly against whoever hasn't yet
+        taken ownership.
 
-        Reshifts the Resolution SLA clock through
-        SLAService.reshift_resolution_clock_for_priority_change — the
-        exact same method a manual Change Priority action already
-        uses — rather than inventing a parallel code path, so the
-        sweep's own elapsed-fraction math (keyed off
-        ResolutionSLA.priority, not Ticket.current_priority) stays
-        internally consistent instead of measuring a now-CRITICAL-
-        looking ticket against a stale, looser target. Deferred import
-        to avoid a circular import (sla_service.py imports
-        build_escalation_service from this module at module level).
+        No-op if already CRITICAL (idempotent — re-escalating an
+        already-critical ticket, e.g. after an ack-window advance to
+        the next level, must never write a second redundant audit row).
         """
 
         if ticket.current_priority == TicketPriority.CRITICAL:
@@ -398,13 +430,6 @@ class EscalationService:
         old_priority = ticket.current_priority
         await self.ticket_repository.update(
             ticket, TicketUpdate(current_priority=TicketPriority.CRITICAL)
-        )
-
-        from app.ticketing.services.sla_service import build_sla_service
-
-        sla_service = build_sla_service(self.ticket_repository.db)
-        await sla_service.reshift_resolution_clock_for_priority_change(
-            ticket_id=ticket.ticket_id, new_priority=TicketPriority.CRITICAL
         )
 
         await AuditLogService.log_event(
@@ -419,6 +444,82 @@ class EscalationService:
             new_values={"current_priority": TicketPriority.CRITICAL.value, "reason": "escalated"},
         )
 
+    async def _reshift_sla_for_escalation_acceptance(self, ticket: Ticket) -> None:
+        """
+        The Resolution SLA clock only reshifts onto CRITICAL's target
+        once a supervisor has actually taken ownership of the
+        escalation — acknowledged (acknowledge()), or assigned before
+        ever being acknowledged (acknowledge_via_assignment()) — never
+        at escalation creation itself, even though the ticket's own
+        priority label already flipped to CRITICAL then (see
+        _set_ticket_priority_to_critical above). This is the "the
+        Resolution SLA should NOT start immediately when escalated —
+        only after acknowledgment AND assignment" requirement: the
+        clock keeps measuring the *original* target's honest overdue
+        time for as long as the escalation sits unacknowledged, and
+        only restarts against the tighter CRITICAL target the moment
+        someone takes it on.
+
+        Reshifts through SLAService.reshift_resolution_clock_for_
+        priority_change — the exact same method a manual Change
+        Priority action already uses — rather than inventing a
+        parallel code path, so the sweep's own elapsed-fraction math
+        (keyed off ResolutionSLA.priority, not Ticket.current_priority)
+        stays internally consistent. No-op if the clock has already
+        been reshifted onto CRITICAL (idempotent — acknowledging via
+        assignment and then again via a literal Acknowledge click, or a
+        later reassignment, must never re-reshift the clock a second
+        time) or if there's no clock to reshift at all. Deferred import
+        to avoid a circular import (sla_service.py imports
+        build_escalation_service from this module at module level).
+        """
+
+        clock = await self.resolution_sla_repository.get_by_ticket_id(ticket.ticket_id)
+        if clock is None or clock.priority == TicketPriority.CRITICAL:
+            return
+
+        from app.ticketing.services.sla_service import build_sla_service
+
+        sla_service = build_sla_service(self.ticket_repository.db)
+        await sla_service.reshift_resolution_clock_for_priority_change(
+            ticket_id=ticket.ticket_id, new_priority=TicketPriority.CRITICAL
+        )
+
+    async def _resolve_starting_level(self, ticket: Ticket) -> EscalationLevel:
+        """
+        Escalation starts one level above whoever currently owns (or
+        would own) the ticket — notifying someone who's already
+        sitting on it and evidently not acting achieves nothing. An
+        unclaimed ticket, or one assigned to Staff, starts at the
+        normal TEAM_LEAD floor. A ticket already assigned to a Team
+        Lead themselves (they claimed it directly, or a prior
+        escalation assigned it to them) skips straight to MANAGER
+        (Account Manager) — re-notifying the same Team Lead who
+        already owns it would be pointless. A ticket assigned to an
+        Account Manager skips straight to SITE_LEAD for the same
+        reason. Site Lead/Super Admin are already the terminal level;
+        no further level exists above them to start at, so this falls
+        back to TEAM_LEAD in that case (the fallback chain in
+        _resolve_owners_with_fallback will still resolve correctly
+        off the ticket's own category/client, same as an ordinary
+        Staff-owned ticket) rather than inventing a level this ladder
+        doesn't have.
+        """
+
+        if ticket.agent_id is None:
+            return EscalationLevel.TEAM_LEAD
+
+        agent = await self.user_repository.get_by_id(ticket.agent_id)
+        if agent is None:
+            return EscalationLevel.TEAM_LEAD
+
+        role_name = agent.role.name
+        if role_name == TEAM_LEAD_ROLE_NAME:
+            return EscalationLevel.MANAGER
+        if role_name == ACCOUNT_MANAGER_ROLE_NAME:
+            return EscalationLevel.SITE_LEAD
+        return EscalationLevel.TEAM_LEAD
+
     async def _create_escalation(
         self,
         *,
@@ -427,15 +528,20 @@ class EscalationService:
         triggered_by: str,
         triggered_by_user_id: UUID | None,
     ) -> TicketEscalation:
-        await self._bump_priority_to_critical(ticket)
+        # The ticket's priority becomes CRITICAL immediately — before
+        # resolving owners/ack-window below, so a freshly-escalated
+        # ticket's own ack window is CRITICAL's (tighter) one right
+        # away, not its previous priority's. The Resolution SLA clock
+        # itself is untouched here — see
+        # _reshift_sla_for_escalation_acceptance's own docstring for
+        # why that part waits for acknowledge/assignment.
+        await self._set_ticket_priority_to_critical(ticket)
 
         now = datetime.now(timezone.utc)
+        starting_level = await self._resolve_starting_level(ticket)
         level, owner_ids = await self._resolve_owners_with_fallback(
-            starting_level=EscalationLevel.TEAM_LEAD, ticket=ticket
+            starting_level=starting_level, ticket=ticket
         )
-        # Read after the bump above, so a newly-escalated ticket's own
-        # escalation gets CRITICAL's (tighter) ack window immediately,
-        # not the ack window its previous priority would have used.
         ack_minutes = await self._ack_target_minutes(ticket.current_priority)
 
         return await self.ticket_escalation_repository.create(
@@ -474,9 +580,19 @@ class EscalationService:
                 detail="There is no active escalation awaiting acknowledgment on this ticket.",
             )
 
-        is_owner = str(current_user.user_id) in escalation.owner_ids
-        is_overseer = current_user.role.name in GLOBAL_INBOX_ROLE_NAMES
-        if not (is_owner or is_overseer):
+        # Strictly owner_ids membership — no Site Lead/Super Admin
+        # "global overseer" bypass here, unlike most other visibility
+        # checks in this codebase. A Site Lead/Super Admin only
+        # becomes a real owner once the chain actually reaches
+        # SITE_LEAD (resolve_global_inbox_user_ids populates owner_ids
+        # for them at that point) — allowing them to acknowledge
+        # earlier would let them jump the queue on a TEAM_LEAD/MANAGER-
+        # level escalation that hasn't reached them yet, exactly the
+        # "escalation should happen one level at a time" behavior this
+        # check exists to guarantee. Mirrors the same owner_ids-only
+        # rule the Escalated tab's own visibility query now enforces
+        # (TicketRepository._escalated_owner_condition).
+        if str(current_user.user_id) not in escalation.owner_ids:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only the current escalation owner can acknowledge it.",
@@ -492,6 +608,17 @@ class EscalationService:
                 detail="This escalation was already acknowledged or closed.",
             )
 
+        # Deliberately does NOT call _reshift_sla_for_escalation_acceptance
+        # or start the escalation-handling SLA here — acknowledging
+        # alone only stops the ack-window auto-advance (evaluate_overdue
+        # only ever considers ACTIVE escalations, and this one just
+        # left that state). The Resolution SLA/handling SLA only start
+        # once assignment is *also* settled — see _complete_acceptance,
+        # called from acknowledge_via_assignment (claim/transfer) and
+        # confirm_assignment (the "keep the current assignee" case) —
+        # so that "Resolution SLA starts only after Acknowledge AND
+        # Assign" holds even if a supervisor acknowledges and then
+        # never gets around to picking an assignee.
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
         )
@@ -506,52 +633,109 @@ class EscalationService:
             new_values={"level": escalation.level.value},
         )
 
-        # Starts the escalation-handling SLA — idempotent (see
-        # EscalationHandlingSlaService.start_if_not_started's own
-        # docstring), so this is safe even though acknowledge() itself
-        # already rejects a second call via the `updated is None` 400
-        # above; the idempotency lives here too since
-        # acknowledge_via_assignment (below) can also reach this same
-        # start call for the same escalation.
+        return TicketActionResponse(
+            interaction_id=None,
+            ticket_id=ticket_id,
+            message="Escalation acknowledged — select who this ticket should be assigned to.",
+            created_at=now,
+        )
+
+    # ---------------------------------------------------------
+    # Acceptance completion — the one moment the Resolution SLA and
+    # the escalation-handling SLA actually start, reached from three
+    # different frontend actions that all mean the same thing ("who
+    # owns this going forward is now settled"): claiming an unclaimed
+    # ticket, transferring it to someone else, or explicitly confirming
+    # it stays with its current assignee. Acknowledging alone
+    # (acknowledge() above) never reaches this — see that method's own
+    # docstring for why.
+    # ---------------------------------------------------------
+
+    async def _complete_acceptance(
+        self,
+        *,
+        ticket: Ticket,
+        escalation: TicketEscalation,
+        current_user: User,
+        via: str,
+    ) -> TicketEscalation:
+        """
+        Idempotent and safe to call more than once for the same
+        escalation (e.g. acknowledge() already ran, or a later
+        reassignment reaches this a second time) — acknowledging a
+        second time here is a no-op (repository.acknowledge only acts
+        on ACTIVE, returns None otherwise), the SLA reshift no-ops once
+        the clock is already on CRITICAL, and the handling-SLA start is
+        itself idempotent per its own docstring.
+        """
+
+        now = datetime.now(timezone.utc)
+        updated = await self.ticket_escalation_repository.acknowledge(
+            escalation, acknowledged_by=current_user.user_id, at=now
+        )
+        if updated is None:
+            # Already acknowledged (the ordinary case: step 1's
+            # explicit Acknowledge click already ran) or closed — use
+            # the escalation as already loaded rather than treating
+            # this as an error.
+            updated = escalation
+
+        # The one moment the Resolution SLA clock actually reshifts
+        # onto CRITICAL's target — see that method's own docstring.
+        await self._reshift_sla_for_escalation_acceptance(ticket)
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+        await AuditLogService.log_event(
+            self.ticket_repository.db,
+            entity_type=AuditEntityType.TICKET,
+            entity_id=ticket.ticket_id,
+            event_type=AuditEventType.ESCALATION_ACKNOWLEDGED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            new_values={"level": escalation.level.value, "via": via},
+        )
+
         if self.escalation_handling_sla_service is not None:
             await self.escalation_handling_sla_service.start_if_not_started(
                 escalation=updated, ticket=ticket
             )
 
-        return TicketActionResponse(
-            interaction_id=None,
-            ticket_id=ticket_id,
-            message="Escalation acknowledged.",
-            created_at=now,
-        )
+        return updated
 
     # ---------------------------------------------------------
-    # Acknowledge via assignment — a supervisor assigning an escalated
-    # ticket to staff is treated as accepting it, same as a literal
-    # Acknowledge click (see the plan's "assignment represents
-    # acceptance" rule). Deliberately more permissive than acknowledge()
-    # itself: the assigning supervisor need not already be a listed
-    # escalation owner, since the act of assigning is itself the
-    # acceptance signal — mirrors ensure_can_reassign_ticket's own
-    # authorization (supervisor role, or ticket:transfer permission).
+    # Acknowledge via assignment — a supervisor claiming/transferring
+    # an escalated ticket is treated as accepting it, same as a literal
+    # Acknowledge click followed by a real assignment decision.
+    # Deliberately more permissive than acknowledge() itself: the
+    # assigning supervisor need not already be a listed escalation
+    # owner, since the act of assigning is itself the acceptance
+    # signal — mirrors ensure_can_reassign_ticket's own authorization
+    # (supervisor role, or ticket:transfer permission).
     # ---------------------------------------------------------
 
     async def acknowledge_via_assignment(
         self, ticket_id: UUID, current_user: User
     ) -> None:
         """
-        Called from InteractionService.transfer_agent after a
-        successful staff assignment. A no-op — never raises — if
-        there's no active escalation to acknowledge, or it's already
-        past ACTIVE (already acknowledged, or closed): assigning a
-        ticket that happens to have no/already-handled escalation is
-        completely ordinary, not an error. Unlike acknowledge(), this
-        does not gate on the caller already being a resolved owner —
-        transfer_agent's own ensure_can_reassign_ticket call already
-        authorized this actor to reassign the ticket in the first
-        place, and assigning it out from under an escalation chain is
-        exactly the kind of "took ownership" act acknowledging is
-        meant to capture.
+        Called from InteractionService.transfer_agent and .claim_ticket
+        right after a successful staff assignment/claim. A no-op —
+        never raises — if there's no non-CLOSED escalation on this
+        ticket at all: assigning a ticket that has no/already-closed
+        escalation is completely ordinary, not an error. Unlike
+        acknowledge(), this does not gate on the caller already being
+        a resolved owner — the caller's own authorization (transfer_agent's
+        ensure_can_reassign_ticket, or claim_ticket's own rules) already
+        authorized this actor to take the ticket in the first place.
+
+        Deliberately reachable whether the escalation is still ACTIVE
+        (assigning before ever clicking Acknowledge — assignment alone
+        counts as acceptance) or already ACKNOWLEDGED (the ordinary
+        two-step case: Acknowledge was clicked first, and this is the
+        follow-up Assign step) — get_active_by_ticket_id already
+        excludes only CLOSED, so no extra status check is needed here.
         """
 
         if current_user.role.name not in SUPERVISOR_ROLE_NAMES and not has_permission(
@@ -562,42 +746,76 @@ class EscalationService:
         escalation = await self.ticket_escalation_repository.get_active_by_ticket_id(
             ticket_id
         )
-        if escalation is None or escalation.status != EscalationStatus.ACTIVE:
+        if escalation is None:
             return
 
         ticket = await self.ticket_repository.get_by_id(ticket_id)
         if ticket is None:
             return
 
-        now = datetime.now(timezone.utc)
-        updated = await self.ticket_escalation_repository.acknowledge(
-            escalation, acknowledged_by=current_user.user_id, at=now
-        )
-        if updated is None:
-            # Already acknowledged/closed by the time we got here (a
-            # race with a concurrent literal Acknowledge click, say) —
-            # no-op, not an error; start_if_not_started below still
-            # runs defensively but will itself no-op if already started.
-            updated = escalation
-
-        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
-            current_user
-        )
-        await AuditLogService.log_event(
-            self.ticket_repository.db,
-            entity_type=AuditEntityType.TICKET,
-            entity_id=ticket_id,
-            event_type=AuditEventType.ESCALATION_ACKNOWLEDGED,
-            actor_id=actor_id,
-            actor_name=actor_name,
-            actor_role=actor_role,
-            new_values={"level": escalation.level.value, "via": "assignment"},
+        await self._complete_acceptance(
+            ticket=ticket, escalation=escalation, current_user=current_user, via="assignment"
         )
 
-        if self.escalation_handling_sla_service is not None:
-            await self.escalation_handling_sla_service.start_if_not_started(
-                escalation=updated, ticket=ticket
+    # ---------------------------------------------------------
+    # Confirm assignment — the one confirmAssignment() branch on the
+    # frontend that neither claims nor transfers (the acknowledging
+    # supervisor decides the ticket should stay with its current
+    # assignee) — without this, that branch would leave the Resolution
+    # SLA/handling SLA never started at all, since it never reaches
+    # claim_ticket or transfer_agent.
+    # ---------------------------------------------------------
+
+    async def confirm_assignment(
+        self, ticket_id: UUID, current_user: User
+    ) -> TicketActionResponse:
+        """
+        Unlike acknowledge_via_assignment (a permissive safety net for
+        its two internal callers), this is a directly user-invoked
+        endpoint and fails loudly with the same authorization
+        acknowledge() itself applies — only the escalation's own listed
+        owner(s), or a company-wide overseer, may confirm it.
+        """
+
+        ticket = await self.ticket_repository.get_by_id(ticket_id)
+        if ticket is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found."
             )
+        ensure_agent_can_view_ticket(ticket, current_user)
+
+        escalation = await self.ticket_escalation_repository.get_active_by_ticket_id(
+            ticket_id
+        )
+        if escalation is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="There is no active escalation on this ticket.",
+            )
+
+        # Strictly owner_ids membership — see acknowledge()'s own
+        # comment for why there is deliberately no Site Lead/Super
+        # Admin bypass here either.
+        if str(current_user.user_id) not in escalation.owner_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the current escalation owner can confirm this assignment.",
+            )
+
+        now = datetime.now(timezone.utc)
+        await self._complete_acceptance(
+            ticket=ticket,
+            escalation=escalation,
+            current_user=current_user,
+            via="confirmed_unchanged",
+        )
+
+        return TicketActionResponse(
+            interaction_id=None,
+            ticket_id=ticket_id,
+            message="Assignment confirmed.",
+            created_at=now,
+        )
 
     # ---------------------------------------------------------
     # Acknowledge candidates — who the caller may hand this escalated

@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.ticketing.enums import EscalationLevel, EscalationStatus, SLAClockStatus, TicketPriority
 from app.ticketing.schemas.common import ORMBase
@@ -37,6 +37,33 @@ class SLAPolicyUpdate(BaseModel):
     warning_1_percentage: float | None = Field(default=None, ge=1, le=100)
     warning_2_percentage: float | None = Field(default=None, ge=1, le=100)
     is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def _ensure_warning_order_when_both_provided(self) -> "SLAPolicyUpdate":
+        """
+        Fast-fail defense-in-depth for the common case (this schema's
+        one real caller, the SLA Timing Matrix page, always submits
+        both fields together) — warning_1_percentage ("Half Elapsed")
+        must fire before warning_2_percentage ("At Risk") as elapsed
+        time increases, or the tiers are inverted (e.g. 90/50 would
+        make "At Risk" trigger before "Half Elapsed" already had).
+        This can't catch every case on its own — a request updating
+        only one of the two fields against an existing, now-inconsistent
+        stored value needs the merged current+incoming check in
+        SLAService.update_policy instead; this only covers a single
+        request that supplies a bad pair outright.
+        """
+
+        if (
+            self.warning_1_percentage is not None
+            and self.warning_2_percentage is not None
+            and self.warning_1_percentage >= self.warning_2_percentage
+        ):
+            raise ValueError(
+                "warning_1_percentage must be less than warning_2_percentage "
+                "(Warning 1 must fire before Warning 2)."
+            )
+        return self
 
 
 class FirstResponseSLAState(BaseModel):

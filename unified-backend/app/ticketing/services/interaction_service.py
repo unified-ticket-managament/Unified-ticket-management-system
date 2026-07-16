@@ -57,6 +57,7 @@ from app.ticketing.schemas.ticket_action import (
 from app.ticketing.repositories.audit_log_repository import AuditLogRepository
 from app.ticketing.schemas.audit_log import AuditLogResponse
 from app.ticketing.services.access_control import (
+    ACCOUNT_MANAGER_ROLE_NAME,
     ensure_account_manager_owns_ticket_client,
     ensure_agent_can_act_on_ticket,
     ensure_agent_can_view_pending_interaction,
@@ -76,6 +77,7 @@ from app.ticketing.services.email_envelope import build_compose_envelope, build_
 from app.ticketing.services.escalation_service import EscalationService
 from app.ticketing.services.interaction_summary import trim_payload_for_list
 from app.ticketing.services.outbound_dispatcher import OutboundDispatcher
+from app.ticketing.services.sla_escalation_rules import TEAM_LEAD_ROLE_NAME
 from app.ticketing.services.sla_service import SLAService
 
 from app.ticketing.enums import (
@@ -176,6 +178,24 @@ class InteractionService:
         self.notification_service = notification_service
         self.sla_service = sla_service
         self.escalation_service = escalation_service
+
+    def _escalation_handling_sla_repository_or_none(self):
+        """
+        Threaded into ensure_agent_can_act_on_ticket alongside the
+        escalation repository below so the freeze check can tell
+        "acknowledged" apart from "actually accepted (assigned)" — see
+        that function's own docstring. Reached through
+        escalation_service rather than constructed directly here,
+        since EscalationService already owns/builds one.
+        """
+
+        if self.escalation_service is None:
+            return None
+        return getattr(
+            self.escalation_service.escalation_handling_sla_service,
+            "escalation_handling_sla_repository",
+            None,
+        )
 
     # ---------------------------------------------------------
     # Create Interaction
@@ -458,7 +478,15 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
-        await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_agent_can_act_on_ticket(
+            ticket,
+            current_user,
+            self.edit_access_repository,
+            self.escalation_service.ticket_escalation_repository
+            if self.escalation_service is not None
+            else None,
+            self._escalation_handling_sla_repository_or_none(),
+        )
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -523,7 +551,15 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
-        await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_agent_can_act_on_ticket(
+            ticket,
+            current_user,
+            self.edit_access_repository,
+            self.escalation_service.ticket_escalation_repository
+            if self.escalation_service is not None
+            else None,
+            self._escalation_handling_sla_repository_or_none(),
+        )
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -869,7 +905,15 @@ class InteractionService:
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
-        await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_agent_can_act_on_ticket(
+            ticket,
+            current_user,
+            self.edit_access_repository,
+            self.escalation_service.ticket_escalation_repository
+            if self.escalation_service is not None
+            else None,
+            self._escalation_handling_sla_repository_or_none(),
+        )
 
         old_status = ticket.current_status
         old_closed_at = ticket.closed_at
@@ -1084,9 +1128,59 @@ class InteractionService:
             current_user
         )
 
+        # Resolved once, up front, since both the widened candidate
+        # check below and the pre-existing category guard need to know
+        # whether this ticket is actively escalated right now.
+        active_escalation = None
+        if self.escalation_service is not None:
+            active_escalation = (
+                await self.escalation_service.ticket_escalation_repository.get_active_by_ticket_id(
+                    ticket_id
+                )
+            )
+
         new_agent = await self.user_repository.get_active_staff_by_id(
             request.new_agent_id
         )
+        # Set only on the widened (Team Lead/Account Manager) path
+        # below — that branch already has the full, eager-loaded User
+        # (role+category) it validated against, so the category guard
+        # further down can reuse it instead of a second get_by_id call.
+        new_agent_full: User | None = None
+
+        if new_agent is None and active_escalation is not None:
+            # An actively-escalated ticket's "who owns it going
+            # forward" (see EscalationService.get_acknowledge_candidates,
+            # the only caller that ever offers one of these two roles
+            # here) can legitimately be a Team Lead or the Account
+            # Manager who owns the ticket's client — not just Staff.
+            # Ordinary (non-escalated) transfers are completely
+            # unaffected: this branch is unreachable without an active
+            # escalation, and get_acknowledge_candidates already scopes
+            # each candidate correctly per caller role — this
+            # re-validates it server-side rather than trusting the
+            # client, same "never trust the submitted id alone"
+            # convention AssignmentService.resolve_target already uses.
+            candidate = await self.user_repository.get_by_id(request.new_agent_id)
+            if candidate is not None and candidate.is_active:
+                if (
+                    candidate.role.name == TEAM_LEAD_ROLE_NAME
+                    and candidate.category is not None
+                    and candidate.category.category_name.value == ticket.ticket_type
+                ):
+                    new_agent = candidate
+                    new_agent_full = candidate
+                elif (
+                    candidate.role.name == ACCOUNT_MANAGER_ROLE_NAME
+                    and ticket.client_company_id is not None
+                    and self.client_repository is not None
+                ):
+                    client = await self.client_repository.get_by_id(
+                        ticket.client_company_id
+                    )
+                    if client is not None and client.account_manager_id == candidate.user_id:
+                        new_agent = candidate
+                        new_agent_full = candidate
 
         if new_agent is None:
             raise HTTPException(
@@ -1100,35 +1194,34 @@ class InteractionService:
                 detail="Ticket is already assigned to this agent.",
             )
 
-        # Escalation-driven assignments get one extra guard beyond the
-        # ordinary active-Staff check above: the chosen staff member
+        # Escalation-driven Staff assignments get one extra guard beyond
+        # the ordinary active-Staff check above: the chosen staff member
         # must belong to the ticket's own work-specialization category
         # (mirrors ensure_agent_can_view_ticket's own category gate) —
         # an escalation shouldn't be able to route work to a completely
-        # unrelated team. Ordinary (non-escalated) transfers are
-        # unaffected; this only applies when there's an active
-        # escalation on the ticket right now.
-        if self.escalation_service is not None:
-            active_escalation = (
-                await self.escalation_service.ticket_escalation_repository.get_active_by_ticket_id(
-                    ticket_id
-                )
+        # unrelated team. Only applies to a Staff candidate — a Team
+        # Lead/Account Manager candidate from the widened branch above
+        # was already scoped against this exact ticket's category/
+        # client ownership directly, so re-checking here would be
+        # redundant (and get_active_staff_by_id's own query never
+        # eager-loads .category, so new_agent_full is resolved lazily,
+        # only when actually needed, exactly as it was before this
+        # branch existed).
+        if active_escalation is not None and new_agent_full is None:
+            new_agent_full = await self.user_repository.get_by_id(new_agent.user_id)
+            new_agent_category = (
+                new_agent_full.category.category_name.value
+                if new_agent_full is not None and new_agent_full.category is not None
+                else None
             )
-            if active_escalation is not None:
-                new_agent_full = await self.user_repository.get_by_id(new_agent.user_id)
-                new_agent_category = (
-                    new_agent_full.category.category_name.value
-                    if new_agent_full is not None and new_agent_full.category is not None
-                    else None
+            if new_agent_category != ticket.ticket_type:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "This ticket is actively escalated — it can only be "
+                        "assigned to a Staff member in its own category."
+                    ),
                 )
-                if new_agent_category != ticket.ticket_type:
-                    raise HTTPException(
-                        status_code=http_status.HTTP_400_BAD_REQUEST,
-                        detail=(
-                            "This ticket is actively escalated — it can only be "
-                            "assigned to a Staff member in its own category."
-                        ),
-                    )
 
         old_agent_id = ticket.agent_id
         old_agent_name = None
@@ -1259,6 +1352,18 @@ class InteractionService:
                 "agent_name": current_user.name,
             },
         )
+
+        # Claiming an escalated (unclaimed) ticket is exactly the same
+        # "took ownership" act transfer_agent's own call below is —
+        # without this, a supervisor who acknowledges an unclaimed
+        # escalation and then assigns it to *themselves* via Claim
+        # (rather than the Transfer picker) would never start the
+        # Resolution SLA/handling SLA at all. No-ops entirely if there's
+        # no active escalation on this ticket.
+        if self.escalation_service is not None:
+            await self.escalation_service.acknowledge_via_assignment(
+                ticket_id, current_user
+            )
 
         return TicketActionResponse(
             interaction_id=None,

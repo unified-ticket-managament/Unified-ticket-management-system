@@ -1,15 +1,16 @@
 # test_escalation_handling_sla.py
 #
 # Regression coverage for the escalation-handling SLA — a second,
-# wholly independent clock (EscalationHandlingSLA) that starts when an
-# escalation is acknowledged (or assignment is treated as acceptance)
-# and measures time-to-actually-resolve, target = 25% of the ORIGINAL
-# Resolution SLA's configured target duration. The load-bearing
-# invariants asserted below: (1) the 25% formula is computed from the
-# configured target, never from remaining/overdue time: (2) starting
-# the clock is idempotent — acknowledging (or assigning) more than
-# once must never create a second row or push due_at forward again;
-# (3) none of this ever touches ResolutionSLA's own
+# wholly independent clock (EscalationHandlingSLA) that starts once
+# assignment is actually settled (claim/transfer/confirm-unchanged —
+# EscalationService._complete_acceptance), NOT on a bare acknowledge()
+# call, and measures time-to-actually-resolve, target = 25% of the
+# ORIGINAL Resolution SLA's configured target duration. The
+# load-bearing invariants asserted below: (1) the 25% formula is
+# computed from the configured target, never from remaining/overdue
+# time; (2) starting the clock is idempotent — settling assignment
+# more than once must never create a second row or push due_at forward
+# again; (3) none of this ever touches ResolutionSLA's own
 # started_at/due_at/status, extending test_escalation_service.py's own
 # central invariant to this new clock.
 #
@@ -177,29 +178,36 @@ async def test_acknowledge_starts_handling_sla_at_25_percent_of_original_target(
     service = _build_escalation_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
 
-    # Captured *after* escalating, not before — escalating itself now
-    # permanently bumps the ticket's priority to CRITICAL and reshifts
-    # due_at/priority once (see test_escalation_service.py's
-    # test_manual_escalate_bumps_priority_to_critical_and_reshifts_due_at).
-    # This test is only about whether ACKNOWLEDGE (starting the
-    # handling clock) touches the Resolution SLA any further, and
-    # "the original target" the handling clock is 25% of is now
-    # CRITICAL's, since that's the effective priority at
-    # acknowledgment time.
-    post_escalate = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
-    original_started_at = post_escalate.started_at
-    original_due_at = post_escalate.due_at
-    original_status = post_escalate.status
-    assert post_escalate.priority == TicketPriority.CRITICAL
+    # Escalating alone must not touch priority or the Resolution SLA —
+    # see test_escalation_service.py's own
+    # test_manual_escalate_does_not_touch_priority_or_sla.
+    pre_ack = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    assert pre_ack.priority == TicketPriority.MEDIUM
+    original_started_at = pre_ack.started_at
+    original_status = pre_ack.status
 
     await service.acknowledge(ticket.ticket_id, team_lead)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
     )
+    # Acknowledging ALONE deliberately does not start the handling
+    # clock (or bump the Resolution SLA's own priority) — see
+    # test_escalation_service.py's test_acknowledge_alone_does_not_
+    # reshift_sla. Both only happen once assignment is also settled —
+    # here via confirm_assignment (the "keep the current assignee"
+    # branch), so by the time the handling clock resolves "the
+    # original target," the ticket is already CRITICAL.
+    assert await _get_handling_sla(db_session, escalation.escalation_id) is None
+
+    await service.confirm_assignment(ticket.ticket_id, team_lead)
+
     handling_sla = await _get_handling_sla(db_session, escalation.escalation_id)
     assert handling_sla is not None
     assert handling_sla.status == SLAClockStatus.RUNNING
+
+    post_ack = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    assert post_ack.priority == TicketPriority.CRITICAL
 
     policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.CRITICAL)
     expected_target_seconds = compute_escalation_handling_target_seconds(
@@ -210,11 +218,9 @@ async def test_acknowledge_starts_handling_sla_at_25_percent_of_original_target(
         expected_target_seconds, abs=1
     )
 
-    # ACKNOWLEDGE itself must not touch the Resolution SLA any further.
-    reloaded = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
-    assert reloaded.started_at == original_started_at
-    assert reloaded.due_at == original_due_at
-    assert reloaded.status == original_status
+    # started_at/status are still never touched by any of this.
+    assert post_ack.started_at == original_started_at
+    assert post_ack.status == original_status
 
 
 async def test_acknowledging_twice_never_restarts_the_handling_sla(db_session):
@@ -224,6 +230,7 @@ async def test_acknowledging_twice_never_restarts_the_handling_sla(db_session):
     service = _build_escalation_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
     await service.acknowledge(ticket.ticket_id, team_lead)
+    await service.confirm_assignment(ticket.ticket_id, team_lead)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -264,10 +271,12 @@ async def test_assignment_implied_acknowledgment_starts_handling_sla_exactly_onc
     service = _build_escalation_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
 
-    # Captured *after* escalating — see the test above for why.
-    original_due_at = (
-        await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
-    ).due_at
+    # Escalating alone must not touch the Resolution SLA — see the test
+    # above. The bump to CRITICAL happens the first time the
+    # escalation is actually accepted — here, via assignment-implied
+    # acknowledgment rather than a literal Acknowledge click.
+    pre_accept = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    assert pre_accept.priority == TicketPriority.MEDIUM
 
     # Simulate a supervisor assigning the ticket out (acceptance) before
     # anyone clicked a literal Acknowledge button.
@@ -279,18 +288,23 @@ async def test_assignment_implied_acknowledgment_starts_handling_sla_exactly_onc
     assert escalation.status == EscalationStatus.ACKNOWLEDGED
     assert escalation.acknowledged_by == team_lead.user_id
 
+    post_accept = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    assert post_accept.priority == TicketPriority.CRITICAL
+    first_reshifted_due_at = post_accept.due_at
+
     handling_sla = await _get_handling_sla(db_session, escalation.escalation_id)
     assert handling_sla is not None
     first_due_at = handling_sla.due_at
 
     # A later reassignment (acknowledge_via_assignment called again)
-    # must not restart the clock.
+    # must not restart the handling clock, nor reshift the Resolution
+    # SLA a second time — the priority bump is idempotent once CRITICAL.
     await service.acknowledge_via_assignment(ticket.ticket_id, team_lead)
     handling_sla_after = await _get_handling_sla(db_session, escalation.escalation_id)
     assert handling_sla_after.due_at == first_due_at
 
     reloaded = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
-    assert reloaded.due_at == original_due_at
+    assert reloaded.due_at == first_reshifted_due_at
 
 
 async def test_handling_sla_breach_advances_escalation_and_preserves_both_histories(db_session):
@@ -299,13 +313,16 @@ async def test_handling_sla_breach_advances_escalation_and_preserves_both_histor
 
     service = _build_escalation_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.acknowledge(ticket.ticket_id, team_lead)
+    await service.confirm_assignment(ticket.ticket_id, team_lead)
 
-    # Captured *after* escalating — see the test above for why.
+    # Captured *after* acknowledge+confirm — which is what now bumps
+    # priority to CRITICAL and reshifts due_at, exactly once. This test
+    # is only about whether the handling-SLA-breach advance path
+    # touches the Resolution SLA any FURTHER.
     original_due_at = (
         await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     ).due_at
-
-    await service.acknowledge(ticket.ticket_id, team_lead)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -347,6 +364,7 @@ async def test_close_for_ticket_resolution_completes_handling_sla(db_session):
     service = _build_escalation_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
     await service.acknowledge(ticket.ticket_id, team_lead)
+    await service.confirm_assignment(ticket.ticket_id, team_lead)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id

@@ -292,6 +292,42 @@ class SLASweepService:
                     for threshold in reached
                 )
 
+            # Auto-escalation creation is deliberately evaluated here,
+            # independent of the notify-once idempotency ledger below —
+            # NOT nested inside the newly-recorded notification loop
+            # further down, where it used to live. A clock's BREACHED/
+            # ESCALATED crossing only ever notifies once (the ledger's
+            # whole point), but a ticket that crossed that threshold
+            # before ever getting an escalation created — a past
+            # transient failure, or simply because this auto-escalation
+            # feature didn't exist yet when the notification first
+            # fired — would otherwise never be retried on any later
+            # sweep tick, since "newly recorded" would stay false
+            # forever for that (clock, threshold) pair. This runs on
+            # every tick a clock remains BREACHED/ESCALATED instead,
+            # relying entirely on auto_escalate_if_needed's own
+            # idempotency (a no-op once an active escalation already
+            # exists) to stay safe to call repeatedly. Isolated in its
+            # own SAVEPOINT, same as every other per-clock action in
+            # this sweep, so one ticket's failure can't affect another.
+            if "BREACHED" in reached or "ESCALATED" in reached:
+                ticket = tickets_by_id.get(clock.ticket_id)
+                if ticket is not None:
+                    try:
+                        async with db.begin_nested():
+                            created = await self.escalation_service.auto_escalate_if_needed(
+                                ticket=ticket, resolution_clock=clock
+                            )
+                        if created:
+                            escalations_created += 1
+                    except Exception:
+                        logger.warning(
+                            "SLA sweep: failed auto-escalating ticket %s",
+                            ticket.ticket_id,
+                            exc_info=True,
+                        )
+                        errors += 1
+
         # ONE round trip checks every crossed triple across both clock
         # types at once — see try_record_many's own docstring for the
         # idempotency guarantee and the trade-off it makes.
@@ -311,7 +347,7 @@ class SLASweepService:
                             fr_interactions_by_id,
                         )
                     else:
-                        sent, escalation_created = await self._notify_resolution(
+                        sent = await self._notify_resolution(
                             res_clock_by_id[clock_id],
                             threshold,
                             global_inbox_ids,
@@ -320,7 +356,6 @@ class SLASweepService:
                             res_clients_by_id,
                             agents_by_id,
                         )
-                        escalations_created += int(escalation_created)
                 notifications_sent += int(sent)
             except Exception:
                 logger.warning(
@@ -425,19 +460,28 @@ class SLASweepService:
         tickets_by_id: dict,
         clients_by_id: dict,
         agents_by_id: dict,
-    ) -> tuple[bool, bool]:
+    ) -> bool:
         """
         Only ever called for a triple try_record_many just confirmed
         is newly-crossed — no idempotency check here, that already
-        happened in the batch. Returns (notification_sent,
-        escalation_created) — the second is always False except on a
-        first BREACHED/ESCALATED crossing with no escalation already
-        active (see EscalationService.auto_escalate_if_needed).
+        happened in the batch. Returns whether a notification was sent.
+
+        Auto-escalation creation is NOT triggered from here (it used to
+        be) — see the classification loop in run_sweep, which now calls
+        EscalationService.auto_escalate_if_needed independently of this
+        newly-crossed gate. Nesting it here meant a ticket only ever
+        got one chance, ever, to auto-escalate: the single sweep tick
+        where its threshold was first recorded in the notification
+        ledger. A ticket that crossed BREACHED/ESCALATED before that
+        auto-escalation call existed (or on a tick where it failed)
+        would then never retry, since "newly recorded" stays false
+        forever for that (clock, threshold) pair — this was a real bug,
+        not a hypothetical one.
         """
 
         ticket = tickets_by_id.get(clock.ticket_id)
         if ticket is None:
-            return False, False
+            return False
 
         client = clients_by_id.get(clock.client_id) if clock.client_id is not None else None
 
@@ -470,7 +514,7 @@ class SLASweepService:
         recipient_ids = resolve_recipients(rules, threshold, ctx)
 
         if not recipient_ids:
-            return False, False
+            return False
 
         title = f"Resolution SLA {threshold.replace('_', ' ').title()}: {ticket.title}"
         message = f"Ticket \"{ticket.title}\" has crossed its Resolution SLA {threshold.lower()} threshold."
@@ -495,7 +539,6 @@ class SLASweepService:
             user_repository=self.user_repository,
         )
 
-        escalation_created = False
         if threshold in ("BREACHED", "ESCALATED"):
             await AuditLogService.log_event(
                 self.ticket_repository.db,
@@ -512,15 +555,7 @@ class SLASweepService:
                 new_values={"threshold": threshold, "ticket_id": ticket.ticket_id},
             )
 
-            # Internal escalation workflow — separate from (and never
-            # touches) the Resolution SLA clock itself. A no-op if this
-            # ticket already has an active escalation, manual or
-            # automatic (see EscalationService.auto_escalate_if_needed).
-            escalation_created = await self.escalation_service.auto_escalate_if_needed(
-                ticket=ticket, resolution_clock=clock
-            )
-
-        return sent, escalation_created
+        return sent
 
     async def _get_category_team(
         self,

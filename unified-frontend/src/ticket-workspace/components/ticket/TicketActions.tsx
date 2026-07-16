@@ -150,10 +150,25 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
       r.status === "APPROVED" &&
       (!r.expires_at || new Date(r.expires_at) > new Date())
   );
-  const canActOnTicket = isOwnTicket || hasEditOther || hasActiveEditAccessGrant;
-  const noAccessTitle = canActOnTicket
-    ? undefined
-    : "You don't have access to work on this ticket";
+  // An actively (not yet acknowledged) escalated ticket is frozen for
+  // its currently-assigned agent — mirrors the backend's own new gate
+  // in ensure_agent_can_act_on_ticket. Supervisors are exempt here too
+  // (same bypass the backend grants them) — acknowledging/assigning is
+  // how a supervisor is meant to interact with an active escalation,
+  // not this "work it normally" set of actions.
+  const SUPERVISOR_ROLES = new Set(["Team Lead", "Account Manager", "Site Lead", "Super Admin"]);
+  const isSupervisor = !!currentUser && SUPERVISOR_ROLES.has(currentUser.role);
+  const isFrozenByEscalation =
+    !isSupervisor &&
+    activeTicket.is_escalated &&
+    activeTicket.escalation_status === "ACTIVE";
+  const canActOnTicket =
+    !isFrozenByEscalation && (isOwnTicket || hasEditOther || hasActiveEditAccessGrant);
+  const noAccessTitle = isFrozenByEscalation
+    ? "This ticket has been escalated and is awaiting acknowledgment — it cannot be worked until reassigned"
+    : canActOnTicket
+      ? undefined
+      : "You don't have access to work on this ticket";
 
   function closeModal() {
     setModal(null);
@@ -229,8 +244,14 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
         <Button
           variant="secondary"
           size="sm"
-          disabled={isTicketClosed || !canChangePriority}
-          title={canChangePriority ? undefined : "Requires the Change Priority permission"}
+          disabled={isTicketClosed || isFrozenByEscalation || !canChangePriority}
+          title={
+            isFrozenByEscalation
+              ? noAccessTitle
+              : canChangePriority
+                ? undefined
+                : "Requires the Change Priority permission"
+          }
           onClick={() => setModal("priority")}
         >
           <Flame size={14} />
@@ -240,7 +261,8 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
           <Button
             variant="secondary"
             size="sm"
-            disabled={isTicketClosed || isClaimLoading}
+            disabled={isTicketClosed || isFrozenByEscalation || isClaimLoading}
+            title={isFrozenByEscalation ? noAccessTitle : undefined}
             isLoading={isClaimLoading}
             onClick={handleClaim}
           >
@@ -270,7 +292,8 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
                 <button
                   type="button"
                   className={menuItemClass}
-                  disabled={isTicketClosed}
+                  disabled={isTicketClosed || isFrozenByEscalation}
+                  title={isFrozenByEscalation ? noAccessTitle : undefined}
                   onClick={openTransferModal}
                 >
                   <ArrowLeftRight size={14} className="text-muted" />

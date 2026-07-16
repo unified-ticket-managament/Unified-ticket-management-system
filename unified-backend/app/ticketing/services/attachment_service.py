@@ -220,7 +220,7 @@ class AttachmentService:
             )
 
         ensure_ticket_not_closed(ticket)
-        ensure_agent_can_act_on_ticket(ticket, current_user)
+        await ensure_agent_can_act_on_ticket(ticket, current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user

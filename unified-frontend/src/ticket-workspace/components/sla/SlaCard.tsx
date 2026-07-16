@@ -24,11 +24,6 @@ import type { TicketPriority } from "@tw/types";
 // directly against the API earlier (Team Lead: 200, Staff: 403).
 const RESOLUTION_OVERRIDE_ROLES = new Set(["Team Lead", "Account Manager", "Site Lead", "Super Admin"]);
 
-// GLOBAL_INBOX_ROLE_NAMES on the backend (access_control.py) — Site
-// Lead/Super Admin can acknowledge any escalation as company-wide
-// overseers, not just the resolved owner.
-const ESCALATION_OVERSEER_ROLES = new Set(["Site Lead", "Super Admin"]);
-
 export function SlaCard({
   ticketId,
   ticketPriority,
@@ -69,18 +64,34 @@ export function SlaCard({
     !escalation &&
     resolution?.status !== "COMPLETED";
 
+  // Strictly owner_ids membership — no Site Lead/Super Admin bypass.
+  // The backend (EscalationService.acknowledge/confirm_assignment)
+  // dropped its own "global overseer" exception for the same reason:
+  // escalation should progress one level at a time, and a Site
+  // Lead/Super Admin only becomes a real owner once the chain
+  // actually reaches SITE_LEAD.
   const canAcknowledge =
     !!currentUser &&
     escalation?.status === "ACTIVE" &&
-    (escalation.owner_ids.includes(currentUser.user_id) ||
-      ESCALATION_OVERSEER_ROLES.has(currentUser.role));
+    escalation.owner_ids.includes(currentUser.user_id);
 
-  async function handleConfirmAssign() {
-    const result = await acknowledgeAndAssign.confirm();
+  async function handleAcknowledgeStep() {
+    const acknowledged = await acknowledgeAndAssign.confirmAcknowledge();
+    if (acknowledged) {
+      // Acknowledging alone already changed escalation.status and
+      // started the escalation-handling SLA — pull fresh state
+      // immediately rather than waiting for the assignment step too.
+      await refetch();
+      onActionComplete();
+    }
+  }
+
+  async function handleAssignStep() {
+    const result = await acknowledgeAndAssign.confirmAssignment();
     if (result.success) {
-      // Transfer/claim/acknowledge all changed something this hook's
-      // own SLA state doesn't already reflect — pull it fresh, then
-      // let the parent re-fetch the ticket itself (agent_id/agent_name).
+      // Transfer/claim changed something this hook's own SLA state
+      // doesn't already reflect — pull it fresh, then let the parent
+      // re-fetch the ticket itself (agent_id/agent_name).
       await refetch();
       onActionComplete();
     }
@@ -365,11 +376,14 @@ export function SlaCard({
     <AcknowledgeAssignModal
       open={acknowledgeAndAssign.isOpen}
       onClose={acknowledgeAndAssign.close}
+      step={acknowledgeAndAssign.step}
       me={acknowledgeAndAssign.me}
       groups={acknowledgeAndAssign.groups}
       selectedAgentId={acknowledgeAndAssign.selectedAgentId}
       onSelectAgent={acknowledgeAndAssign.setSelectedAgentId}
-      onConfirm={handleConfirmAssign}
+      onAcknowledge={handleAcknowledgeStep}
+      onConfirmAssignment={handleAssignStep}
+      isAcknowledging={acknowledgeAndAssign.isAcknowledging}
       isSubmitting={acknowledgeAndAssign.isSubmitting}
     />
     </>

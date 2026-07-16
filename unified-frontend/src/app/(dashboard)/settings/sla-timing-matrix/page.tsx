@@ -86,6 +86,23 @@ function validateDraft(draft: Draft): Errors {
     const message = validateField(field, draft[field]);
     if (message) errors[field] = message;
   }
+
+  // Cross-field: Warning 1 ("Half Elapsed") must fire before Warning 2
+  // ("At Risk") as elapsed time increases — an inverted pair (e.g.
+  // warning_1=90, warning_2=50) would make "At Risk" trigger before
+  // "Half Elapsed" already had. Only checked once both fields are
+  // individually valid, so this doesn't stack on top of a "Must be a
+  // number"-type error. Mirrors the backend's own merged-value check
+  // (SLAService.update_policy) so a save attempt never round-trips
+  // just to discover this.
+  if (!errors.warning_1_percentage && !errors.warning_2_percentage) {
+    const warning1 = Number(draft.warning_1_percentage);
+    const warning2 = Number(draft.warning_2_percentage);
+    if (warning1 >= warning2) {
+      errors.warning_2_percentage = "Must be greater than Warning 1";
+    }
+  }
+
   return errors;
 }
 
@@ -244,7 +261,7 @@ export default function SlaTimingMatrixPage() {
 
       <PageHeader
         title="SLA Timing Matrix"
-        description="Configure First Response, Resolution, escalation, and warning timing per priority. Changes apply to tickets going forward — already-running ticket timers keep their own snapshotted values."
+        description="Configure First Response, Resolution, escalation, and warning timing per priority. Edits apply to new SLA clocks and to any ticket whose priority changes afterward (including via escalation) — they are not applied retroactively to a clock already running at its current, unchanged priority."
         action={
           <div className="flex items-center gap-2">
             <Button

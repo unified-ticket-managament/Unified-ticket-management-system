@@ -385,6 +385,16 @@ export interface TicketResponse {
   escalation_status?: EscalationStatus | null;
   escalation_ack_due_at?: string | null;
 
+  // True only when *the current viewer* is a listed owner of this
+  // ticket's active escalation — not just "this ticket is escalated
+  // to someone." A ticket escalated from Staff to Team Lead is still
+  // visible to an Account Manager on the unrestricted "All" tab (that
+  // tab shows everything by design), but they aren't a real owner
+  // yet, so Acknowledge/Assign must stay hidden for them even though
+  // `is_escalated`/`escalation_status` are both set. Gate the
+  // Acknowledge action on this field, not on is_escalated alone.
+  is_escalation_owner?: boolean;
+
   // Resolution SLA clock's own risk tier — same LEFT JOIN-sourced,
   // display-only shape as the escalation fields above, but an
   // independent signal (see lib/slaMath.ts's SlaTier — kept as an

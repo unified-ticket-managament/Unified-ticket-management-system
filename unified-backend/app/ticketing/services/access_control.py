@@ -4,7 +4,7 @@
 from fastapi import HTTPException, status
 from shared_models.models import User
 
-from app.ticketing.enums import TicketStatus
+from app.ticketing.enums import EscalationStatus, TicketStatus
 from app.ticketing.models.ticket import Ticket
 
 # Every RBAC role except Viewer (the client-facing role) can log into
@@ -121,7 +121,9 @@ def ensure_agent_can_view_ticket(
 async def ensure_agent_can_act_on_ticket(
     ticket: Ticket,
     current_user: User,
-    edit_access_repository=None,    
+    edit_access_repository=None,
+    escalation_repository=None,
+    escalation_handling_sla_repository=None,
 ) -> None:
     """
     Working a ticket — replying, adding an internal note, changing
@@ -133,6 +135,31 @@ async def ensure_agent_can_act_on_ticket(
     someone claims it. Supervisors (SUPERVISOR_ROLE_NAMES) bypass
     this, same as they bypass ownership scoping everywhere else in
     this file.
+
+    A non-CLOSED escalated ticket is frozen for its currently-assigned
+    agent until the escalation has actually been *accepted* — not
+    merely acknowledged. Acknowledging alone (EscalationService.
+    acknowledge) only stops the ack-window auto-advance; the Resolution
+    SLA (and this freeze) only lift once a supervisor has *also*
+    assigned the ticket to someone (claim/transfer/confirm-unchanged —
+    see EscalationService._complete_acceptance), matching "Resolution
+    SLA starts only after Acknowledge AND Assign." Whether acceptance
+    has completed is read off the EscalationHandlingSLA table
+    (`escalation_handling_sla_repository`, optional): a row exists for
+    an escalation_id if and only if _complete_acceptance has already
+    run for it (it's the one and only place that row gets created) —
+    reusing that existing fact rather than adding a new column. If
+    `escalation_handling_sla_repository` isn't supplied, this falls
+    back to the older, coarser rule (frozen only while status is
+    still ACTIVE i.e. never acknowledged at all) so existing callers
+    that haven't been updated to pass it keep their prior behavior
+    rather than becoming newly, incorrectly frozen forever. Checked
+    right after the supervisor bypass above (deliberately not applied
+    to supervisors themselves — acknowledging/assigning is how a
+    supervisor is meant to interact with an active escalation, not
+    this "work it normally" path). `escalation_repository` is
+    optional, same convention as `edit_access_repository` below —
+    callers that don't pass one simply skip this check entirely.
 
     Own-ticket access is gated by ticket:editown_ticket (default for
     every role, so this is normally a formality, but it's now a real,
@@ -165,6 +192,32 @@ async def ensure_agent_can_act_on_ticket(
 
     if current_user.role.name in SUPERVISOR_ROLE_NAMES:
         return
+
+    if escalation_repository is not None:
+        active_escalation = await escalation_repository.get_active_by_ticket_id(
+            ticket.ticket_id
+        )
+        if active_escalation is not None:
+            if escalation_handling_sla_repository is not None:
+                accepted = (
+                    await escalation_handling_sla_repository.get_by_escalation_id(
+                        active_escalation.escalation_id
+                    )
+                    is not None
+                )
+                frozen = not accepted
+            else:
+                frozen = active_escalation.status == EscalationStatus.ACTIVE
+
+            if frozen:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "This ticket has been escalated and is awaiting "
+                        "acknowledgment and assignment — it cannot be worked "
+                        "until a supervisor acknowledges and assigns it."
+                    ),
+                )
 
     if ticket.agent_id == current_user.user_id:
         if has_permission(current_user, "ticket:editown_ticket"):

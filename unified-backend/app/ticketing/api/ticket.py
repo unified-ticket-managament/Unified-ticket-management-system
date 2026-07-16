@@ -29,6 +29,9 @@ from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.ticketing.repositories.ticket_escalation_repository import (
+    TicketEscalationRepository,
+)
 from app.ticketing.repositories.ticket_edit_access_repository import (
     TicketEditAccessRequestRepository,
 )
@@ -270,6 +273,7 @@ async def add_internal_note(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         edit_access_repository=edit_access_repository,
+        escalation_service=build_escalation_service(db),
     )
 
     return await service.add_internal_note(
@@ -314,6 +318,7 @@ async def reply_to_client(
         user_repository=user_repository,
         client_repository=client_repository,
         edit_access_repository=edit_access_repository,
+        escalation_service=build_escalation_service(db),
     )
 
     return await service.add_reply(
@@ -351,6 +356,7 @@ async def claim_ticket(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        escalation_service=build_escalation_service(db),
     )
 
     return await service.claim_ticket(
@@ -390,6 +396,7 @@ async def change_ticket_status(
         user_repository=user_repository,
         edit_access_repository=edit_access_repository,
         sla_service=build_sla_service(db),
+        escalation_service=build_escalation_service(db),
     )
 
     return await service.change_status(
@@ -544,11 +551,13 @@ async def transfer_ticket_agent(
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        client_repository=client_repository,
         notification_service=NotificationService(NotificationRepository(db)),
         escalation_service=build_escalation_service(
             db, notification_service=NotificationService(NotificationRepository(db))
@@ -1026,12 +1035,14 @@ async def get_ticket(
     user_repository = UserRepository(db)
     client_repository = ClientRepository(db)
     ticket_relation_repository = TicketRelationRepository(db)
+    ticket_escalation_repository = TicketEscalationRepository(db)
 
     service = TicketService(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         ticket_relation_repository=ticket_relation_repository,
         client_repository=client_repository,
+        ticket_escalation_repository=ticket_escalation_repository,
     )
 
     return await service.get_by_id(ticket_id, current_user=current_user)

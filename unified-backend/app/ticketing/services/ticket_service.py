@@ -79,6 +79,7 @@ class TicketService:
         interaction_repository: InteractionRepository | None = None,
         attachment_repository: AttachmentRepository | None = None,
         storage_service: StorageService | None = None,
+        ticket_escalation_repository=None,
     ):
         self.ticket_repository = ticket_repository
         self.user_repository = user_repository
@@ -88,6 +89,14 @@ class TicketService:
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
         self.storage_service = storage_service
+        # Optional — only GET /tickets/{id} (get_by_id) uses this, to
+        # populate the same is_escalated/escalation_level/escalation_
+        # status/escalation_ack_due_at display fields the list endpoints
+        # already join in bulk (see TicketRepository.list_visible_page).
+        # A single extra lookup here is fine — this is a low-frequency,
+        # one-record fetch, not a hot list path where N+1 concerns
+        # actually matter.
+        self.ticket_escalation_repository = ticket_escalation_repository
 
     # ---------------------------------------------------------
     # Name Enrichment
@@ -301,9 +310,22 @@ class TicketService:
         await self._attach_names([ticket])
         await self._attach_related_tickets(ticket)
 
-        return TicketResponse.model_validate(
-            ticket
-        )
+        response = TicketResponse.model_validate(ticket)
+
+        if self.ticket_escalation_repository is not None:
+            escalation = await self.ticket_escalation_repository.get_active_by_ticket_id(
+                ticket_id
+            )
+            if escalation is not None:
+                response.is_escalated = True
+                response.escalation_level = escalation.level
+                response.escalation_status = escalation.status
+                response.escalation_ack_due_at = escalation.ack_due_at
+                response.is_escalation_owner = (
+                    str(current_user.user_id) in escalation.owner_ids
+                )
+
+        return response
 
     # ---------------------------------------------------------
     # Related Tickets
@@ -496,6 +518,7 @@ class TicketService:
                 ticket_type_filter=ticket_type_filter,
                 view=view,
                 assigned_to=current_user.user_id,
+                viewer_user_id=current_user.user_id,
                 search=search,
                 date_from=date_from,
                 date_to=date_to,
@@ -526,6 +549,7 @@ class TicketService:
                     escalation_level=escalation_level,
                     escalation_status=escalation_status,
                     escalation_ack_due_at=escalation_ack_due_at,
+                    is_escalation_owner=is_escalation_owner,
                     resolution_sla_tier=resolution_sla_tier,
                 )
                 for (
@@ -537,6 +561,7 @@ class TicketService:
                     escalation_level,
                     escalation_status,
                     escalation_ack_due_at,
+                    is_escalation_owner,
                     resolution_sla_tier,
                     *_,
                 ) in page.items
@@ -582,6 +607,7 @@ class TicketService:
             account_manager_id=account_manager_id,
             ticket_types=ticket_types,
             assigned_to=current_user.user_id,
+            viewer_user_id=current_user.user_id,
         )
 
         if current_user.role.name not in ESCALATION_TAB_ROLE_NAMES:
@@ -663,6 +689,7 @@ class TicketService:
                 escalation_level,
                 escalation_status,
                 escalation_ack_due_at,
+                is_escalation_owner,
                 resolution_sla_tier,
                 *_,
             ) = row
@@ -688,6 +715,7 @@ class TicketService:
                 escalation_level=escalation_level,
                 escalation_status=escalation_status,
                 escalation_ack_due_at=escalation_ack_due_at,
+                is_escalation_owner=is_escalation_owner,
                 resolution_sla_tier=resolution_sla_tier,
             )
 

@@ -50,6 +50,21 @@ export async function acknowledgeTicketEscalation(
   return data;
 }
 
+// POST /tickets/{ticket_id}/escalation/confirm-assignment — the one
+// confirmAssignment() branch in useAcknowledgeAndAssign.ts that keeps
+// the ticket with its already-current assignee (no claim/transfer
+// call happens). This is what actually starts the Resolution SLA/
+// handling SLA in that branch — without it, "confirm without
+// reassigning" would silently never start either clock.
+export async function confirmEscalationAssignment(
+  ticketId: string
+): Promise<TicketActionResponse> {
+  const { data } = await apiClient.post<TicketActionResponse>(
+    `/tickets/${ticketId}/escalation/confirm-assignment`
+  );
+  return data;
+}
+
 // GET /tickets/{ticket_id}/escalation/acknowledge-candidates — who the
 // caller may assign this escalated ticket to, role-scoped server-side
 // (Site Lead/Super Admin: category Team Lead + client's Account

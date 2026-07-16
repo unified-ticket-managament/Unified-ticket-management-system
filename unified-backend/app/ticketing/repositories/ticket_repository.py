@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import and_, case, exists, func, not_, or_, select, update
+from sqlalchemy import and_, case, exists, func, literal, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from shared_models.models import User
@@ -168,6 +168,33 @@ class TicketRepository:
             TicketEscalation.status != EscalationStatus.CLOSED,
         )
 
+    def _escalated_owner_condition(self, viewer_user_id: UUID):
+        """
+        True when a ticket has a non-CLOSED TicketEscalation row whose
+        *current* `owner_ids` includes this specific viewer — the
+        Escalated tab's real filter, as opposed to
+        `_escalated_exists_condition` (any active escalation at any
+        level, used for pool exclusion, where who currently owns it is
+        irrelevant). Without this distinction, a ticket freshly
+        escalated from Staff to Team Lead would also show up in every
+        Account Manager's (and Site Lead's, and Super Admin's) queue
+        immediately, just because they can otherwise see the ticket —
+        even though the escalation hasn't reached their level yet. A
+        Team Lead/Account Manager only ever appears in `owner_ids` once
+        the chain actually reaches their level (see
+        EscalationService._resolve_owners_for_level); Site Lead/Super
+        Admin become owners automatically once it reaches SITE_LEAD
+        (resolve_global_inbox_user_ids), so this same check naturally
+        also keeps them out until then — no separate role-based
+        bypass needed.
+        """
+
+        return exists().where(
+            TicketEscalation.ticket_id == Ticket.ticket_id,
+            TicketEscalation.status != EscalationStatus.CLOSED,
+            TicketEscalation.owner_ids.contains([str(viewer_user_id)]),
+        )
+
     async def list_all(
         self,
         agent_id: UUID | None = None,
@@ -181,6 +208,7 @@ class TicketRepository:
         ticket_type_filter: str | None = None,
         view: str | None = None,
         assigned_to: UUID | None = None,
+        viewer_user_id: UUID | None = None,
         search: str | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
@@ -237,7 +265,14 @@ class TicketRepository:
         elif view == "mine" and assigned_to is not None:
             conditions.append(Ticket.agent_id == assigned_to)
         elif view == "escalated":
-            conditions.append(self._escalated_exists_condition())
+            # Requires viewer_user_id to be a *current* owner of the
+            # escalation, not just "this ticket is escalated at all" —
+            # see _escalated_owner_condition's own docstring for why.
+            conditions.append(
+                self._escalated_owner_condition(viewer_user_id)
+                if viewer_user_id is not None
+                else self._escalated_exists_condition()
+            )
 
         if ticket_type_filter is not None:
             conditions.append(Ticket.ticket_type == ticket_type_filter)
@@ -288,6 +323,7 @@ class TicketRepository:
         account_manager_id: UUID | None,
         ticket_types: list[str] | None,
         assigned_to: UUID,
+        viewer_user_id: UUID | None = None,
     ) -> dict[str, int]:
         """
         One grouped query, three FILTERed counts — the ticket-list
@@ -296,19 +332,43 @@ class TicketRepository:
         without fetching a single ticket row. Same shape as
         InteractionRepository.count_by_view (the Mail page's own tab
         badges).
+
+        The pool count excludes an escalated-but-unclaimed ticket, the
+        same way `list_visible_page`'s own `view == "pool"` branch
+        does (see that method's docstring: an escalated ticket now has
+        an owner via the escalation chain, reached only through the
+        Escalated tab, never auto-surfaced back into the general
+        pool). This exclusion has to be applied here too, independent
+        of that method — a stray pool count that includes what the
+        pool *view* itself excludes is exactly the "badge says N, list
+        shows fewer" staleness bug this was fixed to close.
+
+        The escalated count is scoped to `viewer_user_id` being a
+        *current* owner of the escalation (see
+        `_escalated_owner_condition`) — same reasoning as
+        `list_visible_page`'s own `view == "escalated"` branch, so this
+        badge never shows a nonzero count for tickets whose escalation
+        hasn't actually reached this viewer's level yet.
         """
 
         conditions = self._visibility_conditions(
             account_manager_id=account_manager_id, ticket_types=ticket_types
         )
+        escalated_condition = (
+            self._escalated_owner_condition(viewer_user_id)
+            if viewer_user_id is not None
+            else self._escalated_exists_condition()
+        )
 
         query = select(
             func.count().filter(
-                Ticket.agent_id.is_(None), Ticket.current_status == TicketStatus.OPEN
+                Ticket.agent_id.is_(None),
+                Ticket.current_status == TicketStatus.OPEN,
+                ~self._escalated_exists_condition(),
             ),
             func.count().filter(Ticket.agent_id == assigned_to),
             func.count(),
-            func.count().filter(self._escalated_exists_condition()),
+            func.count().filter(escalated_condition),
         ).where(*conditions)
 
         result = await self.db.execute(query)
@@ -482,6 +542,7 @@ class TicketRepository:
         ticket_type_filter: str | None = None,
         view: str | None = None,
         assigned_to: UUID | None = None,
+        viewer_user_id: UUID | None = None,
         search: str | None = None,
         date_from: datetime | None = None,
         date_to: datetime | None = None,
@@ -552,7 +613,19 @@ class TicketRepository:
         elif view == "mine" and assigned_to is not None:
             conditions.append(Ticket.agent_id == assigned_to)
         elif view == "escalated":
-            conditions.append(TicketEscalation.escalation_id.isnot(None))
+            # Requires viewer_user_id to be a *current* owner of the
+            # escalation (owner_ids), not just "this ticket has an
+            # active escalation at any level" — otherwise a ticket
+            # freshly escalated from Staff to Team Lead would also show
+            # up in every Account Manager's/Site Lead's/Super Admin's
+            # queue immediately, since they could already see the
+            # ticket via ordinary visibility scoping. See
+            # TicketRepository._escalated_owner_condition's docstring.
+            conditions.append(
+                TicketEscalation.owner_ids.contains([str(viewer_user_id)])
+                if viewer_user_id is not None
+                else TicketEscalation.escalation_id.isnot(None)
+            )
 
         if ticket_type_filter is not None:
             conditions.append(Ticket.ticket_type == ticket_type_filter)
@@ -602,6 +675,21 @@ class TicketRepository:
         AgentUser = aliased(User)
         CreatedByUser = aliased(User)
 
+        # Per-viewer, not per-ticket — whether *this specific caller*
+        # is a current owner of the ticket's escalation, so the
+        # frontend can gate the Acknowledge/Assign action without
+        # offering a button that would 403 (e.g. an Account Manager
+        # browsing the unrestricted "All" tab, viewing a ticket only
+        # escalated to Team Lead so far). See TicketResponse.
+        # is_escalation_owner's own docstring.
+        is_escalation_owner_expr = (
+            func.coalesce(
+                TicketEscalation.owner_ids.contains([str(viewer_user_id)]), False
+            )
+            if viewer_user_id is not None
+            else literal(False)
+        )
+
         def _base_select(*extra_columns):
             return (
                 select(
@@ -613,6 +701,7 @@ class TicketRepository:
                     TicketEscalation.level.label("escalation_level"),
                     TicketEscalation.status.label("escalation_status"),
                     TicketEscalation.ack_due_at.label("escalation_ack_due_at"),
+                    is_escalation_owner_expr.label("is_escalation_owner"),
                     resolution_sla_tier.label("resolution_sla_tier"),
                     *extra_columns,
                 )

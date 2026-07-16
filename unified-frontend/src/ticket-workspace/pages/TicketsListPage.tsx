@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
-import { AlertTriangle, ArrowUpDown, MessagesSquare, Search, ShieldAlert, UserPlus } from "lucide-react";
+import { AlertTriangle, ArrowUpDown, Lock, MessagesSquare, Search, ShieldAlert, UserPlus } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { Badge } from "@tw/components/common/Badge";
 import { Button } from "@tw/components/common/Button";
@@ -39,6 +39,7 @@ const STATUSES: TicketStatus[] = [
 // it's excluded from every "Change Priority"/"Create Ticket" picker.
 const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
 const PAGE_SIZE = 10;
+const VIEW_COUNTS_POLL_INTERVAL_MS = 20_000;
 
 // Mirrors the backend's ESCALATION_TAB_ROLE_NAMES (access_control.py)
 // exactly, same reasoning SlaCard.tsx's own RESOLUTION_OVERRIDE_ROLES
@@ -198,6 +199,17 @@ export function TicketsListPage() {
 
   useEffect(() => {
     loadViewCounts();
+    // Badge counts otherwise only ever refreshed on mount or after this
+    // user's own claim/acknowledge/assign action — going stale as soon
+    // as anyone else (a teammate claiming a pool ticket, a new ticket
+    // arriving, an SLA-driven auto-escalation) changes the underlying
+    // set while this page stays open with no user-triggered action of
+    // their own. Same lightweight-poll convention as the SLA card (8s)
+    // and notification bell (30s) elsewhere in this app — one small
+    // grouped query (TicketRepository.count_by_view), not a full
+    // ticket-list refetch.
+    const pollId = window.setInterval(loadViewCounts, VIEW_COUNTS_POLL_INTERVAL_MS);
+    return () => window.clearInterval(pollId);
   }, [loadViewCounts]);
 
   useEffect(() => {
@@ -220,15 +232,28 @@ export function TicketsListPage() {
     // Claiming only ever sets agent_id on this one ticket (see
     // InteractionService.claim_ticket) — patch it in place instead of
     // refetching the whole page, but the tab badges (pool loses one,
-    // mine gains one) do need a fresh grouped count.
+    // mine gains one) do need a fresh grouped count. On the Open Pool
+    // tab specifically, a claimed ticket no longer belongs in this
+    // view at all (it stops matching "unclaimed and OPEN") — patching
+    // it in place would leave it visibly sitting in the pool list,
+    // showing an agent instead of "Unclaimed," until an unrelated
+    // page/filter change happened to reload the row set. Removed from
+    // the local array instead, with the total adjusted to match, so
+    // the list and the badge agree immediately rather than only the
+    // badge (via loadViewCounts below) catching up.
     if (result && currentUser) {
-      setTickets((prev) =>
-        prev.map((t) =>
-          t.ticket_id === ticketId
-            ? { ...t, agent_id: currentUser.user_id, agent_name: currentUser.name }
-            : t
-        )
-      );
+      if (poolTab === "pool") {
+        setTickets((prev) => prev.filter((t) => t.ticket_id !== ticketId));
+        setServerTotal((prev) => Math.max(0, prev - 1));
+      } else {
+        setTickets((prev) =>
+          prev.map((t) =>
+            t.ticket_id === ticketId
+              ? { ...t, agent_id: currentUser.user_id, agent_name: currentUser.name }
+              : t
+          )
+        );
+      }
       loadViewCounts();
     }
   }
@@ -252,15 +277,29 @@ export function TicketsListPage() {
     });
   }
 
-  async function handleConfirmAcknowledge() {
-    const result = await acknowledgeAndAssign.confirm();
+  async function handleAcknowledgeStep() {
+    const acknowledged = await acknowledgeAndAssign.confirmAcknowledge();
+    if (acknowledged && ackTargetId) {
+      // Patch immediately — the ticket is genuinely acknowledged now,
+      // even before the assignment step (still open in the same
+      // modal) completes.
+      setTickets((prev) =>
+        prev.map((t) =>
+          t.ticket_id === ackTargetId ? { ...t, escalation_status: "ACKNOWLEDGED" } : t
+        )
+      );
+      loadViewCounts();
+    }
+  }
+
+  async function handleAssignStep() {
+    const result = await acknowledgeAndAssign.confirmAssignment();
     if (result.success && ackTargetId) {
       setTickets((prev) =>
         prev.map((t) =>
           t.ticket_id === ackTargetId
             ? {
                 ...t,
-                escalation_status: "ACKNOWLEDGED",
                 agent_id: result.agentId ?? t.agent_id,
                 agent_name: result.agentName ?? t.agent_name,
               }
@@ -276,6 +315,14 @@ export function TicketsListPage() {
     ESCALATION_TAB_ROLES.has(currentUser.role) &&
     ticket.is_escalated &&
     ticket.escalation_status === "ACTIVE" &&
+    // Not just "this ticket is escalated" — the chain must have
+    // actually reached this viewer. Without this, a ticket escalated
+    // from Staff to Team Lead still shows an Acknowledge button to
+    // every Account Manager/Site Lead/Super Admin who can otherwise
+    // see it (e.g. on the unrestricted "All" tab), even though the
+    // backend would 403 them — see the Ticket type's own
+    // is_escalation_owner docstring.
+    ticket.is_escalation_owner &&
     !CLOSED_TICKET_STATUSES.has(ticket.current_status);
 
   const totalPages = Math.max(1, Math.ceil(serverTotal / PAGE_SIZE));
@@ -566,10 +613,24 @@ export function TicketsListPage() {
                       </td>
                       <td className="px-5 py-3.5">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <Badge tone={priorityTone[ticket.current_priority]}>
-                            {ticket.current_priority}
-                          </Badge>
-                          {ticket.is_escalated && (
+                          {/* ACTIVE (not yet acknowledged) shows a distinct
+                              "Escalated" badge instead of the priority one —
+                              this row is frozen (see TicketActions.tsx's own
+                              isFrozenByEscalation) until a supervisor
+                              acknowledges/reassigns it. ACKNOWLEDGED shows
+                              the real (now-CRITICAL) priority badge plus a
+                              small indicator, since the ticket is fully
+                              actionable again for whoever it's assigned to. */}
+                          {ticket.is_escalated && ticket.escalation_status === "ACTIVE" ? (
+                            <Badge tone="warning" icon={<Lock size={11} />}>
+                              ESCALATED
+                            </Badge>
+                          ) : (
+                            <Badge tone={priorityTone[ticket.current_priority]}>
+                              {ticket.current_priority}
+                            </Badge>
+                          )}
+                          {ticket.is_escalated && ticket.escalation_status === "ACKNOWLEDGED" && (
                             <ShieldAlert
                               size={14}
                               className="text-danger"
@@ -711,11 +772,14 @@ export function TicketsListPage() {
     <AcknowledgeAssignModal
       open={acknowledgeAndAssign.isOpen}
       onClose={acknowledgeAndAssign.close}
+      step={acknowledgeAndAssign.step}
       me={acknowledgeAndAssign.me}
       groups={acknowledgeAndAssign.groups}
       selectedAgentId={acknowledgeAndAssign.selectedAgentId}
       onSelectAgent={acknowledgeAndAssign.setSelectedAgentId}
-      onConfirm={handleConfirmAcknowledge}
+      onAcknowledge={handleAcknowledgeStep}
+      onConfirmAssignment={handleAssignStep}
+      isAcknowledging={acknowledgeAndAssign.isAcknowledging}
       isSubmitting={acknowledgeAndAssign.isSubmitting}
     />
     </>

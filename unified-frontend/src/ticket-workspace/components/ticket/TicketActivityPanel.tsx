@@ -3,6 +3,15 @@ import { TicketTimeline } from "@tw/components/ticket/TicketTimeline";
 import { TicketAuditLog } from "@tw/components/ticket/TicketAuditLog";
 import { TicketComposer } from "@tw/components/ticket/TicketComposer";
 import { TicketAttachmentsTab } from "@tw/components/ticket/TicketAttachmentsTab";
+import { useAuthContext } from "@tw/context/AuthContext";
+import { useWorkflowContext } from "@tw/context/WorkflowContext";
+
+// Mirrors TicketActions.tsx's own isFrozenByEscalation — an actively
+// (not yet acknowledged) escalated ticket is frozen for its currently-
+// assigned agent, everywhere an action lives, not just the top-right
+// action row. Supervisors are exempt (acknowledging/assigning is how
+// they're meant to interact with it).
+const SUPERVISOR_ROLES = new Set(["Team Lead", "Account Manager", "Site Lead", "Super Admin"]);
 
 export type ActivityTab = "timeline" | "audit" | "reply" | "note" | "attachments";
 
@@ -32,6 +41,14 @@ export function TicketActivityPanel({
   onTimelineChanged,
   auditRefreshToken,
 }: TicketActivityPanelProps) {
+  const { currentUser } = useAuthContext();
+  const { activeTicket } = useWorkflowContext();
+  const isSupervisor = !!currentUser && SUPERVISOR_ROLES.has(currentUser.role);
+  const isFrozenByEscalation =
+    !isSupervisor &&
+    !!activeTicket?.is_escalated &&
+    activeTicket.escalation_status === "ACTIVE";
+
   return (
     <div className="rounded-md2 border border-border bg-surface shadow-xs">
       <div className="flex flex-wrap items-center gap-1 border-b border-border px-5 pt-3">
@@ -61,19 +78,25 @@ export function TicketActivityPanel({
       {activeTab === "attachments" && (
         <TicketAttachmentsTab onChanged={onTimelineChanged} flat />
       )}
-      {(activeTab === "reply" || activeTab === "note") && (
-        <TicketComposer
-          key={activeTab}
-          mode={activeTab === "reply" ? "reply" : "note"}
-          lockMode
-          flat
-          onClose={() => onTabChange("timeline")}
-          onSent={() => {
-            onTimelineChanged();
-            onTabChange("timeline");
-          }}
-        />
-      )}
+      {(activeTab === "reply" || activeTab === "note") &&
+        (isFrozenByEscalation ? (
+          <p className="px-5 py-6 text-sm text-muted">
+            This ticket has been escalated and is awaiting acknowledgment — it
+            cannot be worked until a supervisor acknowledges and reassigns it.
+          </p>
+        ) : (
+          <TicketComposer
+            key={activeTab}
+            mode={activeTab === "reply" ? "reply" : "note"}
+            lockMode
+            flat
+            onClose={() => onTabChange("timeline")}
+            onSent={() => {
+              onTimelineChanged();
+              onTabChange("timeline");
+            }}
+          />
+        ))}
     </div>
   );
 }
