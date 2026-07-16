@@ -11,7 +11,7 @@ import {
   Ticket as TicketIcon,
   TrendingUp,
 } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
 import { Breadcrumbs } from "@/components/shared/breadcrumbs";
@@ -22,37 +22,20 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import {
-  getCountsByCategory,
-  getCountsByPriority,
-  getCountsByStatus,
-  getReportMetrics,
-  getStaffPerformance,
-  getTeamPerformance,
-  getTicketsForAccountManager,
-  getTicketsForStaff,
-  getTicketsForTeamLead,
-  MONTHLY_TICKET_TREND,
-} from "@/lib/mock-tickets";
+  avgResponseMinutesFromAuditLogs,
+  countsByCategoryFromTickets,
+  countsByPriorityFromTickets,
+  monthlyTrendFromTickets,
+  reportMetricsFromTickets,
+  staffPerformanceFromTickets,
+  teamPerformanceFromTickets,
+} from "@/lib/reportAggregations";
 import { ROLE_NAMES } from "@/lib/role-access";
-import { useMockTicketsStore } from "@/store/mock-tickets-store";
 import { useAuthStore } from "@/store/auth-store";
-
-// Chart-only semantic color remap for the reference design — see the
-// matching comment in super-admin-dashboard.tsx for why this is kept
-// local to each page rather than written back into lib/mock-tickets.ts.
-const PRIORITY_CHART_COLOR: Record<string, string> = {
-  Low: "bg-blue-500",
-  Medium: "bg-orange-500",
-  High: "bg-red-500",
-  Critical: "bg-purple-500",
-};
-const STATUS_CHART_COLOR: Record<string, string> = {
-  Open: "bg-blue-500",
-  "In Progress": "bg-orange-500",
-  Resolved: "bg-green-500",
-  Closed: "bg-gray-400",
-};
-const CATEGORY_CHART_COLOR_CYCLE = ["bg-blue-500", "bg-orange-500", "bg-green-500", "bg-purple-500", "bg-red-500", "bg-gray-400"];
+import { listCategories } from "@tw/api/categories";
+import { getAllTicketAuditLogs } from "@tw/api/auditLog";
+import { listTickets } from "@tw/api/ticket";
+import type { CategoryResponse, TicketAuditLogResponse, TicketResponse } from "@tw/types";
 
 function downloadBlob(content: string, filename: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType });
@@ -67,50 +50,77 @@ function downloadBlob(content: string, filename: string, mimeType: string) {
 export default function ReportsPage() {
   const { toast } = useToast();
   const currentUser = useAuthStore((s) => s.user);
-  const allTickets = useMockTicketsStore((s) => s.tickets);
 
-  // Same report layout for every role (per spec) — only which
-  // tickets feed it differs: Account Manager/Team Lead/Staff each see
-  // reports scoped to their own data (see the matching
-  // getTicketsForXxx helpers in lib/mock-tickets.ts); Super Admin/
-  // Site Lead/anyone else keep the unscoped, organization-wide set.
-  const tickets = useMemo(() => {
-    if (!currentUser) return allTickets;
-    switch (currentUser.role) {
-      case ROLE_NAMES.ACCOUNT_MANAGER:
-        return getTicketsForAccountManager(currentUser.user_id, allTickets);
-      case ROLE_NAMES.TEAM_LEAD:
-        return getTicketsForTeamLead(currentUser.user_id, allTickets);
-      case ROLE_NAMES.STAFF:
-        return getTicketsForStaff(currentUser.user_id, allTickets);
-      default:
-        return allTickets;
-    }
-  }, [allTickets, currentUser]);
+  // No client-side role scoping needed here — listTickets()/
+  // getAllTicketAuditLogs() already apply the real per-role visibility
+  // scoping server-side (Account Manager -> own clients, Team Lead/
+  // Staff -> own category, Site Lead/Super Admin -> everything), the
+  // same as every other real ticket-workspace page.
+  const [tickets, setTickets] = useState<TicketResponse[]>([]);
+  const [categories, setCategories] = useState<CategoryResponse[]>([]);
+  const [replyAddedLogs, setReplyAddedLogs] = useState<TicketAuditLogResponse[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const metrics = useMemo(() => getReportMetrics(tickets), [tickets]);
-  const byStatus = useMemo(
-    () => getCountsByStatus(tickets).map((d) => ({ ...d, color: STATUS_CHART_COLOR[d.label] ?? d.color })),
-    [tickets]
+  useEffect(() => {
+    let cancelled = false;
+
+    Promise.all([
+      listTickets(),
+      listCategories(),
+      getAllTicketAuditLogs({ eventType: "REPLY_ADDED" }),
+    ])
+      .then(([ticketsResult, categoriesResult, replyLogsResult]) => {
+        if (cancelled) return;
+        setTickets(ticketsResult);
+        setCategories(categoriesResult);
+        setReplyAddedLogs(replyLogsResult.items);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTickets([]);
+          setCategories([]);
+          setReplyAddedLogs([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Super Admin/Site Lead/Account Manager keep Tickets by Category
+  // (Account Manager's current behavior is deliberately unchanged);
+  // Team Lead/Staff have it hidden per spec.
+  const showCategoryChart =
+    currentUser?.role !== ROLE_NAMES.TEAM_LEAD && currentUser?.role !== ROLE_NAMES.STAFF;
+
+  const metrics = useMemo(() => reportMetricsFromTickets(tickets), [tickets]);
+  const avgResponseMinutes = useMemo(
+    () => avgResponseMinutesFromAuditLogs(tickets, replyAddedLogs),
+    [tickets, replyAddedLogs]
   );
-  const byPriority = useMemo(
-    () => getCountsByPriority(tickets).map((d) => ({ ...d, color: PRIORITY_CHART_COLOR[d.label] ?? d.color })),
-    [tickets]
-  );
-  const byCategory = useMemo(
-    () =>
-      getCountsByCategory(tickets).map((d, i) => ({
-        ...d,
-        color: CATEGORY_CHART_COLOR_CYCLE[i % CATEGORY_CHART_COLOR_CYCLE.length],
-      })),
-    [tickets]
-  );
-  const staffPerformance = useMemo(() => getStaffPerformance(tickets), [tickets]);
-  const teamPerformance = useMemo(() => getTeamPerformance(tickets), [tickets]);
+  const byPriority = useMemo(() => countsByPriorityFromTickets(tickets), [tickets]);
+  const byCategory = useMemo(() => countsByCategoryFromTickets(tickets, categories), [tickets, categories]);
+  const monthlyTrend = useMemo(() => monthlyTrendFromTickets(tickets), [tickets]);
+  const staffPerformance = useMemo(() => staffPerformanceFromTickets(tickets), [tickets]);
+  const teamPerformance = useMemo(() => teamPerformanceFromTickets(tickets), [tickets]);
 
   const buildRows = () => {
     const header = ["Ticket ID", "Subject", "Client", "Category", "Priority", "Status", "Assigned To", "Created Date", "Updated Date"];
-    const rows = tickets.map((t) => [t.id, t.subject, t.client, t.category, t.priority, t.status, t.assignedTo, t.createdDate, t.updatedDate]);
+    const rows = tickets.map((t) => [
+      t.ticket_id,
+      t.title,
+      t.client_name ?? t.client_company_name ?? "—",
+      t.ticket_type,
+      t.current_priority,
+      t.current_status,
+      t.agent_name ?? "Unassigned",
+      t.created_at,
+      t.updated_at,
+    ]);
     return { header, rows };
   };
 
@@ -165,13 +175,18 @@ export default function ReportsPage() {
       />
 
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
-        <ModernStatCard title="Total Tickets" value={metrics.total} icon={TicketIcon} />
-        <ModernStatCard title="Resolved Tickets" value={metrics.resolved} icon={ShieldCheck} tone="success" />
-        <ModernStatCard title="Pending Tickets" value={metrics.pending} icon={Clock3} tone="warning" />
-        <ModernStatCard title="Closed Tickets" value={metrics.closed} icon={FileText} />
-        <ModernStatCard title="Avg. Resolution Time" value={`${metrics.avgResolutionHours}h`} icon={TrendingUp} />
-        <ModernStatCard title="Avg. Response Time" value={`${metrics.avgResponseMinutes}m`} icon={Clock3} />
-        <ModernStatCard title="SLA Compliance" value={`${metrics.slaCompliance}%`} icon={Gauge} tone={metrics.slaCompliance >= 90 ? "success" : "warning"} />
+        <ModernStatCard title="Total Tickets" value={isLoading ? "…" : metrics.total} icon={TicketIcon} />
+        <ModernStatCard title="Resolved Tickets" value={isLoading ? "…" : metrics.resolved} icon={ShieldCheck} tone="success" />
+        <ModernStatCard title="Pending Tickets" value={isLoading ? "…" : metrics.pending} icon={Clock3} tone="warning" />
+        <ModernStatCard title="Closed Tickets" value={isLoading ? "…" : metrics.closed} icon={FileText} />
+        <ModernStatCard title="Avg. Resolution Time" value={isLoading ? "…" : `${metrics.avgResolutionHours}h`} icon={TrendingUp} />
+        <ModernStatCard title="Avg. Response Time" value={isLoading ? "…" : `${avgResponseMinutes}m`} icon={Clock3} />
+        <ModernStatCard
+          title="SLA Compliance"
+          value={isLoading ? "…" : `${metrics.slaCompliance}%`}
+          icon={Gauge}
+          tone={metrics.slaCompliance >= 90 ? "success" : "warning"}
+        />
       </div>
 
       <Card className="rounded-md border-border shadow-sm">
@@ -180,15 +195,22 @@ export default function ReportsPage() {
           <CardDescription>Ticket volume over the last 6 months</CardDescription>
         </CardHeader>
         <CardContent>
-          <AreaTrendChart data={MONTHLY_TICKET_TREND} valueFormatter={(v) => `${v} tickets`} />
+          <AreaTrendChart data={monthlyTrend} valueFormatter={(v) => `${v} tickets`} />
         </CardContent>
       </Card>
 
-      <div className="grid gap-5 lg:grid-cols-3">
-        <ModernBarListCard title="Tickets by Status" data={byStatus} />
+      {/* "Tickets by Status" was removed per spec. Tickets by Category
+          is role-gated (hidden for Team Lead/Staff); when it's hidden,
+          Tickets by Priority expands to the full row instead of sharing
+          a half-empty grid. */}
+      {showCategoryChart ? (
+        <div className="grid gap-5 lg:grid-cols-2">
+          <ModernBarListCard title="Tickets by Priority" data={byPriority} />
+          <ModernBarListCard title="Tickets by Category" data={byCategory} />
+        </div>
+      ) : (
         <ModernBarListCard title="Tickets by Priority" data={byPriority} />
-        <ModernBarListCard title="Tickets by Category" data={byCategory} />
-      </div>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-2">
         <ModernBarListCard
@@ -198,7 +220,7 @@ export default function ReportsPage() {
         />
         <ModernBarListCard
           title="Team Performance"
-          description="Tickets resolved or closed per team"
+          description="Tickets resolved or closed per category"
           data={teamPerformance}
         />
       </div>

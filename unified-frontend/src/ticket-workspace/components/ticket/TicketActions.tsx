@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import {
   ArrowLeftRight,
   CheckCircle2,
   ChevronDown,
   Flame,
   Lock,
-  MessagesSquare,
   Paperclip,
   RotateCcw,
   Settings2,
@@ -66,7 +64,6 @@ interface TicketActionsProps {
 // permission check, and API call below is unchanged from before; only
 // the trigger markup moved.
 export function TicketActions({ onActionComplete }: TicketActionsProps) {
-  const navigate = useNavigate();
   // editAccessRequests is fetched once per ticket by TicketDetailPage
   // and shared via context with EditAccessPanel — see that context
   // field's own comment for why this used to be a separate
@@ -365,17 +362,6 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
               >
                 <ShieldCheck size={14} className="text-muted" />
                 Edit Access
-              </button>
-              <button
-                type="button"
-                className={menuItemClass}
-                onClick={() => {
-                  setIsMoreOpen(false);
-                  navigate(`/tickets/${activeTicket.ticket_id}/interactions`);
-                }}
-              >
-                <MessagesSquare size={14} className="text-muted" />
-                Interactions
               </button>
               {!isTicketClosed && (!isStaff || canClose) && (
                 <button

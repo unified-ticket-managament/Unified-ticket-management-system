@@ -6,10 +6,9 @@ import {
   ArrowUpRight,
   CheckCircle2,
   Clock,
-  Loader2,
   Ticket,
 } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
 import { ModernBarListCard } from "@/components/dashboard/ModernBarListCard";
@@ -18,75 +17,94 @@ import { SlaOverviewSection } from "@/components/dashboard/SlaOverviewSection";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  getCountsByPriority,
-  getCountsByStatus,
-  getDashboardKpis,
-  MOCK_RECENT_ACTIVITIES,
-  MOCK_TICKETS,
-  STATUS_COLOR,
-} from "@/lib/mock-tickets";
-import { formatRelativeTime } from "@/lib/utils";
+import { countsByPriorityFromTickets } from "@/lib/reportAggregations";
+import { cn, formatRelativeTime } from "@/lib/utils";
 import { useAuthStore } from "@/store/auth-store";
-import type { MockTicket } from "@/lib/mock-tickets";
+import { getAllTicketAuditLogs } from "@tw/api/auditLog";
+import { getDashboardStats, listTickets, type DashboardStats } from "@tw/api/ticket";
+import { auditMetaFor } from "@tw/lib/auditLogMeta";
+import type { TicketAuditLogResponse, TicketResponse, TicketStatus } from "@tw/types";
 
-// Chart-only semantic color remap for the reference design (blue/orange/
-// green/purple/red/gray per category) — deliberately local to this page,
-// not written back into lib/mock-tickets.ts's PRIORITY_COLOR/STATUS_COLOR
-// (those still drive the unrelated Badge `tone` used on ticket pages, and
-// changing them there would also repaint viewer-dashboard.tsx's charts,
-// which reuses the same exported constants and is out of scope here).
-const PRIORITY_CHART_COLOR: Record<string, string> = {
-  Low: "bg-blue-500",
-  Medium: "bg-orange-500",
-  High: "bg-red-500",
-  Critical: "bg-purple-500",
+const STATUS_BADGE: Record<TicketStatus, { label: string; variant: "default" | "warning" | "success" | "secondary" }> = {
+  OPEN: { label: "Open", variant: "default" },
+  IN_PROGRESS: { label: "In Progress", variant: "warning" },
+  PENDING: { label: "Pending", variant: "secondary" },
+  WAITING_FOR_CLIENT: { label: "Waiting for Client", variant: "secondary" },
+  RESOLVED: { label: "Resolved", variant: "success" },
+  CLOSED: { label: "Closed", variant: "secondary" },
 };
-const STATUS_CHART_COLOR: Record<string, string> = {
-  Open: "bg-blue-500",
-  "In Progress": "bg-orange-500",
-  Resolved: "bg-green-500",
-  Closed: "bg-gray-400",
+
+const AUDIT_TONE_CLASSES: Record<string, string> = {
+  default: "bg-muted text-muted-foreground",
+  success: "bg-success/10 text-success",
+  warning: "bg-warning/10 text-warning",
+  danger: "bg-destructive/10 text-destructive",
+  info: "bg-info/10 text-info",
+  accent: "bg-accent text-accent-foreground",
 };
 
 interface SuperAdminDashboardProps {
-  // Defaults to the full mock dataset (Super Admin's own view).
-  // Account Manager/Team Lead/Staff dashboards reuse this exact same
-  // component/layout, passing in their own role-scoped subset (see
-  // getTicketsForAccountManager/getTicketsForTeamLead/getTicketsForStaff
-  // in lib/mock-tickets.ts) — every KPI/chart/list below is already a
-  // pure derivation of `tickets`, so no other change was needed to
-  // make this reusable per role.
-  tickets?: MockTicket[];
   description?: string;
 }
 
 // Super Admin's ticket-operations dashboard — replaces the generic
 // ViewerDashboard for this role only (see dashboard/[[...slug]]/page.tsx).
-// KPIs/charts run on the mock dataset in lib/mock-tickets.ts since the
-// backend has no aggregation endpoints for these yet; swap the source
-// here for a real query once it does — the shape (six KPIs + two
-// breakdowns + two recent lists) is meant to stay stable across that swap.
-export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: SuperAdminDashboardProps) {
+// Every KPI/chart/list below is now bound to real backend data via the
+// same @tw/api functions the embedded ticket workspace already uses
+// (getDashboardStats/listTickets/getAllTicketAuditLogs) — all three
+// already apply the real per-role visibility scoping server-side
+// (Account Manager -> own clients, Team Lead/Staff -> own category,
+// Site Lead/Super Admin -> everything), so this component no longer
+// needs a role-scoped `tickets` prop at all; Account Manager/Team
+// Lead/Staff's wrapper components (account-manager-dashboard.tsx etc.)
+// just render this directly now.
+export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
   const currentUser = useAuthStore((state) => state.user);
 
-  const kpis = useMemo(() => getDashboardKpis(tickets), [tickets]);
-  const priorityBreakdown = useMemo(
-    () => getCountsByPriority(tickets).map((d) => ({ ...d, color: PRIORITY_CHART_COLOR[d.label] ?? d.color })),
-    [tickets]
-  );
-  const statusBreakdown = useMemo(
-    () => getCountsByStatus(tickets).map((d) => ({ ...d, color: STATUS_CHART_COLOR[d.label] ?? d.color })),
-    [tickets]
-  );
+  const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [tickets, setTickets] = useState<TicketResponse[]>([]);
+  const [recentActivity, setRecentActivity] = useState<TicketAuditLogResponse[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const recentAssigned = useMemo(
-    () =>
-      [...tickets]
-        .sort((a, b) => new Date(b.updatedDate).getTime() - new Date(a.updatedDate).getTime())
-        .slice(0, 5),
-    [tickets]
-  );
+  useEffect(() => {
+    let cancelled = false;
+
+    Promise.all([
+      getDashboardStats(),
+      listTickets(),
+      getAllTicketAuditLogs({ limit: 8 }),
+    ])
+      .then(([statsResult, ticketsResult, activityResult]) => {
+        if (cancelled) return;
+        setStats(statsResult);
+        setTickets(ticketsResult);
+        setRecentActivity(activityResult.items);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setStats(null);
+          setTickets([]);
+          setRecentActivity([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const priorityBreakdown = countsByPriorityFromTickets(tickets);
+
+  // "Recent Assigned Tickets" — real assigned tickets (agent_id present),
+  // newest-updated first, so this reflects actual assignments/claims
+  // rather than every recently-touched ticket regardless of ownership.
+  const recentAssigned = [...tickets]
+    .filter((t) => t.agent_id && t.agent_name)
+    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
+    .slice(0, 5);
 
   return (
     <div className="space-y-8">
@@ -95,41 +113,36 @@ export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: Sup
         description={description ?? "Ticket operations overview across the organization."}
       />
 
-      {/* Top KPI row — deliberately only 4 tiles now (Open/Resolved
-          Today/In Progress/Closed). SLA Breaches and Escalated Tickets
-          were removed from this row only — both are still fully live
-          just below, as the real (non-mock) "Breached"/"Escalated"
-          tiles in SlaOverviewSection, so no functionality was dropped. */}
+      {/* Top KPI row — deliberately only 4 tiles (Open/Resolved Today/
+          In Progress/Closed), all sourced from the real GET
+          /tickets/dashboard-stats endpoint. SLA Breaches and Escalated
+          Tickets are intentionally absent from this row — both are
+          still fully live just below, as the real "Breached"/
+          "Escalated" tiles in SlaOverviewSection. */}
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-        <ModernStatCard title="Open Tickets" value={kpis.open} subtitle="Awaiting first response" icon={Ticket} />
+        <ModernStatCard title="Open Tickets" value={isLoading ? "…" : stats?.open ?? 0} subtitle="Awaiting first response" icon={Ticket} />
         <ModernStatCard
           title="Resolved Today"
-          value={kpis.resolvedToday}
-          subtitle="Closed within SLA"
+          value={isLoading ? "…" : stats?.resolved_today ?? 0}
+          subtitle="Resolved so far today"
           icon={CheckCircle2}
           tone="success"
         />
-        <ModernStatCard title="In Progress" value={kpis.inProgress} subtitle="Actively being worked" icon={Clock} tone="warning" />
-        <ModernStatCard title="Closed" value={kpis.closed} subtitle="All-time closed" icon={Archive} />
+        <ModernStatCard title="In Progress" value={isLoading ? "…" : stats?.in_progress ?? 0} subtitle="Actively being worked" icon={Clock} tone="warning" />
+        <ModernStatCard title="Closed" value={isLoading ? "…" : stats?.closed ?? 0} subtitle="All-time closed" icon={Archive} />
       </div>
 
       <SlaOverviewSection />
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <ModernBarListCard
-          title="Tickets by Priority"
-          description="Current open workload by priority level"
-          data={priorityBreakdown}
-          legend={Object.entries(PRIORITY_CHART_COLOR).map(([label, bar]) => ({ label, dotClassName: bar }))}
-        />
-
-        <ModernBarListCard
-          title="Tickets by Status"
-          description="Distribution across the ticket lifecycle"
-          data={statusBreakdown}
-          legend={Object.entries(STATUS_CHART_COLOR).map(([label, bar]) => ({ label, dotClassName: bar }))}
-        />
-      </div>
+      {/* "Tickets by Status" was removed per spec — Tickets by Priority
+          now takes the full width instead of sharing a 2-col grid with
+          a chart that no longer exists. */}
+      <ModernBarListCard
+        title="Tickets by Priority"
+        description="Current workload by priority level"
+        data={priorityBreakdown}
+        legend={priorityBreakdown.map((d) => ({ label: d.label, dotClassName: d.color ?? "bg-blue-500" }))}
+      />
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card className="rounded-md border-border shadow-sm">
@@ -140,21 +153,27 @@ export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: Sup
             </div>
           </CardHeader>
           <CardContent className="space-y-1">
-            {MOCK_RECENT_ACTIVITIES.map((activity) => (
-              <div key={activity.id} className="flex items-start gap-3 rounded-md px-2.5 py-3 transition-colors hover:bg-muted/50">
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                  <Loader2 className="h-4 w-4" />
+            {recentActivity.length === 0 && !isLoading && (
+              <p className="px-2.5 py-3 text-sm text-muted-foreground">No recent activity.</p>
+            )}
+            {recentActivity.map((log) => {
+              const meta = auditMetaFor(log.event_type);
+              return (
+                <div key={log.audit_id} className="flex items-start gap-3 rounded-md px-2.5 py-3 transition-colors hover:bg-muted/50">
+                  <div className={cn("mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm", AUDIT_TONE_CLASSES[meta.tone])}>
+                    <span aria-hidden="true">{meta.icon}</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm">
+                      <span className="font-medium">{log.actor_name}</span>{" "}
+                      <span className="text-muted-foreground">{meta.label}</span>{" "}
+                      <span className="font-medium">— {log.ticket_title}</span>
+                    </p>
+                    <p className="text-xs text-muted-foreground">{formatRelativeTime(log.created_at)}</p>
+                  </div>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm">
-                    <span className="font-medium">{activity.actor}</span>{" "}
-                    <span className="text-muted-foreground">{activity.action}</span>{" "}
-                    <span className="font-medium">{activity.ticketId}</span>
-                  </p>
-                  <p className="text-xs text-muted-foreground">{formatRelativeTime(activity.timestamp)}</p>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </CardContent>
         </Card>
 
@@ -162,7 +181,7 @@ export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: Sup
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div>
               <CardTitle className="text-base">Recent Assigned Tickets</CardTitle>
-              <CardDescription>Most recently updated tickets</CardDescription>
+              <CardDescription>Most recently updated assignments</CardDescription>
             </div>
             <Link href="/all-tickets" className="flex items-center gap-1 text-xs font-medium text-primary hover:underline">
               View all
@@ -170,23 +189,24 @@ export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: Sup
             </Link>
           </CardHeader>
           <CardContent className="space-y-1">
+            {recentAssigned.length === 0 && !isLoading && (
+              <p className="px-2.5 py-3 text-sm text-muted-foreground">No assigned tickets yet.</p>
+            )}
             {recentAssigned.map((ticket) => (
               <Link
-                key={ticket.id}
+                key={ticket.ticket_id}
                 href="/all-tickets"
                 className="flex items-center gap-3 rounded-md px-2.5 py-3 transition-colors hover:bg-muted/50"
               >
                 <Avatar className="h-9 w-9">
-                  <AvatarFallback>{ticket.assignedTo.charAt(0)}</AvatarFallback>
+                  <AvatarFallback>{(ticket.agent_name ?? "?").charAt(0)}</AvatarFallback>
                 </Avatar>
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">
-                    {ticket.id} · {ticket.subject}
-                  </p>
-                  <p className="truncate text-xs text-muted-foreground">Assigned to {ticket.assignedTo}</p>
+                  <p className="truncate text-sm font-medium">{ticket.title}</p>
+                  <p className="truncate text-xs text-muted-foreground">Assigned to {ticket.agent_name}</p>
                 </div>
-                <Badge variant={STATUS_COLOR[ticket.status].badge} className="shrink-0">
-                  {ticket.status}
+                <Badge variant={STATUS_BADGE[ticket.current_status].variant} className="shrink-0">
+                  {STATUS_BADGE[ticket.current_status].label}
                 </Badge>
               </Link>
             ))}

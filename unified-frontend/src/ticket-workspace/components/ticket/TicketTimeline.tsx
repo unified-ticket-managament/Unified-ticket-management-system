@@ -115,7 +115,7 @@ export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps)
             to={`/interactions?ticketId=${ticketId}`}
             className="text-[11px] font-semibold text-accent transition-colors hover:text-accent-700"
           >
-            View all
+            Interactions
           </Link>
         )
       }

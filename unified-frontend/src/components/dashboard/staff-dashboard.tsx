@@ -1,27 +1,12 @@
 "use client";
 
-import { useMemo } from "react";
-
 import { SuperAdminDashboard } from "@/components/dashboard/super-admin-dashboard";
-import { getTicketsForStaff } from "@/lib/mock-tickets";
-import { useAuthStore } from "@/store/auth-store";
 
-// Identical layout/components to Super Admin's dashboard — only the
-// ticket data feeding it differs, scoped to this Staff member's own
-// assigned tickets (see getTicketsForStaff for how that scoping works
-// given the mock dataset has no real assignee-id link).
+// Identical layout/components to Super Admin's dashboard — SuperAdminDashboard
+// now fetches its own real data (getDashboardStats/listTickets/audit logs),
+// and those endpoints already scope to this Staff member's own category/
+// assigned tickets server-side, so no client-side ticket subset needs to be
+// passed in here.
 export function StaffDashboard() {
-  const currentUser = useAuthStore((state) => state.user);
-
-  const tickets = useMemo(
-    () => (currentUser ? getTicketsForStaff(currentUser.user_id) : []),
-    [currentUser]
-  );
-
-  return (
-    <SuperAdminDashboard
-      tickets={tickets}
-      description="Your assigned tickets at a glance."
-    />
-  );
+  return <SuperAdminDashboard description="Your assigned tickets at a glance." />;
 }
