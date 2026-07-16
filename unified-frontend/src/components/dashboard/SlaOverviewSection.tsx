@@ -5,7 +5,7 @@ import Link from "next/link";
 import { CheckCircle2, Flame, PauseCircle, ShieldAlert, Timer, TriangleAlert } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { StatCard } from "@/components/shared/stats";
+import { ModernStatCard } from "@/components/dashboard/ModernStatCard";
 import { useDashboardSlaCounts, type DashboardSlaCounts } from "@tw/hooks/useDashboardSlaCounts";
 import { getDashboardStats, type DashboardTicketSummary } from "@tw/api/ticket";
 import { SlaBadge } from "@tw/components/sla/SlaBadge";
@@ -60,7 +60,7 @@ export function SlaOverviewSection() {
   ];
 
   return (
-    <Card>
+    <Card className="rounded-md border-border shadow-sm">
       <CardHeader>
         <CardTitle className="text-base">SLA Overview</CardTitle>
         <CardDescription>
@@ -69,9 +69,9 @@ export function SlaOverviewSection() {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           {items.map((item) => (
-            <StatCard
+            <ModernStatCard
               key={item.key}
               title={item.title}
               value={isLoading ? "…" : counts[item.key]}
@@ -83,8 +83,8 @@ export function SlaOverviewSection() {
         </div>
 
         {criticalTickets && criticalTickets.length > 0 && (
-          <div className="mt-6">
-            <h3 className="mb-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          <div className="mt-6 border-t border-border pt-5">
+            <h3 className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
               Needs Attention
             </h3>
             <ul className="flex flex-col gap-2">
@@ -92,7 +92,7 @@ export function SlaOverviewSection() {
                 <li key={ticket.ticket_id}>
                   <Link
                     href={`/dashboard/tickets/${ticket.ticket_id}`}
-                    className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm transition-colors hover:bg-muted/50"
+                    className="flex items-center justify-between gap-3 rounded-md border border-border px-3.5 py-2.5 text-sm transition-colors hover:bg-muted/50"
                   >
                     <span className="min-w-0 flex-1 truncate font-medium">{ticket.title}</span>
                     <div className="flex flex-none items-center gap-1.5">

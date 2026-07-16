@@ -15,8 +15,9 @@ import { useMemo } from "react";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
 import { Breadcrumbs } from "@/components/shared/breadcrumbs";
-import { AreaTrendChart, CategoryBarList } from "@/components/shared/charts";
-import { StatCard } from "@/components/shared/stats";
+import { AreaTrendChart } from "@/components/shared/charts";
+import { ModernBarListCard } from "@/components/dashboard/ModernBarListCard";
+import { ModernStatCard } from "@/components/dashboard/ModernStatCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
@@ -35,6 +36,23 @@ import {
 import { ROLE_NAMES } from "@/lib/role-access";
 import { useMockTicketsStore } from "@/store/mock-tickets-store";
 import { useAuthStore } from "@/store/auth-store";
+
+// Chart-only semantic color remap for the reference design — see the
+// matching comment in super-admin-dashboard.tsx for why this is kept
+// local to each page rather than written back into lib/mock-tickets.ts.
+const PRIORITY_CHART_COLOR: Record<string, string> = {
+  Low: "bg-blue-500",
+  Medium: "bg-orange-500",
+  High: "bg-red-500",
+  Critical: "bg-purple-500",
+};
+const STATUS_CHART_COLOR: Record<string, string> = {
+  Open: "bg-blue-500",
+  "In Progress": "bg-orange-500",
+  Resolved: "bg-green-500",
+  Closed: "bg-gray-400",
+};
+const CATEGORY_CHART_COLOR_CYCLE = ["bg-blue-500", "bg-orange-500", "bg-green-500", "bg-purple-500", "bg-red-500", "bg-gray-400"];
 
 function downloadBlob(content: string, filename: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType });
@@ -71,9 +89,22 @@ export default function ReportsPage() {
   }, [allTickets, currentUser]);
 
   const metrics = useMemo(() => getReportMetrics(tickets), [tickets]);
-  const byStatus = useMemo(() => getCountsByStatus(tickets), [tickets]);
-  const byPriority = useMemo(() => getCountsByPriority(tickets), [tickets]);
-  const byCategory = useMemo(() => getCountsByCategory(tickets), [tickets]);
+  const byStatus = useMemo(
+    () => getCountsByStatus(tickets).map((d) => ({ ...d, color: STATUS_CHART_COLOR[d.label] ?? d.color })),
+    [tickets]
+  );
+  const byPriority = useMemo(
+    () => getCountsByPriority(tickets).map((d) => ({ ...d, color: PRIORITY_CHART_COLOR[d.label] ?? d.color })),
+    [tickets]
+  );
+  const byCategory = useMemo(
+    () =>
+      getCountsByCategory(tickets).map((d, i) => ({
+        ...d,
+        color: CATEGORY_CHART_COLOR_CYCLE[i % CATEGORY_CHART_COLOR_CYCLE.length],
+      })),
+    [tickets]
+  );
   const staffPerformance = useMemo(() => getStaffPerformance(tickets), [tickets]);
   const teamPerformance = useMemo(() => getTeamPerformance(tickets), [tickets]);
 
@@ -133,18 +164,18 @@ export default function ReportsPage() {
         }
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
-        <StatCard title="Total Tickets" value={metrics.total} icon={TicketIcon} />
-        <StatCard title="Resolved Tickets" value={metrics.resolved} icon={ShieldCheck} tone="success" />
-        <StatCard title="Pending Tickets" value={metrics.pending} icon={Clock3} tone="warning" />
-        <StatCard title="Closed Tickets" value={metrics.closed} icon={FileText} />
-        <StatCard title="Avg. Resolution Time" value={`${metrics.avgResolutionHours}h`} icon={TrendingUp} />
-        <StatCard title="Avg. Response Time" value={`${metrics.avgResponseMinutes}m`} icon={Clock3} />
-        <StatCard title="SLA Compliance" value={`${metrics.slaCompliance}%`} icon={Gauge} tone={metrics.slaCompliance >= 90 ? "success" : "warning"} />
+      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+        <ModernStatCard title="Total Tickets" value={metrics.total} icon={TicketIcon} />
+        <ModernStatCard title="Resolved Tickets" value={metrics.resolved} icon={ShieldCheck} tone="success" />
+        <ModernStatCard title="Pending Tickets" value={metrics.pending} icon={Clock3} tone="warning" />
+        <ModernStatCard title="Closed Tickets" value={metrics.closed} icon={FileText} />
+        <ModernStatCard title="Avg. Resolution Time" value={`${metrics.avgResolutionHours}h`} icon={TrendingUp} />
+        <ModernStatCard title="Avg. Response Time" value={`${metrics.avgResponseMinutes}m`} icon={Clock3} />
+        <ModernStatCard title="SLA Compliance" value={`${metrics.slaCompliance}%`} icon={Gauge} tone={metrics.slaCompliance >= 90 ? "success" : "warning"} />
       </div>
 
-      <Card>
-        <CardHeader>
+      <Card className="rounded-md border-border shadow-sm">
+        <CardHeader className="space-y-0">
           <CardTitle className="text-base">Monthly Ticket Trend</CardTitle>
           <CardDescription>Ticket volume over the last 6 months</CardDescription>
         </CardHeader>
@@ -153,55 +184,23 @@ export default function ReportsPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Tickets by Status</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <CategoryBarList data={byStatus} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Tickets by Priority</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <CategoryBarList data={byPriority} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Tickets by Category</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <CategoryBarList data={byCategory} />
-          </CardContent>
-        </Card>
+      <div className="grid gap-5 lg:grid-cols-3">
+        <ModernBarListCard title="Tickets by Status" data={byStatus} />
+        <ModernBarListCard title="Tickets by Priority" data={byPriority} />
+        <ModernBarListCard title="Tickets by Category" data={byCategory} />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Staff Performance</CardTitle>
-            <CardDescription>Tickets resolved or closed per agent</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <CategoryBarList data={staffPerformance} />
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Team Performance</CardTitle>
-            <CardDescription>Tickets resolved or closed per team</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <CategoryBarList data={teamPerformance} />
-          </CardContent>
-        </Card>
+      <div className="grid gap-5 lg:grid-cols-2">
+        <ModernBarListCard
+          title="Staff Performance"
+          description="Tickets resolved or closed per agent"
+          data={staffPerformance}
+        />
+        <ModernBarListCard
+          title="Team Performance"
+          description="Tickets resolved or closed per team"
+          data={teamPerformance}
+        />
       </div>
     </div>
   );

@@ -3,23 +3,17 @@
 import Link from "next/link";
 import {
   Archive,
-  ArrowUpCircle,
   ArrowUpRight,
-  BarChart3,
-  Bell,
   CheckCircle2,
   Clock,
-  FileBarChart,
   Loader2,
   Ticket,
-  TriangleAlert,
-  UserCog,
 } from "lucide-react";
 import { useMemo } from "react";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
-import { CategoryBarList } from "@/components/shared/charts";
-import { StatCard } from "@/components/shared/stats";
+import { ModernBarListCard } from "@/components/dashboard/ModernBarListCard";
+import { ModernStatCard } from "@/components/dashboard/ModernStatCard";
 import { SlaOverviewSection } from "@/components/dashboard/SlaOverviewSection";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -28,15 +22,32 @@ import {
   getCountsByPriority,
   getCountsByStatus,
   getDashboardKpis,
-  MOCK_DASHBOARD_NOTIFICATIONS,
   MOCK_RECENT_ACTIVITIES,
   MOCK_TICKETS,
-  PRIORITY_COLOR,
   STATUS_COLOR,
 } from "@/lib/mock-tickets";
 import { formatRelativeTime } from "@/lib/utils";
 import { useAuthStore } from "@/store/auth-store";
 import type { MockTicket } from "@/lib/mock-tickets";
+
+// Chart-only semantic color remap for the reference design (blue/orange/
+// green/purple/red/gray per category) — deliberately local to this page,
+// not written back into lib/mock-tickets.ts's PRIORITY_COLOR/STATUS_COLOR
+// (those still drive the unrelated Badge `tone` used on ticket pages, and
+// changing them there would also repaint viewer-dashboard.tsx's charts,
+// which reuses the same exported constants and is out of scope here).
+const PRIORITY_CHART_COLOR: Record<string, string> = {
+  Low: "bg-blue-500",
+  Medium: "bg-orange-500",
+  High: "bg-red-500",
+  Critical: "bg-purple-500",
+};
+const STATUS_CHART_COLOR: Record<string, string> = {
+  Open: "bg-blue-500",
+  "In Progress": "bg-orange-500",
+  Resolved: "bg-green-500",
+  Closed: "bg-gray-400",
+};
 
 interface SuperAdminDashboardProps {
   // Defaults to the full mock dataset (Super Admin's own view).
@@ -60,8 +71,14 @@ export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: Sup
   const currentUser = useAuthStore((state) => state.user);
 
   const kpis = useMemo(() => getDashboardKpis(tickets), [tickets]);
-  const priorityBreakdown = useMemo(() => getCountsByPriority(tickets), [tickets]);
-  const statusBreakdown = useMemo(() => getCountsByStatus(tickets), [tickets]);
+  const priorityBreakdown = useMemo(
+    () => getCountsByPriority(tickets).map((d) => ({ ...d, color: PRIORITY_CHART_COLOR[d.label] ?? d.color })),
+    [tickets]
+  );
+  const statusBreakdown = useMemo(
+    () => getCountsByStatus(tickets).map((d) => ({ ...d, color: STATUS_CHART_COLOR[d.label] ?? d.color })),
+    [tickets]
+  );
 
   const recentAssigned = useMemo(
     () =>
@@ -71,33 +88,6 @@ export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: Sup
     [tickets]
   );
 
-  const quickActions = [
-    {
-      title: "Create Ticket",
-      description: "Log a new ticket on behalf of a client.",
-      href: "/all-tickets",
-      icon: Ticket,
-    },
-    {
-      title: "Assign Ticket",
-      description: "Assign or reassign tickets to an owner.",
-      href: "/all-tickets",
-      icon: UserCog,
-    },
-    {
-      title: "Manage Users",
-      description: "Add or update agents and their roles.",
-      href: "/users",
-      icon: UserCog,
-    },
-    {
-      title: "Generate Report",
-      description: "Export SLA and volume reports.",
-      href: "/reports",
-      icon: FileBarChart,
-    },
-  ];
-
   return (
     <div className="space-y-8">
       <PageHeader
@@ -105,109 +95,53 @@ export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: Sup
         description={description ?? "Ticket operations overview across the organization."}
       />
 
-      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-        <StatCard title="Open Tickets" value={kpis.open} subtitle="Awaiting first response" icon={Ticket} />
-        <StatCard
+      {/* Top KPI row — deliberately only 4 tiles now (Open/Resolved
+          Today/In Progress/Closed). SLA Breaches and Escalated Tickets
+          were removed from this row only — both are still fully live
+          just below, as the real (non-mock) "Breached"/"Escalated"
+          tiles in SlaOverviewSection, so no functionality was dropped. */}
+      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        <ModernStatCard title="Open Tickets" value={kpis.open} subtitle="Awaiting first response" icon={Ticket} />
+        <ModernStatCard
           title="Resolved Today"
           value={kpis.resolvedToday}
           subtitle="Closed within SLA"
           icon={CheckCircle2}
           tone="success"
         />
-        <StatCard title="In Progress" value={kpis.inProgress} subtitle="Actively being worked" icon={Clock} tone="warning" />
-        <StatCard title="Closed" value={kpis.closed} subtitle="All-time closed" icon={Archive} />
-        <StatCard
-          title="SLA Breaches"
-          value={kpis.slaBreaches}
-          subtitle="Past response deadline"
-          icon={TriangleAlert}
-          tone="danger"
-        />
-        <StatCard
-          title="Escalated Tickets"
-          value={kpis.escalated}
-          subtitle="Sent to Tier 2 support"
-          icon={ArrowUpCircle}
-          tone="warning"
-        />
+        <ModernStatCard title="In Progress" value={kpis.inProgress} subtitle="Actively being worked" icon={Clock} tone="warning" />
+        <ModernStatCard title="Closed" value={kpis.closed} subtitle="All-time closed" icon={Archive} />
       </div>
 
       <SlaOverviewSection />
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Tickets by Priority</CardTitle>
-            <CardDescription>Current open workload by priority level</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <CategoryBarList data={priorityBreakdown} />
-            <div className="mt-4 flex flex-wrap gap-3">
-              {Object.entries(PRIORITY_COLOR).map(([label, { bar }]) => (
-                <span key={label} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <span className={`h-2 w-2 rounded-full ${bar}`} />
-                  {label}
-                </span>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+      <div className="grid gap-5 lg:grid-cols-2">
+        <ModernBarListCard
+          title="Tickets by Priority"
+          description="Current open workload by priority level"
+          data={priorityBreakdown}
+          legend={Object.entries(PRIORITY_CHART_COLOR).map(([label, bar]) => ({ label, dotClassName: bar }))}
+        />
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Tickets by Status</CardTitle>
-            <CardDescription>Distribution across the ticket lifecycle</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <CategoryBarList data={statusBreakdown} />
-            <div className="mt-4 flex flex-wrap gap-3">
-              {Object.entries(STATUS_COLOR).map(([label, { bar }]) => (
-                <span key={label} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <span className={`h-2 w-2 rounded-full ${bar}`} />
-                  {label}
-                </span>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+        <ModernBarListCard
+          title="Tickets by Status"
+          description="Distribution across the ticket lifecycle"
+          data={statusBreakdown}
+          legend={Object.entries(STATUS_CHART_COLOR).map(([label, bar]) => ({ label, dotClassName: bar }))}
+        />
       </div>
 
-      <div>
-        <h2 className="mb-4 text-lg font-semibold tracking-tight">Quick Actions</h2>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {quickActions.map((action) => {
-            const Icon = action.icon;
-            return (
-              <Link key={action.title} href={action.href}>
-                <Card className="group h-full cursor-pointer transition-all hover:-translate-y-0.5 hover:shadow-md">
-                  <CardContent className="flex items-start gap-3 p-5">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary transition-colors group-hover:bg-primary group-hover:text-primary-foreground">
-                      <Icon className="h-5 w-5" />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="font-medium">{action.title}</p>
-                      <p className="mt-0.5 text-xs text-muted-foreground">{action.description}</p>
-                    </div>
-                  </CardContent>
-                </Card>
-              </Link>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
+      <div className="grid gap-5 lg:grid-cols-2">
+        <Card className="rounded-md border-border shadow-sm">
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div>
-              <CardTitle className="text-base">Recent Activities</CardTitle>
+              <CardTitle className="text-base">Recent Activity</CardTitle>
               <CardDescription>Latest ticket actions across the team</CardDescription>
             </div>
-            <BarChart3 className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent className="space-y-1">
             {MOCK_RECENT_ACTIVITIES.map((activity) => (
-              <div key={activity.id} className="flex items-start gap-3 rounded-lg px-2 py-2.5">
+              <div key={activity.id} className="flex items-start gap-3 rounded-md px-2.5 py-3 transition-colors hover:bg-muted/50">
                 <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
                   <Loader2 className="h-4 w-4" />
                 </div>
@@ -224,7 +158,7 @@ export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: Sup
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="rounded-md border-border shadow-sm">
           <CardHeader className="flex-row items-center justify-between space-y-0">
             <div>
               <CardTitle className="text-base">Recent Assigned Tickets</CardTitle>
@@ -240,7 +174,7 @@ export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: Sup
               <Link
                 key={ticket.id}
                 href="/all-tickets"
-                className="flex items-center gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-muted/50"
+                className="flex items-center gap-3 rounded-md px-2.5 py-3 transition-colors hover:bg-muted/50"
               >
                 <Avatar className="h-9 w-9">
                   <AvatarFallback>{ticket.assignedTo.charAt(0)}</AvatarFallback>
@@ -259,30 +193,6 @@ export function SuperAdminDashboard({ tickets = MOCK_TICKETS, description }: Sup
           </CardContent>
         </Card>
       </div>
-
-      <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <div>
-            <CardTitle className="text-base">Recent Notifications</CardTitle>
-            <CardDescription>System alerts from the last few hours</CardDescription>
-          </div>
-          <Bell className="h-4 w-4 text-muted-foreground" />
-        </CardHeader>
-        <CardContent className="space-y-1">
-          {MOCK_DASHBOARD_NOTIFICATIONS.map((notification) => (
-            <div key={notification.id} className="flex items-start gap-3 rounded-lg px-2 py-2.5">
-              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                <Bell className="h-4 w-4" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium">{notification.title}</p>
-                <p className="text-xs text-muted-foreground">{notification.description}</p>
-              </div>
-              <span className="shrink-0 text-xs text-muted-foreground">{notification.time}</span>
-            </div>
-          ))}
-        </CardContent>
-      </Card>
     </div>
   );
 }
