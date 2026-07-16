@@ -17,6 +17,7 @@ from app.rbac.repositories import (
 from app.rbac.schemas.permission import PermissionResponse
 from app.rbac.schemas.permission_request import (
     EligibleApproverRolesResponse,
+    EligibleApproverUser,
     PermissionRequestApprove,
     PermissionRequestCreate,
     PermissionRequestReject,
@@ -140,6 +141,29 @@ async def list_eligible_approver_roles(
 
 
 # --------------------------------------------------
+# Eligible Approver Users ("Request To" picker)
+# --------------------------------------------------
+
+
+@router.get(
+    "/eligible-approver-users",
+    response_model=list[EligibleApproverUser],
+    status_code=status.HTTP_200_OK,
+    summary="List the specific people current user may address a request to",
+)
+async def list_eligible_approver_users(
+    permission_id: UUID = Query(...),
+    service: PermissionRequestService = Depends(get_permission_request_service),
+    current_user=Depends(get_current_active_user),
+):
+    candidates = await service.list_eligible_approver_users(permission_id, current_user)
+    return [
+        EligibleApproverUser(user_id=u.user_id, name=u.name, role_name=role_name)
+        for u, role_name in candidates
+    ]
+
+
+# --------------------------------------------------
 # Ticket-scope options (editother_ticket dynamic form fields)
 # --------------------------------------------------
 
@@ -233,6 +257,24 @@ async def list_pending_for_review(
     current_user=Depends(get_current_active_user),
 ):
     return await service.list_pending_for_review(current_user)
+
+
+# --------------------------------------------------
+# History
+# --------------------------------------------------
+
+
+@router.get(
+    "/history",
+    response_model=list[PermissionRequestResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List every decided (approved/rejected/revoked) permission request in scope",
+)
+async def list_permission_request_history(
+    service: PermissionRequestService = Depends(get_permission_request_service),
+    current_user=Depends(get_current_active_user),
+):
+    return await service.list_history(current_user)
 
 
 # --------------------------------------------------

@@ -49,11 +49,14 @@ SUPER_ADMIN_ROLE = "Super Admin"
 class PermissionRequestService:
     """
     Self-service "ask for a permission you don't have" workflow,
-    addressed to a role rather than a specific person — any user
-    holding that role (and who'd actually pass
-    PermissionOverrideService.ensure_can_manage_overrides for this
-    requester) can review it. Approval doesn't grant anything itself;
-    it delegates to the existing PermissionOverrideService.grant() so
+    addressed to one specific person (selected_approver_id) rather
+    than broadcast to a role — only that exact user is notified, sees
+    it in "Pending My Review", and can approve/reject it. requested_role
+    is kept purely as an immutable display snapshot of the approver's
+    role at request time (list_eligible_approver_users still groups
+    candidates by role so the picker can label them), never itself an
+    authorization boundary. Approval doesn't grant anything itself; it
+    delegates to the existing PermissionOverrideService.grant() so
     there's exactly one code path that ever creates a
     UserPermissionOverride row. Deliberately has no knowledge of
     ticketing-service's separate, ticket-scoped Edit Access workflow —
@@ -142,37 +145,60 @@ class PermissionRequestService:
         tickets, _ = await self.ticket_repository.list_all(agent_id=staff_id)
         return [t for t in tickets if t.agent_id == staff_id]
 
-    async def _resolve_approver_ids(
+    async def _resolve_approver_candidates(
         self, requester_id: UUID, eligible_roles: list[str]
-    ) -> set[UUID]:
+    ) -> list[tuple[User, str]]:
         """
         Turns "roles eligible to approve" (list_eligible_approver_roles,
-        role names only) into actual recipient user ids — unrestricted
+        role names only) into the actual (user, role_name) candidates a
+        requester may pick as their specific approver — unrestricted
         for Super Admin/Site Lead, scoped to "is this requester one of
         their own reports" for Account Manager (mirroring
         ensure_can_manage_overrides' own scoping), unrestricted as a
         safe fallback for any other role list_eligible_approver_roles
-        might someday return.
+        might someday return. This is the one place that set of
+        candidates is computed — both the "Request To" picker
+        (list_eligible_approver_users) and create_request's own
+        server-side validation of the submitted selected_approver_id
+        call through here, so a client can never submit an approver
+        outside what they were actually shown.
         """
 
-        approver_ids: set[UUID] = set()
+        candidates: dict[UUID, tuple[User, str]] = {}
 
         for role_name in eligible_roles:
-            candidates = await self.user_repository.list_active_by_role_name(role_name)
+            role_candidates = await self.user_repository.list_active_by_role_name(role_name)
 
             if role_name == SCOPED_OVERRIDE_ROLE:
-                for candidate in candidates:
+                for candidate in role_candidates:
                     subordinate_ids = (
                         await self.permission_override_service.organization_service.get_subordinate_user_ids(
                             candidate
                         )
                     )
                     if requester_id in subordinate_ids:
-                        approver_ids.add(candidate.user_id)
+                        candidates[candidate.user_id] = (candidate, role_name)
             else:
-                approver_ids.update(c.user_id for c in candidates)
+                for candidate in role_candidates:
+                    candidates[candidate.user_id] = (candidate, role_name)
 
-        return approver_ids
+        candidates.pop(requester_id, None)
+
+        return list(candidates.values())
+
+    async def list_eligible_approver_users(
+        self, permission_id: UUID, current_user: User
+    ) -> list[tuple[User, str]]:
+        """Populates the "Request To" picker: the real, specific people
+        current_user may address this request to for a given
+        permission — never a role name, so notification/review access
+        is unambiguous from the moment the request is created."""
+
+        eligible_roles = await self.list_eligible_approver_roles(permission_id)
+
+        return await self._resolve_approver_candidates(
+            current_user.user_id, eligible_roles
+        )
 
     # --------------------------------------------------
     # Eligible permissions / approver roles
@@ -279,31 +305,39 @@ class PermissionRequestService:
                 )
 
         eligible_roles = await self.list_eligible_approver_roles(request.permission_id)
+        candidates = await self._resolve_approver_candidates(
+            current_user.user_id, eligible_roles
+        )
+        candidates_by_id = {u.user_id: (u, role_name) for u, role_name in candidates}
 
-        if request.requested_role not in eligible_roles:
+        if request.selected_approver_id not in candidates_by_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="The selected role cannot grant this permission.",
+                detail="The selected user cannot approve this request.",
             )
 
+        selected_approver, approver_role_name = candidates_by_id[request.selected_approver_id]
+
         existing = (
-            await self.permission_request_repository.get_pending_by_requester_and_permission(
+            await self.permission_request_repository.get_pending_by_requester_permission_and_scope(
                 current_user.user_id,
                 request.permission_id,
+                request.scope_ticket_id,
             )
         )
 
         if existing is not None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="You already have a pending request for this permission.",
+                detail="This permission request is already pending approval.",
             )
 
         permission_request = await self.permission_request_repository.create(
             PermissionRequest(
                 requester_id=current_user.user_id,
                 permission_id=request.permission_id,
-                requested_role=request.requested_role,
+                requested_role=approver_role_name,
+                selected_approver_id=selected_approver.user_id,
                 reason=request.reason,
                 scope_ticket_id=request.scope_ticket_id,
             )
@@ -317,29 +351,32 @@ class PermissionRequestService:
                 entity_id=str(permission_request.request_id),
                 new_value=json.dumps(
                     {
+                        "requester_id": str(current_user.user_id),
+                        "selected_approver_id": str(selected_approver.user_id),
                         "permission_name": permission.permission_name,
-                        "requested_role": request.requested_role,
+                        "requested_role": approver_role_name,
                         "reason": request.reason,
                         "scope_ticket_id": (
                             str(request.scope_ticket_id)
                             if request.scope_ticket_id
                             else None
                         ),
+                        "previous_status": None,
+                        "new_status": PermissionRequestStatus.PENDING,
                     }
                 ),
             )
         )
 
         if self.notification_service is not None:
-            approver_ids = await self._resolve_approver_ids(
-                current_user.user_id, eligible_roles
-            )
-            approver_ids.discard(current_user.user_id)
+            # Exactly one recipient — the specific person selected, not
+            # a role broadcast. No other Site Lead/Account Manager/
+            # Super Admin/etc. is ever notified about this request.
             await self.notification_service.notify(
-                approver_ids,
+                selected_approver.user_id,
                 NotificationType.PERMISSION_REQUESTED,
                 title=f"{current_user.name} requested a permission",
-                message=f"{permission.permission_name} (as {request.requested_role})",
+                message=f"{permission.permission_name}",
                 link="/permission-requests",
                 related_entity_type="permission_request",
                 related_entity_id=permission_request.request_id,
@@ -363,45 +400,56 @@ class PermissionRequestService:
         current_user: User,
     ) -> list[PermissionRequestResponse]:
         """
-        Super Admin/Site Lead (unconditional override authority) see
-        every request regardless of which role it's addressed to;
-        anyone else sees only requests addressed to their own role,
-        further narrowed to requesters they'd actually pass
-        PermissionOverrideService.ensure_can_manage_overrides for
-        (e.g. an Account Manager only sees their own reports'
-        requests). Includes already-APPROVED/REVOKED requests (not
-        just PENDING) so a reviewer's queue keeps a request visible —
-        with Approve/Reject disabled and Revoke available — instead of
-        it disappearing the moment it's decided.
+        Strictly requests where current_user is the selected approver
+        — no role or subordinate-scoping logic, since that's now
+        exactly what selected_approver_id already encodes. Once a
+        request is decided (approved/rejected) it moves to History
+        instead of lingering here.
         """
 
+        requests = await self.permission_request_repository.list_pending_for_approver(
+            current_user.user_id
+        )
+
+        return [await self._to_response(r, current_user) for r in requests]
+
+    async def list_history(
+        self,
+        current_user: User,
+    ) -> list[PermissionRequestResponse]:
+        """
+        Every decided request (APPROVED/REJECTED/REVOKED) — a broader
+        oversight view than "Pending My Review", available to whoever
+        holds general override-managing authority (Super Admin/Site
+        Lead unrestricted, Account Manager narrowed to their own
+        reports via the same PermissionOverrideService.
+        ensure_can_manage_overrides scoping the old role-based review
+        queue used), not just requests addressed to current_user
+        personally.
+        """
+
+        requests = await self.permission_request_repository.list_history()
+
         if current_user.role.name in UNRESTRICTED_OVERRIDE_ROLES:
-            requests = await self.permission_request_repository.list_for_review_by_role(
-                None
-            )
+            visible = requests
         else:
-            requests = await self.permission_request_repository.list_for_review_by_role(
-                current_user.role.name
-            )
-
-        visible: list[PermissionRequest] = []
-
-        for permission_request in requests:
-            requester = await self.user_repository.get_by_id(
-                permission_request.requester_id
-            )
-
-            if requester is None:
-                continue
-
-            try:
-                await self.permission_override_service.ensure_can_manage_overrides(
-                    current_user, requester
+            visible = []
+            for permission_request in requests:
+                requester = await self.user_repository.get_by_id(
+                    permission_request.requester_id
                 )
-            except HTTPException:
-                continue
 
-            visible.append(permission_request)
+                if requester is None:
+                    continue
+
+                try:
+                    await self.permission_override_service.ensure_can_manage_overrides(
+                        current_user, requester
+                    )
+                except HTTPException:
+                    continue
+
+                visible.append(permission_request)
 
         return [await self._to_response(r, current_user) for r in visible]
 
@@ -432,13 +480,10 @@ class PermissionRequestService:
                 detail="This request has already been reviewed.",
             )
 
-        if (
-            current_user.role.name != permission_request.requested_role
-            and current_user.role.name not in UNRESTRICTED_OVERRIDE_ROLES
-        ):
+        if current_user.user_id != permission_request.selected_approver_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="This request wasn't addressed to your role.",
+                detail="This request wasn't addressed to you.",
             )
 
         # Delegates the actual authorization (permission:override_grant
@@ -473,6 +518,8 @@ class PermissionRequestService:
                 new_value=json.dumps(
                     {
                         "requester_id": str(permission_request.requester_id),
+                        "selected_approver_id": str(current_user.user_id),
+                        "permission_name": permission_request.permission.permission_name,
                         "override_id": str(override.override_id),
                         "expires_at": (
                             request.expires_at.isoformat()
@@ -480,6 +527,8 @@ class PermissionRequestService:
                             else None
                         ),
                         "review_comment": request.review_comment,
+                        "previous_status": PermissionRequestStatus.PENDING,
+                        "new_status": PermissionRequestStatus.APPROVED,
                     }
                 ),
             )
@@ -525,22 +574,10 @@ class PermissionRequestService:
                 detail="This request has already been reviewed.",
             )
 
-        if (
-            current_user.role.name != permission_request.requested_role
-            and current_user.role.name not in UNRESTRICTED_OVERRIDE_ROLES
-        ):
+        if current_user.user_id != permission_request.selected_approver_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="This request wasn't addressed to your role.",
-            )
-
-        requester = await self.user_repository.get_by_id(
-            permission_request.requester_id
-        )
-
-        if requester is not None:
-            await self.permission_override_service.ensure_can_manage_overrides(
-                current_user, requester
+                detail="This request wasn't addressed to you.",
             )
 
         permission_request = await self.permission_request_repository.reject(
@@ -555,7 +592,16 @@ class PermissionRequestService:
                 action="permission_request.reject",
                 entity_type="permission_request",
                 entity_id=str(permission_request.request_id),
-                new_value=json.dumps({"review_comment": request.review_comment}),
+                new_value=json.dumps(
+                    {
+                        "requester_id": str(permission_request.requester_id),
+                        "selected_approver_id": str(current_user.user_id),
+                        "permission_name": permission_request.permission.permission_name,
+                        "review_comment": request.review_comment,
+                        "previous_status": PermissionRequestStatus.PENDING,
+                        "new_status": PermissionRequestStatus.REJECTED,
+                    }
+                ),
             )
         )
 
@@ -663,6 +709,8 @@ class PermissionRequestService:
                         "revoked_by": str(current_user.user_id),
                         "revoked_at": permission_request.revoked_at.isoformat(),
                         "reason": request.reason,
+                        "previous_status": PermissionRequestStatus.APPROVED,
+                        "new_status": PermissionRequestStatus.REVOKED,
                     }
                 ),
             )
@@ -704,6 +752,11 @@ class PermissionRequestService:
             if permission_request.revoked_by is not None
             else None
         )
+        selected_approver = (
+            await self.user_repository.get_by_id(permission_request.selected_approver_id)
+            if permission_request.selected_approver_id is not None
+            else None
+        )
 
         return PermissionRequestResponse(
             request_id=permission_request.request_id,
@@ -712,6 +765,10 @@ class PermissionRequestService:
             permission_id=permission_request.permission_id,
             permission_name=permission_request.permission.permission_name,
             requested_role=permission_request.requested_role,
+            selected_approver_id=permission_request.selected_approver_id,
+            selected_approver_name=(
+                selected_approver.name if selected_approver is not None else None
+            ),
             reason=permission_request.reason,
             scope_ticket_id=permission_request.scope_ticket_id,
             status=permission_request.status,

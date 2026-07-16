@@ -53,7 +53,11 @@ function RequestCard({ request, footer }: { request: PermissionRequest; footer?:
             <p className="truncate font-mono text-sm font-medium">{request.permission_name}</p>
             <p className="text-xs text-muted-foreground">
               {request.requester_name ?? "Someone"} → requested from{" "}
-              <span className="font-medium">{request.requested_role}</span>
+              <span className="font-medium">
+                {request.selected_approver_name
+                  ? `${request.selected_approver_name} (${request.requested_role})`
+                  : request.requested_role}
+              </span>
             </p>
           </div>
           <Badge variant={STATUS_VARIANT[request.status]}>{request.status}</Badge>
@@ -67,34 +71,48 @@ function RequestCard({ request, footer }: { request: PermissionRequest; footer?:
           </p>
         )}
 
-        {request.status !== "PENDING" && (
-          <div className="rounded-lg border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground">
-            {request.reviewed_by_name && (
+        <div className="rounded-lg border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground space-y-1">
+          <p>Requested on {formatDate(request.created_at)}</p>
+
+          {request.status === "APPROVED" && (
+            <>
               <p>
-                {request.status === "REJECTED" ? "Rejected" : "Approved"} by{" "}
-                {request.reviewed_by_name}
+                Approved by {request.reviewed_by_name ?? "—"}
                 {request.reviewed_at && ` on ${formatDate(request.reviewed_at)}`}
               </p>
-            )}
-            {request.review_comment && <p className="mt-1">"{request.review_comment}"</p>}
-            {(request.status === "APPROVED" || request.status === "REVOKED") && (
-              <p className="mt-1">
+              <p>
                 {request.expires_at
                   ? `Expires ${formatDate(request.expires_at)}`
                   : "Permanent until manually removed"}
               </p>
-            )}
-            {request.status === "REVOKED" && (
-              <p className="mt-1">
-                Revoked{request.revoked_by_name && ` by ${request.revoked_by_name}`}
+            </>
+          )}
+
+          {request.status === "REJECTED" && (
+            <>
+              <p>
+                Rejected by {request.reviewed_by_name ?? "—"}
+                {request.reviewed_at && ` on ${formatDate(request.reviewed_at)}`}
+              </p>
+              {request.review_comment && (
+                <p>Rejection reason: "{request.review_comment}"</p>
+              )}
+            </>
+          )}
+
+          {request.status === "REVOKED" && (
+            <>
+              <p>
+                Approved{request.reviewed_at && ` on ${formatDate(request.reviewed_at)}`}
+              </p>
+              <p>
+                Revoked by {request.revoked_by_name ?? "—"}
                 {request.revoked_at && ` on ${formatDate(request.revoked_at)}`}
               </p>
-            )}
-            {request.status === "REVOKED" && request.revoke_reason && (
-              <p className="mt-1">Reason: "{request.revoke_reason}"</p>
-            )}
-          </div>
-        )}
+              {request.revoke_reason && <p>Revoke reason: "{request.revoke_reason}"</p>}
+            </>
+          )}
+        </div>
 
         {footer}
       </CardContent>
@@ -108,7 +126,7 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [permissionId, setPermissionId] = useState("");
-  const [requestedRole, setRequestedRole] = useState("");
+  const [approverId, setApproverId] = useState("");
   const [reason, setReason] = useState("");
   const [staffId, setStaffId] = useState("");
   const [ticketId, setTicketId] = useState("");
@@ -125,9 +143,9 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   )?.permission_name;
   const needsTicketScope = selectedPermissionName === TICKET_SCOPED_PERMISSION;
 
-  const rolesQuery = useQuery({
-    queryKey: ["permission-requests-eligible-roles", permissionId],
-    queryFn: () => permissionRequestService.eligibleApproverRoles(permissionId),
+  const approversQuery = useQuery({
+    queryKey: ["permission-requests-eligible-approver-users", permissionId],
+    queryFn: () => permissionRequestService.eligibleApproverUsers(permissionId),
     enabled: open && !!permissionId,
   });
 
@@ -146,7 +164,7 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   useEffect(() => {
     if (!open) {
       setPermissionId("");
-      setRequestedRole("");
+      setApproverId("");
       setReason("");
       setStaffId("");
       setTicketId("");
@@ -154,7 +172,7 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   }, [open]);
 
   useEffect(() => {
-    setRequestedRole("");
+    setApproverId("");
     setStaffId("");
     setTicketId("");
   }, [permissionId]);
@@ -167,7 +185,7 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
     mutationFn: () =>
       permissionRequestService.create({
         permission_id: permissionId,
-        requested_role: requestedRole,
+        selected_approver_id: approverId,
         reason: reason.trim(),
         scope_ticket_id: needsTicketScope ? ticketId : undefined,
       }),
@@ -185,12 +203,12 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
     },
   });
 
-  const eligibleRoles = rolesQuery.data ?? [];
+  const eligibleApprovers = approversQuery.data ?? [];
   const staffOptions = staffOptionsQuery.data ?? [];
   const ticketOptions = ticketOptionsQuery.data ?? [];
   const canSubmit =
     !!permissionId &&
-    !!requestedRole &&
+    !!approverId &&
     reason.trim().length > 0 &&
     (!needsTicketScope || (!!staffId && !!ticketId));
 
@@ -236,31 +254,34 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
 
           <div className="space-y-2">
             <Label>Request To</Label>
-            <Select value={requestedRole} onValueChange={setRequestedRole} disabled={!permissionId}>
+            <Select value={approverId} onValueChange={setApproverId} disabled={!permissionId}>
               <SelectTrigger>
                 <SelectValue
                   placeholder={
                     !permissionId
                       ? "Select a permission first"
-                      : rolesQuery.isLoading
+                      : approversQuery.isLoading
                         ? "Loading approvers..."
-                        : rolesQuery.isError
+                        : approversQuery.isError
                           ? "Failed to load approvers — try again"
-                          : eligibleRoles.length === 0
-                            ? "No role can currently grant this"
-                            : "Select an approver role"
+                          : eligibleApprovers.length === 0
+                            ? "No one can currently grant this"
+                            : "Select a specific approver"
                   }
                 />
               </SelectTrigger>
               <SelectContent>
-                {eligibleRoles.map((role) => (
-                  <SelectItem key={role} value={role}>
-                    {role}
+                {eligibleApprovers.map((approver) => (
+                  <SelectItem key={approver.user_id} value={approver.user_id}>
+                    {approver.name} — {approver.role_name}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            {rolesQuery.isError && (
+            <p className="text-xs text-muted-foreground">
+              Only this exact person is notified and can review the request.
+            </p>
+            {approversQuery.isError && (
               <p className="text-xs text-destructive">
                 Couldn't reach the server. Confirm the backend is running the latest code and
                 try again.
@@ -375,6 +396,11 @@ function ReviewDialog({
     setComment("");
   }, [request, mode]);
 
+  const invalidateAfterDecision = () => {
+    queryClient.invalidateQueries({ queryKey: ["permission-requests-pending-for-review"] });
+    queryClient.invalidateQueries({ queryKey: ["permission-requests-history"] });
+  };
+
   const approveMutation = useMutation({
     mutationFn: () =>
       permissionRequestService.approve(request!.request_id, {
@@ -382,7 +408,7 @@ function ReviewDialog({
         review_comment: comment.trim() || undefined,
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["permission-requests-pending-for-review"] });
+      invalidateAfterDecision();
       toast({ title: "Request approved" });
       onClose();
     },
@@ -401,7 +427,7 @@ function ReviewDialog({
         review_comment: comment.trim() || undefined,
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["permission-requests-pending-for-review"] });
+      invalidateAfterDecision();
       toast({ title: "Request rejected" });
       onClose();
     },
@@ -491,7 +517,7 @@ function RevokeDialog({
         reason: reason.trim() || undefined,
       }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["permission-requests-pending-for-review"] });
+      queryClient.invalidateQueries({ queryKey: ["permission-requests-history"] });
       queryClient.invalidateQueries({ queryKey: ["permission-requests-mine"] });
       toast({ title: "Permission revoked", description: "The user's effective permissions have been updated." });
       onClose();
@@ -563,13 +589,19 @@ export default function PermissionRequestsPage() {
 
   const canReview = (currentUser?.permissions ?? []).includes("permission:override_grant");
   // Super Admin already holds every permission by default — there's
-  // nothing left to request, so the button is hidden rather than
-  // opening a dialog with an empty permission list.
+  // nothing left to request, so the button (and the "My Requests" tab
+  // entirely) is hidden rather than opening a dialog with an empty list.
   const isSuperAdmin = currentUser?.role === SUPER_ADMIN_ROLE;
 
   const pendingQuery = useQuery({
     queryKey: ["permission-requests-pending-for-review"],
     queryFn: () => permissionRequestService.pendingForReview(),
+    enabled: canReview,
+  });
+
+  const historyQuery = useQuery({
+    queryKey: ["permission-requests-history"],
+    queryFn: () => permissionRequestService.history(),
     enabled: canReview,
   });
 
@@ -585,7 +617,7 @@ export default function PermissionRequestsPage() {
 
       <PageHeader
         title="Permission Requests"
-        description="Ask for a permission you don't currently have, or review requests addressed to your role."
+        description="Ask for a permission you don't currently have, or review requests addressed to you."
         action={
           isSuperAdmin ? undefined : (
             <Button className="gap-2" onClick={() => setIsNewRequestOpen(true)}>
@@ -601,6 +633,7 @@ export default function PermissionRequestsPage() {
           {!isSuperAdmin && <TabsTrigger value="mine">My Requests</TabsTrigger>}
           <PermissionGuard permission="permission:override_grant">
             <TabsTrigger value="review">Pending My Review</TabsTrigger>
+            <TabsTrigger value="history">History</TabsTrigger>
           </PermissionGuard>
         </TabsList>
 
@@ -627,69 +660,79 @@ export default function PermissionRequestsPage() {
 
         <PermissionGuard permission="permission:override_grant">
           <TabsContent value="review" className="space-y-3">
-            {(() => {
-              // Rejected requests are excluded here defensively (the
-              // backend's review listing already never returns them) —
-              // a rejected request has nothing further to review or
-              // revoke, so it has no place on this page at all.
-              const visibleRequests = (pendingQuery.data ?? []).filter(
-                (r) => r.status !== "REJECTED"
-              );
-
-              return pendingQuery.isLoading ? (
-                <div className="space-y-3">
-                  {Array.from({ length: 3 }).map((_, i) => (
-                    <Skeleton key={i} className="h-28 w-full rounded-xl" />
-                  ))}
-                </div>
-              ) : visibleRequests.length === 0 ? (
-                <EmptyState
-                  title="Nothing to review"
-                  description="Requests addressed to your role will show up here."
+            {pendingQuery.isLoading ? (
+              <div className="space-y-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={i} className="h-28 w-full rounded-xl" />
+                ))}
+              </div>
+            ) : (pendingQuery.data ?? []).length === 0 ? (
+              <EmptyState
+                title="Nothing to review"
+                description="Requests addressed specifically to you will show up here."
+              />
+            ) : (
+              (pendingQuery.data ?? []).map((request) => (
+                <RequestCard
+                  key={request.request_id}
+                  request={request}
+                  footer={
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <Button
+                        size="sm"
+                        onClick={() => setReviewTarget({ request, mode: "approve" })}
+                      >
+                        Approve
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setReviewTarget({ request, mode: "reject" })}
+                      >
+                        Reject
+                      </Button>
+                    </div>
+                  }
                 />
-              ) : (
-                visibleRequests.map((request) => {
-                  const isPending = request.status === "PENDING";
-                  const isApproved = request.status === "APPROVED";
+              ))
+            )}
+          </TabsContent>
+        </PermissionGuard>
 
-                  return (
-                    <RequestCard
-                      key={request.request_id}
-                      request={request}
-                      footer={
-                        isPending ? (
-                          <div className="flex flex-wrap items-center gap-2 pt-1">
-                            <Button
-                              size="sm"
-                              onClick={() => setReviewTarget({ request, mode: "approve" })}
-                            >
-                              Approve
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => setReviewTarget({ request, mode: "reject" })}
-                            >
-                              Reject
-                            </Button>
-                          </div>
-                        ) : isApproved && request.can_revoke ? (
-                          <div className="flex flex-wrap items-center gap-2 pt-1">
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              onClick={() => setRevokeTarget(request)}
-                            >
-                              Revoke
-                            </Button>
-                          </div>
-                        ) : undefined
-                      }
-                    />
-                  );
-                })
-              );
-            })()}
+        <PermissionGuard permission="permission:override_grant">
+          <TabsContent value="history" className="space-y-3">
+            {historyQuery.isLoading ? (
+              <div className="space-y-3">
+                {Array.from({ length: 3 }).map((_, i) => (
+                  <Skeleton key={i} className="h-28 w-full rounded-xl" />
+                ))}
+              </div>
+            ) : (historyQuery.data ?? []).length === 0 ? (
+              <EmptyState
+                title="No decided requests yet"
+                description="Approved, rejected, and revoked requests will show up here, permanently."
+              />
+            ) : (
+              (historyQuery.data ?? []).map((request) => (
+                <RequestCard
+                  key={request.request_id}
+                  request={request}
+                  footer={
+                    request.status === "APPROVED" && request.can_revoke ? (
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => setRevokeTarget(request)}
+                        >
+                          Revoke
+                        </Button>
+                      </div>
+                    ) : undefined
+                  }
+                />
+              ))
+            )}
           </TabsContent>
         </PermissionGuard>
       </Tabs>

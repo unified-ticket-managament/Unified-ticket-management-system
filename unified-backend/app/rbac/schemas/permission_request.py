@@ -6,7 +6,11 @@ from pydantic import BaseModel, field_validator
 
 class PermissionRequestCreate(BaseModel):
     permission_id: UUID
-    requested_role: str
+    # The specific person picked in the "Request To" dropdown — the
+    # actual routing target. requested_role is no longer submitted by
+    # the client at all; the backend derives it from this user's own
+    # role at creation time (see PermissionRequestService.create_request).
+    selected_approver_id: UUID
     reason: str
     scope_ticket_id: UUID | None = None
 
@@ -38,6 +42,8 @@ class PermissionRequestResponse(BaseModel):
     permission_id: UUID
     permission_name: str
     requested_role: str
+    selected_approver_id: UUID | None = None
+    selected_approver_name: str | None = None
     reason: str
     scope_ticket_id: UUID | None = None
     status: str
@@ -61,6 +67,12 @@ class PermissionRequestResponse(BaseModel):
 
 class EligibleApproverRolesResponse(BaseModel):
     roles: list[str]
+
+
+class EligibleApproverUser(BaseModel):
+    user_id: UUID
+    name: str
+    role_name: str
 
 
 class TeammateStaffOption(BaseModel):

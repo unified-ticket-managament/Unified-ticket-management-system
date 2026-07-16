@@ -73,6 +73,21 @@ class PermissionRequest(Base):
         nullable=False,
     )
 
+    # The specific person picked in the "Request To" dropdown — the
+    # real routing/authorization key as of this column's introduction.
+    # requested_role is kept purely as an immutable display snapshot
+    # (the approver's role name at request time); it no longer decides
+    # who can see or act on the request. Nullable only because rows
+    # created before this column existed have no way to backfill a
+    # specific person — those legacy rows simply become unreachable
+    # from "Pending My Review" (see PermissionRequestService), which
+    # is an acceptable one-time transitional gap, never a crash.
+    selected_approver_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     reason: Mapped[str] = mapped_column(
         Text,
         nullable=False,
@@ -159,13 +174,20 @@ class PermissionRequest(Base):
     )
 
     __table_args__ = (
-        # At most one open request per requester+permission at a time —
-        # doesn't block a fresh request after a prior one was decided,
-        # since that row is no longer PENDING.
+        # At most one open request per requester+permission(+ticket
+        # scope) at a time — doesn't block a fresh request after a
+        # prior one was decided (no longer PENDING), and COALESCE's
+        # scope_ticket_id to a sentinel so two *global* requests still
+        # collide while two distinct ticket-scoped requests for the
+        # same permission (different tickets) don't.
         Index(
             "ix_permission_requests_pending_unique",
             "requester_id",
             "permission_id",
+            text(
+                "COALESCE(scope_ticket_id, "
+                "'00000000-0000-0000-0000-000000000000'::uuid)"
+            ),
             unique=True,
             postgresql_where=text("status = 'PENDING'"),
         ),

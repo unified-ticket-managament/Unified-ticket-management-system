@@ -3,6 +3,7 @@ import {
   AuditLog,
   AuthUser,
   CategoryForm,
+  EligibleApproverUser,
   LoginForm,
   OrganizationNode,
   Permission,
@@ -359,18 +360,18 @@ export const permissionRequestService = {
     return response.data;
   },
 
-  eligibleApproverRoles: async (permissionId: string): Promise<string[]> => {
-    const response = await api.get<{ roles: string[] }>(
-      "/permission-requests/eligible-approver-roles",
+  eligibleApproverUsers: async (permissionId: string): Promise<EligibleApproverUser[]> => {
+    const response = await api.get<EligibleApproverUser[]>(
+      "/permission-requests/eligible-approver-users",
       { params: { permission_id: permissionId } }
     );
 
-    return response.data.roles;
+    return response.data;
   },
 
   create: async (data: {
     permission_id: string;
-    requested_role: string;
+    selected_approver_id: string;
     reason: string;
     scope_ticket_id?: string | null;
   }): Promise<PermissionRequest> => {
@@ -406,6 +407,12 @@ export const permissionRequestService = {
     const response = await api.get<PermissionRequest[]>(
       "/permission-requests/pending-for-review"
     );
+
+    return response.data;
+  },
+
+  history: async (): Promise<PermissionRequest[]> => {
+    const response = await api.get<PermissionRequest[]>("/permission-requests/history");
 
     return response.data;
   },

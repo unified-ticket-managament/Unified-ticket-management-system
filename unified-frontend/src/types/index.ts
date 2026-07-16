@@ -72,6 +72,8 @@ export interface PermissionRequest {
   permission_id: string;
   permission_name: string;
   requested_role: string;
+  selected_approver_id: string | null;
+  selected_approver_name: string | null;
   reason: string;
   scope_ticket_id: string | null;
   status: PermissionRequestStatus;
@@ -87,6 +89,12 @@ export interface PermissionRequest {
   revoke_reason: string | null;
   can_revoke: boolean;
   created_at: string;
+}
+
+export interface EligibleApproverUser {
+  user_id: string;
+  name: string;
+  role_name: string;
 }
 
 export interface TeammateStaffOption {
