@@ -8,7 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from shared_models.database import Base
 
-from app.ticketing.enums import EscalationLevel, EscalationStatus
+from app.ticketing.enums import EscalationLevel, EscalationStatus, TicketPriority
 
 #ticket_escalation.py
 class TicketEscalation(Base):
@@ -72,6 +72,32 @@ class TicketEscalation(Base):
     owner_ids: Mapped[list[str]] = mapped_column(
         JSONB,
         default=list,
+        nullable=False,
+    )
+
+    # The ticket's priority as of THIS escalation's creation, captured
+    # before EscalationService._set_ticket_priority_to_critical
+    # overwrites Ticket.current_priority to CRITICAL — the only durable,
+    # queryable record of what it used to be (otherwise recoverable only
+    # from the audit log's PRIORITY_CHANGED old_values). Also the gate
+    # for how long the Resolution SLA clock keeps running against its
+    # original target rather than CRITICAL's — see
+    # has_advanced_past_starting_level below.
+    original_priority: Mapped[TicketPriority] = mapped_column(
+        SQLEnum(TicketPriority, name="ticket_priority_enum"),
+        nullable=False,
+    )
+
+    # False for the escalation's original starting level. Flips to True
+    # the moment evaluate_overdue/advance_for_handling_sla_breach
+    # actually advances the level past where it started — i.e. the
+    # first owner didn't act in time and this is genuinely a "second
+    # time" escalation. EscalationService._complete_acceptance only
+    # reshifts the Resolution SLA clock onto CRITICAL's target once
+    # this is True; a first-time acceptance leaves the clock running
+    # against original_priority's own target.
+    has_advanced_past_starting_level: Mapped[bool] = mapped_column(
+        default=False,
         nullable=False,
     )
 

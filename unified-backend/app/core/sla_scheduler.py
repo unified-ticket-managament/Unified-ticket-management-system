@@ -2,7 +2,6 @@ import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from app.core.config import get_settings
 from app.database.session import AsyncSessionLocal
 from app.ticketing.api.sla_internal import build_sla_sweep_service
 
@@ -54,12 +53,10 @@ def start_scheduler() -> None:
     if scheduler.running:
         return
 
-    settings = get_settings()
-
     scheduler.add_job(
         _run_scheduled_sweep,
         trigger="interval",
-        minutes=settings.sla_sweep_interval_minutes,
+        seconds=10,
         id=SLA_SWEEP_JOB_ID,
         # APScheduler's own overlap guard — if a sweep is still running
         # when the next tick fires, the new tick is skipped rather than
@@ -72,10 +69,7 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
     scheduler.start()
-    logger.info(
-        "SLA sweep scheduler started — running every %d minute(s).",
-        settings.sla_sweep_interval_minutes,
-    )
+    logger.info("SLA sweep scheduler started — running every 10 second(s).")
 
 
 def shutdown_scheduler() -> None:

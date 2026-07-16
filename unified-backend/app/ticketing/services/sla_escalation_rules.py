@@ -66,6 +66,7 @@ class RecipientRole:
     TEAM_MEMBERS = "TEAM_MEMBERS"
     ASSIGNED_AGENT = "ASSIGNED_AGENT"
     GLOBAL_INBOX = "GLOBAL_INBOX"
+    CURRENT_OWNER = "CURRENT_OWNER"
 
 
 FIRST_RESPONSE_RULES: dict[str, tuple[str, ...]] = {
@@ -105,6 +106,22 @@ RESOLUTION_RULES_CLAIMED: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# Half-Elapsed/At-Risk/Breached: resolve to whoever is actually working
+# the ticket right now (CURRENT_OWNER below) rather than climbing the
+# CLAIMED/UNCLAIMED ladders above — a ticket's higher-ups only ever
+# learn about it through the escalation workflow's own hierarchical
+# notifications (EscalationService._notify_owners), triggered
+# separately when an escalation is created/advances. ESCALATED is
+# deliberately left off this table and keeps consulting
+# RESOLUTION_RULES_CLAIMED/UNCLAIMED as before: by that point real
+# escalation/advance notifications are expected to have already fired,
+# same reasoning that already makes Global Inbox appear at that tier.
+RESOLUTION_RULES_CURRENT_OWNER: dict[str, tuple[str, ...]] = {
+    "HALF_ELAPSED": (RecipientRole.CURRENT_OWNER,),
+    "AT_RISK": (RecipientRole.CURRENT_OWNER,),
+    "BREACHED": (RecipientRole.CURRENT_OWNER,),
+}
+
 TEAM_LEAD_ROLE_NAME = "Team Lead"
 
 
@@ -124,6 +141,11 @@ class RecipientContext:
     team_leads: list[User] = field(default_factory=list)
     team_members: list[User] = field(default_factory=list)
     global_inbox_ids: set[UUID] = field(default_factory=set)
+    # The ticket's active TicketEscalation.owner_ids, if any — the
+    # "lower-level" owner it currently sits with (e.g. Team Lead), used
+    # by resolve_current_owner below to take priority over
+    # assigned_agent/team_leads once a ticket is actually escalated.
+    escalation_owner_ids: set[UUID] = field(default_factory=set)
 
 
 def resolve_account_manager(ctx: RecipientContext) -> set[UUID]:
@@ -181,12 +203,33 @@ def resolve_global_inbox(ctx: RecipientContext) -> set[UUID]:
     return ctx.global_inbox_ids
 
 
+def resolve_current_owner(ctx: RecipientContext) -> set[UUID]:
+    """
+    Whoever is actually working the ticket right now — an active
+    escalation's current owner(s) take priority (a ticket that's been
+    handed to, say, a Team Lead via escalation is now THEIRS to act on,
+    not the original assigned agent's — see
+    EscalationService.acknowledge's own owner_ids-only authorization
+    for the same rule); absent an active escalation, the plain assigned
+    agent (claimed) or the category's Team Lead + staff pool
+    (unclaimed) — i.e. today's un-escalated baseline, with no
+    ladder-climbing on top.
+    """
+
+    if ctx.escalation_owner_ids:
+        return ctx.escalation_owner_ids
+    if ctx.assigned_agent is not None:
+        return resolve_assigned_agent(ctx)
+    return resolve_team_lead(ctx) | resolve_team_members(ctx)
+
+
 RECIPIENT_RESOLVERS = {
     RecipientRole.ACCOUNT_MANAGER: resolve_account_manager,
     RecipientRole.TEAM_LEAD: resolve_team_lead,
     RecipientRole.TEAM_MEMBERS: resolve_team_members,
     RecipientRole.ASSIGNED_AGENT: resolve_assigned_agent,
     RecipientRole.GLOBAL_INBOX: resolve_global_inbox,
+    RecipientRole.CURRENT_OWNER: resolve_current_owner,
 }
 
 

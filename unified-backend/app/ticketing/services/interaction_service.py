@@ -7,6 +7,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, UploadFile
 from fastapi import status as http_status
+from sqlalchemy.exc import IntegrityError
 
 from shared_models.models import User
 
@@ -2034,6 +2035,17 @@ class InteractionService:
         creates an empty one — shared by save_draft (always has real
         text to save) and upload_draft_attachment (may run before the
         user has typed anything yet, e.g. attaching a file first).
+
+        The frontend calls save_draft continuously (debounced) as the
+        user types, so two near-simultaneous requests can both reach
+        this method, both find no existing draft, and both attempt to
+        create one — a check-then-insert race.
+        ix_interactions_one_draft_per_thread_per_agent (a partial unique
+        index on (parent_interaction_id, performed_by) WHERE is_draft
+        AND is_visible) makes the LOSING insert fail with IntegrityError
+        rather than silently creating a second row; caught here and
+        re-fetched so the loser just returns the winner's draft instead
+        of failing that request.
         """
 
         existing = await self.interaction_repository.get_draft(
@@ -2042,25 +2054,34 @@ class InteractionService:
         if existing is not None:
             return existing
 
-        return await self.interaction_repository.create(
-            InteractionCreate(
-                ticket_id=None,
-                interaction_type="REPLY",
-                direction=InteractionDirection.OUTBOUND,
-                status=InteractionStatus.PENDING,
-                performed_by=current_user.user_id,
-                payload={
-                    "message": message,
-                    "cc": cc or [],
-                    "bcc": bcc or [],
-                    "dispatch_status": "DRAFT",
-                },
-                is_visible=True,
-                client_id=root.client_id,
-                parent_interaction_id=root.interaction_id,
-                is_draft=True,
+        try:
+            async with self.interaction_repository.db.begin_nested():
+                return await self.interaction_repository.create(
+                    InteractionCreate(
+                        ticket_id=None,
+                        interaction_type="REPLY",
+                        direction=InteractionDirection.OUTBOUND,
+                        status=InteractionStatus.PENDING,
+                        performed_by=current_user.user_id,
+                        payload={
+                            "message": message,
+                            "cc": cc or [],
+                            "bcc": bcc or [],
+                            "dispatch_status": "DRAFT",
+                        },
+                        is_visible=True,
+                        client_id=root.client_id,
+                        parent_interaction_id=root.interaction_id,
+                        is_draft=True,
+                    )
+                )
+        except IntegrityError:
+            existing = await self.interaction_repository.get_draft(
+                root.interaction_id, current_user.user_id
             )
-        )
+            if existing is not None:
+                return existing
+            raise
 
     async def _fetch_draft_attachments(
         self, interaction_id: UUID

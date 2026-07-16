@@ -874,21 +874,29 @@ class InteractionRepository:
         performed_by: UUID,
     ) -> Interaction | None:
         """
-        The given agent's active draft on this thread, if any — one
-        active draft per thread per agent, so this is always at most
-        one row.
+        The given agent's active draft on this thread, if any. Meant to
+        be at most one row — enforced at the database level by
+        ix_interactions_one_draft_per_thread_per_agent — but reads the
+        most recently created one via ORDER BY + LIMIT 1 rather than
+        scalar_one_or_none(), so a request against a pre-existing
+        duplicate (created before that constraint existed, or any
+        future violation this doesn't anticipate) degrades to "return
+        the newest" instead of a 500.
         """
 
         result = await self.db.execute(
-            select(Interaction).where(
+            select(Interaction)
+            .where(
                 Interaction.parent_interaction_id == root_interaction_id,
                 Interaction.performed_by == performed_by,
                 Interaction.is_draft.is_(True),
                 Interaction.is_visible.is_(True),
             )
+            .order_by(Interaction.created_at.desc())
+            .limit(1)
         )
 
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def update_draft_message(
         self,

@@ -196,8 +196,14 @@ async def test_acknowledge_starts_handling_sla_at_25_percent_of_original_target(
     # test_escalation_service.py's test_acknowledge_alone_does_not_
     # reshift_sla. Both only happen once assignment is also settled —
     # here via confirm_assignment (the "keep the current assignee"
-    # branch), so by the time the handling clock resolves "the
-    # original target," the ticket is already CRITICAL.
+    # branch). This is still a first-time (never-advanced) escalation,
+    # so per test_confirm_assignment_does_not_reshift_sla_on_first_
+    # acceptance in test_escalation_service.py, the Resolution SLA
+    # clock's own priority stays at its true original (MEDIUM) rather
+    # than reshifting to CRITICAL — only the ticket's display priority
+    # flips immediately. The handling SLA's "25% of original target"
+    # therefore resolves off MEDIUM's policy here, genuinely the
+    # ticket's original target rather than CRITICAL's.
     assert await _get_handling_sla(db_session, escalation.escalation_id) is None
 
     await service.confirm_assignment(ticket.ticket_id, team_lead)
@@ -207,9 +213,9 @@ async def test_acknowledge_starts_handling_sla_at_25_percent_of_original_target(
     assert handling_sla.status == SLAClockStatus.RUNNING
 
     post_ack = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
-    assert post_ack.priority == TicketPriority.CRITICAL
+    assert post_ack.priority == TicketPriority.MEDIUM
 
-    policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.CRITICAL)
+    policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
     expected_target_seconds = compute_escalation_handling_target_seconds(
         policy.resolution_target_minutes, policy.handling_sla_percentage / 100
     )
@@ -272,9 +278,13 @@ async def test_assignment_implied_acknowledgment_starts_handling_sla_exactly_onc
     await service.manual_escalate(ticket.ticket_id, team_lead)
 
     # Escalating alone must not touch the Resolution SLA — see the test
-    # above. The bump to CRITICAL happens the first time the
-    # escalation is actually accepted — here, via assignment-implied
-    # acknowledgment rather than a literal Acknowledge click.
+    # above. This is a first-time (never-advanced) escalation, so
+    # accepting it — here via assignment-implied acknowledgment rather
+    # than a literal Acknowledge click — must NOT reshift the
+    # Resolution SLA clock onto CRITICAL either; only the ticket's
+    # display priority flips immediately. See
+    # test_acknowledge_via_assignment_does_not_reshift_on_first_
+    # acceptance in test_escalation_service.py.
     pre_accept = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     assert pre_accept.priority == TicketPriority.MEDIUM
 
@@ -289,7 +299,7 @@ async def test_assignment_implied_acknowledgment_starts_handling_sla_exactly_onc
     assert escalation.acknowledged_by == team_lead.user_id
 
     post_accept = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
-    assert post_accept.priority == TicketPriority.CRITICAL
+    assert post_accept.priority == TicketPriority.MEDIUM
     first_reshifted_due_at = post_accept.due_at
 
     handling_sla = await _get_handling_sla(db_session, escalation.escalation_id)

@@ -122,7 +122,16 @@ class EscalationService:
       This is the "Resolution SLA starts only after Acknowledge AND
       Assign" requirement: acknowledging and then never assigning
       anyone leaves the clock parked at its pre-escalation target
-      indefinitely, by design.
+      indefinitely, by design. The reshift itself is further gated on
+      escalation.has_advanced_past_starting_level: accepting the FIRST
+      escalation leaves the clock running against its
+      original_priority target rather than jumping straight to
+      CRITICAL's — only once nobody acted in time and it genuinely
+      advanced to a further level does acceptance reshift onto
+      CRITICAL. Without this, a ticket that had already run for hours/
+      days under a LOW/MEDIUM/HIGH target would reshift onto CRITICAL's
+      60-minute target the instant the *first* escalation was
+      accepted, landing due_at in the past.
 
     Escalating a ticket, and even acknowledging it, must leave the
     Resolution SLA's own started_at/due_at/status completely untouched
@@ -538,13 +547,22 @@ class EscalationService:
         triggered_by: str,
         triggered_by_user_id: UUID | None,
     ) -> TicketEscalation:
+        # Captured BEFORE the priority flip below — this is the
+        # escalation's durable record of what the ticket's priority
+        # used to be (see TicketEscalation.original_priority's own
+        # docstring), and also what the Resolution SLA clock keeps
+        # running against until this escalation actually advances past
+        # its starting level (has_advanced_past_starting_level).
+        original_priority = ticket.current_priority
+
         # The ticket's priority becomes CRITICAL immediately — before
         # resolving owners/ack-window below, so a freshly-escalated
         # ticket's own ack window is CRITICAL's (tighter) one right
         # away, not its previous priority's. The Resolution SLA clock
         # itself is untouched here — see
         # _reshift_sla_for_escalation_acceptance's own docstring for
-        # why that part waits for acknowledge/assignment.
+        # why that part waits for acknowledge/assignment, and is now
+        # additionally gated on has_advanced_past_starting_level.
         await self._set_ticket_priority_to_critical(ticket)
 
         now = datetime.now(timezone.utc)
@@ -565,6 +583,7 @@ class EscalationService:
             triggered_by_user_id=triggered_by_user_id,
             ack_due_at=now + timedelta(minutes=ack_minutes),
             now=now,
+            original_priority=original_priority,
         )
 
     # ---------------------------------------------------------
@@ -698,9 +717,18 @@ class EscalationService:
             # this as an error.
             updated = escalation
 
-        # The one moment the Resolution SLA clock actually reshifts
-        # onto CRITICAL's target — see that method's own docstring.
-        await self._reshift_sla_for_escalation_acceptance(ticket)
+        # The Resolution SLA clock only reshifts onto CRITICAL's target
+        # once this escalation has already advanced past its starting
+        # level — i.e. this is at least the second time it's been
+        # escalated, because whoever it started with didn't act in
+        # time. Accepting the FIRST escalation leaves the clock running
+        # against escalation.original_priority's own target instead:
+        # reshifting immediately on a first acceptance used to produce
+        # a due_at far in the past (an instant retroactive breach) any
+        # time the ticket had already consumed more than CRITICAL's
+        # own (60-minute) target before being accepted.
+        if updated.has_advanced_past_starting_level:
+            await self._reshift_sla_for_escalation_acceptance(ticket)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user

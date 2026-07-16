@@ -39,6 +39,7 @@ from app.ticketing.services.sla_breach_notifier import (
 )
 from app.ticketing.services.sla_escalation_rules import (
     RESOLUTION_RULES_CLAIMED,
+    RESOLUTION_RULES_CURRENT_OWNER,
     RESOLUTION_RULES_UNCLAIMED,
     TEAM_LEAD_ROLE_NAME,
     RecipientContext,
@@ -258,6 +259,18 @@ class SLASweepService:
             u.user_id: u for u in await self.user_repository.list_by_ids(list(agent_ids))
         }
 
+        # One escalation per ticket in this batch, if active — used to
+        # scope Half-Elapsed/At-Risk/Breached notifications to whoever
+        # currently owns the ticket (see RESOLUTION_RULES_CURRENT_OWNER)
+        # instead of the old CLAIMED/UNCLAIMED role ladder. Same batch-
+        # prefetch rationale as tickets_by_id/res_clients_by_id/
+        # agents_by_id above.
+        escalations_by_ticket_id = (
+            await self.escalation_service.ticket_escalation_repository.list_active_by_ticket_ids(
+                ticket_ids
+            )
+        )
+
         for clock in resolution_clocks:
             target_minutes = target_by_priority_res.get(clock.priority)
             if target_minutes is None:
@@ -335,6 +348,51 @@ class SLASweepService:
             candidates
         )
 
+        # tickets_by_id/agents_by_id/escalations_by_ticket_id were
+        # snapshotted once at the top of this tick, but the
+        # classification+auto-escalation loop above can run for many
+        # seconds (one round trip per ticket). A claim/transfer/
+        # escalation that lands on a ticket mid-tick — after its
+        # snapshot but before this point — would otherwise be invisible
+        # to _notify_resolution's CLAIMED/UNCLAIMED and
+        # current-owner-vs-escalation decisions, misrouting Half-
+        # Elapsed/At-Risk/Breached to the category's whole Team
+        # Lead+staff pool instead of whoever actually holds the ticket
+        # right now. Refresh only the tickets about to be notified
+        # (newly_recorded is typically small) rather than the whole
+        # batch, so this doesn't reintroduce the per-ticket round-trip
+        # cost the original snapshot was built to avoid.
+        resolution_ticket_ids_to_refresh = {
+            res_clock_by_id[clock_id].ticket_id
+            for clock_type, clock_id, _threshold in newly_recorded
+            if clock_type == CLOCK_TYPE_RESOLUTION
+        }
+        if resolution_ticket_ids_to_refresh:
+            fresh_tickets = await self.ticket_repository.list_by_ids(
+                list(resolution_ticket_ids_to_refresh)
+            )
+            for fresh_ticket in fresh_tickets:
+                tickets_by_id[fresh_ticket.ticket_id] = fresh_ticket
+
+            fresh_agent_ids = {
+                t.agent_id for t in fresh_tickets if t.agent_id is not None
+            } - agents_by_id.keys()
+            if fresh_agent_ids:
+                for fresh_agent in await self.user_repository.list_by_ids(
+                    list(fresh_agent_ids)
+                ):
+                    agents_by_id[fresh_agent.user_id] = fresh_agent
+
+            fresh_escalations = (
+                await self.escalation_service.ticket_escalation_repository
+                .list_active_by_ticket_ids(list(resolution_ticket_ids_to_refresh))
+            )
+            for ticket_id in resolution_ticket_ids_to_refresh:
+                if ticket_id in fresh_escalations:
+                    escalations_by_ticket_id[ticket_id] = fresh_escalations[ticket_id]
+                else:
+                    escalations_by_ticket_id.pop(ticket_id, None)
+
         for clock_type, clock_id, threshold in newly_recorded:
             try:
                 async with db.begin_nested():
@@ -355,6 +413,7 @@ class SLASweepService:
                             tickets_by_id,
                             res_clients_by_id,
                             agents_by_id,
+                            escalations_by_ticket_id,
                         )
                 notifications_sent += int(sent)
             except Exception:
@@ -460,6 +519,7 @@ class SLASweepService:
         tickets_by_id: dict,
         clients_by_id: dict,
         agents_by_id: dict,
+        escalations_by_ticket_id: dict,
     ) -> bool:
         """
         Only ever called for a triple try_record_many just confirmed
@@ -477,6 +537,17 @@ class SLASweepService:
         would then never retry, since "newly recorded" stays false
         forever for that (clock, threshold) pair — this was a real bug,
         not a hypothetical one.
+
+        HALF_ELAPSED/AT_RISK/BREACHED resolve recipients via
+        RESOLUTION_RULES_CURRENT_OWNER — whoever is actually working the
+        ticket right now, never the wider CLAIMED/UNCLAIMED ladder — so
+        Team Lead/Account Manager/Global Inbox no longer hear about a
+        ticket from this sweep alone; they only learn about it through
+        the escalation workflow's own hierarchical notifications
+        (EscalationService._notify_owners) once the ticket is actually
+        escalated. ESCALATED is the one threshold still using the old
+        ladder, since by then real escalation/advance notifications are
+        expected to have already fired.
         """
 
         ticket = tickets_by_id.get(clock.ticket_id)
@@ -484,6 +555,11 @@ class SLASweepService:
             return False
 
         client = clients_by_id.get(clock.client_id) if clock.client_id is not None else None
+
+        escalation = escalations_by_ticket_id.get(ticket.ticket_id)
+        escalation_owner_ids = (
+            {UUID(u) for u in escalation.owner_ids} if escalation is not None else set()
+        )
 
         # Claiming (a Team Lead taking a ticket for themselves) and
         # assigning (to a Staff member) both just set this same column —
@@ -497,6 +573,7 @@ class SLASweepService:
                 client=client,
                 assigned_agent=assigned_agent,
                 global_inbox_ids=global_inbox_ids,
+                escalation_owner_ids=escalation_owner_ids,
             )
             rules = RESOLUTION_RULES_CLAIMED
         else:
@@ -508,10 +585,15 @@ class SLASweepService:
                 team_leads=team_leads,
                 team_members=team_members,
                 global_inbox_ids=global_inbox_ids,
+                escalation_owner_ids=escalation_owner_ids,
             )
             rules = RESOLUTION_RULES_UNCLAIMED
 
-        recipient_ids = resolve_recipients(rules, threshold, ctx)
+        recipient_ids = resolve_recipients(
+            rules if threshold == "ESCALATED" else RESOLUTION_RULES_CURRENT_OWNER,
+            threshold,
+            ctx,
+        )
 
         if not recipient_ids:
             return False

@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ticketing.enums import EscalationLevel, EscalationStatus
+from app.ticketing.enums import EscalationLevel, EscalationStatus, TicketPriority
 from app.ticketing.models.ticket_escalation import TicketEscalation
 
 #ticket_escalation_repository.py
@@ -45,6 +45,7 @@ class TicketEscalationRepository:
         triggered_by_user_id: UUID | None,
         ack_due_at: datetime,
         now: datetime,
+        original_priority: TicketPriority,
     ) -> TicketEscalation:
         escalation = TicketEscalation(
             ticket_id=ticket_id,
@@ -57,6 +58,7 @@ class TicketEscalationRepository:
             created_at=now,
             level_started_at=now,
             ack_due_at=ack_due_at,
+            original_priority=original_priority,
         )
         self.db.add(escalation)
         await self.db.flush()
@@ -76,6 +78,11 @@ class TicketEscalationRepository:
         Moves to a new level (or re-notifies the same terminal SITE_LEAD
         level with a fresh ack window) — resets acknowledgment state,
         since the new owner(s) haven't acknowledged anything yet.
+        Advancing at all — regardless of which level it lands on — means
+        the escalation's original owner didn't act in time, so this
+        always marks has_advanced_past_starting_level True; see that
+        column's own docstring for why this is the acceptance-time
+        Resolution SLA reshift's gate.
         """
 
         escalation.level = new_level
@@ -85,10 +92,32 @@ class TicketEscalationRepository:
         escalation.ack_due_at = ack_due_at
         escalation.acknowledged_at = None
         escalation.acknowledged_by = None
+        escalation.has_advanced_past_starting_level = True
 
         await self.db.flush()
         await self.db.refresh(escalation)
         return escalation
+
+    async def list_active_by_ticket_ids(
+        self, ticket_ids: list[UUID]
+    ) -> dict[UUID, TicketEscalation]:
+        """
+        Bulk form of get_active_by_ticket_id — one query for every
+        ticket in a sweep batch, mirroring the sweep's other batch
+        prefetches (tickets_by_id/res_clients_by_id/agents_by_id in
+        SLASweepService.run_sweep) instead of a per-ticket round trip.
+        """
+
+        if not ticket_ids:
+            return {}
+
+        result = await self.db.execute(
+            select(TicketEscalation).where(
+                TicketEscalation.ticket_id.in_(ticket_ids),
+                TicketEscalation.status != EscalationStatus.CLOSED,
+            )
+        )
+        return {row.ticket_id: row for row in result.scalars().all()}
 
     async def acknowledge(
         self,
