@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Minimize2, X } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { Badge } from "@tw/components/common/Badge";
 import { EmptyState } from "@tw/components/common/EmptyState";
@@ -10,11 +10,13 @@ import { openInboxThread } from "@tw/api/inbox";
 import {
   messageBody,
   messageDirectionLabel,
+  messageRecipients,
   messageSender,
   metaFor,
   summarize,
 } from "@tw/lib/interactionMeta";
 import { shortId, formatDateTime } from "@tw/lib/format";
+import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import type { InteractionResponse, InteractionStatus, OpenEmailResponse, ThreadResponse } from "@tw/types";
 
 // Minimal header info the page needs — a subset of InteractionsPage's
@@ -143,6 +145,9 @@ function ConversationItem({ message }: { message: InteractionResponse }) {
   }
 
   const isRight = align === "right";
+  // Only outbound agent replies carry an envelope with real
+  // to/cc/bcc — never rendered for inbound client emails.
+  const recipients = isRight ? messageRecipients(message) : null;
   return (
     <div className={`flex items-end gap-2.5 ${isRight ? "flex-row-reverse" : ""}`}>
       <span className="flex h-8 w-8 flex-none items-center justify-center rounded-full border border-border bg-canvas text-[11px] font-semibold text-slate-600">
@@ -156,6 +161,28 @@ function ConversationItem({ message }: { message: InteractionResponse }) {
           <span>·</span>
           <span>{timestamp}</span>
         </div>
+        {recipients && (
+          <div className="flex flex-col gap-0.5 text-right text-[11px] leading-relaxed text-muted">
+            {recipients.to && (
+              <p className="break-all">
+                <span className="font-semibold text-slate-500">To: </span>
+                {recipients.to}
+              </p>
+            )}
+            {recipients.cc.length > 0 && (
+              <p className="break-all">
+                <span className="font-semibold text-slate-500">CC: </span>
+                {recipients.cc.join(", ")}
+              </p>
+            )}
+            {recipients.bcc.length > 0 && (
+              <p className="break-all">
+                <span className="font-semibold text-slate-500">BCC: </span>
+                {recipients.bcc.join(", ")}
+              </p>
+            )}
+          </div>
+        )}
         <div
           className={`rounded-md2 border px-3.5 py-2.5 text-[13px] leading-relaxed shadow-xs ${
             isRight ? "border-accent/20 bg-accent/10 text-slate-800" : "border-border bg-surface text-slate-800"
@@ -182,6 +209,7 @@ export function FullInteractionPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const passedState = (location.state as LocationState | null) ?? null;
+  const { setInteractionDrawer } = useWorkflowContext();
 
   const [thread, setThread] = useState<ThreadResponse | null>(passedState?.thread ?? null);
   const [email, setEmail] = useState<OpenEmailResponse | null>(passedState?.email ?? null);
@@ -256,17 +284,56 @@ export function FullInteractionPage() {
 
   const meta = row ? metaFor(row.type) : null;
 
+  // Minimize: just navigate back — InteractionsPage's own drawer state
+  // already lives in WorkflowContext (see that file's comment), so it
+  // survives this route change untouched and reopens exactly as left,
+  // scroll position included. Close: explicitly clear that state first
+  // so the list lands with nothing selected, per the spec's "Clear the
+  // selected interaction" requirement — neither button navigates
+  // outside the Interactions module.
+  function handleMinimize() {
+    navigate("/interactions");
+  }
+
+  function handleClose() {
+    setInteractionDrawer({ open: false, row: null, email: null, thread: null, scrollY: 0 });
+    navigate("/interactions");
+  }
+
   return (
     <AppLayout>
       <div className="flex flex-col gap-5">
-        <button
-          type="button"
-          onClick={() => navigate("/interactions")}
-          className="flex w-fit items-center gap-1.5 text-xs font-semibold text-muted transition-colors hover:text-slate-900"
-        >
-          <ArrowLeft size={14} />
-          Back
-        </button>
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => navigate("/interactions")}
+            className="flex w-fit items-center gap-1.5 text-xs font-semibold text-muted transition-colors hover:text-slate-900"
+          >
+            <ArrowLeft size={14} />
+            Back
+          </button>
+
+          <div className="flex flex-none items-center gap-1">
+            <button
+              type="button"
+              onClick={handleMinimize}
+              aria-label="Minimize"
+              title="Minimize"
+              className="flex h-7 w-7 items-center justify-center rounded-md2 text-muted transition-colors hover:bg-surfaceHover hover:text-slate-900"
+            >
+              <Minimize2 size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={handleClose}
+              aria-label="Close"
+              title="Close"
+              className="flex h-7 w-7 items-center justify-center rounded-md2 text-muted transition-colors hover:bg-surfaceHover hover:text-slate-900"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
 
         {!row ? (
           <div className="rounded-md2 border border-border bg-surface shadow-xs">

@@ -110,6 +110,14 @@ class Ticket(Base):
         nullable=True,
     )
 
+    # Who closed the ticket (Close Ticket action) — cleared back to
+    # None on reopen, same lifecycle as closed_at.
+    closed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id"),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

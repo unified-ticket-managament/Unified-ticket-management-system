@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+import { Lock } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { TicketHeader } from "@tw/components/ticket/TicketHeader";
 import { TicketPropertiesCard } from "@tw/components/ticket/TicketPropertiesCard";
 import { TicketActivityPanel, type ActivityTab } from "@tw/components/ticket/TicketActivityPanel";
-import { TicketDetails } from "@tw/components/ticket/TicketDetails";
-import { EditAccessPanel } from "@tw/components/ticket/EditAccessPanel";
 import { SlaCard } from "@tw/components/sla/SlaCard";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { getTicket, listEditAccessRequests } from "@tw/api/ticket";
@@ -112,6 +111,15 @@ export function TicketDetailPage() {
         activeTicket && (
           <div className="flex flex-col gap-5">
             <TicketHeader ticket={activeTicket} onActionComplete={refreshAll} />
+            {activeTicket.current_status === "CLOSED" && (
+              <div className="flex items-center gap-2.5 rounded-md2 border border-border bg-canvas/60 px-4 py-3 text-sm text-slate-700">
+                <Lock size={15} className="flex-none text-muted" />
+                <span>
+                  This ticket has been closed. No further modifications are allowed unless the
+                  ticket is reopened.
+                </span>
+              </div>
+            )}
             <TicketPropertiesCard ticket={activeTicket} />
 
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_320px]">
@@ -131,7 +139,6 @@ export function TicketDetailPage() {
                   motion. */}
               <div>
                 <div className="flex flex-col gap-5 lg:sticky lg:top-0">
-                  <TicketDetails onRelatedChanged={refreshAll} />
                   <SlaCard
                     ticketId={activeTicket.ticket_id}
                     ticketPriority={activeTicket.current_priority}
@@ -139,7 +146,6 @@ export function TicketDetailPage() {
                     currentAgentId={activeTicket.agent_id}
                     onActionComplete={refreshAll}
                   />
-                  <EditAccessPanel onRequestsChanged={refreshEditAccessRequests} />
                 </div>
               </div>
             </div>

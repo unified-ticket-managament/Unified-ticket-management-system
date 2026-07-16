@@ -246,9 +246,19 @@ class EscalationService:
         if not owner_ids:
             return
 
+        # Super Admin/Site Lead see every escalation regardless of
+        # which level currently owns it (Super Admin: "All
+        # escalations"; Site Lead: "Escalations") — not just once the
+        # ladder happens to reach SITE_LEAD. Reuses the same
+        # already-established GLOBAL_INBOX resolver the SITE_LEAD
+        # level itself uses (`_resolve_owners_for_level` above); the
+        # set union means an owner who's also in this set (e.g. the
+        # ladder has already reached SITE_LEAD) isn't notified twice.
+        recipient_ids = owner_ids | await resolve_global_inbox_user_ids(self.user_repository)
+
         if self.notification_service is not None:
             await self.notification_service.notify(
-                owner_ids,
+                recipient_ids,
                 notification_type,
                 title=title,
                 message=message,
@@ -258,7 +268,7 @@ class EscalationService:
             )
 
         await send_notification_emails(
-            recipient_ids=owner_ids,
+            recipient_ids=recipient_ids,
             subject=title,
             body=f"{message}\n\nView it here: {build_absolute_link(f'/tickets/{ticket.ticket_id}')}",
             user_repository=self.user_repository,
@@ -582,16 +592,24 @@ class EscalationService:
 
         # Strictly owner_ids membership — no Site Lead/Super Admin
         # "global overseer" bypass here, unlike most other visibility
-        # checks in this codebase. A Site Lead/Super Admin only
-        # becomes a real owner once the chain actually reaches
-        # SITE_LEAD (resolve_global_inbox_user_ids populates owner_ids
-        # for them at that point) — allowing them to acknowledge
-        # earlier would let them jump the queue on a TEAM_LEAD/MANAGER-
-        # level escalation that hasn't reached them yet, exactly the
-        # "escalation should happen one level at a time" behavior this
-        # check exists to guarantee. Mirrors the same owner_ids-only
-        # rule the Escalated tab's own visibility query now enforces
-        # (TicketRepository._escalated_owner_condition).
+        # checks in this codebase, and deliberately no
+        # ticket:acknowledge_escalation permission fallback either: that
+        # permission is granted "Full" (unscoped) to Account Manager/
+        # Team Lead/Site Lead/Super Admin by role default (see
+        # DEFAULT_ROLES in scripts/rbac_seed/seed.py), and has_permission
+        # can't distinguish a role-default grant from a genuine per-user
+        # override — so treating it as an OR-bypass here would let any
+        # Account Manager/Team Lead acknowledge an escalation that
+        # hasn't reached their level yet, the exact bug this check
+        # exists to prevent. A Site Lead/Super Admin only becomes a
+        # real owner once the chain actually reaches SITE_LEAD
+        # (resolve_global_inbox_user_ids populates owner_ids for them at
+        # that point) — allowing them to acknowledge earlier would let
+        # them jump the queue on a TEAM_LEAD/MANAGER-level escalation,
+        # exactly the "escalation should happen one level at a time"
+        # behavior this check exists to guarantee. Mirrors the same
+        # owner_ids-only rule the Escalated tab's own visibility query
+        # now enforces (TicketRepository._escalated_owner_condition).
         if str(current_user.user_id) not in escalation.owner_ids:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

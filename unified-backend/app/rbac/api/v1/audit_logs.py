@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
@@ -11,12 +11,23 @@ from app.rbac.schemas.audit_log import (
     AuditLogListResponse,
     AuditLogResponse,
 )
+from app.rbac.services.access_control import ensure_has_permission
 from app.rbac.services.audit_log_service import AuditLogService
 
 router = APIRouter(
     prefix="/audit-logs",
     tags=["Audit Logs"],
 )
+
+# This table is system-level administration (logins, password changes,
+# user/role CRUD, permission overrides/requests) — org-wide with no
+# client/ticket/team concept to scope by, unlike app.ticketing's own
+# per-ticket audit trail (see TicketService.list_all_audit_logs, which
+# every other role reaches instead via GET /tickets/audit-logs). Every
+# role's own audit-log requirements are already satisfied by that other
+# endpoint except Super Admin's — see the Audit Logs role-scoping notes
+# in CLAUDE.md.
+SUPER_ADMIN_ROLE_NAME = "Super Admin"
 
 
 # --------------------------------------------------
@@ -79,8 +90,16 @@ async def list_audit_logs(
     current_user=Depends(get_current_active_user),
 ):
     """
-    Returns paginated audit logs.
+    Returns paginated audit logs. Super Admin only — see this
+    module's own top-of-file note on why every other role's audit-log
+    needs are served by GET /tickets/audit-logs instead.
     """
+
+    if current_user.role.name != SUPER_ADMIN_ROLE_NAME:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only Super Admin can view system-level audit logs.",
+        )
 
     logs, total = await service.list_logs(
         page=page,
@@ -113,6 +132,8 @@ async def get_audit_log(
     Returns audit log details.
     """
 
+    ensure_has_permission(current_user, "audit:view")
+
     return await service.get_log(
         audit_log_id,
     )
@@ -137,6 +158,8 @@ async def get_user_audit_logs(
     """
     Returns all audit logs for a user.
     """
+
+    ensure_has_permission(current_user, "audit:view")
 
     return await service.get_user_logs(
         user_id,

@@ -19,6 +19,8 @@ const TYPE_META: Record<string, InteractionTypeMeta> = {
   EDIT_ACCESS_REQUESTED: { icon: "🙏", label: "Edit Access Requested", tone: "warning" },
   EDIT_ACCESS_APPROVED: { icon: "🤝", label: "Edit Access Approved", tone: "success" },
   EDIT_ACCESS_REJECTED: { icon: "🚫", label: "Edit Access Rejected", tone: "danger" },
+  TICKET_CLOSED: { icon: "🔒", label: "Ticket Closed", tone: "default" },
+  TICKET_REOPENED: { icon: "🔓", label: "Ticket Reopened", tone: "info" },
 };
 
 export function metaFor(type: string): InteractionTypeMeta {
@@ -39,6 +41,8 @@ export const RETIRED_INTERACTION_TYPES = new Set([
   "EDIT_ACCESS_REQUESTED",
   "EDIT_ACCESS_APPROVED",
   "EDIT_ACCESS_REJECTED",
+  "TICKET_CLOSED",
+  "TICKET_REOPENED",
 ]);
 
 export function summarize(interaction: InteractionResponse): string {
@@ -61,8 +65,10 @@ export function summarize(interaction: InteractionResponse): string {
       const count = (payload.file_count as number) ?? interaction.attachments?.length ?? 1;
       return `${count} file${count === 1 ? "" : "s"} uploaded`;
     }
-    case "AGENT_TRANSFER":
-      return `${payload.from_agent_name ?? "Unassigned"} → ${payload.to_agent_name ?? "?"}`;
+    case "AGENT_TRANSFER": {
+      const base = `${payload.from_agent_name ?? "Unassigned"} → ${payload.to_agent_name ?? "?"}`;
+      return payload.reason ? `${base} (${payload.reason as string})` : base;
+    }
     case "CLAIM":
       return `Claimed by ${(payload.agent_name as string) ?? "Unknown"}`;
     case "EDIT_ACCESS_REQUESTED":
@@ -71,6 +77,10 @@ export function summarize(interaction: InteractionResponse): string {
       return "Edit access approved";
     case "EDIT_ACCESS_REJECTED":
       return (payload.review_note as string) || "Edit access rejected";
+    case "TICKET_CLOSED":
+      return `Closed by ${(payload.closed_by_name as string) ?? "Unknown"}`;
+    case "TICKET_REOPENED":
+      return "Ticket reopened";
     default:
       return JSON.stringify(payload);
   }
@@ -103,6 +113,32 @@ export function messageSender(message: InteractionResponse): string | null {
     default:
       return message.performed_by_name ?? null;
   }
+}
+
+export interface MessageRecipients {
+  to: string | null;
+  cc: string[];
+  bcc: string[];
+}
+
+// Outbound replies only — the envelope (to/cc/bcc) is built server-side
+// at send time (see build_reply_envelope) and stored under
+// payload.envelope, not at the top level of payload alongside `message`.
+// Returns null for every other interaction type, and for a REPLY whose
+// envelope is absent (a reply sent with no resolvable recipient at all,
+// payload.dispatch_status === "NO_RECIPIENT") — there is nothing to show.
+export function messageRecipients(message: InteractionResponse): MessageRecipients | null {
+  if (message.interaction_type !== "REPLY") return null;
+  const envelope = (message.payload as Record<string, unknown> | undefined)?.envelope as
+    | Record<string, unknown>
+    | undefined;
+  if (!envelope) return null;
+
+  return {
+    to: (envelope.to_email as string) ?? null,
+    cc: (envelope.cc as string[] | undefined) ?? [],
+    bcc: (envelope.bcc as string[] | undefined) ?? [],
+  };
 }
 
 export function messageBody(message: InteractionResponse): string {

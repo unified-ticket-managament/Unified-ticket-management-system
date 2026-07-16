@@ -24,3 +24,5 @@ node_modules/
 .idea/
 .DS_Store
 Thumbs.db
+
+unified-backend/backend_audit.log

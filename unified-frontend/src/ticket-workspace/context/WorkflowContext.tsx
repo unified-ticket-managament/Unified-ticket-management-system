@@ -13,11 +13,16 @@ import type {
   EditAccessRequestResponse,
   InteractionResponse,
   OpenEmailResponse,
+  ThreadResponse,
   TicketResponse,
 } from "@tw/types";
 import { listAgents } from "@tw/api/agent";
 import { listClients } from "@tw/api/clients";
 import { listCategories } from "@tw/api/categories";
+import type {
+  InteractionDrawerEmail,
+  InteractionDrawerRow,
+} from "@tw/components/common/InteractionDetailsDrawer";
 
 // ==========================================================
 // WorkflowContext
@@ -62,6 +67,29 @@ interface WorkflowContextValue {
   // activeTicket/timeline.
   editAccessRequests: EditAccessRequestResponse[];
   setEditAccessRequests: (requests: EditAccessRequestResponse[]) => void;
+
+  // The Interactions list's row-details drawer state, lifted up here
+  // (rather than InteractionsPage's own local useState) so it survives
+  // the Expand -> FullInteractionPage -> Minimize round trip. That
+  // round trip is a real route change (/interactions -> /interactions/
+  // :id -> back), which remounts InteractionsPage itself and would
+  // otherwise reset its local state — but WorkflowProvider sits above
+  // <BrowserRouter> in TicketWorkspaceApp.tsx and TicketWorkspaceApp
+  // itself no longer remounts on ticket-workspace-internal navigation
+  // (see the request-duplication audit note in this repo's CLAUDE.md),
+  // so this context genuinely persists across that round trip. Grouped
+  // into one object (unlike this context's other, independent fields)
+  // since these five always change together.
+  interactionDrawer: {
+    open: boolean;
+    row: InteractionDrawerRow | null;
+    email: InteractionDrawerEmail | null;
+    thread: ThreadResponse | null;
+    scrollY: number;
+  };
+  setInteractionDrawer: (
+    value: WorkflowContextValue["interactionDrawer"]
+  ) => void;
 }
 
 const WorkflowContext = createContext<WorkflowContextValue | undefined>(
@@ -82,6 +110,9 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
   const [editAccessRequests, setEditAccessRequests] = useState<
     EditAccessRequestResponse[]
   >([]);
+  const [interactionDrawer, setInteractionDrawer] = useState<
+    WorkflowContextValue["interactionDrawer"]
+  >({ open: false, row: null, email: null, thread: null, scrollY: 0 });
 
   useEffect(() => {
     let cancelled = false;
@@ -133,8 +164,19 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
       setTimeline,
       editAccessRequests,
       setEditAccessRequests,
+      interactionDrawer,
+      setInteractionDrawer,
     }),
-    [agents, clients, categories, selectedEmail, activeTicket, timeline, editAccessRequests]
+    [
+      agents,
+      clients,
+      categories,
+      selectedEmail,
+      activeTicket,
+      timeline,
+      editAccessRequests,
+      interactionDrawer,
+    ]
   );
 
   return (

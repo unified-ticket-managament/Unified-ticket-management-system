@@ -410,38 +410,83 @@ def ensure_can_review_edit_access(
     ensure_has_permission(current_user, "ticket:editother_ticket")
 
 
+# Roles that bypass ticket:close_ticket/ticket:reopen unconditionally,
+# per the approved RBAC permission matrix — deliberately narrower than
+# SUPERVISOR_ROLE_NAMES. Unlike ticket:transfer/ticket:assign (where
+# Team Lead is Full-by-default, team-scoped), the matrix marks Team
+# Lead as Override-only for closing/reopening — closing a ticket ends
+# its Resolution SLA clock and is meant to be a deliberate, narrower
+# gate than ordinary team supervision. Account Manager is NOT in this
+# bypass set either: they get Full access via the ticket:close_ticket/
+# ticket:reopen permission itself (granted by default in seed.py),
+# scoped to their own clients by the separate
+# ensure_account_manager_owns_ticket_client check the calling method
+# also runs — not a blanket role bypass.
+CLOSE_REOPEN_BYPASS_ROLE_NAMES = {"Site Lead", "Super Admin"}
+
+
 def ensure_can_close_ticket(current_user: User) -> None:
     """
-    Only a supervisor may move a ticket into CLOSED
-    (InteractionService.change_status) — added specifically so the
+    Gates the dedicated Close Ticket action
+    (InteractionService.close_ticket) — added specifically so the
     Resolution SLA's "ends only when a Manager verifies and closes"
     requirement is actually true rather than aspirational: without
-    this gate, an agent's own status change to CLOSED would silently
-    end the SLA clock with no manager involved at all. Moving to
-    RESOLVED (an agent's own proposed fix) is unaffected by this gate
-    and remains open to whoever could already change status.
+    this gate, an agent could otherwise silently end the SLA clock
+    with no manager involved at all. Moving to RESOLVED (an agent's
+    own proposed fix) is unaffected by this gate and remains open to
+    whoever could already change status.
+
+    Only Site Lead/Super Admin bypass unconditionally (see
+    CLOSE_REOPEN_BYPASS_ROLE_NAMES's own docstring for why this is
+    narrower than SUPERVISOR_ROLE_NAMES) — everyone else, including
+    Account Manager and Team Lead, falls through to the
+    ticket:close_ticket permission check. Account Manager holds it by
+    default (own clients, enforced separately); Team Lead/Staff need a
+    personal override.
     """
 
-    if current_user.role.name not in SUPERVISOR_ROLE_NAMES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only a supervisor can close a ticket.",
-        )
+    if current_user.role.name in CLOSE_REOPEN_BYPASS_ROLE_NAMES:
+        return
+
+    ensure_has_permission(current_user, "ticket:close_ticket")
+
+
+def ensure_can_reopen_ticket(current_user: User) -> None:
+    """
+    Gates the dedicated Reopen Ticket action
+    (InteractionService.reopen_ticket) — mirrors ensure_can_close_ticket
+    exactly (see CLOSE_REOPEN_BYPASS_ROLE_NAMES), since reopening undoes
+    the same close a supervisor was required to perform in the first
+    place.
+    """
+
+    if current_user.role.name in CLOSE_REOPEN_BYPASS_ROLE_NAMES:
+        return
+
+    ensure_has_permission(current_user, "ticket:reopen")
 
 
 def ensure_can_override_sla(current_user: User) -> None:
     """
-    Gates the manual SLA pause/resume override action — a business
-    exception (holding a ticket outside the normal customer-wait
-    model), not routine agent work, so it's restricted the same way
-    ensure_can_close_ticket is.
+    Gates the manual SLA pause/resume override action — the real,
+    per-ticket enforcement point for ticket:change_sla (the RBAC matrix
+    doc's own resolution for that otherwise-dead permission: "wire it
+    to the per-ticket SLA-target-adjustment action"). Only Site Lead/
+    Super Admin bypass unconditionally — same narrower-than-
+    SUPERVISOR_ROLE_NAMES shape as ensure_can_close_ticket/
+    ensure_can_reopen_ticket, and for the same reason: Account Manager
+    gets Full access via holding ticket:change_sla by role default
+    (seed.py), scoped to their own clients by the caller's separate
+    ensure_account_manager_owns_ticket_client check, not a blanket
+    bypass; Team Lead/Staff fall through to the same permission check,
+    Override-only per the doc (unlike SUPERVISOR_ROLE_NAMES's blanket
+    Team Lead bypass used elsewhere for transfer/assign).
     """
 
-    if current_user.role.name not in SUPERVISOR_ROLE_NAMES:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only a supervisor can override a ticket's SLA.",
-        )
+    if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
+        return
+
+    ensure_has_permission(current_user, "ticket:change_sla")
 
 
 def ensure_can_manage_sla_policies(current_user: User) -> None:

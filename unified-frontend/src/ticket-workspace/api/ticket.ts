@@ -230,6 +230,29 @@ export async function claimTicket(
   return data;
 }
 
+// POST /tickets/{ticket_id}/close — the only transition that
+// completes the Resolution SLA clock. Ticket becomes read-only until
+// reopened.
+export async function closeTicket(
+  ticketId: string
+): Promise<TicketActionResponse> {
+  const { data } = await apiClient.post<TicketActionResponse>(
+    `/tickets/${ticketId}/close`
+  );
+  return data;
+}
+
+// POST /tickets/{ticket_id}/reopen — the only way off CLOSED; restores
+// every action a closed ticket otherwise blocks.
+export async function reopenTicket(
+  ticketId: string
+): Promise<TicketActionResponse> {
+  const { data } = await apiClient.post<TicketActionResponse>(
+    `/tickets/${ticketId}/reopen`
+  );
+  return data;
+}
+
 // POST /tickets/{ticket_id}/related — symmetric link, both tickets
 // show each other under "Related Tickets" afterward.
 export async function addRelatedTicket(

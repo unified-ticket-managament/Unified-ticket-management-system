@@ -16,7 +16,7 @@ import { PageHeader } from "@/components/layout/dashboard-shell";
 import { actionBadgeVariant, ActionIcon } from "@/components/shared/audit";
 import { Breadcrumbs } from "@/components/shared/breadcrumbs";
 import { DataTablePagination } from "@/components/shared/data-table";
-import { EmptyState, ErrorState } from "@/components/shared/stats";
+import { AccessDenied, EmptyState, ErrorState } from "@/components/shared/stats";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { formatDate } from "@/lib/utils";
 import { auditService, roleService, userService } from "@/services";
+import { useAuthStore } from "@/store/auth-store";
 import { AuditLog, Role, User } from "@/types";
 
 type AuditRow = AuditLog & {
@@ -49,6 +50,7 @@ function isFailureAction(action: string): boolean {
 export default function AuditLogsPage() {
   const { t } = useTranslation();
   const { toast } = useToast();
+  const hasPermission = useAuthStore((s) => s.hasPermission);
   const [search, setSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -222,6 +224,13 @@ export default function AuditLogsPage() {
     initialState: { pagination: { pageSize: 10 } },
   });
 
+  // Mirrors the backend's GET /audit-logs gate (audit:view — Full for
+  // Super Admin/Site Lead, Override-only for Account Manager/Team
+  // Lead/Staff). Previously had no page-level gate at all.
+  if (!hasPermission("audit:view")) {
+    return <AccessDenied message="You do not have access to the Audit Logs page." />;
+  }
+
   if (auditQuery.isError) {
     return <ErrorState message="Failed to load audit logs. Please try again." />;
   }
@@ -266,10 +275,12 @@ export default function AuditLogsPage() {
         title={t("auditLogs.title")}
         description={`${t("auditLogs.description")}${auditQuery.data ? ` — ${auditQuery.data.total} ${t("common.total")}` : ""}.`}
         action={
-          <Button variant="outline" className="gap-2" onClick={handleExport}>
-            <Download className="h-4 w-4" />
-            Export
-          </Button>
+          hasPermission("audit:export") ? (
+            <Button variant="outline" className="gap-2" onClick={handleExport}>
+              <Download className="h-4 w-4" />
+              Export
+            </Button>
+          ) : undefined
         }
       />
 

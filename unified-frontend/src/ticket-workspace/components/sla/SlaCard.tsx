@@ -13,16 +13,13 @@ import { SlaBadge } from "@tw/components/sla/SlaBadge";
 import { SlaProgressBar } from "@tw/components/sla/SlaProgressBar";
 import type { TicketPriority } from "@tw/types";
 
-// Deliberately NOT reusing lib/role-access.ts's SUPERVISOR_ROLE_NAMES
-// constant (only [Site Lead, Super Admin]) to gate the pause/resume
-// buttons — that constant is already documented (this app's own
-// CLAUDE.md) as not matching the real backend gate, which is
-// access_control.py's SUPERVISOR_ROLE_NAMES = {Team Lead, Account
-// Manager, Site Lead, Super Admin}. Using the narrower frontend
-// constant here would hide this button from Team Lead/Account
-// Manager even though the backend lets them pause/resume — verified
-// directly against the API earlier (Team Lead: 200, Staff: 403).
-const RESOLUTION_OVERRIDE_ROLES = new Set(["Team Lead", "Account Manager", "Site Lead", "Super Admin"]);
+// Mirrors the backend's ensure_can_override_sla exactly (narrowed per
+// the RBAC matrix doc's ticket:change_sla row): only Site Lead/Super
+// Admin bypass unconditionally. Account Manager gets Full access via
+// holding ticket:change_sla by role default; Team Lead/Staff are
+// Override-only — both fall through to the permission check below
+// rather than a blanket role bypass.
+const RESOLUTION_OVERRIDE_BYPASS_ROLES = new Set(["Site Lead", "Super Admin"]);
 
 export function SlaCard({
   ticketId,
@@ -57,19 +54,28 @@ export function SlaCard({
 
   const acknowledgeAndAssign = useAcknowledgeAndAssign();
 
-  const canOverride = currentUser?.role ? RESOLUTION_OVERRIDE_ROLES.has(currentUser.role) : false;
+  const canOverride = currentUser?.role
+    ? RESOLUTION_OVERRIDE_BYPASS_ROLES.has(currentUser.role) ||
+      !!currentUser.permissions.includes("ticket:change_sla")
+    : false;
 
   const canEscalate =
     !!currentUser?.permissions.includes("ticket:escalate") &&
     !escalation &&
     resolution?.status !== "COMPLETED";
 
-  // Strictly owner_ids membership — no Site Lead/Super Admin bypass.
-  // The backend (EscalationService.acknowledge/confirm_assignment)
-  // dropped its own "global overseer" exception for the same reason:
-  // escalation should progress one level at a time, and a Site
-  // Lead/Super Admin only becomes a real owner once the chain
-  // actually reaches SITE_LEAD.
+  // Strictly owner_ids membership — no Site Lead/Super Admin bypass,
+  // and deliberately no ticket:acknowledge_escalation permission
+  // fallback either: that permission is granted "Full" (unscoped) to
+  // Account Manager/Team Lead/Site Lead/Super Admin by role default
+  // (see scripts/rbac_seed/seed.py's DEFAULT_ROLES), so treating it as
+  // an OR-bypass here would let any of them acknowledge an escalation
+  // before it reaches their level — see EscalationService.acknowledge's
+  // own docstring for the full reasoning. The backend
+  // (EscalationService.acknowledge/confirm_assignment) dropped its own
+  // "global overseer" exception for the same reason: escalation should
+  // progress one level at a time, and a Site Lead/Super Admin only
+  // becomes a real owner once the chain actually reaches SITE_LEAD.
   const canAcknowledge =
     !!currentUser &&
     escalation?.status === "ACTIVE" &&

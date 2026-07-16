@@ -39,6 +39,7 @@ import { listAssignableAgents } from "@tw/api/agent";
 import { listClientContacts } from "@tw/api/clients";
 import { replyToClient, uploadAttachment } from "@tw/api/interaction";
 import { attachInteractionToTicket, createTicketFromInteraction, listTickets } from "@tw/api/ticket";
+import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { formatDateTime } from "@tw/lib/format";
 import { buildForwardHtml, linkifyPlainText } from "@tw/lib/richText";
@@ -177,7 +178,6 @@ function Bubble({ data }: { data: BubbleData }) {
 interface MessageDetailsViewProps {
   email: OpenEmailResponse;
   folders: MailFolder[];
-  isSupervisor: boolean;
   onBack: () => void;
   onRefreshList: () => void;
   onForward: (values: { clientId: string | null; toEmail: string; subject: string; bodyHtml: string }) => void;
@@ -201,7 +201,6 @@ interface MessageDetailsViewProps {
 export function MessageDetailsView({
   email,
   folders,
-  isSupervisor,
   onBack,
   onRefreshList,
   onForward,
@@ -218,6 +217,17 @@ export function MessageDetailsView({
   // shared, session-wide lookup data fetched once by WorkflowContext
   // instead (see that context's own comment).
   const { setSelectedEmail, categories } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
+  const canConvertToTicket = !!currentUser?.permissions.includes(
+    "communication:convert_to_ticket"
+  );
+  const canAttachToTicket = !!currentUser?.permissions.includes(
+    "communication:attach_to_ticket"
+  );
+  const canArchive = !!currentUser?.permissions.includes("communication:archive");
+  const canReplyExternal = !!currentUser?.permissions.includes(
+    "communication:reply_external"
+  );
   const [replyMode, setReplyMode] = useState<"reply" | "replyAll" | null>(null);
   const [newTag, setNewTag] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -609,14 +619,18 @@ export function MessageDetailsView({
 
       {/* Action Toolbar — pinned below the scrolling content, never scrolls out of view */}
       <div className="flex flex-wrap items-center gap-1.5 border-t border-border bg-muted/20 px-5 py-2.5">
-        <Button size="sm" className="gap-1.5" disabled={isClosed} onClick={() => setReplyMode("reply")}>
-          <ReplyIcon className="h-3.5 w-3.5" />
-          Reply
-        </Button>
-        <Button size="sm" variant="outline" className="gap-1.5" disabled={isClosed} onClick={() => setReplyMode("replyAll")}>
-          <ReplyAll className="h-3.5 w-3.5" />
-          Reply All
-        </Button>
+        {canReplyExternal && (
+          <>
+            <Button size="sm" className="gap-1.5" disabled={isClosed} onClick={() => setReplyMode("reply")}>
+              <ReplyIcon className="h-3.5 w-3.5" />
+              Reply
+            </Button>
+            <Button size="sm" variant="outline" className="gap-1.5" disabled={isClosed} onClick={() => setReplyMode("replyAll")}>
+              <ReplyAll className="h-3.5 w-3.5" />
+              Reply All
+            </Button>
+          </>
+        )}
         <Button size="sm" variant="outline" className="gap-1.5" onClick={handleForwardClick}>
           <ForwardIcon className="h-3.5 w-3.5" />
           Forward
@@ -632,16 +646,20 @@ export function MessageDetailsView({
             </Link>
           </Button>
         ) : (
-          <Button size="sm" variant="outline" className="gap-1.5" disabled={isCreating} onClick={() => setCreateOpen(true)}>
-            <FilePlus className="h-3.5 w-3.5" />
-            Create Ticket
-          </Button>
+          (canConvertToTicket || canAttachToTicket) && (
+            <Button size="sm" variant="outline" className="gap-1.5" disabled={isCreating} onClick={() => setCreateOpen(true)}>
+              <FilePlus className="h-3.5 w-3.5" />
+              Create Ticket
+            </Button>
+          )
         )}
 
-        <Button size="sm" variant="outline" className="gap-1.5" disabled={archiveDisabled} onClick={handleArchive}>
-          <Archive className="h-3.5 w-3.5" />
-          Archive
-        </Button>
+        {canArchive && (
+          <Button size="sm" variant="outline" className="gap-1.5" disabled={archiveDisabled} onClick={handleArchive}>
+            <Archive className="h-3.5 w-3.5" />
+            Archive
+          </Button>
+        )}
 
         <div className="ml-auto flex items-center gap-1.5">
           <Button size="sm" variant="ghost" className="gap-1.5" onClick={onBack}>

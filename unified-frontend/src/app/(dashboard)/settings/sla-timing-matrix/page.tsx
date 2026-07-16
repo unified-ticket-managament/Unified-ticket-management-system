@@ -21,7 +21,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useAuthStore } from "@/store/auth-store";
-import { ROLE_NAMES } from "@/lib/role-access";
 import { listSlaPolicies, updateSlaPolicy } from "@tw/api/sla";
 import { formatDurationShort } from "@tw/lib/slaMath";
 import type { SLAPolicyResponse, SLAPolicyUpdatePayload, TicketPriority } from "@tw/types";
@@ -114,6 +113,7 @@ function draftDiffersFromOriginal(draft: Draft, original: SLAPolicyResponse): bo
 
 export default function SlaTimingMatrixPage() {
   const currentUser = useAuthStore((s) => s.user);
+  const hasPermission = useAuthStore((s) => s.hasPermission);
   const { toast } = useToast();
 
   const [policies, setPolicies] = useState<SLAPolicyResponse[] | null>(null);
@@ -178,8 +178,13 @@ export default function SlaTimingMatrixPage() {
 
   const hasUnsavedChanges = dirtyPolicyIds.size > 0;
 
-  if (currentUser && currentUser.role !== ROLE_NAMES.SUPER_ADMIN) {
-    return <AccessDenied message="Only Super Admin can access the SLA Timing Matrix." />;
+  // Mirrors the backend's PATCH /sla/policies/{id} gate (sla:manage_
+  // policies — Full for Super Admin/Site Lead, Override-only for
+  // everyone else). Previously hardcoded to Super Admin only, which
+  // incorrectly excluded Site Lead despite holding this permission by
+  // default.
+  if (currentUser && !hasPermission("sla:manage_policies")) {
+    return <AccessDenied message="You do not have access to the SLA Timing Matrix." />;
   }
 
   function updateField(policyId: string, field: EditableField, value: string) {

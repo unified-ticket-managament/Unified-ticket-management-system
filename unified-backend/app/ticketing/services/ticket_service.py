@@ -49,8 +49,14 @@ from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
     CATEGORY_SCOPED_ROLE_NAMES,
     ESCALATION_TAB_ROLE_NAMES,
+    GLOBAL_INBOX_ROLE_NAMES,
+    ensure_account_manager_owns_ticket_client,
     ensure_agent_can_view_ticket,
+    ensure_has_permission,
+    ensure_ticket_not_closed,
+    has_permission,
 )
+from app.ticketing.services.assignment_service import STAFF_ROLE_NAME
 from app.ticketing.services.audit_log_service import AuditLogService
 
 # Mirrors the frontend's InteractionsPage.tsx VISIBLE_INTERACTION_TYPES
@@ -121,6 +127,9 @@ class TicketService:
         user_ids.update(
             ticket.created_by for ticket in tickets if ticket.created_by is not None
         )
+        user_ids.update(
+            ticket.closed_by for ticket in tickets if ticket.closed_by is not None
+        )
 
         company_ids: set[UUID] = set()
         if self.client_repository is not None:
@@ -176,6 +185,9 @@ class TicketService:
             )
             ticket.created_by_name = (
                 names.get(ticket.created_by) if ticket.created_by else None
+            )
+            ticket.closed_by_name = (
+                names.get(ticket.closed_by) if ticket.closed_by else None
             )
 
     # ---------------------------------------------------------
@@ -245,6 +257,45 @@ class TicketService:
             return []
 
         return [current_user.category.category_name.value]
+
+    # ---------------------------------------------------------
+    # Team Lead / Staff Audit Log Scoping
+    # ---------------------------------------------------------
+
+    async def _resolve_audit_log_agent_ids(
+        self, current_user: User
+    ) -> list[UUID] | None:
+        """
+        Audit Log page-only scoping for Team Lead/Staff — deliberately
+        narrower than (and independent of) _resolve_category_ticket_types'
+        shared-category-pool visibility, which every OTHER endpoint
+        (ticket list, interactions, dashboard stats) still uses
+        unchanged. A Team Lead's/Staff member's audit trail should
+        read as "my team's work", not "everyone's work in my
+        category" — so this scopes to `Ticket.agent_id` instead of
+        `Ticket.ticket_type`.
+
+        None = unrestricted (Super Admin, Site Lead, Account Manager —
+        the latter is already scoped separately via
+        _resolve_owned_client_ids, by client ownership rather than
+        agent). A list (possibly empty) restricts to tickets assigned
+        to one of these specific agents:
+        - Staff: only themselves — "own ticket actions" only.
+        - Team Lead: themselves plus every Staff member reporting to
+          them (`teamlead_id`) — "my team", not other Team Leads'
+          teams or the wider category.
+        """
+
+        if current_user.role.name == "Staff":
+            return [current_user.user_id]
+
+        if current_user.role.name == "Team Lead":
+            reports = await self.user_repository.list_active_staff_by_teamlead(
+                current_user.user_id
+            )
+            return [current_user.user_id] + [u.user_id for u in reports]
+
+        return None
 
     # ---------------------------------------------------------
     # Get Ticket By ID
@@ -491,8 +542,27 @@ class TicketService:
         tab specifically.
         """
 
+        # ticket:view_escalated — Full by role default for Account
+        # Manager/Team Lead/Site Lead/Super Admin (ESCALATION_TAB_ROLE_NAMES),
+        # Override-only for Staff. A Staff member individually granted
+        # this permission via a personal override can now also reach
+        # the tab, rather than being hard-blocked by role membership
+        # alone regardless of an override.
         if view == "escalated" and current_user.role.name not in ESCALATION_TAB_ROLE_NAMES:
-            return [], 0
+            if not has_permission(current_user, "ticket:view_escalated"):
+                return [], 0
+
+        # Universal-grant permissions (Full for every role by default
+        # per the RBAC matrix) — checked mainly so a personal override
+        # revocation (were one ever granted the opposite way) and the
+        # permission-audit trail both have something real to key off,
+        # not because any role is expected to fail this today.
+        if view == "pool":
+            ensure_has_permission(current_user, "ticket:view_unassigned")
+        elif view == "mine":
+            ensure_has_permission(current_user, "ticket:view_own")
+        elif view == "all":
+            ensure_has_permission(current_user, "ticket:view_others")
 
         # Account Manager is scoped to only their own clients' tickets;
         # Team Lead/Staff are scoped to their own work-specialization
@@ -610,7 +680,9 @@ class TicketService:
             viewer_user_id=current_user.user_id,
         )
 
-        if current_user.role.name not in ESCALATION_TAB_ROLE_NAMES:
+        if current_user.role.name not in ESCALATION_TAB_ROLE_NAMES and not has_permission(
+            current_user, "ticket:view_escalated"
+        ):
             counts["escalated"] = 0
 
         return counts
@@ -629,6 +701,8 @@ class TicketService:
         ticket count grows, while this endpoint's cost stays bounded
         regardless of how many tickets exist.
         """
+
+        ensure_has_permission(current_user, "ticket:view_dashboard_kpis")
 
         ticket_types = self._resolve_category_ticket_types(current_user)
         account_manager_id = (
@@ -764,6 +838,7 @@ class TicketService:
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         search: str | None = None,
+        centralized: bool = False,
     ) -> tuple[list[TicketAuditLogResponse], int]:
         """
         Same visibility scoping as list_all, but returns every audit-
@@ -782,22 +857,62 @@ class TicketService:
         `search` matches ticket title — resolved here (not pushed into
         the audit-log query as a join) since titles are already
         fetched in-process for the whole visible ticket set below.
+
+        Two modes, not one: by default (`centralized=False`) every
+        role gets a *scoped* view — Account Manager to their own
+        clients, Team Lead to their own category/team, Staff to just
+        their own assigned tickets, Site Lead/Super Admin unrestricted
+        (unchanged from before) — and `ticket:view_global_audit_log`
+        is never checked at all for that default view. Passing
+        `centralized=True` requests the unrestricted, company-wide log
+        instead; that's the one and only thing this permission gates.
+        Site Lead/Super Admin get the unrestricted view regardless of
+        `centralized`, matching their existing default.
         """
 
         if self.audit_log_repository is None:
             return [], 0
 
+        is_global_role = current_user.role.name in GLOBAL_INBOX_ROLE_NAMES
+        if centralized and not is_global_role:
+            ensure_has_permission(current_user, "ticket:view_global_audit_log")
+        unrestricted = is_global_role or centralized
+
         if limit is not None:
-            account_manager_id = (
-                current_user.user_id
-                if current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME
-                else None
-            )
-            ticket_types = self._resolve_category_ticket_types(current_user)
+            if unrestricted:
+                account_manager_id = None
+                ticket_types = None
+                agent_ids = None
+                assigned_to = None
+            else:
+                account_manager_id = (
+                    current_user.user_id
+                    if current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME
+                    else None
+                )
+                agent_ids = await self._resolve_audit_log_agent_ids(current_user)
+                # Team Lead/Staff are scoped by agent_ids (their own
+                # reporting line) for this page specifically, never by
+                # ticket_types' wider category pool — see
+                # _resolve_audit_log_agent_ids's own docstring.
+                ticket_types = (
+                    None if agent_ids is not None else self._resolve_category_ticket_types(current_user)
+                )
+                # Independent, user-chosen filter (see
+                # AuditLogRepository.list_visible_page's own
+                # docstring) — layered on top of, not a substitute
+                # for, agent_ids' own role-based scoping above.
+                assigned_to = (
+                    current_user.user_id
+                    if current_user.role.name == STAFF_ROLE_NAME
+                    else None
+                )
 
             page = await self.audit_log_repository.list_visible_page(
                 account_manager_id=account_manager_id,
                 ticket_types=ticket_types,
+                agent_ids=agent_ids,
+                assigned_to=assigned_to,
                 limit=limit,
                 offset=offset,
                 entity_type=entity_type,
@@ -836,12 +951,25 @@ class TicketService:
         # unbounded ticket_repository.list_all fetch this method used
         # to always pay for — but only on this now-rarely-exercised
         # path, not on every request/poll tick.
-        owned_client_ids = await self._resolve_owned_client_ids(current_user)
-        ticket_types = self._resolve_category_ticket_types(current_user)
+        if unrestricted:
+            owned_client_ids = None
+            ticket_types = None
+            agent_ids = None
+        else:
+            owned_client_ids = await self._resolve_owned_client_ids(current_user)
+            agent_ids = await self._resolve_audit_log_agent_ids(current_user)
+            ticket_types = (
+                None if agent_ids is not None else self._resolve_category_ticket_types(current_user)
+            )
+
         tickets, _ = await self.ticket_repository.list_all(
             client_company_ids=owned_client_ids,
             ticket_types=ticket_types,
+            agent_ids=agent_ids,
         )
+
+        if not unrestricted and current_user.role.name == STAFF_ROLE_NAME:
+            tickets = [t for t in tickets if t.agent_id == current_user.user_id]
 
         if not tickets:
             return [], 0
@@ -1184,6 +1312,17 @@ class TicketService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Ticket not found.",
             )
+
+        # This route's real-world use is changing a ticket's
+        # ticket_type (its category) — same permission (ticket:
+        # change_category) and same scoping every sibling mutating
+        # action already applies. Previously had no gate at all.
+        ensure_ticket_not_closed(ticket)
+        ensure_agent_can_view_ticket(ticket, current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_has_permission(current_user, "ticket:change_category")
 
         # Snapshot only the safe, structured fields actually being
         # changed. custom_fields is caller-defined/arbitrary content

@@ -15,7 +15,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDate } from "@/lib/utils";
-import { ROLE_NAMES } from "@/lib/role-access";
 import { permissionService, roleService, userService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 import { Permission, Role, User } from "@/types";
@@ -24,8 +23,12 @@ export default function RoleDetailsPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const currentUser = useAuthStore((s) => s.user);
-  const canManagePermissions =
-    currentUser?.role === ROLE_NAMES.SUPER_ADMIN || currentUser?.role === ROLE_NAMES.ACCOUNT_MANAGER;
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+  // Mirrors the backend's PUT /roles/{id}/permissions gate (permission:
+  // update) — see the roles list page's own comment on this same
+  // change for why the old Super Admin/Account Manager hardcode was
+  // wrong on both ends (missed Site Lead, over-granted Account Manager).
+  const canManagePermissions = hasPermission("permission:update");
   const [permissionsDialogOpen, setPermissionsDialogOpen] = useState(false);
 
   const roleQuery = useQuery({

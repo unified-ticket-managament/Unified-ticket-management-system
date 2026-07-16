@@ -156,6 +156,29 @@ export function InboxPage() {
               onSend={handleComposeSend}
               onDiscard={closeCompose}
             />
+          ) : selectedEmail ? (
+            // Checked ahead of the System-folder branch below: opening a
+            // specific message (e.g. via the interaction_id query param a
+            // First Response SLA notification's "View Mail" link sets,
+            // handled by the effect above) must show that message even
+            // while activeView is still "system" from wherever the click
+            // originated — otherwise this branch never runs, since
+            // activeView doesn't change on its own and the System view
+            // would keep rendering in front of it.
+            <MessageDetailsView
+              email={selectedEmail}
+              folders={mail.folders}
+              onBack={() => setSelectedEmail(null)}
+              onRefreshList={mail.refresh}
+              onForward={handleForward}
+              onSaveDraft={mail.saveDraftMessage}
+              onSendDraft={mail.sendDraftMessage}
+              onDiscardDraft={mail.discardDraftMessage}
+              onUploadDraftAttachment={mail.uploadDraftAttachment}
+              onRemoveDraftAttachment={mail.removeDraftAttachment}
+              onUpdateTags={mail.updateTags}
+              onAssignFolder={mail.assignFolder}
+            />
           ) : mail.activeView === "system" ? (
             mail.selectedSystemNotification ? (
               <SystemMailDetailsView
@@ -171,22 +194,6 @@ export function InboxPage() {
                 onRefresh={mail.refresh}
               />
             )
-          ) : selectedEmail ? (
-            <MessageDetailsView
-              email={selectedEmail}
-              folders={mail.folders}
-              isSupervisor={mail.isSupervisor}
-              onBack={() => setSelectedEmail(null)}
-              onRefreshList={mail.refresh}
-              onForward={handleForward}
-              onSaveDraft={mail.saveDraftMessage}
-              onSendDraft={mail.sendDraftMessage}
-              onDiscardDraft={mail.discardDraftMessage}
-              onUploadDraftAttachment={mail.uploadDraftAttachment}
-              onRemoveDraftAttachment={mail.removeDraftAttachment}
-              onUpdateTags={mail.updateTags}
-              onAssignFolder={mail.assignFolder}
-            />
           ) : (
             <MessageList
               folderLabel={folderLabel}

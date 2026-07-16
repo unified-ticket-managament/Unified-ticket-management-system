@@ -365,12 +365,14 @@ export interface TicketResponse {
   custom_fields: Record<string, unknown>;
   version: number;
   closed_at: string | null;
+  closed_by: string | null;
   created_at: string;
   updated_at: string;
   client_name: string | null;
   client_company_name: string | null;
   agent_name: string | null;
   created_by_name: string | null;
+  closed_by_name: string | null;
   related_tickets: RelatedTicketSummary[];
 
   // Escalation display fields — LEFT JOIN-sourced on the backend
@@ -454,6 +456,7 @@ export interface EditAccessRequestResponse {
 
 export interface TransferAgentRequest {
   new_agent_id: string;
+  reason: string;
 }
 
 export interface TicketUpdateRequest {
@@ -632,6 +635,8 @@ export type AuditEventType =
   | "EDIT_ACCESS_REQUESTED"
   | "EDIT_ACCESS_APPROVED"
   | "EDIT_ACCESS_REJECTED"
+  | "TICKET_CLOSED"
+  | "TICKET_REOPENED"
   | "SLA_PAUSED"
   | "SLA_RESUMED"
   | "SLA_BREACH_DETECTED"

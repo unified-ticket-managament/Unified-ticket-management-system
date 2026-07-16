@@ -34,6 +34,10 @@ export interface ListTicketAuditLogsParams {
   dateFrom?: string;
   dateTo?: string;
   search?: string;
+  // Requests the unrestricted, company-wide audit log instead of the
+  // caller's own role-scoped default — backend-gated by
+  // ticket:view_global_audit_log regardless of what this is set to.
+  centralized?: boolean;
 }
 
 export interface ListTicketAuditLogsResult {
@@ -62,6 +66,7 @@ export async function getAllTicketAuditLogs(
         date_from: params.dateFrom,
         date_to: params.dateTo,
         search: params.search,
+        centralized: params.centralized,
       },
     }
   );

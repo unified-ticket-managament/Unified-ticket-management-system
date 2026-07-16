@@ -312,7 +312,8 @@ export function TicketsListPage() {
 
   const canAcknowledgeRow = (ticket: TicketResponse) =>
     !!currentUser &&
-    ESCALATION_TAB_ROLES.has(currentUser.role) &&
+    (ESCALATION_TAB_ROLES.has(currentUser.role) ||
+      currentUser.permissions.includes("ticket:acknowledge_escalation")) &&
     ticket.is_escalated &&
     ticket.escalation_status === "ACTIVE" &&
     // Not just "this ticket is escalated" — the chain must have
@@ -364,7 +365,10 @@ export function TicketsListPage() {
     );
   }
 
-  const canSeeEscalatedTab = !!currentUser && ESCALATION_TAB_ROLES.has(currentUser.role);
+  const canSeeEscalatedTab =
+    !!currentUser &&
+    (ESCALATION_TAB_ROLES.has(currentUser.role) ||
+      currentUser.permissions.includes("ticket:view_escalated"));
 
   return (
     <>

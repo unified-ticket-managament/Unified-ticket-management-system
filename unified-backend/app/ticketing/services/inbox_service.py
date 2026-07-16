@@ -34,6 +34,7 @@ from app.ticketing.schemas.payloads import EmailPayload
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
     GLOBAL_INBOX_ROLE_NAMES,
+    ensure_has_permission,
 )
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,21 @@ class InboxService:
         server-side, so they search the full filtered set regardless
         of pagination.
         """
+
+        # communication:view_all (Full for Super Admin/Site Lead/Account
+        # Manager — own clients) vs. communication:view_assigned (Full
+        # for everyone, but Team Lead/Staff are structurally limited to
+        # their own team's scope regardless — see _resolve_scope above).
+        # Both are Full by default for every role that reaches this
+        # branch today, so this doesn't change existing behavior; it
+        # gives the permission itself a real enforcement point.
+        if (
+            current_user.role.name in GLOBAL_INBOX_ROLE_NAMES
+            or current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME
+        ):
+            ensure_has_permission(current_user, "communication:view_all")
+        else:
+            ensure_has_permission(current_user, "communication:view_assigned")
 
         decoded_cursor: tuple | None = None
         if cursor is not None and limit is not None:

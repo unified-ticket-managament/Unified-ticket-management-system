@@ -109,11 +109,13 @@ async def hide_interaction(
 
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        client_repository=client_repository,
     )
 
     return await service.hide_interaction(

@@ -116,6 +116,7 @@ class TicketRepository:
         client_company_ids: list[UUID] | None = None,
         account_manager_id: UUID | None = None,
         ticket_types: list[str] | None = None,
+        agent_ids: list[UUID] | None = None,
     ) -> list:
         """
         Account Manager scoping can be supplied either way: `list_all`
@@ -130,6 +131,16 @@ class TicketRepository:
         InteractionRepository.list_visible_page's identical subquery.
         An Account Manager who owns zero clients still "sees nothing"
         for free either way, no special-case needed.
+
+        `agent_ids` is a narrower, opt-in alternative to `ticket_types`
+        for a caller that wants "tickets assigned to one of these
+        specific agents" rather than "tickets in this whole category
+        pool" — used only by the Audit Log page's Team Lead/Staff
+        scoping (see TicketService._resolve_audit_log_agent_ids) so
+        that page can be scoped to one reporting line without
+        narrowing `ticket_types`'s existing, unrelated category-pool
+        meaning for every other caller (ticket list, interactions,
+        dashboard stats).
         """
 
         conditions = []
@@ -148,6 +159,9 @@ class TicketRepository:
             # empty list is a deliberate "no category, sees nothing"
             # rather than "unrestricted", same convention as above.
             conditions.append(Ticket.ticket_type.in_(ticket_types))
+        if agent_ids is not None:
+            # Same "empty list means sees nothing" convention as above.
+            conditions.append(Ticket.agent_id.in_(agent_ids))
         return conditions
 
     def _escalated_exists_condition(self):
@@ -201,6 +215,7 @@ class TicketRepository:
         client_company_ids: list[UUID] | None = None,
         ticket_types: list[str] | None = None,
         *,
+        agent_ids: list[UUID] | None = None,
         limit: int | None = None,
         offset: int = 0,
         status_filter: TicketStatus | None = None,
@@ -230,20 +245,26 @@ class TicketRepository:
         `view`/`assigned_to`/`ticket_type_filter` are the ticket-list
         page's own three UI-level filters (Open Pool / My Tickets /
         All tabs, and the user-facing category dropdown) — distinct
-        from `client_company_ids`/`ticket_types` above, which are
-        role-based *visibility* scoping and always apply regardless of
-        which tab is open. `view="pool"` means "unclaimed and OPEN";
-        `view="mine"` requires `assigned_to` (an exact agent_id match,
-        unlike `agent_id` above which also matches unassigned tickets
-        — a different, older parameter used for a different caller's
-        "can this agent see it" visibility check, not this page's
-        "is this mine" tab filter). `sort_by`/`sort_dir` are validated
-        against a fixed column allowlist (`_SORT_COLUMNS`) so nothing
-        caller-supplied ever reaches `order_by` directly.
+        from `client_company_ids`/`ticket_types`/`agent_ids` above,
+        which are role-based *visibility* scoping and always apply
+        regardless of which tab is open. `view="pool"` means
+        "unclaimed and OPEN"; `view="mine"` requires `assigned_to` (an
+        exact agent_id match, unlike `agent_id` above which also
+        matches unassigned tickets — a different, older parameter used
+        for a different caller's "can this agent see it" visibility
+        check, not this page's "is this mine" tab filter, and not the
+        same thing as the plural `agent_ids` visibility-scoping param
+        either — that one has no unassigned-tickets fallback, since an
+        unclaimed ticket isn't "this reporting line's" work yet).
+        `sort_by`/`sort_dir` are validated against a fixed column
+        allowlist (`_SORT_COLUMNS`) so nothing caller-supplied ever
+        reaches `order_by` directly.
         """
 
         conditions = self._visibility_conditions(
-            client_company_ids=client_company_ids, ticket_types=ticket_types
+            client_company_ids=client_company_ids,
+            ticket_types=ticket_types,
+            agent_ids=agent_ids,
         )
 
         if agent_id is not None:
