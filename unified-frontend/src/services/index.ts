@@ -433,6 +433,18 @@ export const permissionRequestService = {
 
     return response.data;
   },
+
+  revoke: async (
+    requestId: string,
+    data: { reason?: string | null }
+  ): Promise<PermissionRequest> => {
+    const response = await api.post<PermissionRequest>(
+      `/permission-requests/${requestId}/revoke`,
+      data
+    );
+
+    return response.data;
+  },
 };
 
 /* -------------------------------------------------------------------------- */

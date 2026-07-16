@@ -27,6 +27,10 @@ class PermissionRequestReject(BaseModel):
     review_comment: str | None = None
 
 
+class PermissionRequestRevoke(BaseModel):
+    reason: str | None = None
+
+
 class PermissionRequestResponse(BaseModel):
     request_id: UUID
     requester_id: UUID
@@ -44,6 +48,14 @@ class PermissionRequestResponse(BaseModel):
     expires_at: datetime | None
     granted_override_id: UUID | None
     revoked_at: datetime | None = None
+    revoked_by: UUID | None = None
+    revoked_by_name: str | None = None
+    revoke_reason: str | None = None
+    # Computed per-viewer: whether the user this response is being
+    # returned to is allowed to revoke this specific request (the
+    # original approver, or Super Admin) — lets the frontend gate the
+    # Revoke button without re-implementing that authorization rule.
+    can_revoke: bool = False
     created_at: datetime
 
 

@@ -21,6 +21,7 @@ class PermissionRequestStatus:
     PENDING = "PENDING"
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
+    REVOKED = "REVOKED"
 
 
 class PermissionRequest(Base):
@@ -118,6 +119,27 @@ class PermissionRequest(Base):
     granted_override_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("user_permission_overrides.override_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Revocation — deliberately tracked on the request itself rather
+    # than read off granted_override's own revoked_at/revoked_by, so
+    # this row's audit trail stays self-contained and independent of
+    # the override implementation detail underneath it. Approving,
+    # then revoking, never deletes this row (see module docstring).
+    revoked_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    revoke_reason: Mapped[str | None] = mapped_column(
+        Text,
         nullable=True,
     )
 

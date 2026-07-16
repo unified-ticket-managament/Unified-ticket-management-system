@@ -19,6 +19,7 @@ from app.rbac.schemas.permission_request import (
     PermissionRequestCreate,
     PermissionRequestReject,
     PermissionRequestResponse,
+    PermissionRequestRevoke,
 )
 from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.permission_override_service import (
@@ -36,6 +37,13 @@ from app.notifications.service import NotificationService, NotificationType
 # own gate, just evaluated per-role instead of per-actor so it can
 # populate a dropdown before anyone specific is chosen.
 REQUIRED_GRANT_PERMISSION = "permission:override_grant"
+
+# Super Admin holds every permission by default (see seed.py) — there
+# is never a real permission for them to ask for, so request creation
+# is blocked outright rather than left to fail on the "already have
+# this permission" check below, which would only catch it as long as
+# seed data stays exhaustive.
+SUPER_ADMIN_ROLE = "Super Admin"
 
 
 class PermissionRequestService:
@@ -229,6 +237,12 @@ class PermissionRequestService:
         request: PermissionRequestCreate,
     ) -> PermissionRequestResponse:
 
+        if current_user.role.name == SUPER_ADMIN_ROLE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Super Admin already has every permission and cannot create permission requests.",
+            )
+
         permission = await self.permission_repository.get_by_id(
             request.permission_id
         )
@@ -331,7 +345,7 @@ class PermissionRequestService:
                 related_entity_id=permission_request.request_id,
             )
 
-        return await self._to_response(permission_request)
+        return await self._to_response(permission_request, current_user)
 
     # --------------------------------------------------
     # List
@@ -342,7 +356,7 @@ class PermissionRequestService:
             current_user.user_id
         )
 
-        return [await self._to_response(r) for r in requests]
+        return [await self._to_response(r, current_user) for r in requests]
 
     async def list_pending_for_review(
         self,
@@ -350,19 +364,23 @@ class PermissionRequestService:
     ) -> list[PermissionRequestResponse]:
         """
         Super Admin/Site Lead (unconditional override authority) see
-        every pending request regardless of which role it's addressed
-        to; anyone else sees only requests addressed to their own
-        role, further narrowed to requesters they'd actually pass
+        every request regardless of which role it's addressed to;
+        anyone else sees only requests addressed to their own role,
+        further narrowed to requesters they'd actually pass
         PermissionOverrideService.ensure_can_manage_overrides for
-        (e.g. an Account Manager only sees their own reports' requests).
+        (e.g. an Account Manager only sees their own reports'
+        requests). Includes already-APPROVED/REVOKED requests (not
+        just PENDING) so a reviewer's queue keeps a request visible —
+        with Approve/Reject disabled and Revoke available — instead of
+        it disappearing the moment it's decided.
         """
 
         if current_user.role.name in UNRESTRICTED_OVERRIDE_ROLES:
-            requests = await self.permission_request_repository.list_pending_by_role(
+            requests = await self.permission_request_repository.list_for_review_by_role(
                 None
             )
         else:
-            requests = await self.permission_request_repository.list_pending_by_role(
+            requests = await self.permission_request_repository.list_for_review_by_role(
                 current_user.role.name
             )
 
@@ -385,7 +403,7 @@ class PermissionRequestService:
 
             visible.append(permission_request)
 
-        return [await self._to_response(r) for r in visible]
+        return [await self._to_response(r, current_user) for r in visible]
 
     # --------------------------------------------------
     # Approve
@@ -478,7 +496,7 @@ class PermissionRequestService:
                 related_entity_id=permission_request.request_id,
             )
 
-        return await self._to_response(permission_request)
+        return await self._to_response(permission_request, current_user)
 
     # --------------------------------------------------
     # Reject
@@ -552,7 +570,116 @@ class PermissionRequestService:
                 related_entity_id=permission_request.request_id,
             )
 
-        return await self._to_response(permission_request)
+        return await self._to_response(permission_request, current_user)
+
+    # --------------------------------------------------
+    # Revoke
+    # --------------------------------------------------
+
+    def _can_revoke(self, current_user: User, permission_request: PermissionRequest) -> bool:
+        """Only the original approver, or Super Admin, may revoke —
+        no exception, mirrors the acknowledge/confirm-assignment
+        pattern elsewhere in this codebase of a strict, non-bypassable
+        ownership check rather than a broad role allowlist."""
+
+        if permission_request.status != PermissionRequestStatus.APPROVED:
+            return False
+
+        return (
+            current_user.role.name == SUPER_ADMIN_ROLE
+            or current_user.user_id == permission_request.reviewed_by
+        )
+
+    async def revoke(
+        self,
+        current_user: User,
+        request_id: UUID,
+        request: PermissionRequestRevoke,
+    ) -> PermissionRequestResponse:
+
+        permission_request = await self.permission_request_repository.get_by_id(
+            request_id
+        )
+
+        if permission_request is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Permission request not found.",
+            )
+
+        if permission_request.status != PermissionRequestStatus.APPROVED:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Only an approved request can be revoked.",
+            )
+
+        if not self._can_revoke(current_user, permission_request):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the original approver or Super Admin can revoke this permission.",
+            )
+
+        permission_name = permission_request.permission.permission_name
+        requester_id = permission_request.requester_id
+        scope_ticket_id = permission_request.scope_ticket_id
+
+        # Delegates the actual permission removal (and the live-session
+        # refresh via permission_version) to the existing, already-
+        # tested override mechanism — this never mutates the override
+        # row directly. granted_override_id is only ever unset if the
+        # override itself was already revoked out-of-band through the
+        # Users > Permission Overrides screen; either way the request's
+        # own status still needs to move to REVOKED.
+        if permission_request.granted_override_id is not None:
+            await self.permission_override_service.revoke(
+                current_user,
+                requester_id,
+                permission_request.granted_override_id,
+            )
+
+        permission_request = await self.permission_request_repository.revoke(
+            permission_request,
+            revoked_by=current_user.user_id,
+            revoke_reason=request.reason,
+        )
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=current_user.user_id,
+                action="permission_request.revoke",
+                entity_type="permission_request",
+                entity_id=str(permission_request.request_id),
+                old_value=json.dumps(
+                    {
+                        "requester_id": str(requester_id),
+                        "permission_name": permission_name,
+                        "scope_ticket_id": (
+                            str(scope_ticket_id) if scope_ticket_id else None
+                        ),
+                    }
+                ),
+                new_value=json.dumps(
+                    {
+                        "revoked_by": str(current_user.user_id),
+                        "revoked_at": permission_request.revoked_at.isoformat(),
+                        "reason": request.reason,
+                    }
+                ),
+            )
+        )
+
+        if self.notification_service is not None:
+            await self.notification_service.notify(
+                requester_id,
+                NotificationType.PERMISSION_REVOKED,
+                title="A granted permission was revoked",
+                message=f"{permission_name} (as {permission_request.requested_role})",
+                link="/permission-requests",
+                related_entity_type="permission_request",
+                related_entity_id=permission_request.request_id,
+            )
+
+        return await self._to_response(permission_request, current_user)
 
     # --------------------------------------------------
     # Helpers
@@ -561,6 +688,7 @@ class PermissionRequestService:
     async def _to_response(
         self,
         permission_request: PermissionRequest,
+        current_user: User | None = None,
     ) -> PermissionRequestResponse:
 
         requester = await self.user_repository.get_by_id(
@@ -571,10 +699,9 @@ class PermissionRequestService:
             if permission_request.reviewed_by is not None
             else None
         )
-
-        revoked_at = (
-            permission_request.granted_override.revoked_at
-            if permission_request.granted_override is not None
+        revoker = (
+            await self.user_repository.get_by_id(permission_request.revoked_by)
+            if permission_request.revoked_by is not None
             else None
         )
 
@@ -594,6 +721,14 @@ class PermissionRequestService:
             review_comment=permission_request.review_comment,
             expires_at=permission_request.expires_at,
             granted_override_id=permission_request.granted_override_id,
-            revoked_at=revoked_at,
+            revoked_at=permission_request.revoked_at,
+            revoked_by=permission_request.revoked_by,
+            revoked_by_name=revoker.name if revoker is not None else None,
+            revoke_reason=permission_request.revoke_reason,
+            can_revoke=(
+                self._can_revoke(current_user, permission_request)
+                if current_user is not None
+                else False
+            ),
             created_at=permission_request.created_at,
         )

@@ -79,27 +79,40 @@ class PermissionRequestRepository(BaseRepository):
 
         return list(result.scalars().all())
 
-    async def list_pending_by_role(
+    async def list_for_review_by_role(
         self,
         requested_role: str | None = None,
     ) -> list[PermissionRequest]:
         """
-        `requested_role=None` returns every pending request regardless
+        `requested_role=None` returns every matching request regardless
         of who it's addressed to — used for roles with unconditional
         review authority (Super Admin/Site Lead); passing a role name
-        narrows to requests addressed to exactly that role.
+        narrows to requests addressed to exactly that role. Includes
+        already-APPROVED and already-REVOKED requests, not just
+        PENDING (REJECTED is unchanged and intentionally still
+        excluded), so a reviewer's queue keeps showing a request after
+        they act on it instead of it disappearing, letting the Revoke
+        action and audit history stay reachable from the same page.
         """
 
         query = (
             select(PermissionRequest)
             .options(selectinload(PermissionRequest.permission))
-            .where(PermissionRequest.status == PermissionRequestStatus.PENDING)
+            .where(
+                PermissionRequest.status.in_(
+                    [
+                        PermissionRequestStatus.PENDING,
+                        PermissionRequestStatus.APPROVED,
+                        PermissionRequestStatus.REVOKED,
+                    ]
+                )
+            )
         )
 
         if requested_role is not None:
             query = query.where(PermissionRequest.requested_role == requested_role)
 
-        result = await self.db.execute(query.order_by(PermissionRequest.created_at.asc()))
+        result = await self.db.execute(query.order_by(PermissionRequest.created_at.desc()))
 
         return list(result.scalars().all())
 
@@ -135,6 +148,25 @@ class PermissionRequestRepository(BaseRepository):
         request.reviewed_by = reviewed_by
         request.reviewed_at = utc_now()
         request.review_comment = review_comment
+
+        await self.db.flush()
+        await self.db.refresh(request)
+
+        return request
+
+    async def revoke(
+        self,
+        request: PermissionRequest,
+        revoked_by: UUID,
+        revoke_reason: str | None,
+    ) -> PermissionRequest:
+        """Marks an APPROVED request REVOKED — never deletes the row,
+        preserving it for audit/history per the request's own docstring."""
+
+        request.status = PermissionRequestStatus.REVOKED
+        request.revoked_by = revoked_by
+        request.revoked_at = utc_now()
+        request.revoke_reason = revoke_reason
 
         await self.db.flush()
         await self.db.refresh(request)

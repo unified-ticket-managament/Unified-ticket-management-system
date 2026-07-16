@@ -63,7 +63,7 @@ export interface PermissionOverride {
   is_active: boolean;
 }
 
-export type PermissionRequestStatus = "PENDING" | "APPROVED" | "REJECTED";
+export type PermissionRequestStatus = "PENDING" | "APPROVED" | "REJECTED" | "REVOKED";
 
 export interface PermissionRequest {
   request_id: string;
@@ -82,6 +82,10 @@ export interface PermissionRequest {
   expires_at: string | null;
   granted_override_id: string | null;
   revoked_at: string | null;
+  revoked_by: string | null;
+  revoked_by_name: string | null;
+  revoke_reason: string | null;
+  can_revoke: boolean;
   created_at: string;
 }
 

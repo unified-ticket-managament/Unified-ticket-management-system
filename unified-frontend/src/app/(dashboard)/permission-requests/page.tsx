@@ -37,10 +37,11 @@ import { permissionRequestService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 import { PermissionRequest, PermissionRequestStatus } from "@/types";
 
-const STATUS_VARIANT: Record<PermissionRequestStatus, "warning" | "success" | "destructive"> = {
+const STATUS_VARIANT: Record<PermissionRequestStatus, "warning" | "success" | "destructive" | "secondary"> = {
   PENDING: "warning",
   APPROVED: "success",
   REJECTED: "destructive",
+  REVOKED: "secondary",
 };
 
 function RequestCard({ request, footer }: { request: PermissionRequest; footer?: React.ReactNode }) {
@@ -70,19 +71,27 @@ function RequestCard({ request, footer }: { request: PermissionRequest; footer?:
           <div className="rounded-lg border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground">
             {request.reviewed_by_name && (
               <p>
-                {request.status === "APPROVED" ? "Approved" : "Rejected"} by{" "}
+                {request.status === "REJECTED" ? "Rejected" : "Approved"} by{" "}
                 {request.reviewed_by_name}
                 {request.reviewed_at && ` on ${formatDate(request.reviewed_at)}`}
               </p>
             )}
             {request.review_comment && <p className="mt-1">"{request.review_comment}"</p>}
-            {request.status === "APPROVED" && (
+            {(request.status === "APPROVED" || request.status === "REVOKED") && (
               <p className="mt-1">
                 {request.expires_at
                   ? `Expires ${formatDate(request.expires_at)}`
                   : "Permanent until manually removed"}
-                {request.revoked_at && ` — revoked ${formatDate(request.revoked_at)}`}
               </p>
+            )}
+            {request.status === "REVOKED" && (
+              <p className="mt-1">
+                Revoked{request.revoked_by_name && ` by ${request.revoked_by_name}`}
+                {request.revoked_at && ` on ${formatDate(request.revoked_at)}`}
+              </p>
+            )}
+            {request.status === "REVOKED" && request.revoke_reason && (
+              <p className="mt-1">Reason: "{request.revoke_reason}"</p>
             )}
           </div>
         )}
@@ -461,6 +470,83 @@ function ReviewDialog({
   );
 }
 
+function RevokeDialog({
+  request,
+  onClose,
+}: {
+  request: PermissionRequest | null;
+  onClose: () => void;
+}) {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [reason, setReason] = useState("");
+
+  useEffect(() => {
+    setReason("");
+  }, [request]);
+
+  const revokeMutation = useMutation({
+    mutationFn: () =>
+      permissionRequestService.revoke(request!.request_id, {
+        reason: reason.trim() || undefined,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["permission-requests-pending-for-review"] });
+      queryClient.invalidateQueries({ queryKey: ["permission-requests-mine"] });
+      toast({ title: "Permission revoked", description: "The user's effective permissions have been updated." });
+      onClose();
+    },
+    onError: (error: AxiosError<{ detail?: string }>) => {
+      toast({
+        variant: "destructive",
+        title: "Failed to revoke",
+        description: error.response?.data?.detail ?? "Please try again.",
+      });
+    },
+  });
+
+  return (
+    <Dialog open={!!request} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Revoke Permission</DialogTitle>
+        </DialogHeader>
+
+        {request && (
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              This removes <span className="font-mono">{request.permission_name}</span> from{" "}
+              {request.requester_name ?? "this user"} immediately. This action can't be undone —
+              they would need to request it again.
+            </p>
+
+            <div className="space-y-2">
+              <Label>Reason (optional)</Label>
+              <Textarea value={reason} onChange={(e) => setReason(e.target.value)} />
+            </div>
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            disabled={revokeMutation.isPending}
+            onClick={() => revokeMutation.mutate()}
+          >
+            {revokeMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+            Revoke
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const SUPER_ADMIN_ROLE = "Super Admin";
+
 export default function PermissionRequestsPage() {
   const currentUser = useAuthStore((s) => s.user);
   const [isNewRequestOpen, setIsNewRequestOpen] = useState(false);
@@ -468,6 +554,7 @@ export default function PermissionRequestsPage() {
     request: PermissionRequest;
     mode: "approve" | "reject";
   } | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<PermissionRequest | null>(null);
 
   const mineQuery = useQuery({
     queryKey: ["permission-requests-mine"],
@@ -475,6 +562,10 @@ export default function PermissionRequestsPage() {
   });
 
   const canReview = (currentUser?.permissions ?? []).includes("permission:override_grant");
+  // Super Admin already holds every permission by default — there's
+  // nothing left to request, so the button is hidden rather than
+  // opening a dialog with an empty permission list.
+  const isSuperAdmin = currentUser?.role === SUPER_ADMIN_ROLE;
 
   const pendingQuery = useQuery({
     queryKey: ["permission-requests-pending-for-review"],
@@ -496,78 +587,109 @@ export default function PermissionRequestsPage() {
         title="Permission Requests"
         description="Ask for a permission you don't currently have, or review requests addressed to your role."
         action={
-          <Button className="gap-2" onClick={() => setIsNewRequestOpen(true)}>
-            <Plus className="h-4 w-4" />
-            New Request
-          </Button>
+          isSuperAdmin ? undefined : (
+            <Button className="gap-2" onClick={() => setIsNewRequestOpen(true)}>
+              <Plus className="h-4 w-4" />
+              New Request
+            </Button>
+          )
         }
       />
 
-      <Tabs defaultValue="mine">
+      <Tabs defaultValue={isSuperAdmin ? "review" : "mine"}>
         <TabsList>
-          <TabsTrigger value="mine">My Requests</TabsTrigger>
+          {!isSuperAdmin && <TabsTrigger value="mine">My Requests</TabsTrigger>}
           <PermissionGuard permission="permission:override_grant">
             <TabsTrigger value="review">Pending My Review</TabsTrigger>
           </PermissionGuard>
         </TabsList>
 
-        <TabsContent value="mine" className="space-y-3">
-          {mineQuery.isLoading ? (
-            <div className="space-y-3">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <Skeleton key={i} className="h-28 w-full rounded-xl" />
-              ))}
-            </div>
-          ) : (mineQuery.data ?? []).length === 0 ? (
-            <EmptyState
-              title="No permission requests yet"
-              description="Use New Request to ask for a permission you don't currently have."
-            />
-          ) : (
-            (mineQuery.data ?? []).map((request) => (
-              <RequestCard key={request.request_id} request={request} />
-            ))
-          )}
-        </TabsContent>
-
-        <PermissionGuard permission="permission:override_grant">
-          <TabsContent value="review" className="space-y-3">
-            {pendingQuery.isLoading ? (
+        {!isSuperAdmin && (
+          <TabsContent value="mine" className="space-y-3">
+            {mineQuery.isLoading ? (
               <div className="space-y-3">
                 {Array.from({ length: 3 }).map((_, i) => (
                   <Skeleton key={i} className="h-28 w-full rounded-xl" />
                 ))}
               </div>
-            ) : (pendingQuery.data ?? []).length === 0 ? (
+            ) : (mineQuery.data ?? []).length === 0 ? (
               <EmptyState
-                title="Nothing pending"
-                description="Requests addressed to your role will show up here."
+                title="No permission requests yet"
+                description="Use New Request to ask for a permission you don't currently have."
               />
             ) : (
-              (pendingQuery.data ?? []).map((request) => (
-                <RequestCard
-                  key={request.request_id}
-                  request={request}
-                  footer={
-                    <div className="flex gap-2 pt-1">
-                      <Button
-                        size="sm"
-                        onClick={() => setReviewTarget({ request, mode: "approve" })}
-                      >
-                        Approve
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setReviewTarget({ request, mode: "reject" })}
-                      >
-                        Reject
-                      </Button>
-                    </div>
-                  }
-                />
+              (mineQuery.data ?? []).map((request) => (
+                <RequestCard key={request.request_id} request={request} />
               ))
             )}
+          </TabsContent>
+        )}
+
+        <PermissionGuard permission="permission:override_grant">
+          <TabsContent value="review" className="space-y-3">
+            {(() => {
+              // Rejected requests are excluded here defensively (the
+              // backend's review listing already never returns them) —
+              // a rejected request has nothing further to review or
+              // revoke, so it has no place on this page at all.
+              const visibleRequests = (pendingQuery.data ?? []).filter(
+                (r) => r.status !== "REJECTED"
+              );
+
+              return pendingQuery.isLoading ? (
+                <div className="space-y-3">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <Skeleton key={i} className="h-28 w-full rounded-xl" />
+                  ))}
+                </div>
+              ) : visibleRequests.length === 0 ? (
+                <EmptyState
+                  title="Nothing to review"
+                  description="Requests addressed to your role will show up here."
+                />
+              ) : (
+                visibleRequests.map((request) => {
+                  const isPending = request.status === "PENDING";
+                  const isApproved = request.status === "APPROVED";
+
+                  return (
+                    <RequestCard
+                      key={request.request_id}
+                      request={request}
+                      footer={
+                        isPending ? (
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <Button
+                              size="sm"
+                              onClick={() => setReviewTarget({ request, mode: "approve" })}
+                            >
+                              Approve
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setReviewTarget({ request, mode: "reject" })}
+                            >
+                              Reject
+                            </Button>
+                          </div>
+                        ) : isApproved && request.can_revoke ? (
+                          <div className="flex flex-wrap items-center gap-2 pt-1">
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => setRevokeTarget(request)}
+                            >
+                              Revoke
+                            </Button>
+                          </div>
+                        ) : undefined
+                      }
+                    />
+                  );
+                })
+              );
+            })()}
           </TabsContent>
         </PermissionGuard>
       </Tabs>
@@ -579,6 +701,8 @@ export default function PermissionRequestsPage() {
         mode={reviewTarget?.mode ?? null}
         onClose={() => setReviewTarget(null)}
       />
+
+      <RevokeDialog request={revokeTarget} onClose={() => setRevokeTarget(null)} />
     </div>
   );
 }

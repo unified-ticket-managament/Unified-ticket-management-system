@@ -21,6 +21,7 @@ from app.rbac.schemas.permission_request import (
     PermissionRequestCreate,
     PermissionRequestReject,
     PermissionRequestResponse,
+    PermissionRequestRevoke,
     TeammateStaffOption,
     TeammateTicketOption,
 )
@@ -272,3 +273,23 @@ async def reject_permission_request(
     current_user=Depends(get_current_active_user),
 ):
     return await service.reject(current_user, request_id, request)
+
+
+# --------------------------------------------------
+# Revoke
+# --------------------------------------------------
+
+
+@router.post(
+    "/{request_id}/revoke",
+    response_model=PermissionRequestResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Revoke a previously-approved permission request",
+)
+async def revoke_permission_request(
+    request_id: UUID,
+    request: PermissionRequestRevoke,
+    service: PermissionRequestService = Depends(get_permission_request_service),
+    current_user=Depends(get_current_active_user),
+):
+    return await service.revoke(current_user, request_id, request)
