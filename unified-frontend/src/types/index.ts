@@ -159,5 +159,26 @@ export interface OrganizationNode {
   role: string;
   department: string | null;
   is_active: boolean;
+  // "reports_to" (the real manager_id/teamlead_id line),
+  // "reporting_manager" (a dynamic Reporting Manager branch), or
+  // "assignable" (the unrestricted company-wide ticket-assignment
+  // relationship every Account Manager has with every Team Lead —
+  // see root CLAUDE.md's "Organization Structure" section). Optional
+  // for back-compat with any cached response predating this field.
+  relationship_to_parent?: "reports_to" | "reporting_manager" | "assignable";
+  // Category names this node (an Account Manager) is the Reporting
+  // Manager for. Always empty for every other role.
+  reporting_manager_for?: string[];
   children: OrganizationNode[];
+}
+
+export interface ReportingManagerAssignment {
+  id: string;
+  account_manager_id: string;
+  account_manager_name: string;
+  category_id: string;
+  category_name: string;
+  assigned_by: string | null;
+  assigned_by_name: string | null;
+  assigned_at: string;
 }

@@ -7,6 +7,7 @@ from app.dependencies.auth import get_current_active_user
 from app.database.session import get_db
 from app.rbac.repositories.audit_log_repository import AuditLogRepository
 from app.rbac.repositories.category_repository import CategoryRepository
+from app.rbac.repositories.reporting_manager_repository import ReportingManagerRepository
 from app.rbac.repositories.role_repository import RoleRepository
 from app.rbac.repositories.user_repository import UserRepository
 from app.rbac.schemas.organization import OrganizationNode
@@ -64,6 +65,7 @@ def get_organization_service(
     return OrganizationService(
         user_repository=UserRepository(db),
         role_repository=RoleRepository(db),
+        reporting_manager_repository=ReportingManagerRepository(db),
     )
 
 

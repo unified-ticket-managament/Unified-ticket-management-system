@@ -10,6 +10,7 @@ import {
   PermissionOverride,
   PermissionRequest,
   ProfileForm,
+  ReportingManagerAssignment,
   Role,
   RoleForm,
   TeammateStaffOption,
@@ -145,6 +146,37 @@ export const organizationService = {
     );
 
     return response.data;
+  },
+};
+
+/* -------------------------------------------------------------------------- */
+/*                           REPORTING MANAGERS                               */
+/* -------------------------------------------------------------------------- */
+
+export const reportingManagerService = {
+  list: async (accountManagerId?: string): Promise<ReportingManagerAssignment[]> => {
+    const response = await api.get<{ items: ReportingManagerAssignment[] }>(
+      "/reporting-managers",
+      { params: accountManagerId ? { account_manager_id: accountManagerId } : undefined }
+    );
+
+    return response.data.items;
+  },
+
+  assign: async (data: {
+    account_manager_id: string;
+    category_id: string;
+  }): Promise<ReportingManagerAssignment> => {
+    const response = await api.post<ReportingManagerAssignment>(
+      "/reporting-managers",
+      data
+    );
+
+    return response.data;
+  },
+
+  revoke: async (id: string): Promise<void> => {
+    await api.delete(`/reporting-managers/${id}`);
   },
 };
 

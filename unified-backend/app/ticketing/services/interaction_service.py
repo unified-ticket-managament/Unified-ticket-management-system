@@ -59,6 +59,7 @@ from app.ticketing.repositories.audit_log_repository import AuditLogRepository
 from app.ticketing.schemas.audit_log import AuditLogResponse
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
+    TEAM_LEAD_TRANSFER_ROLE_NAMES,
     ensure_account_manager_owns_ticket_client,
     ensure_agent_can_act_on_ticket,
     ensure_agent_can_view_pending_interaction,
@@ -1466,39 +1467,50 @@ class InteractionService:
         new_agent = await self.user_repository.get_active_staff_by_id(
             request.new_agent_id
         )
-        # Set only on the widened (Team Lead/Account Manager) path
-        # below — that branch already has the full, eager-loaded User
-        # (role+category) it validated against, so the category guard
-        # further down can reuse it instead of a second get_by_id call.
+        # Set whenever the candidate was resolved via the get_by_id
+        # branches below (Team Lead, or Account Manager during an
+        # active escalation) — that fetch already eager-loads
+        # role+category, so the Staff category guard further down can
+        # reuse it instead of a second round trip.
         new_agent_full: User | None = None
+        new_agent_is_teamlead = False
 
-        if new_agent is None and active_escalation is not None:
-            # An actively-escalated ticket's "who owns it going
-            # forward" (see EscalationService.get_acknowledge_candidates,
-            # the only caller that ever offers one of these two roles
-            # here) can legitimately be a Team Lead or the Account
-            # Manager who owns the ticket's client — not just Staff.
-            # Ordinary (non-escalated) transfers are completely
-            # unaffected: this branch is unreachable without an active
-            # escalation, and get_acknowledge_candidates already scopes
-            # each candidate correctly per caller role — this
-            # re-validates it server-side rather than trusting the
-            # client, same "never trust the submitted id alone"
-            # convention AssignmentService.resolve_target already uses.
+        if new_agent is None:
             candidate = await self.user_repository.get_by_id(request.new_agent_id)
             if candidate is not None and candidate.is_active:
                 if (
                     candidate.role.name == TEAM_LEAD_ROLE_NAME
-                    and candidate.category is not None
-                    and candidate.category.category_name.value == ticket.ticket_type
+                    and current_user.role.name in TEAM_LEAD_TRANSFER_ROLE_NAMES
                 ):
+                    # Business rule (root CLAUDE.md's Organization
+                    # Structure section): every Account Manager (and
+                    # Site Lead/Super Admin) can hand a ticket directly
+                    # to ANY Team Lead, regardless of department — the
+                    # Account Manager decides which category should own
+                    # it, so this is deliberately NOT scoped to the
+                    # ticket's own ticket_type, unlike the Staff target
+                    # check below. Allowed both during and outside an
+                    # active escalation — this is the ordinary
+                    # AM-assigns-to-Team-Lead workflow, not just the
+                    # escalation acceptance path.
                     new_agent = candidate
                     new_agent_full = candidate
+                    new_agent_is_teamlead = True
                 elif (
-                    candidate.role.name == ACCOUNT_MANAGER_ROLE_NAME
+                    active_escalation is not None
+                    and candidate.role.name == ACCOUNT_MANAGER_ROLE_NAME
                     and ticket.client_company_id is not None
                     and self.client_repository is not None
                 ):
+                    # An actively-escalated ticket's "who owns it going
+                    # forward" (see EscalationService.
+                    # get_acknowledge_candidates, the only caller that
+                    # ever offers this role here) can legitimately be
+                    # the Account Manager who owns the ticket's client
+                    # — re-validated server-side rather than trusting
+                    # the client, same "never trust the submitted id
+                    # alone" convention AssignmentService.resolve_target
+                    # already uses.
                     client = await self.client_repository.get_by_id(
                         ticket.client_company_id
                     )
@@ -1509,7 +1521,11 @@ class InteractionService:
         if new_agent is None:
             raise HTTPException(
                 status_code=http_status.HTTP_400_BAD_REQUEST,
-                detail="New agent must be an active Staff member.",
+                detail=(
+                    "New agent must be an active Staff member, or an "
+                    "active Team Lead when transferred by an Account "
+                    "Manager, Site Lead, or Super Admin."
+                ),
             )
 
         if ticket.agent_id == new_agent.user_id:
@@ -1518,21 +1534,18 @@ class InteractionService:
                 detail="Ticket is already assigned to this agent.",
             )
 
-        # Escalation-driven Staff assignments get one extra guard beyond
-        # the ordinary active-Staff check above: the chosen staff member
-        # must belong to the ticket's own work-specialization category
-        # (mirrors ensure_agent_can_view_ticket's own category gate) —
-        # an escalation shouldn't be able to route work to a completely
-        # unrelated team. Only applies to a Staff candidate — a Team
-        # Lead/Account Manager candidate from the widened branch above
-        # was already scoped against this exact ticket's category/
-        # client ownership directly, so re-checking here would be
-        # redundant (and get_active_staff_by_id's own query never
-        # eager-loads .category, so new_agent_full is resolved lazily,
-        # only when actually needed, exactly as it was before this
-        # branch existed).
-        if active_escalation is not None and new_agent_full is None:
-            new_agent_full = await self.user_repository.get_by_id(new_agent.user_id)
+        # A Staff target must belong to the ticket's own work-
+        # specialization category (mirrors ensure_agent_can_view_ticket's
+        # own category gate) — per the Organization Structure business
+        # rule, a Team Lead must never be able to hand a ticket to
+        # another category's Staff, escalated or not. This used to only
+        # be enforced during an active escalation; it's unconditional
+        # now. Doesn't apply to a Team Lead target
+        # (new_agent_is_teamlead above, deliberately unscoped by
+        # category per that same rule).
+        if not new_agent_is_teamlead:
+            if new_agent_full is None:
+                new_agent_full = await self.user_repository.get_by_id(new_agent.user_id)
             new_agent_category = (
                 new_agent_full.category.category_name.value
                 if new_agent_full is not None and new_agent_full.category is not None
@@ -1541,10 +1554,7 @@ class InteractionService:
             if new_agent_category != ticket.ticket_type:
                 raise HTTPException(
                     status_code=http_status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        "This ticket is actively escalated — it can only be "
-                        "assigned to a Staff member in its own category."
-                    ),
+                    detail="This staff member is not part of the ticket's category.",
                 )
 
         old_agent_id = ticket.agent_id

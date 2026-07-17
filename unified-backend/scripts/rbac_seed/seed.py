@@ -4,7 +4,15 @@ from sqlalchemy import select
 
 from app.auth.password import get_password_hash
 from app.database.session import AsyncSessionLocal, engine
-from app.rbac.models import Base, Category, Permission, Role, RolePermission, User
+from app.rbac.models import (
+    Base,
+    Category,
+    Permission,
+    ReportingManagerTeam,
+    Role,
+    RolePermission,
+    User,
+)
 
 DEFAULT_PERMISSIONS = [
     ("user:create", "Create users"),
@@ -89,6 +97,13 @@ DEFAULT_PERMISSIONS = [
     # SLA targets are a contractual/operational setting, not per-team
     # config.
     ("sla:manage_policies", "Edit company-wide SLA policy targets (First Response / Resolution minutes per priority)"),
+    # Organization Structure — assigning/revoking an Account Manager's
+    # "Reporting Manager" responsibility for a business category (see
+    # root CLAUDE.md's "Organization Structure" section and
+    # ReportingManagerTeam). Granted to Super Admin/Site Lead only by
+    # default — this is an org-design/admin action, not a day-to-day
+    # Account Manager capability.
+    ("org:manage_reporting_managers", "Assign or revoke an Account Manager's Reporting Manager responsibility for a category"),
 ]
 
 # `ticket:bulk_reassign` and `ticket:configure_routing` (previously part
@@ -397,6 +412,16 @@ DEMO_USERS = [
         "password": "Welcome@123",
         "role": "Viewer",
     },
+]
+
+# Demo "Reporting Manager" assignments — the Organization Structure's
+# HR/people-management responsibility layered onto an existing Account
+# Manager, keyed by (account_manager_email, category name). Purely for
+# out-of-the-box demo data illustrating the feature; real assignments
+# are made through the admin-only /reporting-managers endpoints, not
+# by editing this list.
+DEMO_REPORTING_MANAGERS = [
+    ("manager@probeps.com", "Eligibility"),
 ]
 
 # Emails used by an earlier seed run that email-validator rejects
@@ -708,6 +733,36 @@ async def seed() -> None:
                 "`alembic upgrade head` first to seed the categories "
                 f"table): {sorted(missing_categories)}"
             )
+
+        # --------------------------------------------------
+        # Demo Reporting Manager assignments (idempotent)
+        # --------------------------------------------------
+
+        for account_manager_email, category_name in DEMO_REPORTING_MANAGERS:
+            account_manager = users_by_email.get(account_manager_email)
+            category = categories_by_name.get(category_name)
+
+            if account_manager is None or category is None:
+                continue
+
+            existing_mapping = (
+                await session.execute(
+                    select(ReportingManagerTeam).where(
+                        ReportingManagerTeam.account_manager_id == account_manager.user_id,
+                        ReportingManagerTeam.category_id == category.category_id,
+                    )
+                )
+            ).scalar_one_or_none()
+
+            if existing_mapping is None:
+                session.add(
+                    ReportingManagerTeam(
+                        account_manager_id=account_manager.user_id,
+                        category_id=category.category_id,
+                    )
+                )
+
+        await session.commit()
 
         print("Seed completed.")
         for demo in DEMO_USERS:

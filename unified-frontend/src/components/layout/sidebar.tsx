@@ -15,6 +15,7 @@ import {
   LogOut,
   MailPlus,
   MessageSquare,
+  Network,
   Settings,
   Shield,
   Ticket,
@@ -105,6 +106,11 @@ const menuItems: {
     title: "SLA Timing Matrix",
     href: "/settings/sla-timing-matrix",
     icon: Timer,
+  },
+  {
+    title: "Reporting Managers",
+    href: "/settings/reporting-managers",
+    icon: Network,
   },
   {
     title: "Permission Requests",

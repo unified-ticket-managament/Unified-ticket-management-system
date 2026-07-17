@@ -13,6 +13,7 @@ from app.rbac.models.role_permission import RolePermission
 from app.rbac.models.audit_log import AuditLog
 from app.rbac.models.permission_override import UserPermissionOverride
 from app.rbac.models.permission_request import PermissionRequest
+from app.rbac.models.reporting_manager_team import ReportingManagerTeam
 from app.notifications.models import Notification
 
 config = context.config

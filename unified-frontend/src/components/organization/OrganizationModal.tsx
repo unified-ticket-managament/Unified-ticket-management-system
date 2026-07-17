@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { Minus, Plus, RotateCcw, X } from "lucide-react";
+import { Maximize2, Minimize2, Minus, Plus, RotateCcw, X } from "lucide-react";
 
 import { EmptyState, ErrorState } from "@/components/shared/stats";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
 import { organizationService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 
@@ -39,6 +40,8 @@ export function OrganizationModal({
   const currentUserId = useAuthStore((s) => s.user?.user_id);
   const [selectedNode, setSelectedNode] = useState<HierarchyNode | null>(null);
   const [zoom, setZoom] = useState(1);
+  const [isMaximized, setIsMaximized] = useState(false);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const chartQuery = useQuery({
     queryKey: ["organization-chart"],
@@ -50,8 +53,26 @@ export function OrganizationModal({
     if (!open) {
       setSelectedNode(null);
       setZoom(1);
+      setIsMaximized(false);
     }
   }, [open]);
+
+  // Auto-center on the viewer's own ("ME") node once the chart has
+  // rendered — the tree can now be as wide as the whole company (e.g.
+  // Super Admin/Site Lead), so without this the viewer's own position
+  // could load off-screen. A short delay lets the expand/collapse
+  // enter animation (see OrganizationChart's AnimatePresence) finish
+  // laying out first, so scrollIntoView measures the settled position.
+  useEffect(() => {
+    if (!open || !chartQuery.isSuccess) return;
+
+    const timer = setTimeout(() => {
+      const meNode = scrollContainerRef.current?.querySelector('[data-org-me="true"]');
+      meNode?.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [open, chartQuery.isSuccess]);
 
   const zoomIn = () => setZoom((z) => Math.min(MAX_ZOOM, +(z + ZOOM_STEP).toFixed(2)));
   const zoomOut = () => setZoom((z) => Math.max(MIN_ZOOM, +(z - ZOOM_STEP).toFixed(2)));
@@ -64,7 +85,27 @@ export function OrganizationModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] w-[95vw] max-w-5xl flex-col overflow-hidden">
+      <DialogContent
+        className={cn(
+          "flex flex-col overflow-hidden",
+          isMaximized
+            ? "h-[96vh] w-[98vw] max-w-none"
+            : "max-h-[85vh] w-[95vw] max-w-5xl"
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => setIsMaximized((prev) => !prev)}
+          className="absolute right-12 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100"
+          aria-label={isMaximized ? "Restore" : "Maximize"}
+        >
+          {isMaximized ? (
+            <Minimize2 className="h-4 w-4" />
+          ) : (
+            <Maximize2 className="h-4 w-4" />
+          )}
+        </button>
+
         <DialogHeader>
           <DialogTitle>Organization Chart</DialogTitle>
         </DialogHeader>
@@ -97,7 +138,7 @@ export function OrganizationModal({
                 no matter how the chart underneath is panned, scrolled, or
                 zoomed. Only the inner div scrolls. */}
             <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-muted/20">
-              <div className="h-full w-full overflow-auto p-8">
+              <div ref={scrollContainerRef} className="h-full w-full overflow-auto p-8">
                 <motion.div
                   animate={{ scale: zoom }}
                   transition={{ type: "spring", stiffness: 300, damping: 30 }}
@@ -214,12 +255,46 @@ export function OrganizationModal({
                       </div>
                     )}
 
+                    {selectedNode.relationship_to_parent === "reporting_manager" && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">
+                          Relationship
+                        </span>
+                        <Badge variant="outline">Reporting Manager branch</Badge>
+                      </div>
+                    )}
+
+                    {selectedNode.relationship_to_parent === "assignable" && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground">
+                          Relationship
+                        </span>
+                        <Badge variant="outline">Ticket-assignment only</Badge>
+                      </div>
+                    )}
+
                     <div className="flex items-center justify-between">
                       <span className="text-muted-foreground">
                         Direct reports
                       </span>
                       <span>{selectedNode.children.length}</span>
                     </div>
+
+                    {selectedNode.reporting_manager_for &&
+                      selectedNode.reporting_manager_for.length > 0 && (
+                        <div className="space-y-1.5">
+                          <span className="text-muted-foreground">
+                            Reporting Manager for
+                          </span>
+                          <div className="flex flex-wrap gap-1.5">
+                            {selectedNode.reporting_manager_for.map((category) => (
+                              <Badge key={category} variant="secondary">
+                                {category}
+                              </Badge>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                   </div>
                 </CardContent>
               </Card>

@@ -30,6 +30,7 @@ export function OrganizationNodeCard({
       onClick={onSelect}
       role="button"
       tabIndex={0}
+      data-org-me={node.isMe ? "true" : undefined}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") onSelect();
       }}
@@ -67,6 +68,16 @@ export function OrganizationNodeCard({
 
       {node.department && (
         <p className="text-xs text-muted-foreground">{node.department}</p>
+      )}
+
+      {node.reporting_manager_for && node.reporting_manager_for.length > 0 && (
+        <div className="flex flex-wrap items-center justify-center gap-1">
+          {node.reporting_manager_for.map((category) => (
+            <Badge key={category} variant="outline" className="text-[10px]">
+              RM · {category}
+            </Badge>
+          ))}
+        </div>
       )}
 
       {hasChildren && (

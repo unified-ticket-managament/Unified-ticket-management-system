@@ -72,32 +72,6 @@ class UserService:
                 detail="Role not found.",
             )
 
-        # Validate manager
-        if user_data.manager_id is not None:
-
-            manager = await self.user_repository.get_by_id(
-                user_data.manager_id
-            )
-
-            if manager is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Manager not found.",
-                )
-
-        # Validate team lead
-        if user_data.teamlead_id is not None:
-
-            teamlead = await self.user_repository.get_by_id(
-                user_data.teamlead_id
-            )
-
-            if teamlead is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Team Lead not found.",
-                )
-
         # Staff/Team Lead must belong to a work-specialization
         # category; every other role leaves it unset.
         if role.name in CATEGORY_REQUIRED_ROLE_NAMES and user_data.category_id is None:
@@ -117,6 +91,17 @@ class UserService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Category not found.",
                 )
+
+        # Validate manager/team-lead — see _validate_manager_and_teamlead's
+        # own docstring for why existence alone (the old check here)
+        # isn't enough to keep the Organization Structure's reporting
+        # shape intact.
+        await self._validate_manager_and_teamlead(
+            role.name,
+            user_data.manager_id,
+            user_data.teamlead_id,
+            user_data.category_id,
+        )
 
         user = User(
             name=user_data.name,
@@ -146,6 +131,88 @@ class UserService:
         )
 
         return user
+
+    # --------------------------------------------------
+    # Reporting-line validation
+    # --------------------------------------------------
+
+    async def _validate_manager_and_teamlead(
+        self,
+        role_name: str,
+        manager_id: UUID | None,
+        teamlead_id: UUID | None,
+        category_id: UUID | None,
+    ) -> None:
+        """
+        Enforces the Organization Structure's reporting shape (see root
+        CLAUDE.md): Super Admin > Site Lead > Account Manager > Team
+        Lead > Staff. manager_id/teamlead_id previously only checked
+        that the referenced user existed at all — nothing stopped a
+        Staff member's teamlead_id from pointing at another Staff
+        member, or a Team Lead's manager_id from pointing at a
+        different Team Lead.
+        """
+
+        if manager_id is not None:
+            manager = await self.user_repository.get_by_id(manager_id)
+
+            if manager is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Manager not found.",
+                )
+
+            # An Account Manager's own manager (if ever set — it's
+            # usually left null, falling back to the first Super Admin,
+            # see OrganizationService._get_parent) sits one level up at
+            # Site Lead/Super Admin; every other role's manager_id is
+            # the Account Manager one level up from it.
+            expected_roles = (
+                {"Site Lead", "Super Admin"}
+                if role_name == "Account Manager"
+                else {"Account Manager"}
+            )
+
+            if manager.role.name not in expected_roles:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "manager_id must reference a user holding one of "
+                        f"these roles: {', '.join(sorted(expected_roles))}."
+                    ),
+                )
+
+        if teamlead_id is not None:
+            teamlead = await self.user_repository.get_by_id(teamlead_id)
+
+            if teamlead is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Team Lead not found.",
+                )
+
+            if teamlead.role.name != "Team Lead":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="teamlead_id must reference a user holding the Team Lead role.",
+                )
+
+            # Every Staff member belongs to exactly one Team Lead, and
+            # a Team Lead owns exactly one business category — so the
+            # Staff member's own category must match theirs. A Team
+            # Lead with no category assigned yet (shouldn't normally
+            # happen — category is required for that role — but could
+            # exist on old data) doesn't block this, since there's
+            # nothing to mismatch against.
+            if (
+                category_id is not None
+                and teamlead.category_id is not None
+                and teamlead.category_id != category_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="The assigned Team Lead's category must match this user's own category.",
+                )
 
     # --------------------------------------------------
     # Get User
@@ -234,17 +301,37 @@ class UserService:
                 )
 
         # Role validation
+        new_role = None
         if "role_id" in update_data:
 
-            role = await self.role_repository.get_by_id(
+            new_role = await self.role_repository.get_by_id(
                 update_data["role_id"]
             )
 
-            if role is None:
+            if new_role is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Role not found.",
                 )
+
+        # Reporting-line validation — re-runs whenever any field that
+        # affects the check's own inputs is touched (not just when
+        # manager_id/teamlead_id themselves change), e.g. changing
+        # category_id alone must still be checked against an existing
+        # teamlead_id. Falls back to the user's current value for
+        # anything not present in this particular update.
+        if update_data.keys() & {"role_id", "category_id", "manager_id", "teamlead_id"}:
+            effective_role_name = new_role.name if new_role is not None else user.role.name
+            effective_manager_id = update_data.get("manager_id", user.manager_id)
+            effective_teamlead_id = update_data.get("teamlead_id", user.teamlead_id)
+            effective_category_id = update_data.get("category_id", user.category_id)
+
+            await self._validate_manager_and_teamlead(
+                effective_role_name,
+                effective_manager_id,
+                effective_teamlead_id,
+                effective_category_id,
+            )
 
         old_values = {
             field: (str(getattr(user, field)) if getattr(user, field) is not None else None)

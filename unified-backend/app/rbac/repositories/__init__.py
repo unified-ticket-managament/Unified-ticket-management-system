@@ -12,6 +12,7 @@ Repositories:
     - AuditLogRepository
     - PermissionOverrideRepository
     - PermissionRequestRepository
+    - ReportingManagerRepository
 """
 
 from .user_repository import UserRepository
@@ -22,6 +23,7 @@ from .audit_log_repository import AuditLogRepository
 from .role_permission_repository import RolePermissionRepository
 from .permission_override_repository import PermissionOverrideRepository
 from .permission_request_repository import PermissionRequestRepository
+from .reporting_manager_repository import ReportingManagerRepository
 
 __all__ = [
     "UserRepository",
@@ -32,4 +34,5 @@ __all__ = [
     "RolePermissionRepository",
     "PermissionOverrideRepository",
     "PermissionRequestRepository",
+    "ReportingManagerRepository",
 ]

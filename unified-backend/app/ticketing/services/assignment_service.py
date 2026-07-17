@@ -32,8 +32,12 @@ class AssignmentService:
     assign outside the actor's own hierarchy.
 
     Role rules:
-    - Account Manager: their own reporting Team Leads and Staff
-      (`manager_id` match), plus themselves.
+    - Account Manager: EVERY active Team Lead company-wide, regardless
+      of category/reporting line (the Organization Structure business
+      rule — see root CLAUDE.md — is that any Account Manager can hand
+      work to any Team Lead, since the Account Manager decides which
+      department should own it), plus their own reporting Staff
+      (`manager_id` match, unchanged), plus themselves.
     - Team Lead: their own reporting Staff (`teamlead_id` match), plus
       themselves.
     - Site Lead: every active Account Manager / Team Lead / Staff,
@@ -51,8 +55,13 @@ class AssignmentService:
         groups: list[AssignableGroup] = []
 
         if role_name == ACCOUNT_MANAGER_ROLE_NAME:
-            team_leads = await self.user_repository.list_active_by_role_and_manager(
-                TEAM_LEAD_ROLE_NAME, current_user.user_id
+            # Unscoped — see the class docstring's Account Manager rule
+            # above. Was previously list_active_by_role_and_manager
+            # (this Account Manager's own manager_id reports only),
+            # which contradicted the "any Account Manager can assign to
+            # any Team Lead" business rule.
+            team_leads = await self.user_repository.list_active_by_role_name(
+                TEAM_LEAD_ROLE_NAME
             )
             staff = await self.user_repository.list_active_by_role_and_manager(
                 STAFF_ROLE_NAME, current_user.user_id

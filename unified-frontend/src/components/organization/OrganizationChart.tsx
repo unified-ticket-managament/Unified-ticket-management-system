@@ -57,8 +57,23 @@ export function OrganizationChart({
                     "first:before:bg-transparent last:after:bg-transparent"
                   )}
                 >
-                  {/* Stem connecting the sibling row down to this child */}
-                  <div className="h-6 w-px bg-border" />
+                  {/* Stem connecting the sibling row down to this child —
+                      dashed for a Reporting Manager branch (a dynamic,
+                      database-driven HR-responsibility link), dotted for a
+                      plain ticket-assignment connection (no reporting line
+                      or HR responsibility at all) — neither is the real
+                      manager_id/teamlead_id reporting line, so neither
+                      renders as the default solid stem. */}
+                  <div
+                    className={cn(
+                      "h-6 w-px",
+                      child.relationship_to_parent === "reporting_manager"
+                        ? "border-l-2 border-dashed border-muted-foreground/50 bg-transparent"
+                        : child.relationship_to_parent === "assignable"
+                          ? "border-l-2 border-dotted border-muted-foreground/30 bg-transparent"
+                          : "bg-border"
+                    )}
+                  />
 
                   <OrganizationChart
                     node={child}

@@ -16,6 +16,19 @@ AGENT_ROLE_NAMES = {"Staff", "Team Lead", "Account Manager", "Site Lead", "Super
 # to them (or unassigned ones).
 SUPERVISOR_ROLE_NAMES = {"Team Lead", "Account Manager", "Site Lead", "Super Admin"}
 
+# Roles allowed to hand a ticket directly to a Team Lead via
+# InteractionService.transfer_agent, outside any active escalation —
+# the business Organization Structure's rule that every Account
+# Manager can assign work to ANY Team Lead, regardless of department
+# (see root CLAUDE.md's "Organization Structure" section — this is
+# deliberately independent of, and not scoped by, the org-chart
+# manager_id reporting line). Deliberately excludes Team Lead itself
+# (a Team Lead's own scope is its own category's Staff, not other
+# Team Leads — it is "the operational head of a business category",
+# not a reporting manager) and Staff (already blocked from reaching
+# transfer_agent at all by ensure_can_reassign_ticket).
+TEAM_LEAD_TRANSFER_ROLE_NAMES = {"Account Manager", "Site Lead", "Super Admin"}
+
 # The role that owns Client.account_manager_id — i.e. the "Account
 # Manager" from the CEO's org model. Used by client_service.py (who
 # may be assigned as an AM) and ticket_service.py (their own-clients

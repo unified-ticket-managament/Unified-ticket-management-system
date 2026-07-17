@@ -156,7 +156,7 @@ class UserRepository(BaseRepository):
 
         result = await self.db.execute(
             select(User)
-            .options(selectinload(User.role))
+            .options(selectinload(User.role), selectinload(User.category))
             .where(User.role_id == role_id)
             .order_by(User.name)
         )
@@ -192,7 +192,7 @@ class UserRepository(BaseRepository):
 
         result = await self.db.execute(
             select(User)
-            .options(selectinload(User.role))
+            .options(selectinload(User.role), selectinload(User.category))
             .where(
                 User.manager_id == manager_id,
                 User.role_id == role_id,
@@ -209,7 +209,7 @@ class UserRepository(BaseRepository):
 
         result = await self.db.execute(
             select(User)
-            .options(selectinload(User.role))
+            .options(selectinload(User.role), selectinload(User.category))
             .where(User.teamlead_id == teamlead_id)
             .order_by(User.name)
         )
