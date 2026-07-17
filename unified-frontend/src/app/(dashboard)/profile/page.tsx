@@ -1,143 +1,209 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { Network } from "lucide-react";
+import { Network, Pencil } from "lucide-react";
 import { useState } from "react";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
 import { OrganizationModal } from "@/components/organization/OrganizationModal";
-import { actionBadgeVariant, ActionIcon } from "@/components/shared/audit";
-import { EmptyState, ErrorState } from "@/components/shared/stats";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
+import { AccountSummaryCard } from "@/components/profile/AccountSummaryCard";
+import { ActivityFeed } from "@/components/profile/ActivityFeed";
+import { ContactInfoCard } from "@/components/profile/ContactInfoCard";
+import { EditProfileDialog } from "@/components/profile/EditProfileDialog";
+import { NotificationSettingsPanel } from "@/components/profile/NotificationSettingsPanel";
+import { PersonalInfoCard } from "@/components/profile/PersonalInfoCard";
+import { PreferencesCard } from "@/components/profile/PreferencesCard";
+import { ProfileSummaryCard } from "@/components/profile/ProfileSummaryCard";
+import { SecurityDetailPanel } from "@/components/profile/SecurityDetailPanel";
+import { SecurityPanel } from "@/components/profile/SecurityPanel";
+import { ChangePasswordDialog } from "@/components/settings/change-password-dialog";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { useTranslation } from "@/hooks/use-translation";
-import { formatDate } from "@/lib/utils";
-import { auditService, userService } from "@/services";
-import { useAuthStore } from "@/store/auth-store";
-import { useProfileExtrasStore } from "@/store/profile-extras-store";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useProfileData } from "@/hooks/use-profile";
+import { useSettingsStore } from "@/store/settings-store";
+
+type ProfileTab = "personal" | "security" | "preferences" | "notifications" | "activity";
+
+const TABS: Array<{ value: ProfileTab; label: string }> = [
+  { value: "personal", label: "Personal Information" },
+  { value: "security", label: "Security" },
+  { value: "preferences", label: "Preferences" },
+  { value: "notifications", label: "Notification Settings" },
+  { value: "activity", label: "Activity" },
+];
 
 export default function ProfilePage() {
-  const { t } = useTranslation();
-  const user = useAuthStore((s) => s.user);
+  const [activeTab, setActiveTab] = useState<ProfileTab>("personal");
   const [orgChartOpen, setOrgChartOpen] = useState(false);
-  const { phone, address, avatarUrl } = useProfileExtrasStore();
+  const [editProfileOpen, setEditProfileOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
 
-  const userRecordQuery = useQuery({
-    queryKey: ["profile-full-record", user?.user_id],
-    queryFn: () => userService.get(user!.user_id),
-    enabled: !!user?.user_id,
-  });
+  const security = useSettingsStore((s) => s.security);
+  const setSecurity = useSettingsStore((s) => s.setSecurity);
 
-  const activityQuery = useQuery({
-    queryKey: ["user-activity", user?.user_id],
-    queryFn: () => auditService.getUserLogs(user!.user_id),
-    enabled: !!user?.user_id,
-  });
+  const {
+    user,
+    record,
+    extras,
+    language,
+    departmentName,
+    teamName,
+    reportsToName,
+    joinedDate,
+    activity,
+    activityLoading,
+    activityError,
+    lastLogin,
+    dashboardStats,
+    dashboardStatsLoading,
+    slaCompliancePct,
+  } = useProfileData();
 
-  const activity = activityQuery.data ?? [];
+  const loginHistory = activity.filter((log) => log.action.startsWith("auth."));
 
-  const fields = [
-    { label: t("profile.email"), value: user?.email },
-    { label: t("profile.role"), value: user?.role },
-    { label: t("profile.phone"), value: phone || t("profile.notSet") },
-    { label: t("profile.department"), value: t("profile.notSet") },
-    {
-      label: t("profile.joinedDate"),
-      value: userRecordQuery.data?.created_at ? formatDate(userRecordQuery.data.created_at) : "—",
-    },
-  ];
+  // The right-column widgets persist across tabs, except where they'd
+  // just duplicate that tab's own primary content (Security tab already
+  // shows a fuller Security panel; Activity tab already shows the full
+  // feed) — see SecurityDetailPanel/ActivityFeed reuse below.
+  const showSecurityWidget = activeTab !== "security";
+  const showActivityWidget = activeTab !== "activity";
 
   return (
     <div>
-      <PageHeader title={t("profile.title")} description={t("profile.description")} />
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Account Details</CardTitle>
-            <CardDescription>Your profile is read-only. Edit it from Settings.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            <div className="flex items-center gap-4">
-              <Avatar className="h-16 w-16">
-                {avatarUrl && <AvatarImage src={avatarUrl} alt={user?.name ?? "Avatar"} />}
-                <AvatarFallback className="text-xl">
-                  {user?.name?.charAt(0).toUpperCase() ?? "U"}
-                </AvatarFallback>
-              </Avatar>
-              <div>
-                <p className="font-semibold">{user?.name}</p>
-                <Badge className="mt-1">{user?.role}</Badge>
-              </div>
-            </div>
-
-            <dl className="grid gap-4 sm:grid-cols-2">
-              {fields.map((field) => (
-                <div key={field.label}>
-                  <dt className="text-sm text-muted-foreground">{field.label}</dt>
-                  <dd className="mt-0.5 text-sm font-medium">{field.value}</dd>
-                </div>
-              ))}
-              <div>
-                <dt className="text-sm text-muted-foreground">{t("profile.address")}</dt>
-                <dd className="mt-0.5 text-sm font-medium">{address || t("profile.notSet")}</dd>
-              </div>
-            </dl>
-
-            <Button
-              variant="outline"
-              className="gap-2"
-              onClick={() => setOrgChartOpen(true)}
-            >
+      <PageHeader
+        title="My Profile"
+        description="View and manage your account information and preferences."
+        action={
+          <>
+            <Button variant="outline" className="gap-2" onClick={() => setOrgChartOpen(true)}>
               <Network className="h-4 w-4" />
-              {t("profile.orgChart")}
+              Org Chart
             </Button>
-          </CardContent>
-        </Card>
+            <Button className="gap-2" onClick={() => setEditProfileOpen(true)}>
+              <Pencil className="h-4 w-4" />
+              Edit Profile
+            </Button>
+          </>
+        }
+      />
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Activity Timeline</CardTitle>
-            <CardDescription>A record of actions taken on your account.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {activityQuery.isLoading ? (
-              <div className="space-y-4">
-                {Array.from({ length: 3 }).map((_, i) => (
-                  <Skeleton key={i} className="h-12 w-full" />
-                ))}
-              </div>
-            ) : activityQuery.isError ? (
-              <ErrorState message="Failed to load activity history." />
-            ) : activity.length === 0 ? (
-              <EmptyState
-                title="No activity yet"
-                description="Actions taken on your account will appear here."
-              />
-            ) : (
-              <ol className="relative space-y-6 border-l border-border pl-6">
-                {activity.map((log) => (
-                  <li key={log.audit_log_id} className="relative">
-                    <span className="absolute -left-[29px] flex h-6 w-6 items-center justify-center rounded-full border border-border bg-card text-muted-foreground">
-                      <ActionIcon action={log.action} />
-                    </span>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge variant={actionBadgeVariant(log.action)}>{log.action}</Badge>
-                      <span className="text-sm text-muted-foreground">on {log.entity_type}</span>
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">{formatDate(log.timestamp)}</p>
-                  </li>
-                ))}
-              </ol>
+      <div className="space-y-6">
+        <ProfileSummaryCard
+          user={user}
+          record={record}
+          avatarUrl={extras.avatarUrl}
+          phone={extras.phone}
+          officeLocation={extras.address}
+          departmentName={departmentName}
+          teamName={teamName}
+          reportsToName={reportsToName}
+          joinedDate={joinedDate}
+        />
+
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ProfileTab)}>
+          <TabsList className="h-auto w-full justify-start gap-6 rounded-none border-b border-border bg-transparent p-0">
+            {TABS.map((tab) => (
+              <TabsTrigger
+                key={tab.value}
+                value={tab.value}
+                className="rounded-none border-b-2 border-transparent bg-transparent px-1 pb-3 text-muted-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none"
+              >
+                {tab.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,7fr)_minmax(0,3fr)]">
+          <div className="space-y-6">
+            {activeTab === "personal" && (
+              <>
+                <PersonalInfoCard
+                  name={user?.name}
+                  employeeId={extras.employeeId}
+                  dateOfBirth={extras.dateOfBirth}
+                  role={user?.role}
+                  department={departmentName}
+                  timezone={extras.timezone}
+                  onEdit={() => setEditProfileOpen(true)}
+                />
+                <ContactInfoCard
+                  email={user?.email}
+                  alternateEmail={extras.alternateEmail}
+                  phone={extras.phone}
+                  officeLocation={extras.address}
+                  onEdit={() => setEditProfileOpen(true)}
+                />
+                <PreferencesCard
+                  language={language}
+                  dateFormat={extras.dateFormat}
+                  timeFormat={extras.timeFormat}
+                  defaultDashboard={extras.defaultDashboard}
+                  onEdit={() => setEditProfileOpen(true)}
+                />
+              </>
             )}
-          </CardContent>
-        </Card>
+
+            {activeTab === "security" && (
+              <SecurityDetailPanel
+                twoFactorEnabled={security.twoFactorEnabled}
+                loginAlerts={security.loginAlerts}
+                onToggleLoginAlerts={(checked) => setSecurity("loginAlerts", checked)}
+                lastLogin={lastLogin}
+                loginHistory={loginHistory}
+                activityLoading={activityLoading}
+                activityError={activityError}
+                onChangePassword={() => setChangePasswordOpen(true)}
+              />
+            )}
+
+            {activeTab === "preferences" && (
+              <PreferencesCard
+                language={language}
+                dateFormat={extras.dateFormat}
+                timeFormat={extras.timeFormat}
+                defaultDashboard={extras.defaultDashboard}
+                onEdit={() => setEditProfileOpen(true)}
+              />
+            )}
+
+            {activeTab === "notifications" && <NotificationSettingsPanel />}
+
+            {activeTab === "activity" && (
+              <ActivityFeed activity={activity} isLoading={activityLoading} isError={activityError} />
+            )}
+          </div>
+
+          <div className="space-y-6">
+            <AccountSummaryCard
+              stats={dashboardStats}
+              isLoading={dashboardStatsLoading}
+              slaCompliancePct={slaCompliancePct}
+            />
+
+            {showSecurityWidget && (
+              <SecurityPanel
+                twoFactorEnabled={security.twoFactorEnabled}
+                lastLogin={lastLogin}
+                onChangePassword={() => setChangePasswordOpen(true)}
+              />
+            )}
+
+            {showActivityWidget && (
+              <ActivityFeed
+                activity={activity}
+                isLoading={activityLoading}
+                isError={activityError}
+                limit={5}
+                onViewAll={() => setActiveTab("activity")}
+              />
+            )}
+          </div>
+        </div>
       </div>
 
       <OrganizationModal open={orgChartOpen} onOpenChange={setOrgChartOpen} />
+      <EditProfileDialog open={editProfileOpen} onOpenChange={setEditProfileOpen} />
+      <ChangePasswordDialog open={changePasswordOpen} onOpenChange={setChangePasswordOpen} />
     </div>
   );
 }
