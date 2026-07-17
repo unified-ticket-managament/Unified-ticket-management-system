@@ -16,7 +16,6 @@ import {
   MailPlus,
   MessageSquare,
   Network,
-  Settings,
   Shield,
   Ticket,
   Timer,
@@ -121,11 +120,6 @@ const menuItems: {
     title: "Profile",
     href: "/profile",
     icon: UserCircle,
-  },
-  {
-    title: "Settings",
-    href: "/settings",
-    icon: Settings,
   },
 ];
 

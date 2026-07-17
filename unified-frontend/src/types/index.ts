@@ -14,6 +14,17 @@ export interface AuthUser {
   permissions: string[];
   override_permissions?: string[];
   scoped_permissions?: Record<string, string[]>;
+  date_of_birth?: string | null;
+  alternate_email?: string | null;
+  phone_number?: string | null;
+  office_location?: string | null;
+  department?: string | null;
+  team?: string | null;
+  language?: string | null;
+  date_format?: string | null;
+  time_format?: string | null;
+  time_zone?: string | null;
+  default_dashboard?: string | null;
 }
 
 export interface User {
@@ -27,6 +38,17 @@ export interface User {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  date_of_birth: string | null;
+  alternate_email: string | null;
+  phone_number: string | null;
+  office_location: string | null;
+  department: string | null;
+  team: string | null;
+  language: string | null;
+  date_format: string | null;
+  time_format: string | null;
+  time_zone: string | null;
+  default_dashboard: string | null;
 }
 
 export interface Role {
@@ -150,6 +172,16 @@ export interface ProfileForm {
   email?: string;
   password?: string;
   current_password?: string;
+  date_of_birth?: string | null;
+  alternate_email?: string | null;
+  phone_number?: string | null;
+  office_location?: string | null;
+  department?: string | null;
+  language?: string | null;
+  date_format?: string | null;
+  time_format?: string | null;
+  time_zone?: string | null;
+  default_dashboard?: string | null;
 }
 
 export interface OrganizationNode {

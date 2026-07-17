@@ -5,8 +5,10 @@ import { useRouter } from "next/navigation";
 
 import { DashboardShell } from "@/components/layout/dashboard-shell";
 import { Skeleton } from "@/components/ui/skeleton";
+import { isSupportedLanguage } from "@/lib/i18n/translations";
 import { authService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
+import { useSettingsStore } from "@/store/settings-store";
 
 interface Props {
   children: ReactNode;
@@ -35,6 +37,18 @@ export function AuthGuard({ children }: Props) {
 
         if (!cancelled) {
           setUser(me);
+
+          // The user's saved language preference lives on the `users`
+          // table now (User.language — see shared_models.models.User),
+          // not just this device's local settings-storage copy. Sync
+          // it into the settings store on every load so a language
+          // saved from one device/browser applies on any other, and
+          // survives a fresh cold load without relying on localStorage
+          // alone.
+          if (isSupportedLanguage(me.language)) {
+            useSettingsStore.getState().setLanguage(me.language);
+          }
+
           setLoading(false);
         }
       } catch {

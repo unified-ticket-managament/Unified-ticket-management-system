@@ -1,7 +1,8 @@
 import uuid
+from datetime import date
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Date, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -92,6 +93,53 @@ class User(TimestampMixin, Base):
         default=1,
         server_default="1",
         nullable=False,
+    )
+
+    # -------------------------
+    # Profile fields (Profile page — see root CLAUDE.md's
+    # "Profile module" pass). All nullable: every one predates this
+    # column existing, so a pre-existing user legitimately has no
+    # value yet until they (or a backfill) set one. `department`/
+    # `team` are deliberately plain free-text columns, independent of
+    # `category_id` above — that column still drives real RBAC/ticket-
+    # routing business logic and is never touched by the Profile
+    # page's own edit form; these two exist purely for profile
+    # display/self-editing (department) and display only (team, no
+    # edit surface reads/writes it).
+    # -------------------------
+
+    date_of_birth: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+    alternate_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    phone_number: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
+    office_location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    department: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    team: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # Preference fields — nullable with a server-side default matching
+    # what the frontend's client-only store used to default these to,
+    # so an existing user's effective preference doesn't change the
+    # moment these become DB-backed.
+    language: Mapped[str | None] = mapped_column(
+        String(10), nullable=True, server_default="en"
+    )
+
+    date_format: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, server_default="MM/DD/YYYY"
+    )
+
+    time_format: Mapped[str | None] = mapped_column(
+        String(10), nullable=True, server_default="12h"
+    )
+
+    time_zone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    default_dashboard: Mapped[str | None] = mapped_column(
+        String(50), nullable=True, server_default="Dashboard"
     )
 
     # -------------------------

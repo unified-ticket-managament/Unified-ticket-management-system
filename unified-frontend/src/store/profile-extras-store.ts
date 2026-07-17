@@ -1,22 +1,15 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-// Fields with no backend column (see unified-frontend/CLAUDE.md's store
-// notes) — client-side only, not synced across devices. phone/address/
-// avatarUrl are the original set; the rest were added for the redesigned
-// Profile page's Personal/Contact/Preferences cards, which the backend
-// User model has no equivalent columns for.
+// Avatar URL has no backend column — client-side only, not synced
+// across devices. `phone`/`address` used to live here too (the old
+// standalone Settings page's "Account Settings" card) but that card
+// was removed outright — those fields, along with everything else the
+// Profile page displays/edits, are real `users` table columns now
+// (see shared_models.models.User) — see root CLAUDE.md's Profile
+// module section.
 export interface ProfileExtras {
-  phone: string;
-  address: string;
   avatarUrl: string;
-  employeeId: string;
-  dateOfBirth: string;
-  timezone: string;
-  alternateEmail: string;
-  dateFormat: string;
-  timeFormat: string;
-  defaultDashboard: string;
 }
 
 interface ProfileExtrasState extends ProfileExtras {
@@ -26,16 +19,7 @@ interface ProfileExtrasState extends ProfileExtras {
 export const useProfileExtrasStore = create<ProfileExtrasState>()(
   persist(
     (set) => ({
-      phone: "",
-      address: "",
       avatarUrl: "",
-      employeeId: "",
-      dateOfBirth: "",
-      timezone: "",
-      alternateEmail: "",
-      dateFormat: "MM/DD/YYYY",
-      timeFormat: "12h",
-      defaultDashboard: "Dashboard",
       setProfileExtras: (extras) => set((state) => ({ ...state, ...extras })),
     }),
     { name: "profile-extras-storage" }

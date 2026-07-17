@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import { Bell, LogOut, Settings as SettingsIcon, User, X } from "lucide-react";
+import { Bell, LogOut, User, X } from "lucide-react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -323,13 +323,6 @@ export function TopNavbar() {
               <Link href="/profile">
                 <User className="mr-2 h-4 w-4" />
                 {t("nav.profile")}
-              </Link>
-            </DropdownMenuItem>
-
-            <DropdownMenuItem asChild>
-              <Link href="/settings">
-                <SettingsIcon className="mr-2 h-4 w-4" />
-                {t("nav.settings")}
               </Link>
             </DropdownMenuItem>
 

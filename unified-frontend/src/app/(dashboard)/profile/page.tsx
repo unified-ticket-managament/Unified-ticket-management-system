@@ -1,86 +1,62 @@
 "use client";
 
-import { Network, Pencil } from "lucide-react";
+import { Network, Pencil, Settings } from "lucide-react";
 import { useState } from "react";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
 import { OrganizationModal } from "@/components/organization/OrganizationModal";
-import { AccountSummaryCard } from "@/components/profile/AccountSummaryCard";
-import { ActivityFeed } from "@/components/profile/ActivityFeed";
-import { ContactInfoCard } from "@/components/profile/ContactInfoCard";
 import { EditProfileDialog } from "@/components/profile/EditProfileDialog";
-import { NotificationSettingsPanel } from "@/components/profile/NotificationSettingsPanel";
-import { PersonalInfoCard } from "@/components/profile/PersonalInfoCard";
-import { PreferencesCard } from "@/components/profile/PreferencesCard";
+import { ProfileInformationCard } from "@/components/profile/ProfileInformationCard";
 import { ProfileSummaryCard } from "@/components/profile/ProfileSummaryCard";
-import { SecurityDetailPanel } from "@/components/profile/SecurityDetailPanel";
-import { SecurityPanel } from "@/components/profile/SecurityPanel";
-import { ChangePasswordDialog } from "@/components/settings/change-password-dialog";
+import { SettingsPanel } from "@/components/settings/SettingsPanel";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useProfileData } from "@/hooks/use-profile";
-import { useSettingsStore } from "@/store/settings-store";
+import { useTranslation } from "@/hooks/use-translation";
+import { LANGUAGES } from "@/lib/i18n/translations";
 
-type ProfileTab = "personal" | "security" | "preferences" | "notifications" | "activity";
-
-const TABS: Array<{ value: ProfileTab; label: string }> = [
-  { value: "personal", label: "Personal Information" },
-  { value: "security", label: "Security" },
-  { value: "preferences", label: "Preferences" },
-  { value: "notifications", label: "Notification Settings" },
-  { value: "activity", label: "Activity" },
-];
+const TIME_FORMAT_LABEL_KEYS: Record<string, "common.timeFormat12h" | "common.timeFormat24h"> = {
+  "12h": "common.timeFormat12h",
+  "24h": "common.timeFormat24h",
+};
 
 export default function ProfilePage() {
-  const [activeTab, setActiveTab] = useState<ProfileTab>("personal");
+  const { t } = useTranslation();
   const [orgChartOpen, setOrgChartOpen] = useState(false);
   const [editProfileOpen, setEditProfileOpen] = useState(false);
-  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const security = useSettingsStore((s) => s.security);
-  const setSecurity = useSettingsStore((s) => s.setSecurity);
+  const { user, record, extras, reportsToName, joinedDate } = useProfileData();
 
-  const {
-    user,
-    record,
-    extras,
-    language,
-    departmentName,
-    teamName,
-    reportsToName,
-    joinedDate,
-    activity,
-    activityLoading,
-    activityError,
-    lastLogin,
-    dashboardStats,
-    dashboardStatsLoading,
-    slaCompliancePct,
-  } = useProfileData();
-
-  const loginHistory = activity.filter((log) => log.action.startsWith("auth."));
-
-  // The right-column widgets persist across tabs, except where they'd
-  // just duplicate that tab's own primary content (Security tab already
-  // shows a fuller Security panel; Activity tab already shows the full
-  // feed) — see SecurityDetailPanel/ActivityFeed reuse below.
-  const showSecurityWidget = activeTab !== "security";
-  const showActivityWidget = activeTab !== "activity";
+  const languageLabel =
+    LANGUAGES.find((option) => option.value === record?.language)?.label ?? record?.language ?? null;
+  const timeFormatLabel = record?.time_format
+    ? t(TIME_FORMAT_LABEL_KEYS[record.time_format] ?? "common.timeFormat12h")
+    : null;
 
   return (
     <div>
       <PageHeader
-        title="My Profile"
-        description="View and manage your account information and preferences."
+        title={t("profile.pageTitle")}
+        description={t("profile.pageDescription")}
         action={
           <>
             <Button variant="outline" className="gap-2" onClick={() => setOrgChartOpen(true)}>
               <Network className="h-4 w-4" />
-              Org Chart
+              {t("profile.orgChartButton")}
+            </Button>
+            <Button variant="outline" className="gap-2" onClick={() => setSettingsOpen(true)}>
+              <Settings className="h-4 w-4" />
+              {t("nav.settings")}
             </Button>
             <Button className="gap-2" onClick={() => setEditProfileOpen(true)}>
               <Pencil className="h-4 w-4" />
-              Edit Profile
+              {t("profile.editProfile")}
             </Button>
           </>
         }
@@ -91,119 +67,42 @@ export default function ProfilePage() {
           user={user}
           record={record}
           avatarUrl={extras.avatarUrl}
-          phone={extras.phone}
-          officeLocation={extras.address}
-          departmentName={departmentName}
-          teamName={teamName}
-          reportsToName={reportsToName}
+          phone={record?.phone_number ?? ""}
+          officeLocation={record?.office_location ?? ""}
           joinedDate={joinedDate}
         />
 
-        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ProfileTab)}>
-          <TabsList className="h-auto w-full justify-start gap-6 rounded-none border-b border-border bg-transparent p-0">
-            {TABS.map((tab) => (
-              <TabsTrigger
-                key={tab.value}
-                value={tab.value}
-                className="rounded-none border-b-2 border-transparent bg-transparent px-1 pb-3 text-muted-foreground data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none"
-              >
-                {tab.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,7fr)_minmax(0,3fr)]">
-          <div className="space-y-6">
-            {activeTab === "personal" && (
-              <>
-                <PersonalInfoCard
-                  name={user?.name}
-                  employeeId={extras.employeeId}
-                  dateOfBirth={extras.dateOfBirth}
-                  role={user?.role}
-                  department={departmentName}
-                  timezone={extras.timezone}
-                  onEdit={() => setEditProfileOpen(true)}
-                />
-                <ContactInfoCard
-                  email={user?.email}
-                  alternateEmail={extras.alternateEmail}
-                  phone={extras.phone}
-                  officeLocation={extras.address}
-                  onEdit={() => setEditProfileOpen(true)}
-                />
-                <PreferencesCard
-                  language={language}
-                  dateFormat={extras.dateFormat}
-                  timeFormat={extras.timeFormat}
-                  defaultDashboard={extras.defaultDashboard}
-                  onEdit={() => setEditProfileOpen(true)}
-                />
-              </>
-            )}
-
-            {activeTab === "security" && (
-              <SecurityDetailPanel
-                twoFactorEnabled={security.twoFactorEnabled}
-                loginAlerts={security.loginAlerts}
-                onToggleLoginAlerts={(checked) => setSecurity("loginAlerts", checked)}
-                lastLogin={lastLogin}
-                loginHistory={loginHistory}
-                activityLoading={activityLoading}
-                activityError={activityError}
-                onChangePassword={() => setChangePasswordOpen(true)}
-              />
-            )}
-
-            {activeTab === "preferences" && (
-              <PreferencesCard
-                language={language}
-                dateFormat={extras.dateFormat}
-                timeFormat={extras.timeFormat}
-                defaultDashboard={extras.defaultDashboard}
-                onEdit={() => setEditProfileOpen(true)}
-              />
-            )}
-
-            {activeTab === "notifications" && <NotificationSettingsPanel />}
-
-            {activeTab === "activity" && (
-              <ActivityFeed activity={activity} isLoading={activityLoading} isError={activityError} />
-            )}
-          </div>
-
-          <div className="space-y-6">
-            <AccountSummaryCard
-              stats={dashboardStats}
-              isLoading={dashboardStatsLoading}
-              slaCompliancePct={slaCompliancePct}
-            />
-
-            {showSecurityWidget && (
-              <SecurityPanel
-                twoFactorEnabled={security.twoFactorEnabled}
-                lastLogin={lastLogin}
-                onChangePassword={() => setChangePasswordOpen(true)}
-              />
-            )}
-
-            {showActivityWidget && (
-              <ActivityFeed
-                activity={activity}
-                isLoading={activityLoading}
-                isError={activityError}
-                limit={5}
-                onViewAll={() => setActiveTab("activity")}
-              />
-            )}
-          </div>
-        </div>
+        <ProfileInformationCard
+          fullName={record?.name ?? user?.name}
+          employeeId={record?.user_id ?? user?.user_id}
+          dateOfBirth={record?.date_of_birth}
+          role={user?.role}
+          department={record?.department}
+          team={record?.team}
+          reportsTo={reportsToName}
+          email={record?.email ?? user?.email}
+          alternateEmail={record?.alternate_email}
+          phoneNumber={record?.phone_number}
+          officeLocation={record?.office_location}
+          language={languageLabel}
+          timeFormat={timeFormatLabel}
+          dateFormat={record?.date_format}
+          timeZone={record?.time_zone}
+          defaultDashboard={record?.default_dashboard}
+        />
       </div>
 
       <OrganizationModal open={orgChartOpen} onOpenChange={setOrgChartOpen} />
-      <EditProfileDialog open={editProfileOpen} onOpenChange={setEditProfileOpen} />
-      <ChangePasswordDialog open={changePasswordOpen} onOpenChange={setChangePasswordOpen} />
+      <EditProfileDialog open={editProfileOpen} onOpenChange={setEditProfileOpen} record={record} />
+
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t("nav.settings")}</DialogTitle>
+          </DialogHeader>
+          <SettingsPanel open={settingsOpen} record={record} />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

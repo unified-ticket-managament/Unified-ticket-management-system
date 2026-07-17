@@ -92,6 +92,7 @@ export default function UsersPage() {
 
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [sorting, setSorting] = useState<SortingState>([{ id: "created_at", desc: true }]);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
@@ -162,6 +163,7 @@ export default function UsersPage() {
   const filteredRows = useMemo(() => {
     return hierarchyRows.filter((user) => {
       if (roleFilter !== "all" && user.role_id !== roleFilter) return false;
+      if (categoryFilter !== "all" && user.category_id !== categoryFilter) return false;
       if (statusFilter === "active" && !user.is_active) return false;
       if (statusFilter === "inactive" && user.is_active) return false;
 
@@ -174,7 +176,7 @@ export default function UsersPage() {
 
       return true;
     });
-  }, [hierarchyRows, search, roleFilter, statusFilter]);
+  }, [hierarchyRows, search, roleFilter, categoryFilter, statusFilter]);
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => userService.delete(id),
@@ -456,6 +458,20 @@ export default function UsersPage() {
               {(rolesQuery.data?.roles ?? []).map((role: Role) => (
                 <SelectItem key={role.role_id} value={role.role_id}>
                   {role.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+            <SelectTrigger className="w-full sm:w-44">
+              <SelectValue placeholder="Category" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Category</SelectItem>
+              {(categoriesQuery.data?.categories ?? []).map((category: Category) => (
+                <SelectItem key={category.category_id} value={category.category_id}>
+                  {category.category_name}
                 </SelectItem>
               ))}
             </SelectContent>

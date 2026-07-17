@@ -1,10 +1,10 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AxiosError } from "axios";
 import { Loader2 } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
@@ -18,96 +18,78 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { PROFILE_RECORD_QUERY_KEY } from "@/hooks/use-profile";
 import { useToast } from "@/hooks/use-toast";
-import { Language, LANGUAGES } from "@/lib/i18n/translations";
+import { useTranslation } from "@/hooks/use-translation";
 import { authService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
-import { useProfileExtrasStore } from "@/store/profile-extras-store";
-import { useSettingsStore } from "@/store/settings-store";
+import { User } from "@/types";
 
-// The single edit surface for every user-editable Profile field — reached
-// from the page-level "Edit Profile" button and each info card's own Edit
-// button. Reuses exactly the same backend/service calls the Settings
-// page's inline form already uses (authService.updateProfile,
-// profile-extras-store, settings-store's language setter); this only adds
-// a modal presentation, no new business logic.
-const editProfileSchema = z.object({
-  name: z.string().min(1, "Name is required"),
-  email: z.string().email("Enter a valid email"),
-  phone: z.string().optional(),
-  alternateEmail: z.string().email("Enter a valid email").optional().or(z.literal("")),
-  officeLocation: z.string().optional(),
-  employeeId: z.string().optional(),
-  dateOfBirth: z.string().optional(),
-  timezone: z.string().optional(),
-  language: z.string().optional(),
-  dateFormat: z.string().optional(),
-  timeFormat: z.string().optional(),
-  defaultDashboard: z.string().optional(),
-});
-
-type EditProfileValues = z.infer<typeof editProfileSchema>;
-
-const DATE_FORMAT_OPTIONS = ["MM/DD/YYYY", "DD/MM/YYYY", "YYYY-MM-DD"];
-const TIME_FORMAT_OPTIONS = [
-  { value: "12h", label: "12-hour" },
-  { value: "24h", label: "24-hour" },
-];
+type EditProfileValues = {
+  name: string;
+  email: string;
+  phoneNumber?: string;
+  alternateEmail?: string;
+  officeLocation?: string;
+  dateOfBirth?: string;
+  department?: string;
+};
 
 interface EditProfileDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  record?: User;
 }
 
-export function EditProfileDialog({ open, onOpenChange }: EditProfileDialogProps) {
+function defaultsFromRecord(record: User | undefined, name: string, email: string): EditProfileValues {
+  return {
+    name,
+    email,
+    phoneNumber: record?.phone_number ?? "",
+    alternateEmail: record?.alternate_email ?? "",
+    officeLocation: record?.office_location ?? "",
+    dateOfBirth: record?.date_of_birth ?? "",
+    department: record?.department ?? "",
+  };
+}
+
+// The single edit surface for every user-editable identity/contact
+// Profile field — reached from the page header's "Edit Profile"
+// button. Every field here saves straight to the `users` table via
+// PATCH /auth/me (see AuthService.update_profile). Application
+// preferences (Language/Time Zone/Date Format/Time Format/Default
+// Dashboard) live exclusively in the Settings dialog now, not here —
+// see root CLAUDE.md's Profile module section for why the two edit
+// surfaces were split this way (one field, one editable place).
+export function EditProfileDialog({ open, onOpenChange, record }: EditProfileDialogProps) {
   const { toast } = useToast();
+  const { t } = useTranslation();
   const currentUser = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
-  const extras = useProfileExtrasStore();
-  const language = useSettingsStore((s) => s.language);
-  const setLanguage = useSettingsStore((s) => s.setLanguage);
+  const queryClient = useQueryClient();
+
+  const editProfileSchema = useMemo(
+    () =>
+      z.object({
+        name: z.string().min(1, t("profile.validationNameRequired")),
+        email: z.string().email(t("profile.validationInvalidEmail")),
+        phoneNumber: z.string().optional(),
+        alternateEmail: z.string().email(t("profile.validationInvalidEmail")).optional().or(z.literal("")),
+        officeLocation: z.string().optional(),
+        dateOfBirth: z.string().optional(),
+        department: z.string().optional(),
+      }),
+    [t]
+  );
 
   const form = useForm<EditProfileValues>({
     resolver: zodResolver(editProfileSchema),
-    defaultValues: {
-      name: currentUser?.name ?? "",
-      email: currentUser?.email ?? "",
-      phone: extras.phone,
-      alternateEmail: extras.alternateEmail,
-      officeLocation: extras.address,
-      employeeId: extras.employeeId,
-      dateOfBirth: extras.dateOfBirth,
-      timezone: extras.timezone,
-      language,
-      dateFormat: extras.dateFormat,
-      timeFormat: extras.timeFormat,
-      defaultDashboard: extras.defaultDashboard,
-    },
+    defaultValues: defaultsFromRecord(record, currentUser?.name ?? "", currentUser?.email ?? ""),
   });
 
   useEffect(() => {
     if (open) {
-      form.reset({
-        name: currentUser?.name ?? "",
-        email: currentUser?.email ?? "",
-        phone: extras.phone,
-        alternateEmail: extras.alternateEmail,
-        officeLocation: extras.address,
-        employeeId: extras.employeeId,
-        dateOfBirth: extras.dateOfBirth,
-        timezone: extras.timezone,
-        language,
-        dateFormat: extras.dateFormat,
-        timeFormat: extras.timeFormat,
-        defaultDashboard: extras.defaultDashboard,
-      });
+      form.reset(defaultsFromRecord(record, currentUser?.name ?? "", currentUser?.email ?? ""));
     }
     // Only re-sync when the dialog opens, not on every keystroke.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -115,35 +97,31 @@ export function EditProfileDialog({ open, onOpenChange }: EditProfileDialogProps
 
   const mutation = useMutation({
     mutationFn: async (values: EditProfileValues) => {
-      if (values.name !== currentUser?.name || values.email !== currentUser?.email) {
-        await authService.updateProfile({ name: values.name, email: values.email });
-      }
-      extras.setProfileExtras({
-        phone: values.phone ?? "",
-        alternateEmail: values.alternateEmail ?? "",
-        address: values.officeLocation ?? "",
-        employeeId: values.employeeId ?? "",
-        dateOfBirth: values.dateOfBirth ?? "",
-        timezone: values.timezone ?? "",
-        dateFormat: values.dateFormat ?? "MM/DD/YYYY",
-        timeFormat: values.timeFormat ?? "12h",
-        defaultDashboard: values.defaultDashboard ?? "Dashboard",
+      await authService.updateProfile({
+        name: values.name,
+        email: values.email,
+        phone_number: values.phoneNumber || null,
+        alternate_email: values.alternateEmail || null,
+        office_location: values.officeLocation || null,
+        date_of_birth: values.dateOfBirth || null,
+        department: values.department || null,
       });
-      if (values.language && values.language !== language) {
-        setLanguage(values.language as Language);
-      }
     },
     onSuccess: async () => {
       const me = await authService.me();
       setUser(me);
-      toast({ title: "Profile updated", description: "Your changes have been saved." });
+      await queryClient.invalidateQueries({ queryKey: [PROFILE_RECORD_QUERY_KEY] });
+      toast({
+        title: t("profile.toastUpdatedTitle"),
+        description: t("profile.toastUpdatedDescription"),
+      });
       onOpenChange(false);
     },
     onError: (error: AxiosError<{ detail?: string }>) => {
       toast({
         variant: "destructive",
-        title: "Failed to update profile",
-        description: error.response?.data?.detail ?? "Please check your details and try again.",
+        title: t("profile.toastUpdateFailedTitle"),
+        description: error.response?.data?.detail ?? t("common.checkDetailsError"),
       });
     },
   });
@@ -152,7 +130,7 @@ export function EditProfileDialog({ open, onOpenChange }: EditProfileDialogProps
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Edit Profile</DialogTitle>
+          <DialogTitle>{t("profile.editProfile")}</DialogTitle>
         </DialogHeader>
 
         <form
@@ -160,42 +138,46 @@ export function EditProfileDialog({ open, onOpenChange }: EditProfileDialogProps
           className="space-y-6"
         >
           <section className="space-y-3">
-            <h3 className="text-sm font-semibold text-muted-foreground">Personal Information</h3>
+            <h3 className="text-sm font-semibold text-muted-foreground">
+              {t("profile.personalInformation")}
+            </h3>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
-                <Label htmlFor="name">Full Name</Label>
+                <Label htmlFor="name">{t("profile.fullName")}</Label>
                 <Input id="name" {...form.register("name")} />
                 {form.formState.errors.name && (
                   <p className="text-sm text-destructive">{form.formState.errors.name.message}</p>
                 )}
               </div>
               <div className="space-y-2">
-                <Label htmlFor="employeeId">Employee ID</Label>
-                <Input id="employeeId" placeholder="EMP-00123" {...form.register("employeeId")} />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="dateOfBirth">Date of Birth</Label>
+                <Label htmlFor="dateOfBirth">{t("profile.dateOfBirth")}</Label>
                 <Input id="dateOfBirth" type="date" {...form.register("dateOfBirth")} />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="timezone">Time Zone</Label>
-                <Input id="timezone" placeholder="e.g. America/New_York" {...form.register("timezone")} />
+                <Label htmlFor="department">{t("profile.department")}</Label>
+                <Input
+                  id="department"
+                  placeholder={t("profile.departmentPlaceholder")}
+                  {...form.register("department")}
+                />
               </div>
             </div>
           </section>
 
           <section className="space-y-3">
-            <h3 className="text-sm font-semibold text-muted-foreground">Contact Information</h3>
+            <h3 className="text-sm font-semibold text-muted-foreground">
+              {t("profile.contactInformation")}
+            </h3>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
-                <Label htmlFor="email">Email</Label>
+                <Label htmlFor="email">{t("profile.email")}</Label>
                 <Input id="email" type="email" {...form.register("email")} />
                 {form.formState.errors.email && (
                   <p className="text-sm text-destructive">{form.formState.errors.email.message}</p>
                 )}
               </div>
               <div className="space-y-2">
-                <Label htmlFor="alternateEmail">Alternate Email</Label>
+                <Label htmlFor="alternateEmail">{t("profile.alternateEmail")}</Label>
                 <Input id="alternateEmail" type="email" {...form.register("alternateEmail")} />
                 {form.formState.errors.alternateEmail && (
                   <p className="text-sm text-destructive">
@@ -204,91 +186,31 @@ export function EditProfileDialog({ open, onOpenChange }: EditProfileDialogProps
                 )}
               </div>
               <div className="space-y-2">
-                <Label htmlFor="phone">Phone</Label>
-                <Input id="phone" placeholder="+1 555 000 1234" {...form.register("phone")} />
+                <Label htmlFor="phoneNumber">{t("profile.phone")}</Label>
+                <Input
+                  id="phoneNumber"
+                  placeholder={t("profile.phonePlaceholder")}
+                  {...form.register("phoneNumber")}
+                />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="officeLocation">Office Location</Label>
+                <Label htmlFor="officeLocation">{t("profile.officeLocation")}</Label>
                 <Input
                   id="officeLocation"
-                  placeholder="Street, City, Country"
+                  placeholder={t("profile.officeLocationPlaceholder")}
                   {...form.register("officeLocation")}
                 />
               </div>
             </div>
           </section>
 
-          <section className="space-y-3">
-            <h3 className="text-sm font-semibold text-muted-foreground">Preferences</h3>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label>Language</Label>
-                <Select
-                  value={form.watch("language")}
-                  onValueChange={(value) => form.setValue("language", value)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {LANGUAGES.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Default Dashboard</Label>
-                <Input {...form.register("defaultDashboard")} />
-              </div>
-              <div className="space-y-2">
-                <Label>Date Format</Label>
-                <Select
-                  value={form.watch("dateFormat")}
-                  onValueChange={(value) => form.setValue("dateFormat", value)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {DATE_FORMAT_OPTIONS.map((option) => (
-                      <SelectItem key={option} value={option}>
-                        {option}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Time Format</Label>
-                <Select
-                  value={form.watch("timeFormat")}
-                  onValueChange={(value) => form.setValue("timeFormat", value)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TIME_FORMAT_OPTIONS.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </section>
-
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button type="submit" disabled={form.formState.isSubmitting || mutation.isPending}>
               {mutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-              Save Changes
+              {t("common.saveChanges")}
             </Button>
           </DialogFooter>
         </form>

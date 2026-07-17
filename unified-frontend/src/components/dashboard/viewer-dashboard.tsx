@@ -8,7 +8,6 @@ import {
   FolderKanban,
   KeyRound,
   ListChecks,
-  Settings as SettingsIcon,
   Shield,
   ShieldPlus,
   UserCircle,
@@ -229,7 +228,6 @@ export function ViewerDashboard() {
   const personalLinks = useMemo(() => {
     const links = [
       { title: t("dashboard.viewProfile"), description: t("dashboard.viewProfileDesc"), href: "/profile", icon: UserCircle },
-      { title: t("nav.settings"), description: t("dashboard.settingsDesc"), href: "/settings", icon: SettingsIcon },
     ];
     if (canSeeUsers) {
       links.unshift({ title: t("dashboard.viewUsers"), description: t("dashboard.viewUsersDesc"), href: "/users", icon: Users });
