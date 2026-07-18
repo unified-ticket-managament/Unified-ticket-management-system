@@ -33,7 +33,12 @@ export interface NotificationListResponse {
 export async function getNotifications(unreadOnly = false): Promise<NotificationListResponse> {
   const { data } = await api.get<NotificationListResponse>("/notifications", {
     baseURL: API_ROOT,
-    params: { unread_only: unreadOnly, limit: 20 },
+    // Matches the backend's own default (NotificationRepository.
+    // list_for_user) — this used to hardcode 20, well below that
+    // default, which meant a burst of fresh SLA notifications across
+    // many tickets could silently push an older, rarer one (e.g. a
+    // ticket's one-time BREACHED notice) out of the visible window.
+    params: { unread_only: unreadOnly, limit: 50 },
   });
   return data;
 }

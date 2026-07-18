@@ -161,7 +161,7 @@ def _build_escalation_service(session) -> EscalationService:
 
 async def _get_handling_sla(session, escalation_id) -> EscalationHandlingSLA | None:
     repo = EscalationHandlingSlaRepository(session)
-    return await repo.get_by_escalation_id(escalation_id)
+    return await repo.get_active_by_escalation_id(escalation_id)
 
 
 async def _reload_resolution_sla(session, resolution_sla_id) -> ResolutionSLA:
@@ -317,7 +317,25 @@ async def test_assignment_implied_acknowledgment_starts_handling_sla_exactly_onc
     assert reloaded.due_at == first_reshifted_due_at
 
 
-async def test_handling_sla_breach_advances_escalation_and_preserves_both_histories(db_session):
+async def test_handling_sla_breach_re_evaluates_starting_level_and_preserves_both_histories(
+    db_session,
+):
+    """
+    A handling-SLA breach recomputes the level via
+    EscalationService._resolve_starting_level — the exact same logic a
+    brand-new escalation uses — rather than blindly climbing to
+    next_level(old_level). This scenario's ticket is still unclaimed
+    (team_lead only acknowledged/confirmed it, never actually became
+    its assigned agent), so _resolve_starting_level correctly lands
+    back on TEAM_LEAD again rather than jumping to MANAGER: ownership
+    never actually changed, so there's no reason to skip a level. See
+    EscalationService.advance_for_handling_sla_breach's own docstring
+    for the real-world case this matters for — a Team Lead accepting
+    an escalation and handing it to Staff, whose own failure to resolve
+    it should escalate back to Team Lead again, not jump straight to
+    Account Manager.
+    """
+
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
     team_lead.permissions = ["ticket:escalate"]
 
@@ -326,10 +344,11 @@ async def test_handling_sla_breach_advances_escalation_and_preserves_both_histor
     await service.acknowledge(ticket.ticket_id, team_lead)
     await service.confirm_assignment(ticket.ticket_id, team_lead)
 
-    # Captured *after* acknowledge+confirm — which is what now bumps
-    # priority to CRITICAL and reshifts due_at, exactly once. This test
-    # is only about whether the handling-SLA-breach advance path
-    # touches the Resolution SLA any FURTHER.
+    # Captured *after* acknowledge+confirm — but this is still a
+    # first-time acceptance (has_advanced_past_starting_level is still
+    # False at this point), so the Resolution SLA clock has NOT
+    # reshifted yet either — see test_escalation_service.py's own
+    # test_confirm_assignment_does_not_reshift_sla_on_first_acceptance.
     original_due_at = (
         await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     ).due_at
@@ -337,6 +356,7 @@ async def test_handling_sla_breach_advances_escalation_and_preserves_both_histor
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
     )
+    assert escalation.has_advanced_past_starting_level is False
     handling_sla = await _get_handling_sla(db_session, escalation.escalation_id)
 
     # Force the handling clock into the past so the sweep's own breach
@@ -356,15 +376,126 @@ async def test_handling_sla_breach_advances_escalation_and_preserves_both_histor
         ticket.ticket_id
     )
     assert reloaded_escalation.status == EscalationStatus.ACTIVE
-    assert reloaded_escalation.level != EscalationLevel.TEAM_LEAD
+    assert reloaded_escalation.level == EscalationLevel.TEAM_LEAD
+    # The flag still flips even though the recomputed level happens to
+    # be the same as before — this is what gates the Resolution SLA's
+    # eventual hard-restart reshift on the NEXT acceptance.
+    assert reloaded_escalation.has_advanced_past_starting_level is True
 
     # Both histories preserved: the handling clock stays breached (not
-    # deleted/reset), and the original Resolution SLA is still untouched.
-    reloaded_handling = await _get_handling_sla(db_session, escalation.escalation_id)
+    # deleted/reset), and the original Resolution SLA is still untouched
+    # by this advance itself (a subsequent acceptance is what reshifts
+    # it, not the advance). _get_handling_sla only returns an ACTIVE row
+    # now, and this one no longer is one — fetch it directly instead.
+    reloaded_handling = await EscalationHandlingSlaRepository(
+        db_session
+    ).get_latest_by_escalation_id(escalation.escalation_id)
     assert reloaded_handling.breached_at is not None
 
     reloaded_resolution = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     assert reloaded_resolution.due_at == original_due_at
+
+    reloaded_resolution = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    assert reloaded_resolution.due_at == original_due_at
+
+
+async def test_handling_sla_breach_starts_fresh_critical_handling_sla_on_reacceptance(
+    db_session,
+):
+    """
+    Guards the requested behavior: the FIRST acceptance's handling
+    clock runs under the ticket's original priority (25% of MEDIUM's
+    target here). If that clock itself breaches — nobody resolved it in
+    time — the escalation advances a level, and Resolution SLA reshifts
+    onto CRITICAL (per test_confirm_assignment_reshifts_sla_after_
+    escalation_has_advanced in test_escalation_service.py). Accepting
+    the escalation AGAIN at this new level must start a genuinely FRESH
+    handling clock computed off CRITICAL's percentage — not silently
+    keep reusing the first, already-breached, MEDIUM-based one forever.
+    The original breached row must survive untouched as history.
+    """
+
+    team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_escalation_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.acknowledge(ticket.ticket_id, team_lead)
+    await service.confirm_assignment(ticket.ticket_id, team_lead)
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    original_handling_sla = await _get_handling_sla(db_session, escalation.escalation_id)
+    assert original_handling_sla is not None
+
+    medium_policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
+    expected_original_target = compute_escalation_handling_target_seconds(
+        medium_policy.resolution_target_minutes, medium_policy.handling_sla_percentage / 100
+    )
+    assert original_handling_sla.target_seconds == expected_original_target
+
+    # Force the handling clock into the past so the sweep's own breach
+    # query picks it up, then let it actually breach and advance the
+    # escalation — the same mechanics as the test above.
+    original_handling_sla.due_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    await db_session.flush()
+
+    handling_service = build_escalation_handling_sla_service(db_session)
+    await handling_service.evaluate_breaches(now=datetime.now(timezone.utc))
+    await service.advance_for_handling_sla_breach(ticket.ticket_id)
+
+    reloaded_escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert reloaded_escalation.has_advanced_past_starting_level is True
+
+    # No active handling clock right now — the only row that exists is
+    # the breached one, which is exactly what should let a fresh one
+    # be created on the next acceptance.
+    assert await _get_handling_sla(db_session, escalation.escalation_id) is None
+
+    # The escalation advanced past team_lead's own level, so they're no
+    # longer a listed owner — fetch whoever the new level's owner
+    # actually is (e.g. the Account Manager) to accept as them instead.
+    new_owner_id = uuid.UUID(reloaded_escalation.owner_ids[0])
+    new_owner = (
+        await db_session.execute(
+            select(User)
+            .options(joinedload(User.role), joinedload(User.category))
+            .where(User.user_id == new_owner_id)
+        )
+    ).unique().scalar_one()
+
+    # Re-accept at the new level — this must reshift Resolution SLA
+    # onto CRITICAL AND start a brand new handling clock under
+    # CRITICAL's percentage.
+    await service.confirm_assignment(ticket.ticket_id, new_owner)
+
+    reloaded_resolution = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    assert reloaded_resolution.priority == TicketPriority.CRITICAL
+
+    new_handling_sla = await _get_handling_sla(db_session, escalation.escalation_id)
+    assert new_handling_sla is not None
+    assert new_handling_sla.escalation_handling_sla_id != original_handling_sla.escalation_handling_sla_id
+    assert new_handling_sla.breached_at is None
+
+    critical_policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.CRITICAL)
+    expected_new_target = compute_escalation_handling_target_seconds(
+        critical_policy.resolution_target_minutes, critical_policy.handling_sla_percentage / 100
+    )
+    assert new_handling_sla.target_seconds == expected_new_target
+
+    # Both rows coexist — the breached original is permanent history,
+    # never deleted or mutated by the new one starting.
+    all_rows = await EscalationHandlingSlaRepository(db_session).list_by_escalation_id(
+        escalation.escalation_id
+    )
+    assert len(all_rows) == 2
+    assert {row.escalation_handling_sla_id for row in all_rows} == {
+        original_handling_sla.escalation_handling_sla_id,
+        new_handling_sla.escalation_handling_sla_id,
+    }
 
 
 async def test_close_for_ticket_resolution_completes_handling_sla(db_session):
@@ -384,6 +515,11 @@ async def test_close_for_ticket_resolution_completes_handling_sla(db_session):
 
     await service.close_for_ticket_resolution(ticket.ticket_id)
 
-    reloaded_handling = await _get_handling_sla(db_session, escalation.escalation_id)
+    # completed_at is now set, so this row is no longer ACTIVE —
+    # _get_handling_sla (active-only) would correctly return None here;
+    # fetch it directly to check its completed state instead.
+    reloaded_handling = await EscalationHandlingSlaRepository(
+        db_session
+    ).get_latest_by_escalation_id(escalation.escalation_id)
     assert reloaded_handling.status == SLAClockStatus.COMPLETED
     assert reloaded_handling.completed_at is not None

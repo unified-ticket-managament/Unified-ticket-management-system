@@ -38,9 +38,7 @@ from app.ticketing.services.sla_breach_notifier import (
     send_notification_emails,
 )
 from app.ticketing.services.sla_escalation_rules import (
-    RESOLUTION_RULES_CLAIMED,
     RESOLUTION_RULES_CURRENT_OWNER,
-    RESOLUTION_RULES_UNCLAIMED,
     TEAM_LEAD_ROLE_NAME,
     RecipientContext,
     resolve_recipients,
@@ -323,7 +321,21 @@ class SLASweepService:
             # exists) to stay safe to call repeatedly. Isolated in its
             # own SAVEPOINT, same as every other per-clock action in
             # this sweep, so one ticket's failure can't affect another.
-            if "BREACHED" in reached or "ESCALATED" in reached:
+            #
+            # Skipped entirely for a ticket already present in
+            # escalations_by_ticket_id (the batch prefetch above) —
+            # auto_escalate_if_needed's own first line is exactly this
+            # same "does an active escalation already exist" check via
+            # a per-ticket round trip, which on a tick with dozens of
+            # already-escalated tickets was the dominant cost of the
+            # entire sweep (each round trip ~0.5-1s under Neon's
+            # latency) and the direct cause of a NEWLY-breaching
+            # ticket's own escalation lagging its actual breach point
+            # by 30-200+ seconds — it had to wait behind every other
+            # ticket's redundant re-check first. Only tickets with no
+            # prefetched active escalation still pay that round trip,
+            # and only once they actually need it.
+            if ("BREACHED" in reached or "ESCALATED" in reached) and clock.ticket_id not in escalations_by_ticket_id:
                 ticket = tickets_by_id.get(clock.ticket_id)
                 if ticket is not None:
                     try:
@@ -540,86 +552,83 @@ class SLASweepService:
 
         HALF_ELAPSED/AT_RISK/BREACHED resolve recipients via
         RESOLUTION_RULES_CURRENT_OWNER — whoever is actually working the
-        ticket right now, never the wider CLAIMED/UNCLAIMED ladder — so
-        Team Lead/Account Manager/Global Inbox no longer hear about a
-        ticket from this sweep alone; they only learn about it through
-        the escalation workflow's own hierarchical notifications
+        ticket right now, never a wider role ladder — so Team Lead/
+        Account Manager/Global Inbox no longer hear about a ticket from
+        this sweep alone; they only learn about it through the
+        escalation workflow's own hierarchical notifications
         (EscalationService._notify_owners) once the ticket is actually
-        escalated. ESCALATED is the one threshold still using the old
-        ladder, since by then real escalation/advance notifications are
-        expected to have already fired.
+        escalated. ESCALATED (150% elapsed) sends no notification at
+        all — by that point the real escalation-created notification
+        (fired earlier, at the crossing that first creates the
+        TicketEscalation) has already informed the actual owner; still
+        audit-logged (SLA_ESCALATED) below, just not notified/emailed.
         """
 
         ticket = tickets_by_id.get(clock.ticket_id)
         if ticket is None:
             return False
 
-        client = clients_by_id.get(clock.client_id) if clock.client_id is not None else None
-
-        escalation = escalations_by_ticket_id.get(ticket.ticket_id)
-        escalation_owner_ids = (
-            {UUID(u) for u in escalation.owner_ids} if escalation is not None else set()
-        )
-
-        # Claiming (a Team Lead taking a ticket for themselves) and
-        # assigning (to a Staff member) both just set this same column —
-        # see inbox_ticket_service.py's own "born unclaimed" comment.
-        if ticket.agent_id is not None:
-            # None here means an orphaned/deactivated agent_id — the
-            # resolvers already handle assigned_agent=None gracefully
-            # (ASSIGNED_AGENT/TEAM_LEAD both just resolve to nobody).
-            assigned_agent = agents_by_id.get(ticket.agent_id)
-            ctx = RecipientContext(
-                client=client,
-                assigned_agent=assigned_agent,
-                global_inbox_ids=global_inbox_ids,
-                escalation_owner_ids=escalation_owner_ids,
-            )
-            rules = RESOLUTION_RULES_CLAIMED
-        else:
-            team_leads, team_members = await self._get_category_team(
-                ticket.ticket_type, category_cache
-            )
-            ctx = RecipientContext(
-                client=client,
-                team_leads=team_leads,
-                team_members=team_members,
-                global_inbox_ids=global_inbox_ids,
-                escalation_owner_ids=escalation_owner_ids,
-            )
-            rules = RESOLUTION_RULES_UNCLAIMED
-
-        recipient_ids = resolve_recipients(
-            rules if threshold == "ESCALATED" else RESOLUTION_RULES_CURRENT_OWNER,
-            threshold,
-            ctx,
-        )
-
-        if not recipient_ids:
-            return False
-
-        title = f"Resolution SLA {threshold.replace('_', ' ').title()}: {ticket.title}"
-        message = f"Ticket \"{ticket.title}\" has crossed its Resolution SLA {threshold.lower()} threshold."
-
         sent = False
-        if self.notification_service is not None:
-            await self.notification_service.notify(
-                recipient_ids,
-                NOTIFICATION_TYPE_BY_THRESHOLD[threshold],
-                title=title,
-                message=message,
-                link=f"/tickets/{ticket.ticket_id}",
-                related_entity_type="ticket",
-                related_entity_id=ticket.ticket_id,
-            )
-            sent = True
 
-        await send_notification_emails(
-            recipient_ids=recipient_ids,
-            subject=title,
-            body=f"{message}\n\nView it here: {build_absolute_link(f'/tickets/{ticket.ticket_id}')}",
-            user_repository=self.user_repository,
-        )
+        if threshold != "ESCALATED":
+            client = clients_by_id.get(clock.client_id) if clock.client_id is not None else None
+
+            escalation = escalations_by_ticket_id.get(ticket.ticket_id)
+            escalation_owner_ids = (
+                {UUID(u) for u in escalation.owner_ids} if escalation is not None else set()
+            )
+
+            # Claiming (a Team Lead taking a ticket for themselves) and
+            # assigning (to a Staff member) both just set this same
+            # column — see inbox_ticket_service.py's own "born
+            # unclaimed" comment.
+            if ticket.agent_id is not None:
+                # None here means an orphaned/deactivated agent_id — the
+                # resolver already handles assigned_agent=None
+                # gracefully (falls through to nobody).
+                assigned_agent = agents_by_id.get(ticket.agent_id)
+                ctx = RecipientContext(
+                    client=client,
+                    assigned_agent=assigned_agent,
+                    global_inbox_ids=global_inbox_ids,
+                    escalation_owner_ids=escalation_owner_ids,
+                )
+            else:
+                team_leads, team_members = await self._get_category_team(
+                    ticket.ticket_type, category_cache
+                )
+                ctx = RecipientContext(
+                    client=client,
+                    team_leads=team_leads,
+                    team_members=team_members,
+                    global_inbox_ids=global_inbox_ids,
+                    escalation_owner_ids=escalation_owner_ids,
+                )
+
+            recipient_ids = resolve_recipients(RESOLUTION_RULES_CURRENT_OWNER, threshold, ctx)
+
+            if recipient_ids:
+                title = f"Resolution SLA {threshold.replace('_', ' ').title()}: {ticket.title}"
+                message = f"Ticket \"{ticket.title}\" has crossed its Resolution SLA {threshold.lower()} threshold."
+
+                if self.notification_service is not None:
+                    await self.notification_service.notify(
+                        recipient_ids,
+                        NOTIFICATION_TYPE_BY_THRESHOLD[threshold],
+                        title=title,
+                        message=message,
+                        link=f"/tickets/{ticket.ticket_id}",
+                        related_entity_type="ticket",
+                        related_entity_id=ticket.ticket_id,
+                    )
+                    sent = True
+
+                await send_notification_emails(
+                    recipient_ids=recipient_ids,
+                    subject=title,
+                    body=f"{message}\n\nView it here: {build_absolute_link(f'/tickets/{ticket.ticket_id}')}",
+                    user_repository=self.user_repository,
+                )
 
         if threshold in ("BREACHED", "ESCALATED"):
             await AuditLogService.log_event(

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, and_
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -25,10 +25,17 @@ class EscalationHandlingSLA(Base):
     edit never retroactively changes an already-started clock's due
     date, matching ResolutionSLA's own established convention).
 
-    1:1 with a TicketEscalation (one row per escalation instance, not
-    per ticket — closing an escalation and later re-escalating the
-    same ticket gets a fresh escalation_id and thus a fresh row here
-    too). `ticket_id` is denormalized off the escalation for the
+    At most one ACTIVE row per TicketEscalation at a time (enforced by
+    ix_escalation_handling_slas_one_active_per_escalation, a partial
+    unique index on escalation_id WHERE breached_at IS NULL AND
+    completed_at IS NULL) — not one row per escalation forever. If the
+    original-priority handling clock breaches (the owner didn't resolve
+    it in time) and the escalation advances a level, the next
+    acceptance starts a genuinely NEW row under the new (by then
+    CRITICAL) target rather than reusing or rewriting the breached one
+    — see EscalationHandlingSlaService.start_if_not_started. The
+    breached row is kept as-is, permanent history of that first
+    attempt. `ticket_id` is denormalized off the escalation for the
     sweep's own query convenience (avoids a join back through
     ticket_escalations just to filter/report by ticket).
 
@@ -49,7 +56,6 @@ class EscalationHandlingSLA(Base):
     escalation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("ticket_escalations.escalation_id"),
-        unique=True,
         nullable=False,
         index=True,
     )
@@ -111,5 +117,18 @@ class EscalationHandlingSLA(Base):
             "ix_escalation_handling_slas_status_due_at",
             "status",
             "due_at",
+        ),
+        # At most one ACTIVE (not yet breached or completed) handling
+        # clock per escalation at a time — enforced in Postgres, not
+        # just application logic, mirroring
+        # ix_ticket_escalations_one_active_per_ticket's own partial-
+        # unique-index pattern. A breached row falls outside this
+        # index's predicate, which is exactly what lets a fresh row be
+        # created for the same escalation_id once it advances.
+        Index(
+            "ix_escalation_handling_slas_one_active_per_escalation",
+            "escalation_id",
+            unique=True,
+            postgresql_where=and_(breached_at.is_(None), completed_at.is_(None)),
         ),
     )

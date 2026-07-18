@@ -33,7 +33,18 @@ class NotificationRepository:
         if notification_types:
             query = query.where(Notification.notification_type.in_(notification_types))
 
-        query = query.order_by(Notification.created_at.desc()).offset(offset).limit(limit)
+        # notification_id as a tiebreaker: create_many bulk-inserts every
+        # recipient of one notify() call in a single statement, and two
+        # of those rows can land with an identical created_at down to
+        # the microsecond — ORDER BY created_at alone doesn't guarantee
+        # a stable result across repeated queries in that case, so
+        # which rows fall inside/outside the LIMIT could silently
+        # differ from one poll to the next.
+        query = (
+            query.order_by(Notification.created_at.desc(), Notification.notification_id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
 
         result = await self.db.execute(query)
         return list(result.scalars().all())

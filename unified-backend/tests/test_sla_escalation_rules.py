@@ -15,8 +15,7 @@ from app.ticketing.models.client import Client
 from app.ticketing.services.sla_escalation_rules import (
     FIRST_RESPONSE_RULES,
     RECIPIENT_RESOLVERS,
-    RESOLUTION_RULES_CLAIMED,
-    RESOLUTION_RULES_UNCLAIMED,
+    RESOLUTION_RULES_CURRENT_OWNER,
     THRESHOLDS,
     RecipientContext,
     RecipientRole,
@@ -136,19 +135,28 @@ class TestFirstResponseAccountManagerNeverDropped:
 
 
 class TestRuleTableCompleteness:
-    @pytest.mark.parametrize(
-        "rules",
-        [FIRST_RESPONSE_RULES, RESOLUTION_RULES_UNCLAIMED, RESOLUTION_RULES_CLAIMED],
-    )
+    # RESOLUTION_RULES_CURRENT_OWNER is deliberately partial (no
+    # ESCALATED entry — see TestResolutionEscalatedHasNoRuleEntry
+    # below), so only FIRST_RESPONSE_RULES is checked for full
+    # threshold coverage here.
+    @pytest.mark.parametrize("rules", [FIRST_RESPONSE_RULES])
     def test_every_threshold_has_a_rule_entry(self, rules):
         for name, _ in THRESHOLDS:
             assert name in rules
 
-    @pytest.mark.parametrize(
-        "rules",
-        [FIRST_RESPONSE_RULES, RESOLUTION_RULES_UNCLAIMED, RESOLUTION_RULES_CLAIMED],
-    )
+    @pytest.mark.parametrize("rules", [FIRST_RESPONSE_RULES, RESOLUTION_RULES_CURRENT_OWNER])
     def test_every_referenced_role_has_a_resolver(self, rules):
         for roles in rules.values():
             for role in roles:
                 assert role in RECIPIENT_RESOLVERS
+
+
+class TestResolutionEscalatedHasNoRuleEntry:
+    # Deliberate: Resolution SLA's ESCALATED (150%) tier sends no
+    # notification at all (SLASweepService._notify_resolution skips it
+    # outright) — the real escalation-created notification, fired
+    # earlier at the crossing that first creates the TicketEscalation,
+    # already covers it. A rule entry reappearing here would silently
+    # reintroduce the redundant notification this was removed for.
+    def test_escalated_is_absent(self):
+        assert "ESCALATED" not in RESOLUTION_RULES_CURRENT_OWNER

@@ -13,6 +13,7 @@ import pytest
 
 from app.ticketing.repositories.resolution_sla_repository import (
     compute_reshifted_due_at,
+    compute_restarted_due_at,
     compute_resumed_due_at,
 )
 from app.ticketing.services.sla_escalation_rules import thresholds_reached
@@ -102,6 +103,33 @@ class TestComputeReshiftedDueAt:
         )
 
         assert new_due_at == now - timedelta(days=2)
+
+
+class TestComputeRestartedDueAt:
+    # Used only by the escalation-acceptance reshift, deliberately NOT
+    # the same formula as TestComputeReshiftedDueAt above — see
+    # ResolutionSLARepository.restart_due_at_for_escalation's own
+    # docstring. No started_at/paused_seconds input at all: the result
+    # depends only on `now` and the new target, ignoring however long
+    # the ticket had already been running.
+    def test_full_target_from_now_regardless_of_prior_elapsed_time(self):
+        now = _dt(12)
+
+        new_due_at = compute_restarted_due_at(new_target_minutes=46, now=now)
+
+        assert new_due_at == now + timedelta(minutes=46)
+
+    def test_a_ticket_running_far_longer_than_the_new_target_still_gets_the_full_window(self):
+        # This is exactly the scenario compute_reshifted_due_at's own
+        # "downgrade past new target" test above lands in the past for
+        # — a ticket that ran far longer than CRITICAL's short target
+        # before finally being accepted. The restart variant must NOT
+        # reproduce that: the new owner gets the genuine full window.
+        now = _dt(12)
+
+        new_due_at = compute_restarted_due_at(new_target_minutes=46, now=now)
+
+        assert new_due_at > now
 
 
 class TestComputeElapsedFraction:

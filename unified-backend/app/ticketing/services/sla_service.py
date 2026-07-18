@@ -404,7 +404,13 @@ class SLAService:
         ticket_id: UUID,
         new_priority: TicketPriority,
     ) -> None:
-        """Called from InteractionService.change_priority."""
+        """
+        Called from InteractionService.change_priority (a manual Change
+        Priority action) — preserves elapsed-time-consumed proportionally
+        against the new target. NOT used by the escalation-acceptance
+        path anymore; see restart_resolution_clock_for_escalation below
+        for why that moment needs different math.
+        """
 
         clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
         if clock is None:
@@ -415,6 +421,39 @@ class SLAService:
             return
 
         await self.resolution_sla_repository.reshift_due_at_for_priority_change(
+            clock,
+            new_priority=new_priority,
+            new_target_minutes=policy.resolution_target_minutes,
+            now=datetime.now(timezone.utc),
+        )
+
+    async def restart_resolution_clock_for_escalation(
+        self,
+        *,
+        ticket_id: UUID,
+        new_priority: TicketPriority,
+    ) -> None:
+        """
+        Called from EscalationService._reshift_sla_for_escalation_
+        acceptance only. A full, fresh due_at (now + new target) rather
+        than reshift_resolution_clock_for_priority_change's proportional
+        formula — see ResolutionSLARepository.restart_due_at_for_
+        escalation's own docstring for why: preserving elapsed time
+        against CRITICAL's much shorter target routinely produced a
+        due_at already in the past the moment a supervisor accepted the
+        escalation, which defeats the point of giving the new owner a
+        real window to act.
+        """
+
+        clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
+        if clock is None:
+            return
+
+        policy = await self._get_policy(new_priority)
+        if policy is None:
+            return
+
+        await self.resolution_sla_repository.restart_due_at_for_escalation(
             clock,
             new_priority=new_priority,
             new_target_minutes=policy.resolution_target_minutes,
@@ -470,7 +509,10 @@ class SLAService:
 
             if escalation_state is not None:
                 handling_sla_repository = EscalationHandlingSlaRepository(db)
-                handling_clock = await handling_sla_repository.get_by_escalation_id(
+                # Most recent row (active or already-breached) — always
+                # the freshest state to show on the ticket detail page,
+                # even once the escalation has advanced past it.
+                handling_clock = await handling_sla_repository.get_latest_by_escalation_id(
                     escalation_state.escalation_id
                 )
                 if handling_clock is not None:

@@ -479,18 +479,28 @@ class EscalationService:
         only restarts against the tighter CRITICAL target the moment
         someone takes it on.
 
-        Reshifts through SLAService.reshift_resolution_clock_for_
-        priority_change — the exact same method a manual Change
-        Priority action already uses — rather than inventing a
-        parallel code path, so the sweep's own elapsed-fraction math
-        (keyed off ResolutionSLA.priority, not Ticket.current_priority)
-        stays internally consistent. No-op if the clock has already
-        been reshifted onto CRITICAL (idempotent — acknowledging via
-        assignment and then again via a literal Acknowledge click, or a
-        later reassignment, must never re-reshift the clock a second
-        time) or if there's no clock to reshift at all. Deferred import
-        to avoid a circular import (sla_service.py imports
-        build_escalation_service from this module at module level).
+        Uses SLAService.restart_resolution_clock_for_escalation — a
+        full, fresh CRITICAL-target window from this exact moment —
+        rather than reshift_resolution_clock_for_priority_change (the
+        manual Change Priority action's own method, which preserves
+        elapsed-time-consumed proportionally against the new target).
+        That proportional formula algebraically reduces to
+        clock.started_at + new_target, independent of when the reshift
+        actually happens — sensible for a manual priority change, but
+        wrong here: by the time an escalation has genuinely advanced a
+        level and someone finally accepts it, the ticket has often
+        already run for far longer than CRITICAL's own (deliberately
+        short) target, so the proportional formula would land due_at
+        in the past — the new owner effectively getting less time to
+        act than the target promises, or none at all. A full restart
+        gives them the real target window, starting now. No-op if the
+        clock has already been reshifted onto CRITICAL (idempotent —
+        acknowledging via assignment and then again via a literal
+        Acknowledge click, or a later reassignment, must never
+        re-reshift the clock a second time) or if there's no clock to
+        reshift at all. Deferred import to avoid a circular import
+        (sla_service.py imports build_escalation_service from this
+        module at module level).
         """
 
         clock = await self.resolution_sla_repository.get_by_ticket_id(ticket.ticket_id)
@@ -500,7 +510,7 @@ class EscalationService:
         from app.ticketing.services.sla_service import build_sla_service
 
         sla_service = build_sla_service(self.ticket_repository.db)
-        await sla_service.reshift_resolution_clock_for_priority_change(
+        await sla_service.restart_resolution_clock_for_escalation(
             ticket_id=ticket.ticket_id, new_priority=TicketPriority.CRITICAL
         )
 
@@ -1044,8 +1054,23 @@ class EscalationService:
 
         now = datetime.now(timezone.utc)
         old_level = escalation.level
-        upcoming = next_level(old_level)
-        target_level = upcoming if upcoming is not None else old_level
+
+        # Deliberately NOT next_level(old_level) — unlike
+        # evaluate_overdue's ack-window-lapse case above (where the
+        # current level's owner never even acknowledged it, so genuinely
+        # climbing the ladder one level is correct), a handling-SLA
+        # breach means someone DID accept and settle ownership, and it's
+        # THAT assignee who then failed to resolve it in time. That's a
+        # fresh failure against the ticket's current ownership, not
+        # evidence the current escalation level itself is unreachable —
+        # so this recomputes the starting level the exact same way a
+        # brand-new escalation would (_resolve_starting_level), rather
+        # than unconditionally skipping past whoever's actually still
+        # working it. For the common case — Team Lead accepted and
+        # handed the ticket back to Staff, and Staff then missed the
+        # handling window — this correctly lands back on TEAM_LEAD
+        # again, instead of jumping straight to MANAGER every time.
+        target_level = await self._resolve_starting_level(ticket)
 
         new_level, owner_ids = await self._resolve_owners_with_fallback(
             starting_level=target_level, ticket=ticket

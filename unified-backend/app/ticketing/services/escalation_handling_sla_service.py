@@ -99,23 +99,32 @@ class EscalationHandlingSlaService:
         ticket: Ticket,
     ) -> EscalationHandlingSLA | None:
         """
-        Idempotent — the one guarantee the whole feature depends on:
+        Idempotent against repeated acceptance at the SAME level —
         acknowledging (or assignment-treated-as-acknowledgment) more
-        than once, or acknowledging after an already-started handling
-        clock, must never create a second row or push due_at forward
-        again. Returns the existing row unchanged if one is already
-        present, only ever creating on a genuine first call. Returns
-        None (skips creation) if no SLA policy can be resolved for
-        this ticket's priority — the same "never let missing SLA
+        than once while the current clock is still open must never
+        create a second row or push due_at forward again, so this
+        checks for an ACTIVE (un-breached, un-completed) row, not just
+        any row ever created for this escalation. If the previous
+        clock already breached — the owner didn't resolve it in time,
+        so the escalation advanced a level — this deliberately DOES
+        create a fresh row rather than returning the breached one: the
+        new acceptance is happening at a new level, generally after
+        _reshift_sla_for_escalation_acceptance has already moved the
+        Resolution SLA clock onto CRITICAL's target, so _resolve_policy
+        (which reads that same clock's priority) now correctly resolves
+        CRITICAL's handling percentage instead of the original
+        priority's. The breached row is left untouched as history.
+        Returns None (skips creation) if no SLA policy can be resolved
+        for this ticket's priority — the same "never let missing SLA
         config block the underlying action" convention SLAService
         itself uses.
         """
 
-        existing = await self.escalation_handling_sla_repository.get_by_escalation_id(
+        existing_active = await self.escalation_handling_sla_repository.get_active_by_escalation_id(
             escalation.escalation_id
         )
-        if existing is not None:
-            return existing
+        if existing_active is not None:
+            return existing_active
 
         policy = await self._resolve_policy(ticket=ticket)
         if policy is None:
@@ -138,12 +147,15 @@ class EscalationHandlingSlaService:
     async def complete_for_escalation(self, escalation_id: UUID) -> None:
         """
         Called when the escalation itself closes (ticket resolved, or
-        any other closing path) — no-op if no handling clock was ever
-        started (e.g. the escalation was closed before anyone
-        acknowledged it) or it's already completed.
+        any other closing path) — completes the currently-ACTIVE
+        handling clock, if any (e.g. the escalation was closed before
+        anyone accepted it, or the only clock that ever ran already
+        breached — both leave nothing active to complete). Historical
+        breached rows from an earlier level are left alone; they're
+        already terminal.
         """
 
-        clock = await self.escalation_handling_sla_repository.get_by_escalation_id(
+        clock = await self.escalation_handling_sla_repository.get_active_by_escalation_id(
             escalation_id
         )
         if clock is None:

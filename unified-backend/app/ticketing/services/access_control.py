@@ -212,8 +212,13 @@ async def ensure_agent_can_act_on_ticket(
         )
         if active_escalation is not None:
             if escalation_handling_sla_repository is not None:
+                # Any row at all — active or already-breached-and-
+                # superseded — means acceptance has happened at least
+                # once for this escalation; that's what unfreezes the
+                # previous owner, regardless of whether the level has
+                # since advanced again.
                 accepted = (
-                    await escalation_handling_sla_repository.get_by_escalation_id(
+                    await escalation_handling_sla_repository.get_latest_by_escalation_id(
                         active_escalation.escalation_id
                     )
                     is not None

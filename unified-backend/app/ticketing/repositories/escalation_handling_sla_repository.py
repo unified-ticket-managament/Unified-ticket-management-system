@@ -13,21 +13,60 @@ class EscalationHandlingSlaRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_by_escalation_id(
+    async def get_active_by_escalation_id(
         self, escalation_id: UUID
     ) -> EscalationHandlingSLA | None:
         """
-        At most one row per escalation (enforced by the model's own
-        unique index on escalation_id) — used as the idempotent
-        "has this already started" check before creating a new one.
+        The one currently-open (not yet breached or completed) handling
+        clock for an escalation, if any — enforced at-most-one by the
+        model's own partial unique index
+        (ix_escalation_handling_slas_one_active_per_escalation), so
+        scalar_one_or_none() is safe here. This is the idempotency check
+        start_if_not_started uses: a hit means "acceptance already
+        started a clock that's still running," a miss means either
+        "never started" or "the previous one already breached and
+        moved on" — both cases where a fresh row should be created.
         """
 
         result = await self.db.execute(
             select(EscalationHandlingSLA).where(
-                EscalationHandlingSLA.escalation_id == escalation_id
+                EscalationHandlingSLA.escalation_id == escalation_id,
+                EscalationHandlingSLA.breached_at.is_(None),
+                EscalationHandlingSLA.completed_at.is_(None),
             )
         )
         return result.scalar_one_or_none()
+
+    async def get_latest_by_escalation_id(
+        self, escalation_id: UUID
+    ) -> EscalationHandlingSLA | None:
+        """
+        The most recently started handling clock for an escalation,
+        active or historical — for display (the ticket detail page's
+        Escalation Handling SLA card) and the "has acceptance ever
+        completed" freeze check in access_control.py, neither of which
+        cares whether the latest row happens to already be breached.
+        """
+
+        result = await self.db.execute(
+            select(EscalationHandlingSLA)
+            .where(EscalationHandlingSLA.escalation_id == escalation_id)
+            .order_by(EscalationHandlingSLA.started_at.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
+    async def list_by_escalation_id(
+        self, escalation_id: UUID
+    ) -> list[EscalationHandlingSLA]:
+        """Every handling clock ever started for an escalation, oldest first — history included."""
+
+        result = await self.db.execute(
+            select(EscalationHandlingSLA)
+            .where(EscalationHandlingSLA.escalation_id == escalation_id)
+            .order_by(EscalationHandlingSLA.started_at.asc())
+        )
+        return list(result.scalars().all())
 
     async def create(
         self,

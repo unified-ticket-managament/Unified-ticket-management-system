@@ -25,6 +25,21 @@ def compute_resumed_due_at(
     return due_at + (resumed_at - paused_at)
 
 
+def compute_restarted_due_at(*, new_target_minutes: int, now: datetime) -> datetime:
+    """
+    Pure clock-restart math, factored out of
+    ResolutionSLARepository.restart_due_at_for_escalation for the same
+    reason as compute_reshifted_due_at below. A full, fresh target
+    window starting now — no elapsed/paused time carried over at all —
+    deliberately unlike compute_reshifted_due_at's proportional
+    formula. See that repository method's own docstring for why an
+    escalation's acceptance-time reshift needs different math than a
+    manual priority change's.
+    """
+
+    return now + timedelta(minutes=new_target_minutes)
+
+
 def compute_reshifted_due_at(
     *,
     started_at: datetime,
@@ -224,6 +239,43 @@ class ResolutionSLARepository:
             new_target_minutes=new_target_minutes,
             now=now,
         )
+
+        await self.db.flush()
+        await self.db.refresh(clock)
+        return clock
+
+    async def restart_due_at_for_escalation(
+        self,
+        clock: ResolutionSLA,
+        *,
+        new_priority: TicketPriority,
+        new_target_minutes: int,
+        now: datetime,
+    ) -> ResolutionSLA:
+        """
+        A full, fresh due_at (now + new_target_minutes) rather than
+        reshift_due_at_for_priority_change's proportional-consumed-time
+        formula — deliberately different math for a deliberately
+        different moment. That formula's due_at algebraically reduces
+        to (clock.started_at + new_target_minutes - paused), independent
+        of when the reshift itself actually happens — sensible for a
+        manual priority change (the clock keeps counting the SAME
+        elapsed work against a new target), but wrong for an escalation
+        that has genuinely advanced a level: the new owner is only just
+        now taking this on, and deserves the full target window from
+        THIS moment, not one already shrunk by however long the ticket
+        had been running under its original, much longer priority
+        target. See EscalationService._reshift_sla_for_escalation_
+        acceptance, the one caller.
+
+        No-op if the clock is already COMPLETED (nothing to restart).
+        """
+
+        if clock.status == SLAClockStatus.COMPLETED:
+            return clock
+
+        clock.priority = new_priority
+        clock.due_at = compute_restarted_due_at(new_target_minutes=new_target_minutes, now=now)
 
         await self.db.flush()
         await self.db.refresh(clock)

@@ -76,46 +76,23 @@ FIRST_RESPONSE_RULES: dict[str, tuple[str, ...]] = {
     "ESCALATED": (RecipientRole.ACCOUNT_MANAGER, RecipientRole.GLOBAL_INBOX),
 }
 
-# Ticket sitting unclaimed in the category pool (ticket.agent_id is None).
-RESOLUTION_RULES_UNCLAIMED: dict[str, tuple[str, ...]] = {
-    "HALF_ELAPSED": (RecipientRole.TEAM_LEAD, RecipientRole.TEAM_MEMBERS),
-    "AT_RISK": (RecipientRole.TEAM_LEAD, RecipientRole.TEAM_MEMBERS),
-    "BREACHED": (RecipientRole.TEAM_LEAD, RecipientRole.ACCOUNT_MANAGER),
-    "ESCALATED": (
-        RecipientRole.TEAM_LEAD,
-        RecipientRole.ACCOUNT_MANAGER,
-        RecipientRole.GLOBAL_INBOX,
-    ),
-}
-
-# Ticket claimed by a Team Lead for themselves, or assigned to a Staff
-# member — both set the same ticket.agent_id column.
-RESOLUTION_RULES_CLAIMED: dict[str, tuple[str, ...]] = {
-    "HALF_ELAPSED": (RecipientRole.ASSIGNED_AGENT,),
-    "AT_RISK": (RecipientRole.ASSIGNED_AGENT, RecipientRole.TEAM_LEAD),
-    "BREACHED": (
-        RecipientRole.ASSIGNED_AGENT,
-        RecipientRole.TEAM_LEAD,
-        RecipientRole.ACCOUNT_MANAGER,
-    ),
-    "ESCALATED": (
-        RecipientRole.ASSIGNED_AGENT,
-        RecipientRole.TEAM_LEAD,
-        RecipientRole.ACCOUNT_MANAGER,
-        RecipientRole.GLOBAL_INBOX,
-    ),
-}
-
 # Half-Elapsed/At-Risk/Breached: resolve to whoever is actually working
-# the ticket right now (CURRENT_OWNER below) rather than climbing the
-# CLAIMED/UNCLAIMED ladders above — a ticket's higher-ups only ever
-# learn about it through the escalation workflow's own hierarchical
-# notifications (EscalationService._notify_owners), triggered
-# separately when an escalation is created/advances. ESCALATED is
-# deliberately left off this table and keeps consulting
-# RESOLUTION_RULES_CLAIMED/UNCLAIMED as before: by that point real
-# escalation/advance notifications are expected to have already fired,
-# same reasoning that already makes Global Inbox appear at that tier.
+# the ticket right now — the assigned agent (claimed), the escalation's
+# current owner (escalated), or the category's Team Lead+staff pool
+# (unclaimed) — rather than a role ladder. A ticket's higher-ups only
+# ever learn about it through the escalation workflow's own
+# hierarchical notifications (EscalationService._notify_owners),
+# triggered separately when an escalation is created/advances.
+#
+# ESCALATED (150% elapsed) has no entry here at all, deliberately —
+# SLASweepService._notify_resolution skips notification entirely at
+# that tier. The old CLAIMED/UNCLAIMED role-ladder tables this
+# threshold used to consult (RESOLUTION_RULES_CLAIMED/UNCLAIMED) were
+# removed outright: by 150%, the real escalation-created notification
+# (fired earlier, at the BREACHED/ESCALATED crossing that first creates
+# the TicketEscalation) has already informed the actual owner — a
+# second, generic "Resolution SLA Escalated" notification on top of
+# that was pure noise, not a second real signal.
 RESOLUTION_RULES_CURRENT_OWNER: dict[str, tuple[str, ...]] = {
     "HALF_ELAPSED": (RecipientRole.CURRENT_OWNER,),
     "AT_RISK": (RecipientRole.CURRENT_OWNER,),
