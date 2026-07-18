@@ -456,10 +456,19 @@ class SLASweepService:
         # "extend this one sweep, no second scheduler" rationale.
         escalation_handling_sla_breaches = 0
         for clock in await self.escalation_handling_sla_service.evaluate_breaches(now=now):
-            advanced = await self.escalation_service.advance_for_handling_sla_breach(
-                clock.ticket_id
-            )
-            escalation_handling_sla_breaches += int(advanced)
+            try:
+                async with db.begin_nested():
+                    advanced = await self.escalation_service.advance_for_handling_sla_breach(
+                        clock.ticket_id
+                    )
+                escalation_handling_sla_breaches += int(advanced)
+            except Exception:
+                logger.warning(
+                    "SLA sweep: failed advancing escalation for handling-SLA breach on ticket %s",
+                    clock.ticket_id,
+                    exc_info=True,
+                )
+                errors += 1
 
         duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
         logger.info(

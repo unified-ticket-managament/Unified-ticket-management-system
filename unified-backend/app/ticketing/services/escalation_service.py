@@ -958,61 +958,80 @@ class EscalationService:
         terminal SITE_LEAD escalation just gets re-notified with a
         fresh ack window instead of advancing further. Returns how
         many rows were advanced (surfaced in SLASweepResponse).
+
+        Each escalation is processed in its own SAVEPOINT
+        (db.begin_nested()) so one escalation's failure can't roll back
+        another's — or the rest of the sweep tick's already-flushed
+        work — same isolation pattern SLASweepService's own per-clock
+        loops already use.
         """
 
         overdue = await self.ticket_escalation_repository.list_overdue_active(now=now)
         advanced = 0
+        db = self.ticket_repository.db
 
         for escalation in overdue:
-            ticket = await self.ticket_repository.get_by_id(escalation.ticket_id)
-            if ticket is None:
-                continue
+            try:
+                async with db.begin_nested():
+                    ticket = await self.ticket_repository.get_by_id(escalation.ticket_id)
+                    if ticket is None:
+                        continue
 
-            old_level = escalation.level
-            upcoming = next_level(old_level)
-            target_level = upcoming if upcoming is not None else old_level
+                    old_level = escalation.level
+                    upcoming = next_level(old_level)
+                    target_level = upcoming if upcoming is not None else old_level
 
-            new_level, owner_ids = await self._resolve_owners_with_fallback(
-                starting_level=target_level, ticket=ticket
-            )
-            ack_minutes = await self._ack_target_minutes(ticket.current_priority)
-            new_ack_due_at = now + timedelta(minutes=ack_minutes)
+                    new_level, owner_ids = await self._resolve_owners_with_fallback(
+                        starting_level=target_level, ticket=ticket
+                    )
+                    ack_minutes = await self._ack_target_minutes(ticket.current_priority)
+                    new_ack_due_at = now + timedelta(minutes=ack_minutes)
 
-            await self.ticket_escalation_repository.advance(
-                escalation,
-                new_level=new_level,
-                owner_ids=owner_ids,
-                ack_due_at=new_ack_due_at,
-                now=now,
-            )
-            advanced += 1
+                    await self.ticket_escalation_repository.advance(
+                        escalation,
+                        new_level=new_level,
+                        owner_ids=owner_ids,
+                        ack_due_at=new_ack_due_at,
+                        now=now,
+                    )
+                    advanced += 1
 
-            await AuditLogService.log_event(
-                self.ticket_repository.db,
-                entity_type=AuditEntityType.TICKET,
-                entity_id=ticket.ticket_id,
-                event_type=AuditEventType.ESCALATION_ADVANCED,
-                actor_id=None,
-                actor_name="SLA Sweep",
-                actor_role=ActorRole.SYSTEM,
-                old_values={"level": old_level.value},
-                new_values={"level": new_level.value, "owner_ids": [str(u) for u in owner_ids]},
-            )
+                    await AuditLogService.log_event(
+                        self.ticket_repository.db,
+                        entity_type=AuditEntityType.TICKET,
+                        entity_id=ticket.ticket_id,
+                        event_type=AuditEventType.ESCALATION_ADVANCED,
+                        actor_id=None,
+                        actor_name="SLA Sweep",
+                        actor_role=ActorRole.SYSTEM,
+                        old_values={"level": old_level.value},
+                        new_values={
+                            "level": new_level.value,
+                            "owner_ids": [str(u) for u in owner_ids],
+                        },
+                    )
 
-            await self._notify_owners(
-                ticket=ticket,
-                owner_ids=owner_ids,
-                notification_type=NotificationType.ESCALATION_ADVANCED,
-                title=f"Escalation Advanced: {ticket.title}",
-                message=(
-                    f"Ticket \"{ticket.title}\" ({ticket.current_priority.value} priority) was not "
-                    f"acknowledged by {old_level.value.replace('_', ' ').title()} in time, and has "
-                    f"advanced to {new_level.value.replace('_', ' ').title()}.\n\n"
-                    f"Please acknowledge by {new_ack_due_at.strftime('%Y-%m-%d %H:%M UTC')} "
-                    "— if this isn't acknowledged in time, it will automatically "
-                    "advance further."
-                ),
-            )
+                    await self._notify_owners(
+                        ticket=ticket,
+                        owner_ids=owner_ids,
+                        notification_type=NotificationType.ESCALATION_ADVANCED,
+                        title=f"Escalation Advanced: {ticket.title}",
+                        message=(
+                            f"Ticket \"{ticket.title}\" ({ticket.current_priority.value} priority) was not "
+                            f"acknowledged by {old_level.value.replace('_', ' ').title()} in time, and has "
+                            f"advanced to {new_level.value.replace('_', ' ').title()}.\n\n"
+                            f"Please acknowledge by {new_ack_due_at.strftime('%Y-%m-%d %H:%M UTC')} "
+                            "— if this isn't acknowledged in time, it will automatically "
+                            "advance further."
+                        ),
+                    )
+            except Exception:
+                logger.warning(
+                    "Escalation sweep: failed advancing overdue escalation %s (ticket %s)",
+                    escalation.escalation_id,
+                    escalation.ticket_id,
+                    exc_info=True,
+                )
 
         return advanced
 
