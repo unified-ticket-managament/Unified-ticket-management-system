@@ -680,6 +680,13 @@ export interface ResolutionSLAState {
   status: SLAClockStatus;
   started_at: string;
   due_at: string;
+  // The real target (in minutes) this clock is currently measured
+  // against — read this directly rather than re-deriving a target
+  // from priority, since once a handling stage has reshifted the
+  // clock, its target no longer matches any single priority's flat
+  // policy value (see the backend's ResolutionSLA.active_target_
+  // minutes docstring).
+  active_target_minutes: number;
   paused_at: string | null;
   total_paused_seconds: number;
   completed_at: string | null;
@@ -715,6 +722,16 @@ export interface TicketEscalationState {
   closed_at: string | null;
   closed_reason: string | null;
   overdue_seconds: number;
+  // Handling progression — independent of `level`/`status` above (see
+  // root CLAUDE.md's SLA & Escalation section). 0 until the first
+  // genuine acceptance completes; only advances on a real
+  // accept-assign-breach cycle, never on an acknowledgment-window
+  // ladder advance alone. handling_stage_due_at is null whenever no
+  // stage is currently running (before the first acceptance, or
+  // between a stage's breach and the next acceptance).
+  handling_stage: number;
+  handling_stage_started_at: string | null;
+  handling_stage_due_at: string | null;
 }
 
 // Internal escalation-handling clock — a second, wholly separate timer
@@ -753,7 +770,15 @@ export interface SLAPolicyResponse {
   first_response_target_minutes: number;
   resolution_target_minutes: number;
   escalation_ack_target_minutes: number;
+  // Superseded by handling_stage_percentages below — no longer read by
+  // any backend logic (kept only until the later EscalationHandlingSLA
+  // cleanup phase). Don't use this for new UI.
   handling_sla_percentage: number;
+  // Ordered, configurable per-stage percentages of the ticket's
+  // ORIGINAL priority's resolution_target_minutes — index 0 is stage
+  // 1's percentage, index 1 is stage 2's, etc. A stage beyond this
+  // list's length repeats the last configured value.
+  handling_stage_percentages: number[];
   warning_1_percentage: number;
   warning_2_percentage: number;
   is_active: boolean;
@@ -767,6 +792,7 @@ export interface SLAPolicyUpdatePayload {
   resolution_target_minutes?: number;
   escalation_ack_target_minutes?: number;
   handling_sla_percentage?: number;
+  handling_stage_percentages?: number[];
   warning_1_percentage?: number;
   warning_2_percentage?: number;
   is_active?: boolean;

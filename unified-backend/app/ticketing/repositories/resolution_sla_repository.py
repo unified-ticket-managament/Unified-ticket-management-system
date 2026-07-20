@@ -81,6 +81,7 @@ class ResolutionSLARepository:
         priority: TicketPriority,
         started_at: datetime,
         due_at: datetime,
+        active_target_minutes: int,
     ) -> ResolutionSLA:
         clock = ResolutionSLA(
             ticket_id=ticket_id,
@@ -89,6 +90,7 @@ class ResolutionSLARepository:
             status=SLAClockStatus.RUNNING,
             started_at=started_at,
             due_at=due_at,
+            active_target_minutes=active_target_minutes,
         )
         self.db.add(clock)
         await self.db.flush()
@@ -233,6 +235,7 @@ class ResolutionSLARepository:
             return clock
 
         clock.priority = new_priority
+        clock.active_target_minutes = new_target_minutes
         clock.due_at = compute_reshifted_due_at(
             started_at=clock.started_at,
             total_paused_seconds=clock.total_paused_seconds,
@@ -275,6 +278,7 @@ class ResolutionSLARepository:
             return clock
 
         clock.priority = new_priority
+        clock.active_target_minutes = new_target_minutes
         clock.due_at = compute_restarted_due_at(new_target_minutes=new_target_minutes, now=now)
 
         await self.db.flush()

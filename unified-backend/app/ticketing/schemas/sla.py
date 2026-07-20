@@ -17,6 +17,7 @@ class SLAPolicyResponse(ORMBase):
     resolution_target_minutes: int
     escalation_ack_target_minutes: int
     handling_sla_percentage: float
+    handling_stage_percentages: list[float]
     warning_1_percentage: float
     warning_2_percentage: float
     is_active: bool
@@ -34,9 +35,22 @@ class SLAPolicyUpdate(BaseModel):
     resolution_target_minutes: int | None = Field(default=None, gt=0)
     escalation_ack_target_minutes: int | None = Field(default=None, gt=0)
     handling_sla_percentage: float | None = Field(default=None, ge=1, le=100)
+    handling_stage_percentages: list[float] | None = Field(default=None, min_length=1)
     warning_1_percentage: float | None = Field(default=None, ge=1, le=100)
     warning_2_percentage: float | None = Field(default=None, ge=1, le=100)
     is_active: bool | None = None
+
+    @model_validator(mode="after")
+    def _ensure_handling_stage_percentages_in_bounds(self) -> "SLAPolicyUpdate":
+        """Same 1-100 bound the single handling_sla_percentage field enforces per-element, since Field(ge=/le=) can't reach into a list."""
+
+        if self.handling_stage_percentages is not None:
+            for value in self.handling_stage_percentages:
+                if not (1 <= value <= 100):
+                    raise ValueError(
+                        "Every handling_stage_percentages value must be between 1 and 100."
+                    )
+        return self
 
     @model_validator(mode="after")
     def _ensure_warning_order_when_both_provided(self) -> "SLAPolicyUpdate":
@@ -83,11 +97,19 @@ class FirstResponseSLAState(BaseModel):
 
 
 class ResolutionSLAState(BaseModel):
-    """Current state of a ticket's Resolution clock, as read at request time."""
+    """
+    Current state of a ticket's Resolution clock, as read at request
+    time. `active_target_minutes` is the real target this clock is
+    currently measured against — read this directly rather than
+    re-deriving a target from priority, since once a handling stage has
+    reshifted the clock, its target no longer matches any single
+    priority's flat policy value.
+    """
 
     status: SLAClockStatus
     started_at: datetime
     due_at: datetime
+    active_target_minutes: int
     paused_at: datetime | None
     total_paused_seconds: int
     completed_at: datetime | None
@@ -119,6 +141,9 @@ class TicketEscalationState(BaseModel):
     closed_at: datetime | None
     closed_reason: str | None
     overdue_seconds: float
+    handling_stage: int
+    handling_stage_started_at: datetime | None
+    handling_stage_due_at: datetime | None
 
 
 class EscalationHandlingSLAState(BaseModel):

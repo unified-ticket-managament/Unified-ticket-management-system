@@ -38,6 +38,7 @@ class SLAPolicyRepository:
         resolution_target_minutes: int | None = None,
         escalation_ack_target_minutes: int | None = None,
         handling_sla_percentage: float | None = None,
+        handling_stage_percentages: list[float] | None = None,
         warning_1_percentage: float | None = None,
         warning_2_percentage: float | None = None,
         is_active: bool | None = None,
@@ -50,6 +51,8 @@ class SLAPolicyRepository:
             policy.escalation_ack_target_minutes = escalation_ack_target_minutes
         if handling_sla_percentage is not None:
             policy.handling_sla_percentage = handling_sla_percentage
+        if handling_stage_percentages is not None:
+            policy.handling_stage_percentages = handling_stage_percentages
         if warning_1_percentage is not None:
             policy.warning_1_percentage = warning_1_percentage
         if warning_2_percentage is not None:

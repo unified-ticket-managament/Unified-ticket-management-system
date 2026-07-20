@@ -91,14 +91,53 @@ class TicketEscalation(Base):
     # False for the escalation's original starting level. Flips to True
     # the moment evaluate_overdue/advance_for_handling_sla_breach
     # actually advances the level past where it started — i.e. the
-    # first owner didn't act in time and this is genuinely a "second
-    # time" escalation. EscalationService._complete_acceptance only
-    # reshifts the Resolution SLA clock onto CRITICAL's target once
-    # this is True; a first-time acceptance leaves the clock running
-    # against original_priority's own target.
+    # first owner didn't act in time. Purely an "has the ownership
+    # ladder ever moved" fact now — kept for display/audit purposes,
+    # but no longer used to decide whether to reshift the Resolution
+    # SLA clock (see handling_stage below, which tracks the genuinely
+    # different "how many real accept-assign-breach cycles have
+    # occurred" fact instead). Ladder movement caused by an
+    # acknowledgment-window timeout must never be conflated with a
+    # genuine handling-stage breach — that conflation was the bug this
+    # column's old reshift-gating role produced.
     has_advanced_past_starting_level: Mapped[bool] = mapped_column(
         default=False,
         nullable=False,
+    )
+
+    # ---------------------------------------------------------
+    # Handling progression — independent of the ownership ladder
+    # above. handling_stage is 0 until the first genuine acceptance
+    # completes (EscalationService._complete_acceptance), and only
+    # ever increments when a stage's own window elapses AND a new
+    # acceptance completes at whatever level the ladder has since
+    # reached — never on a bare ack-timeout ladder advance (evaluate_
+    # overdue never touches these three fields).
+    #
+    # handling_stage_started_at/handling_stage_due_at describe the
+    # CURRENT stage's window; both NULL whenever no stage is presently
+    # running (before the first acceptance, or between a stage's
+    # breach and the next acceptance). "Breached" is derived by
+    # comparing handling_stage_due_at to now rather than a separate
+    # boolean column — the sweep clears handling_stage_due_at back to
+    # NULL once it has acted on a breach, which doubles as the
+    # idempotency guard (a stage is "currently running" iff this field
+    # is non-null).
+    # ---------------------------------------------------------
+
+    handling_stage: Mapped[int] = mapped_column(
+        default=0,
+        nullable=False,
+    )
+
+    handling_stage_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    handling_stage_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
 
     # MANUAL (an agent/supervisor used ticket:escalate) or
@@ -164,6 +203,14 @@ class TicketEscalation(Base):
         # The sweep's overdue-acknowledgment query path:
         # WHERE status = 'ACTIVE' AND ack_due_at < :now.
         Index("ix_ticket_escalations_status_ack_due_at", "status", "ack_due_at"),
+        # The sweep's handling-stage-breach query path (list_handling_
+        # stage_overdue): WHERE handling_stage_due_at IS NOT NULL AND
+        # handling_stage_due_at < :now.
+        Index(
+            "ix_ticket_escalations_handling_stage_due_at",
+            "handling_stage_due_at",
+            postgresql_where=(handling_stage_due_at.is_not(None)),
+        ),
         # At most one non-CLOSED escalation per ticket at a time —
         # enforced in Postgres, not just application logic, so a race
         # between two concurrent escalate calls can't create two

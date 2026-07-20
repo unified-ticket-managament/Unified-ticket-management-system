@@ -85,11 +85,21 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
   // The one policy row applicable to this ticket's own priority — not
   // the full matrix. `policies` itself is fetched once per mount (see
   // above) and never re-fetched per ticket; this is a pure lookup, no
-  // extra network call.
+  // extra network call. Still used for display (ack window, handling-
+  // stage percentages) — just no longer for targetMinutes below.
   const policy = policies?.find((p) => p.priority === ticketPriority) ?? null;
-  const targetMinutes = policy?.resolution_target_minutes ?? null;
 
   const resolution = sla?.resolution ?? null;
+
+  // The clock's own active_target_minutes is the real target it's
+  // currently measured against — read directly rather than re-derived
+  // from a policy lookup keyed on ticketPriority. This matters once a
+  // handling stage has reshifted the clock: ticketPriority becomes
+  // CRITICAL on escalation, but the clock's real target is
+  // original-priority x stage-percentage, which no longer matches
+  // CRITICAL's own flat policy value. Falls back to the policy lookup
+  // only when there's no resolution clock at all yet.
+  const targetMinutes = resolution?.active_target_minutes ?? policy?.resolution_target_minutes ?? null;
 
   const elapsedFraction =
     resolution && targetMinutes != null

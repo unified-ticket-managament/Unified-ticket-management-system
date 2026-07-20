@@ -175,3 +175,27 @@ class TicketEscalationRepository:
             )
         )
         return list(result.scalars().all())
+
+    async def list_handling_stage_overdue(self, *, now: datetime) -> list[TicketEscalation]:
+        """
+        Every escalation with a currently-running handling stage
+        (handling_stage_due_at non-null) whose window has elapsed — the
+        sweep's candidate set for EscalationService.
+        advance_for_handling_sla_breach. A stage is "currently running"
+        iff handling_stage_due_at is non-null (see TicketEscalation's
+        own docstring) — that field being cleared back to NULL once
+        advance_for_handling_sla_breach acts on it is what keeps this
+        query returning each real breach at most once, no separate
+        breach-flag column needed. Deliberately independent of
+        list_overdue_active above — an escalation only ever has a
+        running handling stage while ACKNOWLEDGED, never ACTIVE, so
+        the two candidate sets never overlap.
+        """
+
+        result = await self.db.execute(
+            select(TicketEscalation).where(
+                TicketEscalation.handling_stage_due_at.is_not(None),
+                TicketEscalation.handling_stage_due_at < now,
+            )
+        )
+        return list(result.scalars().all())

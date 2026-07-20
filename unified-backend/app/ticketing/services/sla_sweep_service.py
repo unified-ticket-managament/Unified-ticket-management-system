@@ -143,7 +143,6 @@ class SLASweepService:
 
         policies = await self.sla_policy_repository.list_all()
         target_by_priority_fr = {p.priority: p.first_response_target_minutes for p in policies}
-        target_by_priority_res = {p.priority: p.resolution_target_minutes for p in policies}
         # Per-priority "Warning 1"/"Warning 2" overrides (see SLAPolicy.
         # warning_1_percentage/warning_2_percentage and the admin-facing
         # SLA Timing Matrix) — BREACHED/ESCALATED stay fixed globally,
@@ -270,9 +269,18 @@ class SLASweepService:
         )
 
         for clock in resolution_clocks:
-            target_minutes = target_by_priority_res.get(clock.priority)
-            if target_minutes is None:
-                continue
+            # active_target_minutes is the clock's own stored, resolved
+            # target — read directly rather than re-derived from
+            # `priority` via a policy lookup. This matters once a
+            # handling-stage reshift is in play: the target is then
+            # original_resolution_target_minutes x stage_percentage,
+            # which no longer matches any single priority's flat policy
+            # row (see ResolutionSLA.active_target_minutes's own
+            # docstring). warning_1/warning_2 thresholds below still
+            # resolve via `clock.priority` — priority stays at the
+            # escalation's own original_priority throughout (never
+            # forced to CRITICAL), so that lookup remains correct.
+            target_minutes = clock.active_target_minutes
 
             fraction = compute_elapsed_fraction(
                 due_at=clock.due_at, target_minutes=target_minutes, at=now
@@ -452,23 +460,51 @@ class SLASweepService:
         # EscalationHandlingSlaService/EscalationService.
         # advance_for_handling_sla_breach's own docstrings): this one
         # fires when an *acknowledged* escalation still isn't actually
-        # resolved within its 25%-of-original-target window. Same
+        # resolved within its current handling stage's window. Same
         # "extend this one sweep, no second scheduler" rationale.
+        #
+        # As of the handling-stage redesign, the trigger source is
+        # TicketEscalation.handling_stage_due_at (list_handling_stage_
+        # overdue), not the old EscalationHandlingSlaService.
+        # evaluate_breaches() return value — that method is still
+        # called (next block) purely so the old, still-dual-written
+        # table's own breached_at/status stay accurate for anyone still
+        # reading it, WITHOUT also driving this advance a second time
+        # for the same real-world breach (which would double-advance
+        # the escalation ladder).
         escalation_handling_sla_breaches = 0
-        for clock in await self.escalation_handling_sla_service.evaluate_breaches(now=now):
+        for escalation in await self.escalation_service.ticket_escalation_repository.list_handling_stage_overdue(
+            now=now
+        ):
             try:
                 async with db.begin_nested():
                     advanced = await self.escalation_service.advance_for_handling_sla_breach(
-                        clock.ticket_id
+                        escalation.ticket_id
                     )
                 escalation_handling_sla_breaches += int(advanced)
             except Exception:
                 logger.warning(
-                    "SLA sweep: failed advancing escalation for handling-SLA breach on ticket %s",
-                    clock.ticket_id,
+                    "SLA sweep: failed advancing escalation for handling-stage breach on ticket %s",
+                    escalation.ticket_id,
                     exc_info=True,
                 )
                 errors += 1
+
+        # Dual-write only, per this session's "migrate behavior first,
+        # verify nothing depends on it, remove in a later cleanup
+        # phase" decision — keeps the old escalation_handling_slas
+        # rows' own breached_at/status current for anyone still reading
+        # them, without influencing escalation advancement (handled
+        # entirely by the loop above now).
+        try:
+            await self.escalation_handling_sla_service.evaluate_breaches(now=now)
+        except Exception:
+            logger.warning(
+                "SLA sweep: failed evaluating legacy escalation-handling-SLA breaches "
+                "(dual-write only, does not affect escalation advancement)",
+                exc_info=True,
+            )
+            errors += 1
 
         duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
         logger.info(

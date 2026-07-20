@@ -1,9 +1,9 @@
 # test_escalation_service.py
 #
 # Regression coverage for the internal escalation workflow
-# (TicketEscalation / EscalationService). Three deliberate exceptions
-# to "escalating must never restart/recalculate the Resolution SLA
-# clock," split into three separate moments on purpose:
+# (TicketEscalation / EscalationService). Two deliberate exceptions to
+# "escalating must never restart/recalculate the Resolution SLA clock,"
+# split into two separate moments on purpose:
 #
 # 1. The ticket's priority permanently becomes CRITICAL the instant it
 #    escalates — manual_escalate/auto_escalate_if_needed, via
@@ -13,23 +13,28 @@
 #    sla_untouched below is the test that guards this split.
 # 2. Acknowledging alone (acknowledge()) only stops the ack-window
 #    auto-advance — it does NOT reshift the Resolution SLA clock and
-#    does NOT start the escalation-handling SLA. See
-#    test_acknowledge_alone_does_not_reshift_sla below.
-# 3. The Resolution SLA clock's own due_at/priority only reshift once a
-#    supervisor has ALSO settled who the ticket is assigned to —
+#    does NOT advance the handling stage. Only once a supervisor has
+#    ALSO settled who the ticket is assigned to —
 #    acknowledge_via_assignment() (claim_ticket/transfer_agent) or
-#    confirm_assignment() (the "keep the current assignee" case) —
-#    via EscalationService._complete_acceptance /
-#    _reshift_sla_for_escalation_acceptance. This is the "the
-#    Resolution SLA should NOT start immediately when escalated — only
-#    after acknowledgment AND assignment" requirement. Further gated on
-#    escalation.has_advanced_past_starting_level: acceptance of a
-#    still-first-time escalation leaves the clock running against its
-#    original_priority target rather than reshifting straight to
-#    CRITICAL's — only once nobody acted in time and it genuinely
-#    advanced to a further level does acceptance reshift onto CRITICAL.
-#    See test_confirm_assignment_does_not_reshift_sla_on_first_acceptance
-#    / test_confirm_assignment_reshifts_sla_after_escalation_has_advanced.
+#    confirm_assignment() (the "keep the current assignee" case) — does
+#    EscalationService._complete_acceptance advance the handling stage
+#    AND reshift the Resolution SLA clock, to
+#    original_priority.resolution_target_minutes x
+#    handling_stage_percentages[stage]. See
+#    test_acknowledge_alone_does_not_reshift_sla below.
+#
+# As of the 2026-07-20 handling-stage redesign: ResolutionSLA.priority
+# is NEVER forced to CRITICAL (it stays at the escalation's own
+# original_priority for the ticket's whole life — only
+# Ticket.current_priority, the visible badge, becomes CRITICAL).
+# handling_stage/handling_stage_started_at/handling_stage_due_at are
+# genuinely independent of has_advanced_past_starting_level (which
+# only tracks ownership-ladder movement) — an acknowledgment-window
+# timeout (evaluate_overdue) must NEVER advance the handling stage or
+# reshift the clock; only a genuine accept -> assign ->
+# (handling-stage-window-elapses) -> re-accept cycle does. See
+# test_ack_timeout_ladder_advance_does_not_advance_handling_stage below
+# for the regression test covering exactly this distinction.
 #
 # started_at/status are still never touched by ANYTHING in this file.
 #
@@ -136,6 +141,12 @@ async def _make_scenario(session, *, agent_id=None):
     # tickets is written before resolution_slas in the same flush.
     await session.flush()
 
+    # active_target_minutes is read from the real seeded MEDIUM policy
+    # rather than hardcoded, so every stage-based assertion below (which
+    # also reads the same policy at test time) stays self-consistent
+    # even if the seeded target/percentages are ever retuned.
+    medium_policy = await SLAPolicyRepository(session).get_by_priority(TicketPriority.MEDIUM)
+
     resolution_sla = ResolutionSLA(
         resolution_sla_id=uuid.uuid4(),
         ticket_id=ticket.ticket_id,
@@ -144,6 +155,7 @@ async def _make_scenario(session, *, agent_id=None):
         status=SLAClockStatus.RUNNING,
         started_at=started_at,
         due_at=due_at,
+        active_target_minutes=medium_policy.resolution_target_minutes,
     )
     session.add(resolution_sla)
 
@@ -323,19 +335,18 @@ async def test_acknowledge_alone_does_not_reshift_sla(db_session):
     assert reloaded.due_at == original_due_at
 
 
-async def test_confirm_assignment_does_not_reshift_sla_on_first_acceptance(db_session):
+async def test_confirm_assignment_reshifts_sla_to_stage_1_on_first_acceptance(db_session):
     """
     The "keep the current assignee" branch: Acknowledge (step 1) is
     clicked first — leaving the clock untouched (see the test above) —
     and confirm_assignment (step 2's no-reassignment branch) completes
-    acceptance. On a still-first-time escalation (never advanced past
-    its starting level), this must NOT reshift the Resolution SLA onto
-    CRITICAL's target — it keeps running against its original
-    priority's target until the escalation has actually advanced (see
-    test_confirm_assignment_reshifts_sla_after_escalation_has_advanced
-    below). Reshifting immediately here used to jump straight to
-    CRITICAL's 60-minute target even though the clock had already run
-    for hours under MEDIUM's, landing due_at in the past.
+    acceptance. As of the handling-stage redesign, even a first-time
+    acceptance now reshifts the Resolution SLA — onto
+    handling_stage=1's target (original_priority's resolution_target
+    x handling_stage_percentages[0]), never CRITICAL's — since the
+    clock's target is no longer tied to `priority` at all
+    (active_target_minutes carries it directly). priority itself stays
+    at original_priority (MEDIUM here) for the ticket's whole life.
     """
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
@@ -352,44 +363,78 @@ async def test_confirm_assignment_does_not_reshift_sla_on_first_acceptance(db_se
     result = await service.confirm_assignment(ticket.ticket_id, team_lead)
     assert result.ticket_id == ticket.ticket_id
 
+    policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
+    expected_target_minutes = round(
+        policy.resolution_target_minutes * policy.handling_stage_percentages[0] / 100
+    )
+
     reloaded = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     assert reloaded.priority == TicketPriority.MEDIUM
-    assert reloaded.due_at == original_due_at
-
-
-async def test_confirm_assignment_reshifts_sla_after_escalation_has_advanced(db_session):
-    """
-    Once the escalation has gone unhandled and advanced past its
-    starting level — a genuine "second time" escalation — acceptance
-    DOES reshift the Resolution SLA clock onto CRITICAL's target, same
-    as it always did before this fix, just deferred until this later
-    point instead of firing on the very first acceptance. Sets
-    has_advanced_past_starting_level directly, same convention as
-    test_overdue_active_escalation_advances_without_touching_sla's own
-    direct manipulation of ack_due_at, rather than driving a full
-    ack-window-lapse cycle through evaluate_overdue.
-    """
-
-    team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    original_due_at = resolution_sla.due_at
-    team_lead.permissions = ["ticket:escalate"]
-
-    service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    assert reloaded.due_at != original_due_at
+    assert reloaded.active_target_minutes == expected_target_minutes
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
     )
-    escalation.has_advanced_past_starting_level = True
+    assert escalation.handling_stage == 1
+    assert escalation.handling_stage_started_at is not None
+    assert escalation.handling_stage_due_at is not None
+
+
+async def test_confirm_assignment_advances_to_stage_2_after_stage_1_elapses(db_session):
+    """
+    A genuine "second time" acceptance — stage 1 already ran and its
+    window elapsed (simulated by clearing handling_stage_due_at back to
+    NULL directly, exactly what the sweep does on a real breach — see
+    test_advance_for_handling_sla_breach_clears_stage_due_at_and_
+    advances_ladder for that side in isolation) — reshifts the
+    Resolution SLA onto stage 2's (smaller) percentage of the SAME
+    original priority's target, and increments handling_stage to 2.
+    Deliberately NOT driven via has_advanced_past_starting_level (the
+    escalation-ladder flag) at all — handling-stage progression is
+    independent of it by design; see the ack-timeout test below for the
+    case that flag WOULD be set without any real handling-stage
+    advance happening.
+    """
+
+    team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.acknowledge(ticket.ticket_id, team_lead)
+    await service.confirm_assignment(ticket.ticket_id, team_lead)
+
+    stage_1 = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    stage_1_due_at = stage_1.due_at
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation.handling_stage == 1
+    # Simulate stage 1's window having elapsed with nobody resolving it
+    # — the sweep would clear this same field the same way (see
+    # advance_for_handling_sla_breach).
+    escalation.handling_stage_due_at = None
     await db_session.flush()
 
-    await service.acknowledge(ticket.ticket_id, team_lead)
     result = await service.confirm_assignment(ticket.ticket_id, team_lead)
     assert result.ticket_id == ticket.ticket_id
 
+    policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
+    expected_target_minutes = round(
+        policy.resolution_target_minutes * policy.handling_stage_percentages[1] / 100
+    )
+
     reloaded = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
-    assert reloaded.priority == TicketPriority.CRITICAL
-    assert reloaded.due_at != original_due_at
+    assert reloaded.priority == TicketPriority.MEDIUM
+    assert reloaded.due_at != stage_1_due_at
+    assert reloaded.active_target_minutes == expected_target_minutes
+
+    reloaded_escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert reloaded_escalation.handling_stage == 2
 
 
 async def test_confirm_assignment_requires_no_active_escalation_to_400(db_session):
@@ -454,15 +499,14 @@ async def test_acknowledge_by_site_lead_before_their_level_is_forbidden(db_sessi
     assert exc_info.value.status_code == 403
 
 
-async def test_acknowledge_via_assignment_does_not_reshift_on_first_acceptance(db_session):
+async def test_acknowledge_via_assignment_reshifts_sla_to_stage_1_on_first_acceptance(db_session):
     """
     Simulates a supervisor assigning the ticket out (acceptance) before
     ever clicking a literal Acknowledge button. The ticket's priority
-    label still becomes CRITICAL immediately (escalating alone always
-    does that), but on a still-first-time escalation the Resolution SLA
-    clock itself must NOT reshift yet — see
-    test_acknowledge_via_assignment_reshifts_once_escalation_has_advanced
-    below for when it does.
+    label becomes CRITICAL immediately (escalating alone always does
+    that) — but ResolutionSLA.priority itself stays at original_priority
+    (MEDIUM), never CRITICAL; only its due_at/active_target_minutes
+    reshift, onto handling_stage=1's target.
     """
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
@@ -477,58 +521,74 @@ async def test_acknowledge_via_assignment_does_not_reshift_on_first_acceptance(d
     reloaded_ticket = await service.ticket_repository.get_by_id(ticket.ticket_id)
     assert reloaded_ticket.current_priority == TicketPriority.CRITICAL
 
+    policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
+    expected_target_minutes = round(
+        policy.resolution_target_minutes * policy.handling_stage_percentages[0] / 100
+    )
+
     reloaded = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     assert reloaded.priority == TicketPriority.MEDIUM
-    assert reloaded.due_at == original_due_at
+    assert reloaded.due_at != original_due_at
+    assert reloaded.active_target_minutes == expected_target_minutes
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation.handling_stage == 1
 
 
-async def test_acknowledge_via_assignment_reshifts_once_escalation_has_advanced(db_session):
+async def test_acknowledge_via_assignment_is_idempotent_while_stage_still_running(db_session):
+    """
+    A second acknowledge_via_assignment call (e.g. a later reassignment)
+    while the current handling stage is still running (its window
+    hasn't elapsed) must not advance the stage or reshift the clock
+    again — guarded by handling_stage_due_at already being non-null,
+    independent of has_advanced_past_starting_level entirely.
+    """
+
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    original_due_at = resolution_sla.due_at
     team_lead.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
 
-    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
-        ticket.ticket_id
-    )
-    escalation.has_advanced_past_starting_level = True
-    await db_session.flush()
-
     await service.acknowledge_via_assignment(ticket.ticket_id, team_lead)
 
     reloaded = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
-    assert reloaded.priority == TicketPriority.CRITICAL
-    assert reloaded.due_at != original_due_at
+    assert reloaded.priority == TicketPriority.MEDIUM
     first_reshifted_due_at = reloaded.due_at
 
-    # A second acknowledge_via_assignment call (e.g. a later
-    # reassignment) must not reshift the clock again — idempotent once
-    # the clock is already on CRITICAL.
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation.handling_stage == 1
+    first_stage_due_at = escalation.handling_stage_due_at
+
+    # A second call, stage 1 still running — must not reshift the
+    # clock again or advance the stage.
     await service.acknowledge_via_assignment(ticket.ticket_id, team_lead)
     reloaded_again = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     assert reloaded_again.due_at == first_reshifted_due_at
+
+    escalation_again = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation_again.handling_stage == 1
+    assert escalation_again.handling_stage_due_at == first_stage_due_at
 
 
 async def test_acknowledge_via_assignment_still_completes_after_prior_explicit_acknowledge(
     db_session,
 ):
     """
-    Guards the fix to acknowledge_via_assignment's own bail-out: it used
-    to skip everything unless the escalation was still ACTIVE, which
-    broke the ordinary two-step flow (Acknowledge, then Assign) — by
-    the time claim_ticket/transfer_agent calls this, status is already
-    ACKNOWLEDGED from step 1, so bailing out there would silently leave
-    acceptance (the reshift once the escalation has advanced, and the
-    escalation-handling SLA's start) never completed at all for the
-    single most common path through this feature.
-
-    has_advanced_past_starting_level is forced True first so the
-    reshift itself has something to prove: on a still-first-time
-    escalation this method now correctly no-ops the reshift regardless
-    of whether it bails out early or not, which would make a bail-out
-    regression invisible here otherwise.
+    Guards acknowledge_via_assignment's own bail-out: it must not skip
+    completing acceptance just because the escalation is already
+    ACKNOWLEDGED (from a prior plain Acknowledge click) rather than
+    still ACTIVE — by the time claim_ticket/transfer_agent calls this,
+    status is already ACKNOWLEDGED from step 1, so bailing out there
+    would silently leave acceptance (the handling-stage advance and
+    Resolution SLA reshift) never completed at all for the single most
+    common path through this feature.
     """
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
@@ -542,17 +602,16 @@ async def test_acknowledge_via_assignment_still_completes_after_prior_explicit_a
     still_untouched = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     assert still_untouched.due_at == original_due_at
 
-    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
-        ticket.ticket_id
-    )
-    escalation.has_advanced_past_starting_level = True
-    await db_session.flush()
-
     await service.acknowledge_via_assignment(ticket.ticket_id, team_lead)
 
     reloaded = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
-    assert reloaded.priority == TicketPriority.CRITICAL
+    assert reloaded.priority == TicketPriority.MEDIUM
     assert reloaded.due_at != original_due_at
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation.handling_stage == 1
 
 
 async def test_escalating_twice_is_rejected_not_a_second_chain(db_session):
@@ -647,6 +706,136 @@ async def test_overdue_active_escalation_advances_without_touching_sla(db_sessio
 
     reloaded = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     assert reloaded.due_at == original_due_at
+
+    # Ladder movement alone must never touch handling progression — the
+    # exact distinction this whole redesign exists to enforce.
+    assert advanced.handling_stage == 0
+    assert advanced.handling_stage_due_at is None
+
+
+async def test_ack_timeout_ladder_advance_then_first_accept_starts_at_stage_1_not_2(db_session):
+    """
+    The core regression test for this session's fix. Team Lead never
+    acknowledges; the ack window lapses and the ladder auto-advances to
+    MANAGER (evaluate_overdue) — nobody has done any real handling work
+    yet. The Manager's SUBSEQUENT first acceptance must still be
+    handling_stage=1 (25% of the ORIGINAL priority's target), not stage
+    2 and not CRITICAL's target — before this fix,
+    has_advanced_past_starting_level (which evaluate_overdue always
+    sets True on any ladder advance, regardless of cause) was
+    incorrectly used as a proxy for "a real handling cycle already
+    happened," which this scenario disproves: the ladder moved, but
+    handling never started.
+    """
+
+    team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation.level == EscalationLevel.TEAM_LEAD
+
+    # Simulate the ack window lapsing with nobody having acknowledged —
+    # same mechanism test_overdue_active_escalation_advances_without_
+    # touching_sla already exercises in isolation.
+    escalation.ack_due_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    await db_session.flush()
+
+    advanced_count = await service.evaluate_overdue(now=datetime.now(timezone.utc))
+    assert advanced_count == 1
+
+    ladder_advanced = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert ladder_advanced.status == EscalationStatus.ACTIVE
+    assert ladder_advanced.level != EscalationLevel.TEAM_LEAD
+    assert ladder_advanced.has_advanced_past_starting_level is True
+    # The would-be-buggy proxy is True, but handling progression itself
+    # must be completely untouched by this ladder movement alone.
+    assert ladder_advanced.handling_stage == 0
+    assert ladder_advanced.handling_stage_due_at is None
+
+    # Whoever the ladder now points at (MANAGER — the Team Lead's own
+    # manager, resolved by _resolve_owners_for_level) accepts for the
+    # very first time.
+    new_owner_id = uuid.UUID(ladder_advanced.owner_ids[0])
+    new_owner = (
+        await db_session.execute(
+            select(User)
+            .options(joinedload(User.role), joinedload(User.category))
+            .where(User.user_id == new_owner_id)
+        )
+    ).unique().scalar_one()
+
+    await service.acknowledge(ticket.ticket_id, new_owner)
+    await service.confirm_assignment(ticket.ticket_id, new_owner)
+
+    policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
+    expected_target_minutes = round(
+        # stage 1's percentage, NOT stage 2's — this is the exact bug
+        # fix: the ladder having already advanced once must not skip
+        # straight to stage 2's smaller percentage.
+        policy.resolution_target_minutes * policy.handling_stage_percentages[0] / 100
+    )
+
+    final_escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert final_escalation.handling_stage == 1
+
+    reloaded = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    assert reloaded.priority == TicketPriority.MEDIUM
+    assert reloaded.active_target_minutes == expected_target_minutes
+
+
+async def test_advance_for_handling_sla_breach_clears_due_at_without_bumping_stage(db_session):
+    """
+    advance_for_handling_sla_breach only clears handling_stage_due_at
+    (so list_handling_stage_overdue's idempotency guard doesn't fire
+    again for the same breach) and moves the ownership ladder — it does
+    NOT itself increment handling_stage. The stage counter only
+    advances on the NEXT successful _complete_acceptance, mirroring
+    handling_stage=1 -> 2's own mechanics tested above.
+    """
+
+    team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.acknowledge(ticket.ticket_id, team_lead)
+    await service.confirm_assignment(ticket.ticket_id, team_lead)
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation.handling_stage == 1
+    assert escalation.handling_stage_due_at is not None
+    old_level_started_at = escalation.level_started_at
+
+    advanced = await service.advance_for_handling_sla_breach(ticket.ticket_id)
+    assert advanced is True
+
+    reloaded = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert reloaded.status == EscalationStatus.ACTIVE
+    # Ticket is still unclaimed (agent_id never set in this scenario),
+    # so _resolve_starting_level correctly lands back on TEAM_LEAD
+    # again rather than skipping a level — but it's still a genuine
+    # fresh ownership cycle (level_started_at/ack_due_at reset), not a
+    # no-op.
+    assert reloaded.level == EscalationLevel.TEAM_LEAD
+    assert reloaded.level_started_at != old_level_started_at
+    assert reloaded.handling_stage_due_at is None
+    # Stage itself is untouched by this call — only the next
+    # _complete_acceptance bumps it to 2.
+    assert reloaded.handling_stage == 1
+    assert reloaded.has_advanced_past_starting_level is True
 
 
 async def test_close_for_ticket_resolution_closes_escalation_only(db_session):

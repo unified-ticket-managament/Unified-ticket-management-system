@@ -54,7 +54,13 @@ class ResolutionSLA(Base):
 
     # Snapshotted at ticket-creation time. Reshifted (not left stale)
     # if the ticket's priority changes mid-flight — see
-    # InteractionService.change_priority's due_at recompute.
+    # InteractionService.change_priority's due_at recompute. Deliberately
+    # NOT forced to CRITICAL on escalation acceptance (that used to be
+    # this column's role) — it now stays at the escalation's
+    # original_priority for the ticket's whole life, since
+    # active_target_minutes (below) is what carries the actual current
+    # target. Ticket.current_priority (the visible badge) is the
+    # separate, unaffected place CRITICAL is shown.
     priority: Mapped[TicketPriority] = mapped_column(
         SQLEnum(
             TicketPriority,
@@ -82,6 +88,20 @@ class ResolutionSLA(Base):
         DateTime(timezone=True),
         nullable=False,
         index=True,
+    )
+
+    # The actual target this clock is currently measured against, in
+    # minutes — stored, not re-derived from `priority` via a policy
+    # lookup, because once a handling stage reshifts due_at (target =
+    # original_resolution_target_minutes x handling_stage_percentage),
+    # that number no longer matches any single priority's flat policy
+    # row. Set at clock creation from the ticket's own priority policy,
+    # and kept in sync on every later reshift (manual priority change,
+    # escalation stage acceptance) — mirrors EscalationHandlingSLA.
+    # target_seconds's own "store the resolved value" convention.
+    active_target_minutes: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
     )
 
     # Non-null iff status == PAUSED; cleared back to None on resume.

@@ -77,6 +77,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ACK_TARGET_MINUTES = 30
 
+# Fallback only — used if a priority somehow has no SLAPolicy row at
+# all (shouldn't happen against a properly seeded database). Mirrors
+# DEFAULT_ACK_TARGET_MINUTES's own convention.
+DEFAULT_HANDLING_STAGE_TARGET_MINUTES = 60
+
 #escalation_service.py
 
 class EscalationService:
@@ -99,9 +104,8 @@ class EscalationService:
     isn't acting on it would just re-notify the same person.
 
     Never invents its own reshift math for the Resolution SLA clock —
-    the two deliberate exceptions, split into three separate moments on
-    purpose, are _set_ticket_priority_to_critical, acknowledge(), and
-    _complete_acceptance (via _reshift_sla_for_escalation_acceptance):
+    the two deliberate exceptions are _set_ticket_priority_to_critical
+    and _complete_acceptance:
 
     - _set_ticket_priority_to_critical runs immediately in
       _create_escalation (manual_escalate/auto_escalate_if_needed) — a
@@ -111,27 +115,37 @@ class EscalationService:
       Resolution SLA clock itself.
     - acknowledge() only stops the ack-window auto-advance
       (evaluate_overdue only considers ACTIVE escalations) — it does
-      NOT reshift the Resolution SLA and does NOT start the
-      escalation-handling SLA. Acknowledging alone means "someone is
-      looking at this," not "someone has taken it on."
+      NOT reshift the Resolution SLA and does NOT advance the handling
+      stage. Acknowledging alone means "someone is looking at this,"
+      not "someone has taken it on."
     - _complete_acceptance (called from acknowledge_via_assignment —
       i.e. claim_ticket/transfer_agent — and from confirm_assignment)
-      is the one place both the Resolution SLA reshift and the
-      escalation-handling SLA's start actually happen, once a
-      supervisor has *also* settled who the ticket is assigned to.
-      This is the "Resolution SLA starts only after Acknowledge AND
-      Assign" requirement: acknowledging and then never assigning
-      anyone leaves the clock parked at its pre-escalation target
-      indefinitely, by design. The reshift itself is further gated on
-      escalation.has_advanced_past_starting_level: accepting the FIRST
-      escalation leaves the clock running against its
-      original_priority target rather than jumping straight to
-      CRITICAL's — only once nobody acted in time and it genuinely
-      advanced to a further level does acceptance reshift onto
-      CRITICAL. Without this, a ticket that had already run for hours/
-      days under a LOW/MEDIUM/HIGH target would reshift onto CRITICAL's
-      60-minute target the instant the *first* escalation was
-      accepted, landing due_at in the past.
+      is the one place the handling stage actually advances and the
+      Resolution SLA reshifts, once a supervisor has *also* settled who
+      the ticket is assigned to. This is the "Resolution SLA starts
+      only after Acknowledge AND Assign" requirement: acknowledging and
+      then never assigning anyone leaves the clock parked at its
+      pre-escalation target indefinitely, by design.
+
+    Handling-stage progression (TicketEscalation.handling_stage /
+    handling_stage_started_at / handling_stage_due_at) is a genuinely
+    independent fact from escalation-ladder progression
+    (level/status/has_advanced_past_starting_level) — this is the core
+    fix of the 2026-07-20 redesign. A ladder advance caused by an
+    acknowledgment-window timeout (evaluate_overdue) NEVER touches the
+    handling-stage fields or reshifts the Resolution SLA; only a
+    genuine accept -> assign -> (handling-stage-window-elapses) ->
+    re-accept cycle does. _complete_acceptance advances the stage
+    exactly once per genuinely new cycle (guarded by
+    handling_stage_due_at being NULL — see that method), always
+    resolving the target as original_priority's policy row's
+    resolution_target_minutes x handling_stage_percentages[stage],
+    never off whatever ResolutionSLA.priority happens to be — see
+    _resolve_stage_target_minutes. ResolutionSLA.priority itself no
+    longer gets forced to CRITICAL on acceptance; it stays at
+    original_priority for the ticket's whole life, since
+    ResolutionSLA.active_target_minutes (not priority) now carries the
+    real target.
 
     Escalating a ticket, and even acknowledging it, must leave the
     Resolution SLA's own started_at/due_at/status completely untouched
@@ -463,56 +477,31 @@ class EscalationService:
             new_values={"current_priority": TicketPriority.CRITICAL.value, "reason": "escalated"},
         )
 
-    async def _reshift_sla_for_escalation_acceptance(self, ticket: Ticket) -> None:
+    async def _resolve_stage_target_minutes(
+        self, *, original_priority: TicketPriority, stage: int
+    ) -> int:
         """
-        The Resolution SLA clock only reshifts onto CRITICAL's target
-        once a supervisor has actually taken ownership of the
-        escalation — acknowledged (acknowledge()), or assigned before
-        ever being acknowledged (acknowledge_via_assignment()) — never
-        at escalation creation itself, even though the ticket's own
-        priority label already flipped to CRITICAL then (see
-        _set_ticket_priority_to_critical above). This is the "the
-        Resolution SLA should NOT start immediately when escalated —
-        only after acknowledgment AND assignment" requirement: the
-        clock keeps measuring the *original* target's honest overdue
-        time for as long as the escalation sits unacknowledged, and
-        only restarts against the tighter CRITICAL target the moment
-        someone takes it on.
-
-        Uses SLAService.restart_resolution_clock_for_escalation — a
-        full, fresh CRITICAL-target window from this exact moment —
-        rather than reshift_resolution_clock_for_priority_change (the
-        manual Change Priority action's own method, which preserves
-        elapsed-time-consumed proportionally against the new target).
-        That proportional formula algebraically reduces to
-        clock.started_at + new_target, independent of when the reshift
-        actually happens — sensible for a manual priority change, but
-        wrong here: by the time an escalation has genuinely advanced a
-        level and someone finally accepts it, the ticket has often
-        already run for far longer than CRITICAL's own (deliberately
-        short) target, so the proportional formula would land due_at
-        in the past — the new owner effectively getting less time to
-        act than the target promises, or none at all. A full restart
-        gives them the real target window, starting now. No-op if the
-        clock has already been reshifted onto CRITICAL (idempotent —
-        acknowledging via assignment and then again via a literal
-        Acknowledge click, or a later reassignment, must never
-        re-reshift the clock a second time) or if there's no clock to
-        reshift at all. Deferred import to avoid a circular import
-        (sla_service.py imports build_escalation_service from this
-        module at module level).
+        original_target_minutes x handling_stage_percentages[stage-1]
+        (or the LAST configured percentage, if `stage` exceeds the
+        configured list's length — repeats rather than growing
+        unboundedly or erroring). Always resolved from
+        `original_priority` — the escalation's own snapshotted,
+        never-mutated priority-before-escalation — never from whatever
+        ResolutionSLA.priority currently is; that was the exact bug
+        this redesign fixes (see the class docstring). Falls back to
+        DEFAULT_HANDLING_STAGE_TARGET_MINUTES only if no policy row
+        exists at all for this priority, same "never let missing SLA
+        config block the underlying action" convention
+        _ack_target_minutes above already uses.
         """
 
-        clock = await self.resolution_sla_repository.get_by_ticket_id(ticket.ticket_id)
-        if clock is None or clock.priority == TicketPriority.CRITICAL:
-            return
+        policy = await self.sla_policy_repository.get_by_priority(original_priority)
+        if policy is None or not policy.handling_stage_percentages:
+            return DEFAULT_HANDLING_STAGE_TARGET_MINUTES
 
-        from app.ticketing.services.sla_service import build_sla_service
-
-        sla_service = build_sla_service(self.ticket_repository.db)
-        await sla_service.restart_resolution_clock_for_escalation(
-            ticket_id=ticket.ticket_id, new_priority=TicketPriority.CRITICAL
-        )
+        percentages = policy.handling_stage_percentages
+        stage_pct = percentages[min(stage - 1, len(percentages) - 1)]
+        return round(policy.resolution_target_minutes * stage_pct / 100)
 
     async def _resolve_starting_level(self, ticket: Ticket) -> EscalationLevel:
         """
@@ -711,9 +700,10 @@ class EscalationService:
         escalation (e.g. acknowledge() already ran, or a later
         reassignment reaches this a second time) — acknowledging a
         second time here is a no-op (repository.acknowledge only acts
-        on ACTIVE, returns None otherwise), the SLA reshift no-ops once
-        the clock is already on CRITICAL, and the handling-SLA start is
-        itself idempotent per its own docstring.
+        on ACTIVE, returns None otherwise), and the handling-stage
+        advance below is separately guarded so a second call while the
+        current stage is still running never advances the stage or
+        reshifts the clock a second time.
         """
 
         now = datetime.now(timezone.utc)
@@ -727,18 +717,61 @@ class EscalationService:
             # this as an error.
             updated = escalation
 
-        # The Resolution SLA clock only reshifts onto CRITICAL's target
-        # once this escalation has already advanced past its starting
-        # level — i.e. this is at least the second time it's been
-        # escalated, because whoever it started with didn't act in
-        # time. Accepting the FIRST escalation leaves the clock running
-        # against escalation.original_priority's own target instead:
-        # reshifting immediately on a first acceptance used to produce
-        # a due_at far in the past (an instant retroactive breach) any
-        # time the ticket had already consumed more than CRITICAL's
-        # own (60-minute) target before being accepted.
-        if updated.has_advanced_past_starting_level:
-            await self._reshift_sla_for_escalation_acceptance(ticket)
+        # Handling-stage advance — deliberately independent of
+        # has_advanced_past_starting_level (escalation-ladder
+        # movement). A genuinely new handling cycle starts here every
+        # time acceptance completes, whether this is the very first
+        # acceptance ever (stage 0 -> 1) or a re-acceptance after a
+        # real handling-stage breach (stage N -> N+1) — an
+        # acknowledgment-window timeout alone (evaluate_overdue) never
+        # reaches this method, so it can never trigger this advance.
+        # Guarded on handling_stage_due_at being NULL (no stage
+        # currently running) so a second call for the SAME already-
+        # running stage (e.g. acknowledge() then confirm_assignment()
+        # both routing here) is a genuine no-op — not just an
+        # idempotent re-write of the same values, a real skip.
+        if updated.handling_stage_due_at is None:
+            next_stage = updated.handling_stage + 1
+            stage_target_minutes = await self._resolve_stage_target_minutes(
+                original_priority=updated.original_priority, stage=next_stage
+            )
+
+            updated.handling_stage = next_stage
+            updated.handling_stage_started_at = now
+            updated.handling_stage_due_at = now + timedelta(minutes=stage_target_minutes)
+
+            # Deferred import to avoid a circular import (sla_service.py
+            # imports build_escalation_service from this module at
+            # module level). ResolutionSLA.priority is passed as
+            # original_priority, never CRITICAL — see ResolutionSLA's
+            # own docstring for why it no longer gets forced to
+            # CRITICAL on acceptance.
+            from app.ticketing.services.sla_service import build_sla_service
+
+            sla_service = build_sla_service(self.ticket_repository.db)
+            await sla_service.restart_resolution_clock_for_escalation(
+                ticket_id=ticket.ticket_id,
+                new_priority=updated.original_priority,
+                new_target_minutes=stage_target_minutes,
+            )
+
+            # Dual-write, per this session's "migrate behavior first,
+            # verify nothing depends on it, remove in a later cleanup
+            # phase" decision — EscalationHandlingSLA is no longer what
+            # drives anything below, but it's kept populated with the
+            # exact same target so nothing currently reading it (e.g.
+            # sla_service.py's get_ticket_sla_state, the ticket-detail
+            # "Escalation Handling SLA" card) goes stale during the
+            # transition.
+            if self.escalation_handling_sla_service is not None:
+                await self.escalation_handling_sla_service.start_if_not_started(
+                    escalation=updated,
+                    ticket=ticket,
+                    target_minutes=stage_target_minutes,
+                )
+
+            await self.ticket_repository.db.flush()
+            await self.ticket_repository.db.refresh(updated)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -751,13 +784,12 @@ class EscalationService:
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            new_values={"level": escalation.level.value, "via": via},
+            new_values={
+                "level": escalation.level.value,
+                "via": via,
+                "handling_stage": updated.handling_stage,
+            },
         )
-
-        if self.escalation_handling_sla_service is not None:
-            await self.escalation_handling_sla_service.start_if_not_started(
-                escalation=updated, ticket=ticket
-            )
 
         return updated
 
@@ -1074,6 +1106,15 @@ class EscalationService:
         now = datetime.now(timezone.utc)
         old_level = escalation.level
 
+        # Clear the elapsed stage's window — handling_stage itself is
+        # left as-is (the next successful _complete_acceptance is what
+        # advances it), but handling_stage_due_at being non-null is
+        # what list_handling_stage_overdue's idempotency relies on, so
+        # this must happen exactly once per real breach. Included in
+        # the same flush as the advance() call below (both mutate the
+        # same `escalation` object before either is written).
+        escalation.handling_stage_due_at = None
+
         # Deliberately NOT next_level(old_level) — unlike
         # evaluate_overdue's ack-window-lapse case above (where the
         # current level's owner never even acknowledged it, so genuinely
@@ -1224,6 +1265,9 @@ class EscalationService:
             closed_at=escalation.closed_at,
             closed_reason=escalation.closed_reason,
             overdue_seconds=overdue_seconds,
+            handling_stage=escalation.handling_stage,
+            handling_stage_started_at=escalation.handling_stage_started_at,
+            handling_stage_due_at=escalation.handling_stage_due_at,
         )
 
 

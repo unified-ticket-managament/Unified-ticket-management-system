@@ -34,7 +34,6 @@ type EditableField =
   | "first_response_target_minutes"
   | "resolution_target_minutes"
   | "escalation_ack_target_minutes"
-  | "handling_sla_percentage"
   | "warning_1_percentage"
   | "warning_2_percentage";
 
@@ -43,14 +42,22 @@ const MINUTE_FIELDS: EditableField[] = [
   "resolution_target_minutes",
   "escalation_ack_target_minutes",
 ];
-const PERCENTAGE_FIELDS: EditableField[] = [
-  "handling_sla_percentage",
-  "warning_1_percentage",
-  "warning_2_percentage",
-];
+const PERCENTAGE_FIELDS: EditableField[] = ["warning_1_percentage", "warning_2_percentage"];
 
-type Draft = Record<EditableField, string> & { policy_id: string; priority: TicketPriority };
-type Errors = Partial<Record<EditableField, string>>;
+// handling_stage_percentages is a variable-length array (stage 1 =
+// index 0, etc.) — edited separately from the scalar EditableFields
+// above, since it can't share their Record<EditableField, string>
+// shape. handling_sla_percentage itself is deliberately no longer
+// editable here — it's superseded and unread by any backend logic
+// (see SLAPolicyResponse's own comment in types/index.ts).
+type Draft = Record<EditableField, string> & {
+  policy_id: string;
+  priority: TicketPriority;
+  handling_stage_percentages: string[];
+};
+type Errors = Partial<Record<EditableField, string>> & {
+  handling_stage_percentages?: (string | undefined)[];
+};
 
 function toDraft(policy: SLAPolicyResponse): Draft {
   return {
@@ -59,9 +66,9 @@ function toDraft(policy: SLAPolicyResponse): Draft {
     first_response_target_minutes: String(policy.first_response_target_minutes),
     resolution_target_minutes: String(policy.resolution_target_minutes),
     escalation_ack_target_minutes: String(policy.escalation_ack_target_minutes),
-    handling_sla_percentage: String(policy.handling_sla_percentage),
     warning_1_percentage: String(policy.warning_1_percentage),
     warning_2_percentage: String(policy.warning_2_percentage),
+    handling_stage_percentages: policy.handling_stage_percentages.map(String),
   };
 }
 
@@ -79,11 +86,24 @@ function validateField(field: EditableField, raw: string): string | undefined {
   return undefined;
 }
 
+function validateStagePercentage(raw: string): string | undefined {
+  if (raw.trim() === "") return "Required";
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return "Number";
+  if (value < 1 || value > 100) return "1-100";
+  return undefined;
+}
+
 function validateDraft(draft: Draft): Errors {
   const errors: Errors = {};
   for (const field of [...MINUTE_FIELDS, ...PERCENTAGE_FIELDS]) {
     const message = validateField(field, draft[field]);
     if (message) errors[field] = message;
+  }
+
+  const stageErrors = draft.handling_stage_percentages.map(validateStagePercentage);
+  if (stageErrors.some((message) => message !== undefined)) {
+    errors.handling_stage_percentages = stageErrors;
   }
 
   // Cross-field: Warning 1 ("Half Elapsed") must fire before Warning 2
@@ -106,9 +126,21 @@ function validateDraft(draft: Draft): Errors {
 }
 
 function draftDiffersFromOriginal(draft: Draft, original: SLAPolicyResponse): boolean {
-  return [...MINUTE_FIELDS, ...PERCENTAGE_FIELDS].some(
+  const scalarDiffers = [...MINUTE_FIELDS, ...PERCENTAGE_FIELDS].some(
     (field) => draft[field] !== String(original[field])
   );
+  const stagesDiffer =
+    draft.handling_stage_percentages.length !== original.handling_stage_percentages.length ||
+    draft.handling_stage_percentages.some(
+      (value, index) => value !== String(original.handling_stage_percentages[index])
+    );
+  return scalarDiffers || stagesDiffer;
+}
+
+function updateStagePercentage(draft: Draft, index: number, value: string): Draft {
+  const handling_stage_percentages = [...draft.handling_stage_percentages];
+  handling_stage_percentages[index] = value;
+  return { ...draft, handling_stage_percentages };
 }
 
 export default function SlaTimingMatrixPage() {
@@ -193,6 +225,12 @@ export default function SlaTimingMatrixPage() {
     );
   }
 
+  function updateStage(policyId: string, index: number, value: string) {
+    setDrafts((prev) =>
+      prev.map((d) => (d.policy_id === policyId ? updateStagePercentage(d, index, value) : d))
+    );
+  }
+
   function handleReset() {
     if (!policies) return;
     setDrafts(policies.map(toDraft));
@@ -210,7 +248,7 @@ export default function SlaTimingMatrixPage() {
               first_response_target_minutes: Number(draft.first_response_target_minutes),
               resolution_target_minutes: Number(draft.resolution_target_minutes),
               escalation_ack_target_minutes: Number(draft.escalation_ack_target_minutes),
-              handling_sla_percentage: Number(draft.handling_sla_percentage),
+              handling_stage_percentages: draft.handling_stage_percentages.map(Number),
               warning_1_percentage: Number(draft.warning_1_percentage),
               warning_2_percentage: Number(draft.warning_2_percentage),
             };
@@ -266,7 +304,7 @@ export default function SlaTimingMatrixPage() {
 
       <PageHeader
         title="SLA Timing Matrix"
-        description="Configure First Response, Resolution, escalation, and warning timing per priority. Edits apply to new SLA clocks and to any ticket whose priority changes afterward (including via escalation) — they are not applied retroactively to a clock already running at its current, unchanged priority."
+        description="Configure First Response, Resolution, escalation, handling-stage, and warning timing per priority. Each handling stage's percentage is of the ticket's ORIGINAL priority's Resolution SLA target — a stage beyond the configured list repeats the last value. Edits apply to new SLA clocks and to any ticket whose priority changes afterward (including via escalation) — they are not applied retroactively to a clock already running at its current, unchanged priority."
         action={
           <div className="flex items-center gap-2">
             <Button
@@ -305,8 +343,7 @@ export default function SlaTimingMatrixPage() {
                     <TableHead>First Response SLA (min)</TableHead>
                     <TableHead>Resolution SLA (min)</TableHead>
                     <TableHead>Escalation Ack Window (min)</TableHead>
-                    <TableHead>Handling SLA (%)</TableHead>
-                    <TableHead>Calculated Handling SLA</TableHead>
+                    <TableHead>Handling Stage Percentages (%)</TableHead>
                     <TableHead>Warning 1 (%)</TableHead>
                     <TableHead>Warning 2 (%)</TableHead>
                   </TableRow>
@@ -315,11 +352,7 @@ export default function SlaTimingMatrixPage() {
                   {orderedDrafts.map((draft) => {
                     const errors = errorsByPolicyId.get(draft.policy_id) ?? {};
                     const resolutionMinutes = Number(draft.resolution_target_minutes);
-                    const handlingPct = Number(draft.handling_sla_percentage);
-                    const calculatedSeconds =
-                      Number.isFinite(resolutionMinutes) && Number.isFinite(handlingPct)
-                        ? Math.round(resolutionMinutes * 60 * (handlingPct / 100))
-                        : null;
+                    const stageErrors = errors.handling_stage_percentages ?? [];
 
                     return (
                       <TableRow key={draft.policy_id}>
@@ -346,28 +379,43 @@ export default function SlaTimingMatrixPage() {
                           </TableCell>
                         ))}
                         <TableCell>
-                          <Input
-                            type="number"
-                            min={1}
-                            max={100}
-                            step={1}
-                            value={draft.handling_sla_percentage}
-                            onChange={(e) =>
-                              updateField(draft.policy_id, "handling_sla_percentage", e.target.value)
-                            }
-                            className="w-20"
-                            aria-invalid={!!errors.handling_sla_percentage}
-                          />
-                          {errors.handling_sla_percentage && (
-                            <p className="mt-1 text-xs text-destructive">
-                              {errors.handling_sla_percentage}
-                            </p>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <span className="text-sm font-medium text-muted-foreground">
-                            {calculatedSeconds != null ? formatDurationShort(calculatedSeconds) : "—"}
-                          </span>
+                          <div className="flex flex-wrap gap-3">
+                            {draft.handling_stage_percentages.map((value, index) => {
+                              const stagePct = Number(value);
+                              const calculatedSeconds =
+                                Number.isFinite(resolutionMinutes) && Number.isFinite(stagePct)
+                                  ? Math.round(resolutionMinutes * 60 * (stagePct / 100))
+                                  : null;
+                              const stageError = stageErrors[index];
+
+                              return (
+                                <div key={index} className="flex flex-col">
+                                  <span className="mb-1 text-[11px] text-muted-foreground">
+                                    Stage {index + 1}
+                                  </span>
+                                  <Input
+                                    type="number"
+                                    min={1}
+                                    max={100}
+                                    step={1}
+                                    value={value}
+                                    onChange={(e) => updateStage(draft.policy_id, index, e.target.value)}
+                                    className="w-16"
+                                    aria-invalid={!!stageError}
+                                  />
+                                  {stageError ? (
+                                    <p className="mt-1 text-xs text-destructive">{stageError}</p>
+                                  ) : (
+                                    <p className="mt-1 text-xs text-muted-foreground">
+                                      {calculatedSeconds != null
+                                        ? formatDurationShort(calculatedSeconds)
+                                        : "—"}
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
                         </TableCell>
                         {(["warning_1_percentage", "warning_2_percentage"] as const).map((field) => (
                           <TableCell key={field}>

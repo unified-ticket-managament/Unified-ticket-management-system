@@ -300,6 +300,7 @@ class SLAService:
             priority=priority,
             started_at=started_at,
             due_at=due_at,
+            active_target_minutes=policy.resolution_target_minutes,
         )
 
     async def create_or_resume_resolution_clock(
@@ -432,31 +433,39 @@ class SLAService:
         *,
         ticket_id: UUID,
         new_priority: TicketPriority,
+        new_target_minutes: int,
     ) -> None:
         """
-        Called from EscalationService._reshift_sla_for_escalation_
-        acceptance only. A full, fresh due_at (now + new target) rather
-        than reshift_resolution_clock_for_priority_change's proportional
-        formula — see ResolutionSLARepository.restart_due_at_for_
-        escalation's own docstring for why: preserving elapsed time
-        against CRITICAL's much shorter target routinely produced a
-        due_at already in the past the moment a supervisor accepted the
-        escalation, which defeats the point of giving the new owner a
-        real window to act.
+        Called from EscalationService._complete_acceptance on every
+        handling-stage (re)acceptance — a full, fresh due_at (now + new
+        target) rather than reshift_resolution_clock_for_priority_
+        change's proportional formula — see ResolutionSLARepository.
+        restart_due_at_for_escalation's own docstring for why: preserving
+        elapsed time against a much shorter stage target routinely
+        produced a due_at already in the past the moment a supervisor
+        accepted the escalation, which defeats the point of giving the
+        new owner a real window to act.
+
+        `new_target_minutes` is passed in explicitly (the caller has
+        already resolved it as original_resolution_target_minutes x
+        handling_stage_percentage) rather than looked up from a policy
+        keyed on `new_priority` — the target no longer maps 1:1 to any
+        single priority's flat policy row once stages are involved.
+        `new_priority` is still recorded on the clock (kept at the
+        escalation's own original_priority by every caller — see
+        EscalationService — never forced to CRITICAL) purely so
+        warning_1/warning_2 threshold lookups elsewhere keep resolving
+        against the correct policy row.
         """
 
         clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
         if clock is None:
             return
 
-        policy = await self._get_policy(new_priority)
-        if policy is None:
-            return
-
         await self.resolution_sla_repository.restart_due_at_for_escalation(
             clock,
             new_priority=new_priority,
-            new_target_minutes=policy.resolution_target_minutes,
+            new_target_minutes=new_target_minutes,
             now=datetime.now(timezone.utc),
         )
 
@@ -481,21 +490,18 @@ class SLAService:
 
         resolution_state = None
         if resolution_clock is not None:
-            policy = await self._get_policy(resolution_clock.priority)
-            target_minutes = (
-                policy.resolution_target_minutes if policy is not None else 0
-            )
             at = resolution_clock.completed_at or datetime.now(timezone.utc)
             resolution_state = ResolutionSLAState(
                 status=resolution_clock.status,
                 started_at=resolution_clock.started_at,
                 due_at=resolution_clock.due_at,
+                active_target_minutes=resolution_clock.active_target_minutes,
                 paused_at=resolution_clock.paused_at,
                 total_paused_seconds=resolution_clock.total_paused_seconds,
                 completed_at=resolution_clock.completed_at,
                 elapsed_fraction=compute_elapsed_fraction(
                     due_at=resolution_clock.due_at,
-                    target_minutes=target_minutes,
+                    target_minutes=resolution_clock.active_target_minutes,
                     at=at,
                 ),
             )
@@ -620,6 +626,7 @@ class SLAService:
             resolution_target_minutes=request.resolution_target_minutes,
             escalation_ack_target_minutes=request.escalation_ack_target_minutes,
             handling_sla_percentage=request.handling_sla_percentage,
+            handling_stage_percentages=request.handling_stage_percentages,
             warning_1_percentage=request.warning_1_percentage,
             warning_2_percentage=request.warning_2_percentage,
             is_active=request.is_active,

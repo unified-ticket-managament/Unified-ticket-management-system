@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, DateTime, Float, Integer
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from shared_models.database import Base
@@ -61,15 +61,28 @@ class SLAPolicy(Base):
         nullable=False,
     )
 
-    # What fraction of THIS priority's resolution_target_minutes the
-    # escalation-handling clock gets once an escalation is acknowledged
-    # (see EscalationHandlingSlaService.compute_escalation_handling_target_seconds,
-    # which now reads this column instead of a single hardcoded 0.25 for
-    # every priority). Stored as a whole percentage (25.0, not 0.25) to
-    # match the admin-facing SLA Timing Matrix UI directly.
+    # Superseded by handling_stage_percentages below (2026-07-20) — a
+    # single flat fraction can't express a per-stage percentage, which
+    # is the whole point of the handling-stage redesign. Left in place,
+    # unread by current code, rather than dropped/renamed: per this
+    # session's "migrate behavior first, verify nothing depends on it,
+    # remove in a later cleanup phase" decision. Do not read this column
+    # in new code — use handling_stage_percentages instead.
     handling_sla_percentage: Mapped[float] = mapped_column(
         Float,
         default=25.0,
+        nullable=False,
+    )
+
+    # Ordered, configurable per-stage percentages of THIS priority's
+    # resolution_target_minutes — index 0 is stage 1's percentage,
+    # index 1 is stage 2's, etc. A stage beyond this list's length
+    # repeats the last configured value (see
+    # EscalationHandlingSlaService.resolve_stage_percentage) rather than
+    # growing unboundedly. Stored as whole percentages (25.0, 12.5, ...),
+    # same convention as the superseded handling_sla_percentage above.
+    handling_stage_percentages: Mapped[list[float]] = mapped_column(
+        JSONB,
         nullable=False,
     )
 

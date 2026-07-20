@@ -204,6 +204,22 @@ export function SlaCard({
               {resolution.completed_at ? formatDateTime(resolution.completed_at) : "—"}
             </dd>
           </div>
+          {/*
+            Handling-stage indicator — only shown once a real
+            accept-assign-breach cycle has occurred (handling_stage >
+            0). This is WHY the Target above is whatever it currently
+            is: from stage 1 onward, Target = the ticket's original
+            priority target x this stage's configured percentage, not
+            a flat per-priority value — see the root CLAUDE.md's SLA &
+            Escalation section. Escalation-ladder movement alone
+            (acknowledgment-window timeouts) never changes this number.
+          */}
+          {!!escalation && escalation.handling_stage > 0 && (
+            <div>
+              <dt className="text-muted">Handling Stage</dt>
+              <dd className="font-medium text-slate-800">Stage {escalation.handling_stage}</dd>
+            </div>
+          )}
         </dl>
 
         {/*
@@ -229,15 +245,30 @@ export function SlaCard({
                 </dd>
               </div>
               <div>
-                <dt className="text-muted">Handling SLA</dt>
+                <dt className="text-muted">Handling Stages</dt>
+                {/*
+                  Per-stage breakdown, replacing the old single flat
+                  percentage — each stage's duration is this policy's
+                  resolution_target_minutes x that stage's configured
+                  percentage. Note: this reflects {ticketPriority}'s own
+                  policy row, which is CRITICAL once escalated — the
+                  actual stage calculation is based on the ticket's
+                  ORIGINAL (pre-escalation) priority's policy instead,
+                  so these numbers are illustrative of the mechanism,
+                  not necessarily this specific ticket's exact figures
+                  once it has escalated.
+                */}
                 <dd className="font-medium text-slate-800">
-                  {policy.handling_sla_percentage}% of Resolution SLA (
-                  {formatDurationShort(
-                    Math.round(
-                      policy.resolution_target_minutes * 60 * (policy.handling_sla_percentage / 100)
-                    )
-                  )}
-                  )
+                  {policy.handling_stage_percentages.map((pct, index) => (
+                    <span key={index} className="mr-1.5 inline-block">
+                      {index > 0 && <span className="mr-1.5 text-muted">→</span>}
+                      Stage {index + 1}: {pct}% (
+                      {formatDurationShort(
+                        Math.round(policy.resolution_target_minutes * 60 * (pct / 100))
+                      )}
+                      )
+                    </span>
+                  ))}
                 </dd>
               </div>
             </dl>

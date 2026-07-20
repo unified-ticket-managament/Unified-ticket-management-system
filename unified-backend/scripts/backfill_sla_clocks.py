@@ -95,6 +95,7 @@ async def backfill(session) -> BackfillStats:
             priority=ticket.current_priority,
             started_at=ticket.created_at,
             due_at=ticket.created_at + timedelta(minutes=policy.resolution_target_minutes),
+            active_target_minutes=policy.resolution_target_minutes,
         )
         stats.resolution_clocks_created += 1
 

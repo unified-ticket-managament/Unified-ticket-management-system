@@ -1,18 +1,31 @@
 # test_escalation_handling_sla.py
 #
-# Regression coverage for the escalation-handling SLA — a second,
-# wholly independent clock (EscalationHandlingSLA) that starts once
-# assignment is actually settled (claim/transfer/confirm-unchanged —
-# EscalationService._complete_acceptance), NOT on a bare acknowledge()
-# call, and measures time-to-actually-resolve, target = 25% of the
-# ORIGINAL Resolution SLA's configured target duration. The
-# load-bearing invariants asserted below: (1) the 25% formula is
-# computed from the configured target, never from remaining/overdue
-# time; (2) starting the clock is idempotent — settling assignment
-# more than once must never create a second row or push due_at forward
-# again; (3) none of this ever touches ResolutionSLA's own
-# started_at/due_at/status, extending test_escalation_service.py's own
-# central invariant to this new clock.
+# Regression coverage for the LEGACY escalation-handling SLA table
+# (EscalationHandlingSLA) — as of the 2026-07-20 handling-stage
+# redesign, this table is a dual-write mirror, not what actually
+# drives the system: the real stage counter/reshift now live on
+# TicketEscalation.handling_stage/handling_stage_started_at/
+# handling_stage_due_at and ResolutionSLA.active_target_minutes (see
+# EscalationService._complete_acceptance and test_escalation_service.py).
+# This file's own EscalationService is still wired with a real
+# EscalationHandlingSlaService (see _build_escalation_service) purely
+# to exercise/verify that dual-write path — every target_seconds
+# assertion below is computed the SAME way the production code now
+# computes it (original_priority's policy row x
+# handling_stage_percentages[stage-1]), not re-derived from
+# resolution_clock.priority or handling_sla_percentage, which this
+# service no longer reads at all.
+#
+# Load-bearing invariants asserted below: (1) the per-stage percentage
+# formula is computed from the configured original-priority target,
+# never from remaining/overdue time, and never from whatever
+# ResolutionSLA.priority happens to be (it stays at original_priority
+# throughout, never CRITICAL); (2) starting the clock is idempotent —
+# settling assignment more than once while the current stage is still
+# running must never create a second row or push due_at forward again;
+# (3) none of this ever touches ResolutionSLA's own started_at/status,
+# extending test_escalation_service.py's own central invariant to this
+# legacy clock.
 #
 # DB-touching tests here follow the exact same convention as
 # test_escalation_service.py (real dev DB, rolled back at the end of
@@ -140,6 +153,7 @@ async def _make_scenario(session, *, target_minutes: int = 240):
         status=SLAClockStatus.RUNNING,
         started_at=started_at,
         due_at=due_at,
+        active_target_minutes=target_minutes,
     )
     session.add(resolution_sla)
     await session.flush()
@@ -216,9 +230,10 @@ async def test_acknowledge_starts_handling_sla_at_25_percent_of_original_target(
     assert post_ack.priority == TicketPriority.MEDIUM
 
     policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
-    expected_target_seconds = compute_escalation_handling_target_seconds(
-        policy.resolution_target_minutes, policy.handling_sla_percentage / 100
+    stage_1_target_minutes = round(
+        policy.resolution_target_minutes * policy.handling_stage_percentages[0] / 100
     )
+    expected_target_seconds = stage_1_target_minutes * 60
     assert handling_sla.target_seconds == expected_target_seconds
     assert (handling_sla.due_at - handling_sla.started_at).total_seconds() == pytest.approx(
         expected_target_seconds, abs=1
@@ -250,11 +265,15 @@ async def test_acknowledging_twice_never_restarts_the_handling_sla(db_session):
     # but the idempotency of start_if_not_started is the thing under
     # test here, not acknowledge()'s own rejection — call the handling
     # SLA start directly a second time, the same way a defensive
-    # concurrent-request retry would.
+    # concurrent-request retry would. Deliberately passing a wildly
+    # different target_minutes (999) than the first call used — proves
+    # the existing active row is returned completely unchanged,
+    # ignoring this call's input entirely, not just coincidentally
+    # recomputing the same value.
     handling_service = build_escalation_handling_sla_service(db_session)
     ticket_row = await TicketRepository(db_session).get_by_id(ticket.ticket_id)
     second = await handling_service.start_if_not_started(
-        escalation=escalation, ticket=ticket_row
+        escalation=escalation, ticket=ticket_row, target_minutes=999
     )
 
     assert second is not None
@@ -278,13 +297,13 @@ async def test_assignment_implied_acknowledgment_starts_handling_sla_exactly_onc
     await service.manual_escalate(ticket.ticket_id, team_lead)
 
     # Escalating alone must not touch the Resolution SLA — see the test
-    # above. This is a first-time (never-advanced) escalation, so
-    # accepting it — here via assignment-implied acknowledgment rather
-    # than a literal Acknowledge click — must NOT reshift the
-    # Resolution SLA clock onto CRITICAL either; only the ticket's
-    # display priority flips immediately. See
-    # test_acknowledge_via_assignment_does_not_reshift_on_first_
-    # acceptance in test_escalation_service.py.
+    # above. Accepting it for the first time — here via assignment-
+    # implied acknowledgment rather than a literal Acknowledge click —
+    # DOES now reshift the Resolution SLA, onto handling_stage=1's
+    # target; priority itself stays at original_priority (MEDIUM),
+    # never CRITICAL. See test_escalation_service.py's
+    # test_acknowledge_via_assignment_reshifts_sla_to_stage_1_on_first_
+    # acceptance for this invariant in isolation.
     pre_accept = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     assert pre_accept.priority == TicketPriority.MEDIUM
 
@@ -308,7 +327,8 @@ async def test_assignment_implied_acknowledgment_starts_handling_sla_exactly_onc
 
     # A later reassignment (acknowledge_via_assignment called again)
     # must not restart the handling clock, nor reshift the Resolution
-    # SLA a second time — the priority bump is idempotent once CRITICAL.
+    # SLA a second time — idempotent while handling_stage=1 is still
+    # running (handling_stage_due_at already set).
     await service.acknowledge_via_assignment(ticket.ticket_id, team_lead)
     handling_sla_after = await _get_handling_sla(db_session, escalation.escalation_id)
     assert handling_sla_after.due_at == first_due_at
@@ -344,11 +364,13 @@ async def test_handling_sla_breach_re_evaluates_starting_level_and_preserves_bot
     await service.acknowledge(ticket.ticket_id, team_lead)
     await service.confirm_assignment(ticket.ticket_id, team_lead)
 
-    # Captured *after* acknowledge+confirm — but this is still a
-    # first-time acceptance (has_advanced_past_starting_level is still
-    # False at this point), so the Resolution SLA clock has NOT
-    # reshifted yet either — see test_escalation_service.py's own
-    # test_confirm_assignment_does_not_reshift_sla_on_first_acceptance.
+    # Captured *after* acknowledge+confirm — the clock HAS already
+    # reshifted by this point (stage 1, on first acceptance — see
+    # test_escalation_service.py's own
+    # test_confirm_assignment_reshifts_sla_to_stage_1_on_first_
+    # acceptance); this is the stage-1-reshifted due_at, which the
+    # breach-advance below must leave untouched (only the NEXT
+    # acceptance reshifts it again, onto stage 2).
     original_due_at = (
         await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     ).due_at
@@ -378,9 +400,13 @@ async def test_handling_sla_breach_re_evaluates_starting_level_and_preserves_bot
     assert reloaded_escalation.status == EscalationStatus.ACTIVE
     assert reloaded_escalation.level == EscalationLevel.TEAM_LEAD
     # The flag still flips even though the recomputed level happens to
-    # be the same as before — this is what gates the Resolution SLA's
-    # eventual hard-restart reshift on the NEXT acceptance.
+    # be the same as before — purely a ladder-movement fact now (see
+    # TicketEscalation's own docstring); it no longer gates anything
+    # about the Resolution SLA reshift, which is instead driven by
+    # handling_stage_due_at having been cleared just below.
     assert reloaded_escalation.has_advanced_past_starting_level is True
+    assert reloaded_escalation.handling_stage == 1
+    assert reloaded_escalation.handling_stage_due_at is None
 
     # Both histories preserved: the handling clock stays breached (not
     # deleted/reset), and the original Resolution SLA is still untouched
@@ -399,20 +425,21 @@ async def test_handling_sla_breach_re_evaluates_starting_level_and_preserves_bot
     assert reloaded_resolution.due_at == original_due_at
 
 
-async def test_handling_sla_breach_starts_fresh_critical_handling_sla_on_reacceptance(
+async def test_handling_sla_breach_starts_fresh_stage_2_handling_sla_on_reacceptance(
     db_session,
 ):
     """
     Guards the requested behavior: the FIRST acceptance's handling
-    clock runs under the ticket's original priority (25% of MEDIUM's
-    target here). If that clock itself breaches — nobody resolved it in
-    time — the escalation advances a level, and Resolution SLA reshifts
-    onto CRITICAL (per test_confirm_assignment_reshifts_sla_after_
-    escalation_has_advanced in test_escalation_service.py). Accepting
-    the escalation AGAIN at this new level must start a genuinely FRESH
-    handling clock computed off CRITICAL's percentage — not silently
-    keep reusing the first, already-breached, MEDIUM-based one forever.
-    The original breached row must survive untouched as history.
+    clock runs at handling_stage=1 (25% of MEDIUM's target here — the
+    ticket's own original priority). If that clock's window elapses —
+    nobody resolved it in time — the escalation advances a level, and
+    the NEXT acceptance advances to handling_stage=2, computed as stage
+    2's (smaller) percentage of the SAME original priority's target —
+    never CRITICAL's, since ResolutionSLA.priority never becomes
+    CRITICAL under this design. Accepting the escalation again at this
+    new level must start a genuinely FRESH handling clock — not
+    silently keep reusing the first, already-breached one forever. The
+    original breached row must survive untouched as history.
     """
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
@@ -428,12 +455,13 @@ async def test_handling_sla_breach_starts_fresh_critical_handling_sla_on_reaccep
     )
     original_handling_sla = await _get_handling_sla(db_session, escalation.escalation_id)
     assert original_handling_sla is not None
+    assert escalation.handling_stage == 1
 
     medium_policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
-    expected_original_target = compute_escalation_handling_target_seconds(
-        medium_policy.resolution_target_minutes, medium_policy.handling_sla_percentage / 100
+    stage_1_target_minutes = round(
+        medium_policy.resolution_target_minutes * medium_policy.handling_stage_percentages[0] / 100
     )
-    assert original_handling_sla.target_seconds == expected_original_target
+    assert original_handling_sla.target_seconds == stage_1_target_minutes * 60
 
     # Force the handling clock into the past so the sweep's own breach
     # query picks it up, then let it actually breach and advance the
@@ -449,6 +477,10 @@ async def test_handling_sla_breach_starts_fresh_critical_handling_sla_on_reaccep
         ticket.ticket_id
     )
     assert reloaded_escalation.has_advanced_past_starting_level is True
+    # Stage itself is unchanged by the breach-advance alone — only the
+    # next acceptance below bumps it.
+    assert reloaded_escalation.handling_stage == 1
+    assert reloaded_escalation.handling_stage_due_at is None
 
     # No active handling clock right now — the only row that exists is
     # the breached one, which is exactly what should let a fresh one
@@ -467,24 +499,29 @@ async def test_handling_sla_breach_starts_fresh_critical_handling_sla_on_reaccep
         )
     ).unique().scalar_one()
 
-    # Re-accept at the new level — this must reshift Resolution SLA
-    # onto CRITICAL AND start a brand new handling clock under
-    # CRITICAL's percentage.
+    # Re-accept at the new level — this must reshift Resolution SLA onto
+    # stage 2's target AND start a brand new handling clock matching it.
+    # priority stays at MEDIUM throughout — never CRITICAL.
     await service.confirm_assignment(ticket.ticket_id, new_owner)
 
     reloaded_resolution = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
-    assert reloaded_resolution.priority == TicketPriority.CRITICAL
+    assert reloaded_resolution.priority == TicketPriority.MEDIUM
 
     new_handling_sla = await _get_handling_sla(db_session, escalation.escalation_id)
     assert new_handling_sla is not None
     assert new_handling_sla.escalation_handling_sla_id != original_handling_sla.escalation_handling_sla_id
     assert new_handling_sla.breached_at is None
 
-    critical_policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.CRITICAL)
-    expected_new_target = compute_escalation_handling_target_seconds(
-        critical_policy.resolution_target_minutes, critical_policy.handling_sla_percentage / 100
+    stage_2_target_minutes = round(
+        medium_policy.resolution_target_minutes * medium_policy.handling_stage_percentages[1] / 100
     )
-    assert new_handling_sla.target_seconds == expected_new_target
+    assert new_handling_sla.target_seconds == stage_2_target_minutes * 60
+    assert reloaded_resolution.active_target_minutes == stage_2_target_minutes
+
+    final_escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert final_escalation.handling_stage == 2
 
     # Both rows coexist — the breached original is permanent history,
     # never deleted or mutated by the new one starting.
