@@ -280,6 +280,13 @@ class ResolutionSLARepository:
         clock.priority = new_priority
         clock.active_target_minutes = new_target_minutes
         clock.due_at = compute_restarted_due_at(new_target_minutes=new_target_minutes, now=now)
+        # A genuinely new SLA cycle starts here — see
+        # ResolutionSLA.escalation_cycle's own docstring. This is what
+        # lets SLABreachNotification's (clock_type, clock_id, threshold,
+        # cycle) ledger re-fire HALF_ELAPSED/AT_RISK/BREACHED for this
+        # same clock row instead of treating them as already-notified
+        # forever from the pre-restart cycle.
+        clock.escalation_cycle += 1
 
         await self.db.flush()
         await self.db.refresh(clock)

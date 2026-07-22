@@ -63,6 +63,13 @@ const SUPERVISOR_ROLES = ["Site Lead", "Super Admin"];
 // up front.
 const MAIL_TAB_FETCH_SIZE = 200;
 
+// Stable empty-array reference for the "system" slot in rowsByView
+// below — "system" is never actually read for rendering (see that
+// object's own comment), but a fresh `[]` literal there would still
+// change identity every render and defeat filteredItems' memoization
+// whenever the System tab happens to be active.
+const EMPTY_ITEMS: InboxItem[] = [];
+
 // "Unassigned"/"My Claims" aren't separate backend views — they're
 // derived client-side from the "pending" set (claimed_by null vs.
 // mine), same data, no extra network round-trip. "sent"/"drafts" are
@@ -194,9 +201,14 @@ type LoadKey = BaseTabKey | "sent" | "drafts" | "system" | "mineTicketed";
 // assigned-to-me ticketed fetch ("mineTicketed") — it can't reuse the
 // plain "ticketed" tab's cache, since that one is unfiltered (backs
 // the separate "Ticketed" folder showing every ticketed thread in
-// scope, not just this user's own).
+// scope, not just this user's own). "pending" (the "Inbox" view) now
+// means a conventional inbox — every state merged together (see
+// inboxAll below) — so it needs all four base tabs loaded, not just
+// its own.
 function baseKeysForView(view: MailViewKey): LoadKey[] {
   switch (view) {
+    case "pending":
+      return ["pending", "replied", "ticketed", "archived"];
     case "unassigned":
       return ["pending"];
     case "mine":
@@ -740,7 +752,10 @@ export function useMailInbox() {
     [timeFilter, now, term]
   );
 
-  const unassigned = rowsByTab.pending.filter((item) => !item.claimed_by);
+  const unassigned = useMemo(
+    () => rowsByTab.pending.filter((item) => !item.claimed_by),
+    [rowsByTab.pending]
+  );
   // De-duped by interaction_id: `pending`/`replied` are two
   // independently-fetched arrays (parallel requests in refresh()), so
   // an item whose status flips between those two fetches could
@@ -749,19 +764,44 @@ export function useMailInbox() {
   // never needs the `claimed_by` filter the pre-ticket half does —
   // once ticketed, "claimed" means "the ticket is assigned to me,"
   // not the pre-ticket `claimed_by` field.
-  const mine = Array.from(
-    new Map(
-      [
-        ...[...rowsByTab.pending, ...rowsByTab.replied].filter(
-          (item) => item.claimed_by === currentUser?.user_id
-        ),
-        ...myTicketedClaims,
-      ].map((item) => [item.interaction_id, item])
-    ).values()
+  const mine = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          [
+            ...[...rowsByTab.pending, ...rowsByTab.replied].filter(
+              (item) => item.claimed_by === currentUser?.user_id
+            ),
+            ...myTicketedClaims,
+          ].map((item) => [item.interaction_id, item])
+        ).values()
+      ),
+    [rowsByTab.pending, rowsByTab.replied, myTicketedClaims, currentUser?.user_id]
+  );
+
+  // "Inbox" ("pending") is now a conventional inbox — every state
+  // merged into one list, not just still-untouched pre-ticket mail.
+  // "Unassigned"/"My Claims" above are unaffected: they read
+  // rowsByTab.pending/rowsByTab.replied/myTicketedClaims directly, a
+  // separate internal bucket from whatever gets rendered for "Inbox"
+  // itself. De-duped by interaction_id (same rationale as `mine`
+  // above — pending/replied/ticketed/archived are four independently-
+  // fetched arrays, so an item whose state flips between fetches
+  // could otherwise land in more than one), sorted newest first.
+  const inboxAll = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          [...rowsByTab.pending, ...rowsByTab.replied, ...rowsByTab.ticketed, ...rowsByTab.archived].map(
+            (item) => [item.interaction_id, item]
+          )
+        ).values()
+      ).sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime()),
+    [rowsByTab.pending, rowsByTab.replied, rowsByTab.ticketed, rowsByTab.archived]
   );
 
   const rowsByView: Record<MailViewKey, InboxItem[]> = {
-    pending: rowsByTab.pending,
+    pending: inboxAll,
     replied: rowsByTab.replied,
     ticketed: rowsByTab.ticketed,
     archived: rowsByTab.archived,
@@ -775,7 +815,7 @@ export function useMailInbox() {
     // `systemNotifications` directly, before touching filteredItems
     // below) — present only so this record stays total over
     // MailViewKey and hasMore/loadMore's lookups below never crash.
-    system: [],
+    system: EMPTY_ITEMS,
   };
 
   // Pending/Replied/Ticketed/Archived/All come from the eager
@@ -786,16 +826,32 @@ export function useMailInbox() {
   // deliberately unread-count (not total), matching the topbar bell's
   // own "badge = needs attention" convention, not the other tabs'
   // "badge = how many items" one.
-  const viewCounts: Record<MailViewKey, number> = {
-    ...baseViewCounts,
-    unassigned: unassigned.length,
-    mine: mine.length,
-    sent: sentItems.length,
-    drafts: draftItems.length,
-    system: systemNotifications.filter((n) => !n.is_read).length,
-  };
+  const viewCounts: Record<MailViewKey, number> = useMemo(
+    () => ({
+      ...baseViewCounts,
+      // Overrides baseViewCounts.pending (the server's old, narrower
+      // "still-untouched pre-ticket mail" count) with the real merged
+      // total, computed from each tab's own accurate server-reported
+      // total (tabTotals), not just currently-loaded row count — correct
+      // even before "Load more" has pulled every row.
+      pending: tabTotals.pending + tabTotals.replied + tabTotals.ticketed + tabTotals.archived,
+      unassigned: unassigned.length,
+      mine: mine.length,
+      sent: sentItems.length,
+      drafts: draftItems.length,
+      system: systemNotifications.filter((n) => !n.is_read).length,
+    }),
+    [baseViewCounts, tabTotals, unassigned, mine, sentItems, draftItems, systemNotifications]
+  );
 
-  const filteredItems = applyFilters(rowsByView[activeViewRaw]);
+  // Only re-runs applyFilters when the active view's underlying data
+  // (activeRows) or the filter criteria (baked into applyFilters'
+  // own identity — see its useCallback deps above) actually change —
+  // not on every render (e.g. a search keystroke before the 300ms
+  // debounce settles), since inboxAll/unassigned/mine/rowsByTab.* are
+  // all stable references now unless their own source data changed.
+  const activeRows = rowsByView[activeViewRaw];
+  const filteredItems = useMemo(() => applyFilters(activeRows), [activeRows, applyFilters]);
 
   const managedClientCount = currentUser
     ? clients.filter((c) => c.account_manager_id === currentUser.user_id).length

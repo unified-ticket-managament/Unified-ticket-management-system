@@ -60,7 +60,7 @@ class SLASweepService:
     clock; (2) classify each clock's crossed thresholds in Python
     (compute_elapsed_fraction + thresholds_reached, both pure); (3) one
     batched INSERT ... ON CONFLICT DO NOTHING ... RETURNING checks
-    every crossed (clock_type, clock_id, threshold) triple's
+    every crossed (clock_type, clock_id, threshold, cycle) quadruple's
     idempotency ledger at once (SLABreachNotificationRepository.
     try_record_many) and reports exactly which are newly-crossed; (4)
     only those get real recipient-resolution + notify + audit-log work,
@@ -171,11 +171,15 @@ class SLASweepService:
         # members) escalation path would otherwise add per-clock.
         category_cache: dict[str, tuple[list, list]] = {}
 
-        # Every (clock_type, clock_id, threshold) triple that crossed
-        # this tick, across both clock types — checked against the
-        # idempotency ledger in one batch below, not one round trip
-        # each.
-        candidates: list[tuple[str, UUID, str]] = []
+        # Every (clock_type, clock_id, threshold, cycle) quadruple that
+        # crossed this tick, across both clock types — checked against
+        # the idempotency ledger in one batch below, not one round trip
+        # each. `cycle` is always 0 for First Response (never restarts);
+        # for Resolution it's the clock's own current escalation_cycle,
+        # so a threshold already recorded in an earlier cycle can still
+        # fire again after a legitimate escalation-driven restart — see
+        # ResolutionSLA.escalation_cycle's own docstring.
+        candidates: list[tuple[str, UUID, str, int]] = []
         fr_clock_by_id: dict[UUID, FirstResponseSLA] = {}
         res_clock_by_id: dict[UUID, ResolutionSLA] = {}
 
@@ -230,7 +234,7 @@ class SLASweepService:
             if reached:
                 fr_clock_by_id[clock.first_response_sla_id] = clock
                 candidates.extend(
-                    (CLOCK_TYPE_FIRST_RESPONSE, clock.first_response_sla_id, threshold)
+                    (CLOCK_TYPE_FIRST_RESPONSE, clock.first_response_sla_id, threshold, 0)
                     for threshold in reached
                 )
 
@@ -307,7 +311,12 @@ class SLASweepService:
             if reached:
                 res_clock_by_id[clock.resolution_sla_id] = clock
                 candidates.extend(
-                    (CLOCK_TYPE_RESOLUTION, clock.resolution_sla_id, threshold)
+                    (
+                        CLOCK_TYPE_RESOLUTION,
+                        clock.resolution_sla_id,
+                        threshold,
+                        clock.escalation_cycle,
+                    )
                     for threshold in reached
                 )
 
@@ -384,7 +393,7 @@ class SLASweepService:
         # cost the original snapshot was built to avoid.
         resolution_ticket_ids_to_refresh = {
             res_clock_by_id[clock_id].ticket_id
-            for clock_type, clock_id, _threshold in newly_recorded
+            for clock_type, clock_id, _threshold, _cycle in newly_recorded
             if clock_type == CLOCK_TYPE_RESOLUTION
         }
         if resolution_ticket_ids_to_refresh:
@@ -413,7 +422,7 @@ class SLASweepService:
                 else:
                     escalations_by_ticket_id.pop(ticket_id, None)
 
-        for clock_type, clock_id, threshold in newly_recorded:
+        for clock_type, clock_id, threshold, _cycle in newly_recorded:
             try:
                 async with db.begin_nested():
                     if clock_type == CLOCK_TYPE_FIRST_RESPONSE:
@@ -622,6 +631,16 @@ class SLASweepService:
             escalation_owner_ids = (
                 {UUID(u) for u in escalation.owner_ids} if escalation is not None else set()
             )
+            # Mirrors the same "has acceptance actually completed"
+            # signal EscalationService itself uses (handling_stage_due_at
+            # non-null means a handling stage is currently running,
+            # i.e. accept+assign has settled at this level) — read
+            # straight off the already-loaded escalation row, no extra
+            # query. False whenever there's no active escalation at
+            # all, which resolve_current_owner treats as irrelevant.
+            escalation_acceptance_completed = (
+                escalation is not None and escalation.handling_stage_due_at is not None
+            )
 
             # Claiming (a Team Lead taking a ticket for themselves) and
             # assigning (to a Staff member) both just set this same
@@ -637,6 +656,7 @@ class SLASweepService:
                     assigned_agent=assigned_agent,
                     global_inbox_ids=global_inbox_ids,
                     escalation_owner_ids=escalation_owner_ids,
+                    escalation_acceptance_completed=escalation_acceptance_completed,
                 )
             else:
                 team_leads, team_members = await self._get_category_team(
@@ -648,6 +668,7 @@ class SLASweepService:
                     team_members=team_members,
                     global_inbox_ids=global_inbox_ids,
                     escalation_owner_ids=escalation_owner_ids,
+                    escalation_acceptance_completed=escalation_acceptance_completed,
                 )
 
             recipient_ids = resolve_recipients(RESOLUTION_RULES_CURRENT_OWNER, threshold, ctx)

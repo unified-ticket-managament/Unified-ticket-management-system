@@ -121,8 +121,19 @@ class RecipientContext:
     # The ticket's active TicketEscalation.owner_ids, if any — the
     # "lower-level" owner it currently sits with (e.g. Team Lead), used
     # by resolve_current_owner below to take priority over
-    # assigned_agent/team_leads once a ticket is actually escalated.
+    # assigned_agent/team_leads while an escalation is awaiting
+    # acceptance.
     escalation_owner_ids: set[UUID] = field(default_factory=set)
+
+    # Whether the active escalation's current level has already
+    # completed acceptance (accept -> assign settled — see
+    # EscalationService._complete_acceptance) rather than merely being
+    # ACTIVE/ACKNOWLEDGED-but-unassigned. Mirrors
+    # TicketEscalation.handling_stage_due_at being non-null (the same
+    # signal EscalationService itself uses to decide whether a handling
+    # stage is currently running). Only meaningful when
+    # escalation_owner_ids is non-empty; ignored otherwise.
+    escalation_acceptance_completed: bool = False
 
 
 def resolve_account_manager(ctx: RecipientContext) -> set[UUID]:
@@ -182,21 +193,41 @@ def resolve_global_inbox(ctx: RecipientContext) -> set[UUID]:
 
 def resolve_current_owner(ctx: RecipientContext) -> set[UUID]:
     """
-    Whoever is actually working the ticket right now — an active
-    escalation's current owner(s) take priority (a ticket that's been
-    handed to, say, a Team Lead via escalation is now THEIRS to act on,
-    not the original assigned agent's — see
-    EscalationService.acknowledge's own owner_ids-only authorization
-    for the same rule); absent an active escalation, the plain assigned
-    agent (claimed) or the category's Team Lead + staff pool
-    (unclaimed) — i.e. today's un-escalated baseline, with no
+    Whoever is actually working the ticket right now.
+
+    While an escalation is awaiting acceptance (ACTIVE, or ACKNOWLEDGED
+    but not yet assigned to anyone) its owner_ids — the accountable
+    acknowledger, e.g. a Team Lead — takes priority, since nobody has
+    actually taken the ticket on yet. Once acceptance completes
+    (escalation_acceptance_completed — the supervisor has claimed,
+    transferred, or confirmed an assignee), that assignee is the one
+    genuinely doing the work and the one on the hook for the new,
+    tighter handling-stage deadline — so `assigned_agent` (ticket.
+    agent_id, resolved fresh every sweep tick, never the escalation's
+    own stale owner_ids) takes over.
+
+    This was a real bug, not a hypothetical one: TicketEscalation.
+    owner_ids is only ever rewritten by an explicit ladder advance
+    (TicketEscalationRepository.advance — the ack-timeout or
+    handling-SLA-breach paths); a plain accept-and-assign
+    (EscalationService._complete_acceptance, reached from
+    claim_ticket/transfer_agent/confirm_assignment) never touches it.
+    Without this split, every Resolution SLA notification kept going to
+    whoever last acknowledged the escalation, even long after they'd
+    handed the ticket to someone else.
+
+    Absent any active escalation at all, this is just the plain
+    assigned agent (claimed) or the category's Team Lead + staff pool
+    (unclaimed) — today's un-escalated baseline, with no
     ladder-climbing on top.
     """
 
-    if ctx.escalation_owner_ids:
+    if ctx.escalation_owner_ids and not ctx.escalation_acceptance_completed:
         return ctx.escalation_owner_ids
     if ctx.assigned_agent is not None:
         return resolve_assigned_agent(ctx)
+    if ctx.escalation_owner_ids:
+        return ctx.escalation_owner_ids
     return resolve_team_lead(ctx) | resolve_team_members(ctx)
 
 

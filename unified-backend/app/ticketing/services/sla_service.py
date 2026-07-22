@@ -230,8 +230,11 @@ class SLAService:
             reached = thresholds_reached(fraction)
 
             if reached:
+                # cycle is always 0 here — a First Response clock never
+                # restarts (see ResolutionSLA.escalation_cycle's own
+                # docstring for the concept this doesn't apply to).
                 candidates = [
-                    (CLOCK_TYPE_FIRST_RESPONSE, clock.first_response_sla_id, threshold)
+                    (CLOCK_TYPE_FIRST_RESPONSE, clock.first_response_sla_id, threshold, 0)
                     for threshold in reached
                 ]
                 newly_recorded = (
@@ -256,7 +259,7 @@ class SLAService:
                         if self.user_repository is not None
                         else set()
                     )
-                    for _, _, threshold in newly_recorded:
+                    for _, _, threshold, _cycle in newly_recorded:
                         await notify_first_response_threshold(
                             clock=clock,
                             threshold=threshold,

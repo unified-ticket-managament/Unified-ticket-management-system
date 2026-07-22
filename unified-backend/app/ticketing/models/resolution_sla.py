@@ -126,6 +126,22 @@ class ResolutionSLA(Base):
         nullable=True,
     )
 
+    # Bumped by ResolutionSLARepository.restart_due_at_for_escalation on
+    # every handling-stage (re)acceptance — this same row's due_at/
+    # active_target_minutes get reset in place rather than a new
+    # ResolutionSLA row being created, so this is the only signal that
+    # distinguishes "the pre-escalation baseline" (0) from each
+    # subsequent restarted cycle. Folded into
+    # SLABreachNotification's own unique index (clock_type, clock_id,
+    # threshold, cycle) so a threshold that already fired in an earlier
+    # cycle can still fire again once a genuine restart begins a new
+    # one — see that model's own docstring.
+    escalation_cycle: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

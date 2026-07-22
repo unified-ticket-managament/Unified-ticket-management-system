@@ -537,6 +537,148 @@ async def test_acknowledge_via_assignment_reshifts_sla_to_stage_1_on_first_accep
     assert escalation.handling_stage == 1
 
 
+async def test_escalation_owner_ids_are_not_refreshed_by_a_plain_acceptance(db_session):
+    """
+    Regression coverage for the root cause of "current owner not
+    receiving the SLA Breached notification": TicketEscalation.
+    owner_ids is only ever rewritten by an explicit ladder advance
+    (TicketEscalationRepository.advance — the ack-timeout or
+    handling-SLA-breach paths) — a plain accept-and-assign
+    (EscalationService._complete_acceptance, reached here via
+    acknowledge_via_assignment) never touches it. This is exactly why
+    sla_escalation_rules.resolve_current_owner can no longer trust
+    escalation_owner_ids once acceptance has completed — see that
+    function's own regression tests in test_sla_escalation_rules.py
+    for the fix built on top of this data-level fact.
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    escalation_before = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    owner_ids_before = set(escalation_before.owner_ids)
+    assert str(team_lead.user_id) in owner_ids_before
+
+    await service.acknowledge_via_assignment(ticket.ticket_id, team_lead)
+
+    escalation_after = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    # Acceptance genuinely completed (a handling stage is now running)...
+    assert escalation_after.handling_stage_due_at is not None
+    # ...yet owner_ids is byte-for-byte the same as before acceptance —
+    # the staleness resolve_current_owner's escalation_acceptance_
+    # completed gate exists to work around.
+    assert set(escalation_after.owner_ids) == owner_ids_before
+
+
+async def test_resolution_sla_escalation_cycle_increments_on_each_handling_stage_restart(
+    db_session,
+):
+    """
+    Regression coverage for the root cause of "regular SLA notifications
+    stop after the first escalation": restart_due_at_for_escalation must
+    bump ResolutionSLA.escalation_cycle every time it resets this same
+    clock row's due_at for a new handling stage — that number is what
+    lets the SLABreachNotification ledger re-fire a threshold that
+    already notified once in an earlier cycle (see
+    test_sla_breach_notification_repository.py for the ledger side of
+    this fix).
+    """
+
+    team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    baseline = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    assert baseline.escalation_cycle == 0
+
+    await service.acknowledge(ticket.ticket_id, team_lead)
+    await service.confirm_assignment(ticket.ticket_id, team_lead)
+
+    after_stage_1 = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    assert after_stage_1.escalation_cycle == 1
+
+    # Simulate stage 1's window having elapsed with nobody resolving it
+    # — same mechanics as test_confirm_assignment_advances_to_stage_2_
+    # after_stage_1_elapses above.
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    escalation.handling_stage_due_at = None
+    await db_session.flush()
+
+    await service.confirm_assignment(ticket.ticket_id, team_lead)
+
+    after_stage_2 = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    assert after_stage_2.escalation_cycle == 2
+
+
+async def test_advance_is_guarded_against_a_concurrent_racing_sweep(db_session):
+    """
+    Regression coverage for the "duplicate scheduler workers" risk this
+    codebase's own CLAUDE.md documents (a local dev backend and the
+    deployed Render backend can share the same database, each running
+    its own scheduler). Simulates two overlapping evaluate_overdue()
+    runs both having read the same escalation before either writes: the
+    first advance() call wins; a second call against an in-memory
+    object still showing the OLD (pre-first-advance) level — exactly
+    what a second process's independent, slightly-stale read would look
+    like — must lose the race and return None rather than double-
+    advancing the ladder.
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    stale_level = escalation.level
+    now = datetime.now(timezone.utc)
+
+    first = await service.ticket_escalation_repository.advance(
+        escalation,
+        new_level=EscalationLevel.MANAGER,
+        owner_ids={uuid.uuid4()},
+        ack_due_at=now + timedelta(minutes=30),
+        now=now,
+    )
+    assert first is not None
+    assert first.level == EscalationLevel.MANAGER
+
+    # Simulate a second process's stale in-memory read: same escalation
+    # row, but still showing the level it observed before the first
+    # process's advance() committed.
+    escalation.level = stale_level
+
+    second = await service.ticket_escalation_repository.advance(
+        escalation,
+        new_level=EscalationLevel.SITE_LEAD,
+        owner_ids={uuid.uuid4()},
+        ack_due_at=now + timedelta(minutes=30),
+        now=now,
+    )
+    assert second is None
+
+    reloaded = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    # Still at MANAGER (the first, winning advance) — the second,
+    # stale-level call must not have moved it to SITE_LEAD.
+    assert reloaded.level == EscalationLevel.MANAGER
+
+
 async def test_acknowledge_via_assignment_is_idempotent_while_stage_still_running(db_session):
     """
     A second acknowledge_via_assignment call (e.g. a later reassignment)

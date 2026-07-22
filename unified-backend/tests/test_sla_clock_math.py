@@ -191,3 +191,55 @@ class TestThresholdsReached:
             "BREACHED",
             "ESCALATED",
         ]
+
+
+class TestThresholdBoundaryRequirements:
+    """
+    Explicit, individually-named coverage mapped 1:1 to the reported
+    issue's own numbered threshold test list — TestThresholdsReached
+    above already covers this logic more broadly; these exist purely
+    for direct traceability against that list, not new behavior.
+    """
+
+    def test_1_before_half_elapsed_no_half_elapsed_notification(self):
+        assert "HALF_ELAPSED" not in thresholds_reached(0.49)
+        assert thresholds_reached(0.49) == []
+
+    def test_2_exactly_half_elapsed_half_elapsed_only(self):
+        assert thresholds_reached(0.5) == ["HALF_ELAPSED"]
+
+    def test_3_between_half_elapsed_and_at_risk_no_at_risk_yet(self):
+        assert thresholds_reached(0.65) == ["HALF_ELAPSED"]
+        assert "AT_RISK" not in thresholds_reached(0.65)
+
+    def test_4_exactly_at_the_at_risk_threshold_at_risk_included(self):
+        assert thresholds_reached(0.8) == ["HALF_ELAPSED", "AT_RISK"]
+
+    def test_5_at_100_percent_breached_included(self):
+        assert thresholds_reached(1.0) == ["HALF_ELAPSED", "AT_RISK", "BREACHED"]
+
+    # Test 6 (paused time excluded from elapsed time) is covered by
+    # TestComputeResumedDueAt/TestComputeReshiftedDueAt above — due_at
+    # is what elapsed_fraction is derived from, and pause duration is
+    # exactly what gets excluded via the due_at shift, never read from
+    # started_at/pause history at classification time.
+
+    def test_7_multiple_thresholds_crossed_between_runs_all_generated_once_in_order(self):
+        # A clock discovered already past both Half Elapsed and At Risk
+        # (e.g. a long gap between sweep ticks) must report every
+        # crossed threshold, in order, in one call — the sweep's ledger
+        # then records all of them together in the same tick, none
+        # duplicated on a later tick.
+        assert thresholds_reached(0.92) == ["HALF_ELAPSED", "AT_RISK"]
+
+    def test_per_priority_warning_overrides_actually_change_where_thresholds_land(self):
+        # Proves the per-priority override plumbing (policy.warning_1_
+        # percentage/warning_2_percentage / 100) genuinely changes
+        # behavior rather than always falling back to the hardcoded
+        # 0.5/0.8 defaults: 0.45 is below the *default* half_elapsed
+        # cutoff (0.5) but above this tighter override's (0.25/0.4).
+        assert thresholds_reached(0.45, half_elapsed=0.25, at_risk=0.4) == [
+            "HALF_ELAPSED",
+            "AT_RISK",
+        ]
+        assert thresholds_reached(0.45) == []  # same fraction, default cutoffs -> nothing yet

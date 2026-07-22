@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ticketing.enums import EscalationLevel, EscalationStatus, TicketPriority
@@ -73,7 +73,7 @@ class TicketEscalationRepository:
         owner_ids: set[UUID],
         ack_due_at: datetime,
         now: datetime,
-    ) -> TicketEscalation:
+    ) -> TicketEscalation | None:
         """
         Moves to a new level (or re-notifies the same terminal SITE_LEAD
         level with a fresh ack window) — resets acknowledgment state,
@@ -83,16 +83,42 @@ class TicketEscalationRepository:
         always marks has_advanced_past_starting_level True; see that
         column's own docstring for why this is the acceptance-time
         Resolution SLA reshift's gate.
+
+        Guarded by a conditional UPDATE (`escalation_id = ... AND level
+        = <the level the caller observed before deciding to advance>`)
+        rather than a plain ORM attribute set — mirrors
+        TicketRepository.claim's own race guard. This codebase's own
+        CLAUDE.md documents a real risk this protects against: a local
+        dev backend and the deployed Render backend can share the same
+        database, each running its own in-process scheduler, so two
+        overlapping evaluate_overdue() sweeps could both read the same
+        overdue escalation and both try to advance it. Returns None if
+        another process already advanced (or otherwise changed) this
+        escalation's level since it was read — the caller should treat
+        that as "nothing to do here" (skip the audit log / notification
+        for this one), not retry or raise.
         """
 
-        escalation.level = new_level
-        escalation.status = EscalationStatus.ACTIVE
-        escalation.owner_ids = [str(uid) for uid in owner_ids]
-        escalation.level_started_at = now
-        escalation.ack_due_at = ack_due_at
-        escalation.acknowledged_at = None
-        escalation.acknowledged_by = None
-        escalation.has_advanced_past_starting_level = True
+        result = await self.db.execute(
+            update(TicketEscalation)
+            .where(
+                TicketEscalation.escalation_id == escalation.escalation_id,
+                TicketEscalation.level == escalation.level,
+            )
+            .values(
+                level=new_level,
+                status=EscalationStatus.ACTIVE,
+                owner_ids=[str(uid) for uid in owner_ids],
+                level_started_at=now,
+                ack_due_at=ack_due_at,
+                acknowledged_at=None,
+                acknowledged_by=None,
+                has_advanced_past_starting_level=True,
+            )
+        )
+
+        if result.rowcount == 0:
+            return None
 
         await self.db.flush()
         await self.db.refresh(escalation)

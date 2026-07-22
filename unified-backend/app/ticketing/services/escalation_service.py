@@ -1019,13 +1019,20 @@ class EscalationService:
                     ack_minutes = await self._ack_target_minutes(ticket.current_priority)
                     new_ack_due_at = now + timedelta(minutes=ack_minutes)
 
-                    await self.ticket_escalation_repository.advance(
+                    updated = await self.ticket_escalation_repository.advance(
                         escalation,
                         new_level=new_level,
                         owner_ids=owner_ids,
                         ack_due_at=new_ack_due_at,
                         now=now,
                     )
+                    if updated is None:
+                        # Lost the race — another process (e.g. an
+                        # overlapping sweep on a second backend
+                        # instance) already advanced this escalation
+                        # since list_overdue_active read it. Nothing
+                        # left to do for this one.
+                        continue
                     advanced += 1
 
                     await AuditLogService.log_event(
@@ -1138,13 +1145,17 @@ class EscalationService:
         ack_minutes = await self._ack_target_minutes(ticket.current_priority)
         new_ack_due_at = now + timedelta(minutes=ack_minutes)
 
-        await self.ticket_escalation_repository.advance(
+        updated = await self.ticket_escalation_repository.advance(
             escalation,
             new_level=new_level,
             owner_ids=owner_ids,
             ack_due_at=new_ack_due_at,
             now=now,
         )
+        if updated is None:
+            # Lost the race — another process already advanced this
+            # escalation since it was read. Nothing left to do.
+            return False
 
         await AuditLogService.log_event(
             self.ticket_repository.db,
