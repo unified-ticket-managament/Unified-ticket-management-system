@@ -8,6 +8,13 @@ const config: Config = {
     "./src/app/**/*.{js,ts,jsx,tsx,mdx}",
     "./src/modules/**/*.{js,ts,jsx,tsx,mdx}",
     "./src/ticket-workspace/**/*.{js,ts,jsx,tsx,mdx}",
+    // lib/ holds dynamic className strings too (e.g. reportAggregations.ts's
+    // per-priority/category chart color maps) — without this glob, Tailwind's
+    // JIT purge never sees those class-name strings and silently emits no
+    // CSS for them (confirmed: bg-orange-500/bg-purple-500/bg-red-500/
+    // bg-gray-400 appear nowhere else in scanned content), so those chart
+    // bars/legend dots would render with no background color at all.
+    "./src/lib/**/*.{js,ts,jsx,tsx,mdx}",
   ],
   theme: {
     extend: {

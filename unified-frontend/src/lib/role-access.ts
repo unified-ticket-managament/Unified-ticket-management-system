@@ -206,3 +206,26 @@ export function getCreatableRoleNames(role: string | undefined): string[] | null
   if (!role || !(role in CREATABLE_ROLES_BY_ROLE)) return [];
   return CREATABLE_ROLES_BY_ROLE[role] ?? null;
 }
+
+/**
+ * Defensive guard for any role-selection dropdown (Create/Edit User, the
+ * Users page Role filter, etc.): `roles.name` is a freeform, non-enum string
+ * column at the DB level (no fixed set of allowed values enforced by
+ * Postgres), so a stray typo'd or case-variant row (e.g. a "viewre" next to
+ * "Viewer") is technically possible even though the backend now rejects
+ * exact-duplicate names. Normalizes each name (trim + lowercase) and keeps
+ * only the first row seen per normalized name — the roles list route always
+ * orders alphabetically, so this is a stable, deterministic choice, not a
+ * random one. This never hides a *legitimate* second role (e.g. two
+ * genuinely different names never collide here) — it only ever collapses
+ * true near-duplicates.
+ */
+export function dedupeRolesByName<T extends { name: string }>(roles: T[]): T[] {
+  const seen = new Set<string>();
+  return roles.filter((role) => {
+    const key = role.name.trim().toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}

@@ -34,7 +34,7 @@ class RoleService:
         actor: User | None = None,
     ) -> Role:
 
-        exists = await self.role_repository.exists(
+        exists = await self.role_repository.get_by_name_case_insensitive(
             role_data.name
         )
 
@@ -129,7 +129,7 @@ class RoleService:
 
         if "name" in update_data:
 
-            exists = await self.role_repository.get_by_name(
+            exists = await self.role_repository.get_by_name_case_insensitive(
                 update_data["name"]
             )
 

@@ -29,11 +29,15 @@ const PRIORITY_LABEL: Record<TicketPriority, string> = {
   CRITICAL: "Critical",
 };
 
+// Fixed hex values (not Tailwind default-palette shades) so this exact
+// scheme stays stable regardless of Tailwind's own default palette
+// changing in a future upgrade — Low=Blue/Medium=Amber/High=Red/
+// Critical=Purple, per the product's canonical priority color spec.
 const PRIORITY_CHART_COLOR: Record<TicketPriority, string> = {
-  LOW: "bg-blue-500",
-  MEDIUM: "bg-orange-500",
-  HIGH: "bg-red-500",
-  CRITICAL: "bg-purple-500",
+  LOW: "bg-[#3B82F6]",
+  MEDIUM: "bg-[#F59E0B]",
+  HIGH: "bg-[#EF4444]",
+  CRITICAL: "bg-[#8B5CF6]",
 };
 
 const PRIORITY_ORDER: TicketPriority[] = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];

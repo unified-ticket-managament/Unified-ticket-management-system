@@ -48,6 +48,23 @@ class RoleRepository(BaseRepository):
 
         return result.scalar_one_or_none()
 
+    async def get_by_name_case_insensitive(self, name: str) -> Role | None:
+        """
+        Trim + case-insensitive lookup. `Role.name` has an exact-match unique
+        index only, so " viewer"/"VIEWER"/"Viewer " are all distinct rows to
+        Postgres despite being the same role to a human — this is what
+        actually let a typo'd near-duplicate ("viewre" next to "Viewer")
+        coexist as its own row. Used by create/update to reject this class of
+        duplicate before it reaches the database, not to replace the DB's own
+        exact-match unique index.
+        """
+        result = await self.db.execute(
+            select(Role)
+            .where(func.lower(Role.name) == name.strip().lower())
+        )
+
+        return result.scalar_one_or_none()
+
     async def get_all(
         self,
         page: int = 1,

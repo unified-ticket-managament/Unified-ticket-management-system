@@ -58,7 +58,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { formatDate } from "@/lib/utils";
-import { canDeleteRecords, ROLE_NAMES } from "@/lib/role-access";
+import { canDeleteRecords, dedupeRolesByName, ROLE_NAMES } from "@/lib/role-access";
 import { categoryService, roleService, userService } from "@/services";
 import { PermissionGuard } from "@/components/auth/PermissionGuard";
 import { useAuthStore } from "@/store/auth-store";
@@ -117,11 +117,13 @@ export default function UsersPage() {
     queryFn: () => categoryService.list({ page_size: 100 }),
   });
 
+  const dedupedRoles = useMemo(() => dedupeRolesByName<Role>(rolesQuery.data?.roles ?? []), [rolesQuery.data]);
+
   const roleMap = useMemo(() => {
     const map = new Map<string, string>();
-    (rolesQuery.data?.roles ?? []).forEach((role: Role) => map.set(role.role_id, role.name));
+    dedupedRoles.forEach((role: Role) => map.set(role.role_id, role.name));
     return map;
-  }, [rolesQuery.data]);
+  }, [dedupedRoles]);
 
   const categoryMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -455,7 +457,7 @@ export default function UsersPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Roles</SelectItem>
-              {(rolesQuery.data?.roles ?? []).map((role: Role) => (
+              {dedupedRoles.map((role: Role) => (
                 <SelectItem key={role.role_id} value={role.role_id}>
                   {role.name}
                 </SelectItem>

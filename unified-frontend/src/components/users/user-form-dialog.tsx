@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
-import { getCreatableRoleNames, ROLE_NAMES } from "@/lib/role-access";
+import { dedupeRolesByName, getCreatableRoleNames, ROLE_NAMES } from "@/lib/role-access";
 import { categoryService, roleService, userService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 import { Category, Role, User } from "@/types";
@@ -98,7 +98,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
     enabled: open,
   });
 
-  const allRoles: Role[] = rolesQuery.data?.roles ?? [];
+  const allRoles: Role[] = dedupeRolesByName<Role>(rolesQuery.data?.roles ?? []);
   const roleMap = useMemo(() => {
     const map = new Map<string, string>();
     allRoles.forEach((role) => map.set(role.role_id, role.name));
