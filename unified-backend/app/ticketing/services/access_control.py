@@ -35,6 +35,21 @@ TEAM_LEAD_TRANSFER_ROLE_NAMES = {"Account Manager", "Site Lead", "Super Admin"}
 # ticket scoping).
 ACCOUNT_MANAGER_ROLE_NAME = "Account Manager"
 
+# The remaining four role-name literals, centralized here so every
+# module that needs one imports it instead of re-declaring its own
+# local copy of the same string (previously independently redeclared
+# in both assignment_service.py and sla_escalation_rules.py — harmless
+# today since every copy happened to agree, but a real "single source
+# of truth" risk the moment one of them drifts, e.g. a role rename).
+# assignment_service.py and sla_escalation_rules.py both now import
+# from here instead of declaring their own, so anything that used to
+# import these names from either of those two modules keeps working
+# unchanged — they're re-exported, not removed.
+TEAM_LEAD_ROLE_NAME = "Team Lead"
+STAFF_ROLE_NAME = "Staff"
+SITE_LEAD_ROLE_NAME = "Site Lead"
+SUPER_ADMIN_ROLE_NAME = "Super Admin"
+
 # Roles whose ticket visibility is scoped to their own work-
 # specialization category (Eligibility, AR, Claims, ... — see
 # shared_models.models.Category). Each category is its own shared
@@ -113,7 +128,26 @@ def ensure_agent_can_view_ticket(
     user created before that constraint existed, and "sees nothing"
     is the safe failure mode, matching the Account Manager's
     owns-no-clients-sees-nothing convention below.
+
+    Requires membership in AGENT_ROLE_NAMES before anything else — a
+    real, confirmed gap found during an RBAC verification pass: this
+    function used to return (unrestricted) for ANY role outside
+    CATEGORY_SCOPED_ROLE_NAMES, which was meant to cover "Account
+    Manager/Site Lead/Super Admin stay unrestricted" but actually also
+    silently let Viewer (the client-facing role, deliberately excluded
+    from AGENT_ROLE_NAMES everywhere else — e.g. get_current_agent)
+    through unrestricted too, since Viewer isn't in
+    CATEGORY_SCOPED_ROLE_NAMES either. Every real ticket-mutating
+    action already reaches this same function first, so this one
+    check now closes the gap everywhere at once rather than needing a
+    separate fix per call site.
     """
+
+    if current_user.role.name not in AGENT_ROLE_NAMES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this ticket.",
+        )
 
     if current_user.role.name not in CATEGORY_SCOPED_ROLE_NAMES:
         return

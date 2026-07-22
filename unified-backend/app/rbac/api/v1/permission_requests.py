@@ -86,6 +86,12 @@ def get_permission_request_service(
         organization_service=organization_service,
         permission_resolver=permission_resolver,
         audit_log_service=audit_log_service,
+        # PermissionRequestService's own approve()/revoke() always call
+        # grant()/revoke() with notify=False (it sends its own, more
+        # specific notification), so this is never actually used today
+        # — wired in anyway so that stays true by construction rather
+        # than by coincidence if that default ever changes.
+        notification_service=NotificationService(NotificationRepository(db)),
     )
 
     return PermissionRequestService(

@@ -499,6 +499,10 @@ class PermissionRequestService:
                 expires_at=request.expires_at,
                 scope_ticket_id=permission_request.scope_ticket_id,
             ),
+            # This method sends its own PERMISSION_APPROVED notification
+            # below — grant()'s own PERMISSION_GRANTED would otherwise
+            # fire a second, duplicate notification for this same event.
+            notify=False,
         )
 
         permission_request = await self.permission_request_repository.approve(
@@ -681,6 +685,10 @@ class PermissionRequestService:
                 current_user,
                 requester_id,
                 permission_request.granted_override_id,
+                # This method sends its own PERMISSION_REVOKED
+                # notification below — revoke()'s own would otherwise
+                # duplicate it for this same event.
+                notify=False,
             )
 
         permission_request = await self.permission_request_repository.revoke(

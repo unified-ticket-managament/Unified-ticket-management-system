@@ -4,6 +4,12 @@ from uuid import UUID
 from shared_models.models import User
 
 from app.ticketing.models.client import Client
+# Imported from the centralized access_control.py rather than declared
+# locally (this module used to declare its own copy) — re-exported
+# under the same name, so escalation_service.py's existing
+# `from app.ticketing.services.sla_escalation_rules import TEAM_LEAD_ROLE_NAME`
+# keeps working unchanged.
+from app.ticketing.services.access_control import TEAM_LEAD_ROLE_NAME
 
 #sla_escalation_rules.py
 
@@ -98,9 +104,6 @@ RESOLUTION_RULES_CURRENT_OWNER: dict[str, tuple[str, ...]] = {
     "AT_RISK": (RecipientRole.CURRENT_OWNER,),
     "BREACHED": (RecipientRole.CURRENT_OWNER,),
 }
-
-TEAM_LEAD_ROLE_NAME = "Team Lead"
-
 
 @dataclass
 class RecipientContext:

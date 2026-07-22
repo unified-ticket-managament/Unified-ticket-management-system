@@ -19,6 +19,7 @@ from app.rbac.schemas.permission_override import (
 from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.organization_service import OrganizationService
 from app.rbac.services.permission_resolver import PermissionResolverService
+from app.notifications.service import NotificationService, NotificationType
 
 # Roles with unconditional authority to manage any user's permission
 # overrides — matches seed.py's own design ("Site Lead: all
@@ -52,6 +53,7 @@ class PermissionOverrideService:
         organization_service: OrganizationService,
         permission_resolver: PermissionResolverService,
         audit_log_service: AuditLogService,
+        notification_service: NotificationService | None = None,
     ):
         self.user_repository = user_repository
         self.permission_repository = permission_repository
@@ -59,6 +61,10 @@ class PermissionOverrideService:
         self.organization_service = organization_service
         self.permission_resolver = permission_resolver
         self.audit_log_service = audit_log_service
+        # Optional, same convention as PermissionRequestService's own
+        # notification_service — a caller that doesn't wire one in
+        # simply skips notifying, same as before this fix existed.
+        self.notification_service = notification_service
 
     # --------------------------------------------------
     # Authorization
@@ -110,7 +116,19 @@ class PermissionOverrideService:
         actor: User,
         target_user_id: UUID,
         request: GrantOverrideRequest,
+        notify: bool = True,
     ) -> PermissionOverrideResponse:
+        """
+        `notify=False` is used by PermissionRequestService.approve(),
+        which delegates the actual grant to this method but then sends
+        its own, more specific PERMISSION_APPROVED notification ("your
+        request was approved") — without this flag, approving a
+        request would fire both that notification and this method's own
+        PERMISSION_GRANTED one for the exact same grant. Every other
+        caller (e.g. a direct grant via the Users > Permission
+        Overrides admin screen, which has no separate notification of
+        its own) keeps the default and gets notified here.
+        """
 
         target = await self.user_repository.get_by_id(target_user_id)
 
@@ -215,6 +233,24 @@ class PermissionOverrideService:
             )
         )
 
+        if notify and self.notification_service is not None:
+            await self.notification_service.notify(
+                target.user_id,
+                NotificationType.PERMISSION_GRANTED,
+                title="You were granted a new permission",
+                message=(
+                    f"{permission.permission_name} — granted by {actor.name}"
+                    + (
+                        f", expires {request.expires_at.isoformat()}"
+                        if request.expires_at
+                        else ""
+                    )
+                ),
+                link="/profile",
+                related_entity_type="user_permission_override",
+                related_entity_id=override.override_id,
+            )
+
         return self._to_response(override)
 
     # --------------------------------------------------
@@ -226,7 +262,18 @@ class PermissionOverrideService:
         actor: User,
         target_user_id: UUID,
         override_id: UUID,
+        notify: bool = True,
     ) -> None:
+        """
+        `notify=False` is used by PermissionRequestService.revoke(),
+        which delegates the actual revocation to this method but then
+        sends its own PERMISSION_REVOKED notification — without this
+        flag, revoking a request-granted permission would fire two
+        notifications for the same event. A direct revoke via the
+        Users > Permission Overrides admin screen (previously silent —
+        this was the real, confirmed gap) keeps the default and gets
+        notified here.
+        """
 
         target = await self.user_repository.get_by_id(target_user_id)
 
@@ -278,6 +325,24 @@ class PermissionOverrideService:
                 ),
             )
         )
+
+        if notify and self.notification_service is not None:
+            # No revocation-reason field exists at this layer (the
+            # override model/repository has never had one — only the
+            # separate Permission Request revoke flow does) — the
+            # notification includes permission name, who revoked it,
+            # and the timestamp (Notification.created_at, set
+            # automatically), matching what this action actually
+            # supports rather than inventing a new column for it.
+            await self.notification_service.notify(
+                target.user_id,
+                NotificationType.PERMISSION_REVOKED,
+                title="Permission Revoked",
+                message=f'Your permission "{permission_name}" has been revoked by {actor.name}.',
+                link="/profile",
+                related_entity_type="user_permission_override",
+                related_entity_id=override.override_id,
+            )
 
     # --------------------------------------------------
     # List

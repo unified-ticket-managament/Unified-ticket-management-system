@@ -9,13 +9,19 @@ from app.ticketing.schemas.assignment import (
     AssignableGroup,
     AssignableUserSummary,
 )
-from app.ticketing.services.access_control import ensure_has_permission
-
-ACCOUNT_MANAGER_ROLE_NAME = "Account Manager"
-TEAM_LEAD_ROLE_NAME = "Team Lead"
-STAFF_ROLE_NAME = "Staff"
-SITE_LEAD_ROLE_NAME = "Site Lead"
-SUPER_ADMIN_ROLE_NAME = "Super Admin"
+# Role-name constants imported from the centralized access_control.py
+# rather than redeclared locally (this module used to declare its own
+# copy of all five) — re-exported under the same names, so any other
+# module importing them FROM assignment_service (e.g. ticket_service.py
+# imports STAFF_ROLE_NAME from here) keeps working unchanged.
+from app.ticketing.services.access_control import (
+    ACCOUNT_MANAGER_ROLE_NAME,
+    SITE_LEAD_ROLE_NAME,
+    STAFF_ROLE_NAME,
+    SUPER_ADMIN_ROLE_NAME,
+    TEAM_LEAD_ROLE_NAME,
+    ensure_has_permission,
+)
 
 
 def _summary(user: User) -> AssignableUserSummary:
@@ -32,39 +38,83 @@ class AssignmentService:
     assign outside the actor's own hierarchy.
 
     Role rules:
-    - Account Manager: EVERY active Team Lead company-wide, regardless
-      of category/reporting line (the Organization Structure business
-      rule — see root CLAUDE.md — is that any Account Manager can hand
-      work to any Team Lead, since the Account Manager decides which
-      department should own it), plus their own reporting Staff
-      (`manager_id` match, unchanged), plus themselves.
-    - Team Lead: their own reporting Staff (`teamlead_id` match), plus
+    - Account Manager: every active Team Lead AND every active Staff
+      member — both **narrowed to the ticket's own category whenever
+      one is known** (see `category_name` below), since each category
+      has exactly one operational team (one Team Lead, a handful of
+      Staff) and a company-wide, unscoped list of either is meaningless
+      noise once the ticket's own department is already known. Falls
+      back to the full company-wide Team Lead list (still respecting
+      the underlying Organization Structure business rule — see root
+      CLAUDE.md — that any Account Manager may in principle work with
+      any Team Lead) only while no category has been chosen yet in the
+      dialog. This picker-level narrowing is purely a UI convenience —
+      it does NOT narrow `InteractionService.transfer_agent`'s own,
+      separately-gated ability to hand an *existing* ticket to any
+      Team Lead company-wide; that rule is untouched.
+    - Team Lead: their own reporting Staff (`teamlead_id` match, always
+      already within their own category by construction), plus
       themselves.
     - Site Lead: every active Account Manager / Team Lead / Staff,
-      unrestricted (Site Lead has unconditional visibility elsewhere
-      in this codebase too).
-    - Super Admin: every active user of every role.
+      narrowed to `category_name` for the Team Lead/Staff groups the
+      same way Account Manager's are, when one is known — Site Lead
+      keeps unrestricted oversight, this is purely about not showing
+      an irrelevant company-wide list when the caller already told us
+      which category the new ticket belongs to.
+    - Super Admin: every active user of every role, same category
+      narrowing as Site Lead for Team Lead/Staff.
     - Staff (or anything else): no groups — always themselves only.
+
+    `category_name` (optional, a `CategoryName` value like
+    "Eligibility") is the new ticket's own `ticket_type` — passed by
+    the caller (the GET /agents/assignable route reads it from a query
+    param; `resolve_target` below reads it from the same
+    `TicketFromInteractionCreate.ticket_type` the ticket is actually
+    being created with) so the "Assigned To" picker and the server-side
+    validation of whatever was picked always agree on the same scope.
+    Omitting it preserves the old, unscoped-by-category behavior — this
+    is additive, not a breaking change for any caller that doesn't know
+    the category yet.
     """
 
     def __init__(self, user_repository: UserRepository):
         self.user_repository = user_repository
 
-    async def get_assignable_groups(self, current_user: User) -> AssignableAgentsResponse:
+    async def get_assignable_groups(
+        self,
+        current_user: User,
+        category_name: str | None = None,
+    ) -> AssignableAgentsResponse:
         role_name = current_user.role.name
         groups: list[AssignableGroup] = []
 
         if role_name == ACCOUNT_MANAGER_ROLE_NAME:
-            # Unscoped — see the class docstring's Account Manager rule
-            # above. Was previously list_active_by_role_and_manager
-            # (this Account Manager's own manager_id reports only),
-            # which contradicted the "any Account Manager can assign to
-            # any Team Lead" business rule.
-            team_leads = await self.user_repository.list_active_by_role_name(
-                TEAM_LEAD_ROLE_NAME
+            # Both groups narrow to category_name when known — see the
+            # class docstring's Account Manager rule above. Team Lead
+            # previously listed every Team Lead company-wide
+            # unconditionally; Staff previously used
+            # list_active_by_role_and_manager (only Staff who report
+            # directly to *this* Account Manager via manager_id, a
+            # company-wide reporting-line coincidence, not a category
+            # concept — empty for every Account Manager except
+            # whichever one happens to be every Staff member's
+            # manager_id). Both fall back to their old, unscoped
+            # behavior only while no category is known yet, so a
+            # caller that hasn't picked one still sees a sensible
+            # default list rather than an empty one.
+            team_leads = (
+                await self.user_repository.list_active_by_role_and_category(
+                    TEAM_LEAD_ROLE_NAME, category_name
+                )
+                if category_name is not None
+                else await self.user_repository.list_active_by_role_name(TEAM_LEAD_ROLE_NAME)
             )
-            staff = await self.user_repository.list_active_by_role_and_manager(
-                STAFF_ROLE_NAME, current_user.user_id
+            staff = (
+                await self.user_repository.list_active_staff_by_category(category_name)
+                if category_name is not None
+                else await self.user_repository.list_active_by_role_and_manager(
+                    STAFF_ROLE_NAME, current_user.user_id
+                )
             )
             groups = [
                 AssignableGroup(role=TEAM_LEAD_ROLE_NAME, users=[_summary(u) for u in team_leads]),
@@ -83,8 +133,18 @@ class AssignmentService:
             account_managers = await self.user_repository.list_active_by_role_name(
                 ACCOUNT_MANAGER_ROLE_NAME
             )
-            team_leads = await self.user_repository.list_active_by_role_name(TEAM_LEAD_ROLE_NAME)
-            staff = await self.user_repository.list_active_by_role_name(STAFF_ROLE_NAME)
+            team_leads = (
+                await self.user_repository.list_active_by_role_and_category(
+                    TEAM_LEAD_ROLE_NAME, category_name
+                )
+                if category_name is not None
+                else await self.user_repository.list_active_by_role_name(TEAM_LEAD_ROLE_NAME)
+            )
+            staff = (
+                await self.user_repository.list_active_staff_by_category(category_name)
+                if category_name is not None
+                else await self.user_repository.list_active_by_role_name(STAFF_ROLE_NAME)
+            )
             groups = [
                 AssignableGroup(
                     role=ACCOUNT_MANAGER_ROLE_NAME,
@@ -102,8 +162,18 @@ class AssignmentService:
             account_managers = await self.user_repository.list_active_by_role_name(
                 ACCOUNT_MANAGER_ROLE_NAME
             )
-            team_leads = await self.user_repository.list_active_by_role_name(TEAM_LEAD_ROLE_NAME)
-            staff = await self.user_repository.list_active_by_role_name(STAFF_ROLE_NAME)
+            team_leads = (
+                await self.user_repository.list_active_by_role_and_category(
+                    TEAM_LEAD_ROLE_NAME, category_name
+                )
+                if category_name is not None
+                else await self.user_repository.list_active_by_role_name(TEAM_LEAD_ROLE_NAME)
+            )
+            staff = (
+                await self.user_repository.list_active_staff_by_category(category_name)
+                if category_name is not None
+                else await self.user_repository.list_active_by_role_name(STAFF_ROLE_NAME)
+            )
             groups = [
                 AssignableGroup(
                     role=SUPER_ADMIN_ROLE_NAME, users=[_summary(u) for u in super_admins]
@@ -123,12 +193,20 @@ class AssignmentService:
 
         return AssignableAgentsResponse(me=_summary(current_user), groups=groups)
 
-    async def resolve_target(self, current_user: User, agent_id: UUID | None) -> UUID | None:
+    async def resolve_target(
+        self,
+        current_user: User,
+        agent_id: UUID | None,
+        category_name: str | None = None,
+    ) -> UUID | None:
         """
         Validates a chosen `agent_id` against the same set
         `get_assignable_groups` offers. `None` preserves the original,
         pre-existing behavior (ticket born unclaimed) for any caller
-        that doesn't send this field at all.
+        that doesn't send this field at all. `category_name` must be
+        the same value the picker itself was scoped by (the ticket's
+        own `ticket_type`), so this re-validation can never reject a
+        choice the picker legitimately offered.
         """
 
         if agent_id is None:
@@ -146,7 +224,7 @@ class AssignmentService:
         # point rather than a side effect of hierarchy shape.
         ensure_has_permission(current_user, "ticket:assign")
 
-        response = await self.get_assignable_groups(current_user)
+        response = await self.get_assignable_groups(current_user, category_name)
         allowed_ids = {user.user_id for group in response.groups for user in group.users}
 
         if agent_id not in allowed_ids:

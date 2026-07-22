@@ -16,6 +16,15 @@ class NotificationType:
     PERMISSION_APPROVED = "PERMISSION_APPROVED"
     PERMISSION_REJECTED = "PERMISSION_REJECTED"
     PERMISSION_REVOKED = "PERMISSION_REVOKED"
+    # A permission override granted directly (e.g. via the Users >
+    # Permission Overrides admin screen) rather than through an
+    # approved Permission Request — kept distinct from
+    # PERMISSION_APPROVED so a recipient can tell "an admin proactively
+    # gave me this" apart from "my own request was approved". See
+    # PermissionOverrideService.grant's own `notify` parameter for why
+    # this never fires alongside PERMISSION_APPROVED for the same
+    # grant.
+    PERMISSION_GRANTED = "PERMISSION_GRANTED"
     EDIT_ACCESS_REQUESTED = "EDIT_ACCESS_REQUESTED"
     EDIT_ACCESS_APPROVED = "EDIT_ACCESS_APPROVED"
     EDIT_ACCESS_REJECTED = "EDIT_ACCESS_REJECTED"

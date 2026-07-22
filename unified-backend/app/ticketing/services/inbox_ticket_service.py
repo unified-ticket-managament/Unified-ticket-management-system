@@ -110,7 +110,9 @@ class InboxTicketService:
         # AssignmentService, never trusted as-is. `created_by` still
         # separately records who actually did the promoting.
         resolved_agent_id = (
-            await self.assignment_service.resolve_target(current_user, request.agent_id)
+            await self.assignment_service.resolve_target(
+                current_user, request.agent_id, request.ticket_type
+            )
             if self.assignment_service is not None
             else None
         )

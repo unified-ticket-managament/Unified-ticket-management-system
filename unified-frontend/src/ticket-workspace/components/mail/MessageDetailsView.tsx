@@ -270,10 +270,19 @@ export function MessageDetailsView({
   }, [categories]);
 
   useEffect(() => {
-    listAssignableAgents()
+    // Re-fetches whenever the dialog's own Category selection changes
+    // (not just once on mount) — the Team Lead/Staff groups are scoped
+    // to this category on the backend (see AssignmentService), so a
+    // stale, unscoped list would otherwise linger from before the user
+    // picked a category. Resets any already-chosen assignee too, since
+    // a Team Lead/Staff picked under the old category may not even be
+    // in the new category's list.
+    setAssignedToChoice("unassigned");
+    setSelectedAssigneeId("");
+    listAssignableAgents(ticketType || undefined)
       .then(setAssignableAgents)
       .catch(() => setAssignableAgents(null));
-  }, []);
+  }, [ticketType]);
 
   // Every personal address this client has ever emailed the shared
   // inbox from — backs the reply composer's "To" dropdown.

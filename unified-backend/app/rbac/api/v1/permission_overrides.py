@@ -21,6 +21,8 @@ from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.organization_service import OrganizationService
 from app.rbac.services.permission_override_service import PermissionOverrideService
 from app.rbac.services.permission_resolver import PermissionResolverService
+from app.notifications.repository import NotificationRepository
+from app.notifications.service import NotificationService
 
 router = APIRouter(
     prefix="/users",
@@ -64,6 +66,7 @@ def get_permission_override_service(
         organization_service=organization_service,
         permission_resolver=permission_resolver,
         audit_log_service=audit_log_service,
+        notification_service=NotificationService(NotificationRepository(db)),
     )
 
 

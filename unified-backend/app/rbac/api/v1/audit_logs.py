@@ -67,7 +67,23 @@ async def create_audit_log(
 ):
     """
     Create a new audit log.
+
+    Super Admin only — this route is not the system's real audit-writing
+    path (every real action logs itself via AuditLogService.create_log
+    called directly, server-side, from the service that performed the
+    action); it exists only as a manual/administrative escape hatch.
+    Previously had no authorization check at all beyond authentication,
+    meaning any logged-in user of any role could forge an arbitrary
+    audit log entry. No legitimate caller (frontend or backend) invokes
+    this route today — confirmed by repo-wide search — so this is a
+    pure hardening change with no behavioral impact on any real flow.
     """
+
+    if current_user.role.name != SUPER_ADMIN_ROLE_NAME:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only Super Admin can create system-level audit logs.",
+        )
 
     return await service.create_log(log_data)
 
@@ -183,7 +199,21 @@ async def delete_audit_log(
 ):
     """
     Delete an audit log.
+
+    Super Admin only — same reasoning as create_audit_log above.
+    Audit logs are meant to be an append-only, permanent record;
+    previously this route had no authorization check at all beyond
+    authentication, meaning any logged-in user of any role could
+    permanently delete any audit log row. Confirmed no legitimate
+    caller (frontend or backend) invokes this route today, so this is
+    a pure hardening change.
     """
+
+    if current_user.role.name != SUPER_ADMIN_ROLE_NAME:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only Super Admin can delete system-level audit logs.",
+        )
 
     await service.delete_log(
         audit_log_id,

@@ -50,13 +50,14 @@ from app.ticketing.services.access_control import (
     CATEGORY_SCOPED_ROLE_NAMES,
     ESCALATION_TAB_ROLE_NAMES,
     GLOBAL_INBOX_ROLE_NAMES,
+    STAFF_ROLE_NAME,
+    TEAM_LEAD_ROLE_NAME,
     ensure_account_manager_owns_ticket_client,
     ensure_agent_can_view_ticket,
     ensure_has_permission,
     ensure_ticket_not_closed,
     has_permission,
 )
-from app.ticketing.services.assignment_service import STAFF_ROLE_NAME
 from app.ticketing.services.audit_log_service import AuditLogService
 
 # Mirrors the frontend's InteractionsPage.tsx VISIBLE_INTERACTION_TYPES
@@ -286,10 +287,10 @@ class TicketService:
           teams or the wider category.
         """
 
-        if current_user.role.name == "Staff":
+        if current_user.role.name == STAFF_ROLE_NAME:
             return [current_user.user_id]
 
-        if current_user.role.name == "Team Lead":
+        if current_user.role.name == TEAM_LEAD_ROLE_NAME:
             reports = await self.user_repository.list_active_staff_by_teamlead(
                 current_user.user_id
             )
@@ -563,6 +564,23 @@ class TicketService:
             ensure_has_permission(current_user, "ticket:view_own")
         elif view == "all":
             ensure_has_permission(current_user, "ticket:view_others")
+        elif view != "escalated":
+            # No specific tab was requested (the unbounded, no-`view`
+            # call this method's own callers can make — e.g. the
+            # ticket-workspace's listTickets(), which hits GET /tickets
+            # with zero query params). Previously NONE of the three
+            # branches above ever ran in this case, so this whole
+            # method fell through with no permission check and no role
+            # scoping narrower than Site Lead/Super Admin's own
+            # unrestricted default — any authenticated role, including
+            # Viewer (which holds zero ticket:* permissions and is
+            # deliberately excluded from AGENT_ROLE_NAMES elsewhere),
+            # could see the entire company's tickets unscoped. Every
+            # real agent role already holds ticket:view_own by default
+            # (see seed.py's DEFAULT_ROLES), so this changes nothing
+            # for any legitimate caller — it only blocks the case that
+            # was never supposed to be reachable at all.
+            ensure_has_permission(current_user, "ticket:view_own")
 
         # Account Manager is scoped to only their own clients' tickets;
         # Team Lead/Staff are scoped to their own work-specialization

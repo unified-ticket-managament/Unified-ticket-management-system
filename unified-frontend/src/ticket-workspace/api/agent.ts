@@ -42,8 +42,16 @@ export async function listAgents(category?: string): Promise<AgentSummary[]> {
 
 // GET /agents/assignable — who the current user may assign a
 // brand-new ticket to on the Create Ticket dialog, scoped per their
-// own role/hierarchy (see AssignmentService on the backend).
-export async function listAssignableAgents(): Promise<AssignableAgentsResponse> {
-  const { data } = await apiClient.get<AssignableAgentsResponse>("/agents/assignable");
+// own role/hierarchy (see AssignmentService on the backend). Pass the
+// dialog's currently-selected category so the Team Lead/Staff groups
+// narrow to that one work-specialization team instead of listing
+// every category's people at once — omit only if the category isn't
+// known yet.
+export async function listAssignableAgents(
+  category?: string
+): Promise<AssignableAgentsResponse> {
+  const { data } = await apiClient.get<AssignableAgentsResponse>("/agents/assignable", {
+    params: category ? { category } : undefined,
+  });
   return data;
 }

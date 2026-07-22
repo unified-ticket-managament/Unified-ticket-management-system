@@ -34,6 +34,8 @@ from app.ticketing.schemas.payloads import EmailPayload
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
     GLOBAL_INBOX_ROLE_NAMES,
+    STAFF_ROLE_NAME,
+    TEAM_LEAD_ROLE_NAME,
     ensure_has_permission,
 )
 
@@ -120,13 +122,13 @@ class InboxService:
             pass
         elif role_name == ACCOUNT_MANAGER_ROLE_NAME:
             account_manager_id = current_user.user_id
-        elif role_name == "Team Lead":
+        elif role_name == TEAM_LEAD_ROLE_NAME:
             ticket_type = (
                 current_user.category.category_name.value
                 if current_user.category is not None
                 else "__no_category__"
             )
-        elif role_name == "Staff":
+        elif role_name == STAFF_ROLE_NAME:
             assigned_agent_id = current_user.user_id
             # An approved edit-access grant is exactly what lets this
             # Staff member act on a ticket they aren't assigned to

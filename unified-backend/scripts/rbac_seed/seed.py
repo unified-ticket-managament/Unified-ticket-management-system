@@ -486,6 +486,24 @@ REVOKED_GRANTS = [
     ("Team Lead", "ticket:view_global_audit_log"),
     ("Team Lead", "ticket:hide_interaction"),
     ("Staff", "ticket:hide_interaction"),
+    # Found during an end-to-end RBAC verification pass: these three
+    # grants existed live (on the dev database's role_permissions
+    # table) despite never having been part of either role's
+    # DEFAULT_ROLES entry above in any version of this file the
+    # additive-only seeding loop has run against — leftover drift from
+    # before the RBAC matrix reconciliation, never explicitly clawed
+    # back. Per the matrix, ticket:close_ticket/ticket:system_config
+    # are Override-only for Staff (Staff having Full access to close a
+    # ticket outright, bypassing the "a supervisor must verify before
+    # the SLA clock stops" requirement Module 10/close_ticket's own
+    # design depends on, is the one of these three with a real,
+    # active enforcement gap — access_control.ensure_can_close_ticket
+    # does check this permission for Staff); communication:create is
+    # Override-only for Team Lead/Staff.
+    ("Staff", "ticket:close_ticket"),
+    ("Staff", "ticket:system_config"),
+    ("Staff", "communication:create"),
+    ("Team Lead", "communication:create"),
 ]
 
 

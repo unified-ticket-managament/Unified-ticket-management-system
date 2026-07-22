@@ -153,11 +153,18 @@ class UserRepository(BaseRepository):
         self,
         role_id: UUID,
     ) -> list[User]:
+        # is_active filtered for consistency with every "active"-
+        # prefixed sibling method in ticketing's own UserRepository —
+        # this method (and get_by_manager_and_role/get_by_teamlead/
+        # get_by_category below) previously had no such filter, so a
+        # deactivated user could still appear as a live node in the
+        # Organization Chart (OrganizationService is this method's
+        # only real caller).
 
         result = await self.db.execute(
             select(User)
             .options(selectinload(User.role), selectinload(User.category))
-            .where(User.role_id == role_id)
+            .where(User.role_id == role_id, User.is_active.is_(True))
             .order_by(User.name)
         )
 
@@ -196,6 +203,7 @@ class UserRepository(BaseRepository):
             .where(
                 User.manager_id == manager_id,
                 User.role_id == role_id,
+                User.is_active.is_(True),
             )
             .order_by(User.name)
         )
@@ -210,7 +218,7 @@ class UserRepository(BaseRepository):
         result = await self.db.execute(
             select(User)
             .options(selectinload(User.role), selectinload(User.category))
-            .where(User.teamlead_id == teamlead_id)
+            .where(User.teamlead_id == teamlead_id, User.is_active.is_(True))
             .order_by(User.name)
         )
 
@@ -224,7 +232,7 @@ class UserRepository(BaseRepository):
         result = await self.db.execute(
             select(User)
             .options(selectinload(User.role))
-            .where(User.category_id == category_id)
+            .where(User.category_id == category_id, User.is_active.is_(True))
             .order_by(User.name)
         )
 

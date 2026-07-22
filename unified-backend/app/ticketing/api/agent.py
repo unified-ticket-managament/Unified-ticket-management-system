@@ -28,6 +28,15 @@ router = APIRouter(
     response_model=AssignableAgentsResponse,
 )
 async def get_assignable_agents(
+    category: str | None = Query(
+        None,
+        description=(
+            "The new ticket's own category (e.g. 'Eligibility') — "
+            "narrows the Team Lead/Staff groups to that one "
+            "work-specialization team instead of showing every "
+            "category's staff at once. Omit for the old, unscoped list."
+        ),
+    ),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
@@ -41,7 +50,7 @@ async def get_assignable_agents(
     repository = UserRepository(db)
     service = AssignmentService(repository)
 
-    return await service.get_assignable_groups(current_user)
+    return await service.get_assignable_groups(current_user, category)
 
 
 # ---------------------------------------------------------
