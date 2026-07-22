@@ -62,7 +62,11 @@ If the action is itself a status transition into `RESOLVED`/`CLOSED`, fire a dis
 than both, to avoid a duplicate pair of notifications for one event. See
 `unified-frontend/CLAUDE.md`'s "Notification hierarchy" section for the full before/after and the
 deliberate scope decision *not* to fan every routine event out to Super Admin/Site Lead (their
-broad visibility comes from ticket lists/audit logs, not a flooded bell).
+broad visibility comes from ticket lists/audit logs, not a flooded bell). **Any recipient with an
+open browser tab gets this notification pushed to them in real time** (`GET /notifications/stream`,
+an SSE connection — see the root `CLAUDE.md`'s "Notifications: real-time delivery via Server-Sent
+Events" section) automatically, with zero extra work — `notify()` is the one place that publishes
+to it, so a new call site never needs its own push-delivery wiring.
 
 **Three further variants exist for shapes that don't fit either pattern above** — see
 `CLAUDE.md` for the full detail, summarized here:

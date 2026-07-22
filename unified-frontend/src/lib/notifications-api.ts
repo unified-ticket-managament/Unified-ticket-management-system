@@ -50,3 +50,11 @@ export async function markNotificationRead(notificationId: string): Promise<void
 export async function markAllNotificationsRead(): Promise<void> {
   await api.post("/notifications/read-all", null, { baseURL: API_ROOT });
 }
+
+// The browser's native EventSource API cannot set an Authorization
+// header, so the SSE endpoint takes the access token as a query param
+// instead (see unified-backend's get_current_user_sse) — this is the
+// one place in the app a token goes into a URL rather than a header.
+export function getNotificationStreamUrl(accessToken: string): string {
+  return `${API_ROOT}/notifications/stream?token=${encodeURIComponent(accessToken)}`;
+}

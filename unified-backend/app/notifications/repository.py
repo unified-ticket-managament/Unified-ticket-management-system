@@ -10,11 +10,13 @@ class NotificationRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def create_many(self, rows: list[dict]) -> None:
+    async def create_many(self, rows: list[dict]) -> list[Notification]:
         if not rows:
-            return
-        self.db.add_all([Notification(**row) for row in rows])
+            return []
+        created = [Notification(**row) for row in rows]
+        self.db.add_all(created)
         await self.db.flush()
+        return created
 
     async def list_for_user(
         self,

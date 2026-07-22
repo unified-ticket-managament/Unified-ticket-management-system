@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, Security, status
+from fastapi import Depends, HTTPException, Query, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import Category, CategoryName, Role, User
@@ -8,7 +8,7 @@ from shared_models.models import Category, CategoryName, Role, User
 from app.auth.jwt import decode_token
 from app.core.rbac_cache import get_rbac_cache, resolution_lock
 from app.core.request_timing import timed_stage
-from app.database.session import get_db
+from app.database.session import AsyncSessionLocal, get_db
 # Deliberately ticketing's UserRepository, not rbac's, for this one
 # shared dependency: its get_by_id eager-loads both User.role AND
 # User.category (rbac's own UserRepository only loads .role). Every
@@ -63,10 +63,7 @@ def _build_transient_user(payload: dict) -> User:
     return user
 
 
-async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Security(security),
-    db: AsyncSession = Depends(get_db),
-) -> User:
+async def _authenticate_token(token: str, db: AsyncSession) -> User:
     """
     Verifies an RBAC-issued access token and returns the authenticated
     User (with .role and .category populated). Normally re-resolves
@@ -86,9 +83,12 @@ async def get_current_user(
     `permission_version` in its payload, which always takes the DB
     path below — degrades safely, same convention already used for
     `permissions`/`scoped_permissions`.
-    """
 
-    token = credentials.credentials
+    Shared by both get_current_user (Authorization header) and
+    get_current_user_sse (query param, see that function's own
+    docstring for why) — this is the one place the actual verification
+    logic lives, so neither path can drift from the other.
+    """
 
     try:
         payload = decode_token(token)
@@ -176,6 +176,52 @@ async def get_current_user(
     user.scoped_permissions = payload.get("scoped_permissions") or {}
 
     return user
+
+
+async def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Every ordinary route's auth dependency — token from the Authorization header."""
+
+    return await _authenticate_token(credentials.credentials, db)
+
+
+async def get_current_user_sse(
+    token: str = Query(..., description="Access token — passed as a query param, not a header."),
+) -> User:
+    """
+    Same verification as get_current_user, sourcing the token from a
+    query parameter instead of an Authorization header. The browser's
+    native EventSource API cannot set custom request headers, so the
+    one route that needs to authenticate an EventSource connection
+    (GET /notifications/stream) depends on this instead of
+    get_current_user. Every other route must keep depending on
+    get_current_user — do not swap this in elsewhere just for
+    convenience, since a token in a query string is more exposed
+    (server access logs, browser history, Referer headers) than one in
+    a header, which is why this stays a deliberate, narrow exception
+    rather than the default.
+
+    Deliberately does NOT take `db` via `Depends(get_db)` the way
+    every other dependency in this module does. FastAPI keeps a
+    generator dependency's context (get_db's `async with
+    AsyncSessionLocal() as session: yield session`) open until the
+    whole response has finished — for an ordinary request that's
+    milliseconds, but for the streaming SSE response this feeds into,
+    "the response" means the entire connection, potentially open for
+    hours. Holding one pooled connection per open browser tab for that
+    long would exhaust the pool (pool_size=20/max_overflow=30, see
+    app/database/session.py) at a small fraction of any real number of
+    concurrently-open tabs. This instead opens its own short-lived
+    session — used only for this one, usually cache-hit/zero-query
+    auth check — and lets it close immediately on return, so the SSE
+    connection itself never holds a database connection for the rest
+    of its life.
+    """
+
+    async with AsyncSessionLocal() as db:
+        return await _authenticate_token(token, db)
 
 
 async def get_current_active_user(

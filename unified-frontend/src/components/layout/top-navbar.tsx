@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
@@ -22,6 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import {
   getNotifications,
+  getNotificationStreamUrl,
   markAllNotificationsRead,
   markNotificationRead,
   type NotificationItem,
@@ -29,7 +30,14 @@ import {
 import { authService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 
-const NOTIFICATION_POLL_INTERVAL_MS = 30_000;
+// Reconnect backoff for the notification SSE connection — doubles
+// each consecutive failure, capped at 30s, reset back to the base on
+// any successful open. Deliberately unbounded in attempt count (kept
+// trying forever while this component is mounted): a network blip or
+// a backend restart should silently self-heal without the bell ever
+// needing a manual page refresh.
+const SSE_RECONNECT_BASE_DELAY_MS = 1_000;
+const SSE_RECONNECT_MAX_DELAY_MS = 30_000;
 
 // SLA_AT_RISK/SLA_BREACHED/SLA_ESCALATED (app/notifications/service.py's
 // NotificationType) — colored distinctly from the generic unread dot so
@@ -82,7 +90,18 @@ export function TopNavbar() {
   const logout = useAuthStore((state) => state.logout);
 
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
-  const [unreadCount, setUnreadCount] = useState(0);
+
+  // Derived, not separately tracked — a single source of truth means
+  // every update path (SSE arrival, mark-read, mark-all-read, local
+  // dismiss) automatically keeps the badge correct with no hand-sync.
+  // Previously this was its own useState, independently decremented in
+  // three different places (mark-all-read, click-to-read, dismiss) —
+  // real duplicated bookkeeping that only stayed correct by each of
+  // those call sites remembering to update it too.
+  const unreadCount = useMemo(
+    () => notifications.filter((n) => !n.is_read).length,
+    [notifications]
+  );
 
   // The backend has no delete/dismiss endpoint for notifications, so
   // "Clear All" / removing a single notification is a client-side-only
@@ -91,59 +110,128 @@ export function TopNavbar() {
   // notification would silently reappear on the next 30s refresh.
   const dismissedIdsRef = useRef<Set<string>>(new Set());
 
-  // Every notification_id already seen, so a poll only toasts for
-  // ones that are genuinely new — not on first load (which would
-  // toast every pre-existing notification at once the moment any page
-  // mounts) and not again on every subsequent poll of the same item.
-  const seenIdsRef = useRef<Set<string> | null>(null);
+  // Every notification_id already delivered, so a genuinely duplicate
+  // push (a defensive guard, not an expected occurrence — each open
+  // connection is pushed to exactly once per notify() call) never
+  // double-inserts or double-toasts.
+  const seenIdsRef = useRef<Set<string>>(new Set());
 
-  // Polls the real notification feed — silent on failure, same
-  // rationale as this app's other polling (the bell just keeps
-  // showing the last good state rather than flashing an error toast
-  // every tick).
+  // One-time hydration on mount: SSE only pushes *new* events going
+  // forward, it never replays history, so the initial list/badge still
+  // needs one ordinary fetch to seed state. Silent on failure, same
+  // rationale as before — the bell just starts empty until the next
+  // real-time event rather than showing an error.
   useEffect(() => {
     let cancelled = false;
 
-    async function load() {
+    (async () => {
       try {
         const data = await getNotifications();
         if (cancelled) return;
 
-        const isFirstLoad = seenIdsRef.current === null;
-        const previouslySeen = seenIdsRef.current ?? new Set<string>();
-
-        // SLA breach/at-risk/escalation notifications get a toast in
-        // addition to the bell update — everything else (permission
-        // requests, etc.) only updates the bell, unchanged from before.
-        if (!isFirstLoad) {
-          for (const n of data.items) {
-            if (previouslySeen.has(n.notification_id)) continue;
-            if (!(n.notification_type in SLA_NOTIFICATION_DOT)) continue;
-            toast({
-              variant: n.notification_type === "SLA_AT_RISK" ? "default" : "destructive",
-              title: n.title,
-              description: n.message,
-            });
-          }
-        }
         seenIdsRef.current = new Set(data.items.map((n) => n.notification_id));
-
         const visible = data.items.filter(
           (n) => !dismissedIdsRef.current.has(n.notification_id)
         );
         setNotifications(visible);
-        setUnreadCount(visible.filter((n) => !n.is_read).length);
       } catch {
-        // ignore
+        // ignore — the SSE connection below still delivers new events
+        // even if this initial hydration failed.
       }
-    }
-
-    load();
-    const interval = window.setInterval(load, NOTIFICATION_POLL_INTERVAL_MS);
+    })();
 
     return () => {
       cancelled = true;
-      window.clearInterval(interval);
+    };
+  }, []);
+
+  // Real-time delivery via Server-Sent Events — replaces the old 30s
+  // GET /notifications poll entirely. One EventSource per mount (this
+  // component itself only mounts once per authenticated session, see
+  // DashboardLayout — it sits outside the per-navigation animation
+  // wrapper), manually reconnected with exponential backoff on error
+  // since the native EventSource auto-reconnect doesn't reliably retry
+  // after every failure mode and gives no control over backoff pacing.
+  useEffect(() => {
+    let cancelled = false;
+    let source: EventSource | null = null;
+    let reconnectTimer: number | null = null;
+    let attempt = 0;
+
+    function scheduleReconnect() {
+      if (cancelled) return;
+      const delay = Math.min(
+        SSE_RECONNECT_BASE_DELAY_MS * 2 ** attempt,
+        SSE_RECONNECT_MAX_DELAY_MS
+      );
+      attempt += 1;
+      reconnectTimer = window.setTimeout(connect, delay);
+    }
+
+    function handleNotificationEvent(event: MessageEvent) {
+      let payload: { notification: NotificationItem };
+      try {
+        payload = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      const n = payload.notification;
+      if (!n || seenIdsRef.current.has(n.notification_id)) return;
+      seenIdsRef.current.add(n.notification_id);
+
+      // SLA breach/at-risk/escalation notifications get a toast in
+      // addition to the bell update — everything else (permission
+      // requests, etc.) only updates the bell, unchanged from before.
+      if (n.notification_type in SLA_NOTIFICATION_DOT) {
+        toast({
+          variant: n.notification_type === "SLA_AT_RISK" ? "default" : "destructive",
+          title: n.title,
+          description: n.message,
+        });
+      }
+
+      if (dismissedIdsRef.current.has(n.notification_id)) return;
+      setNotifications((prev) =>
+        prev.some((existing) => existing.notification_id === n.notification_id)
+          ? prev
+          : [n, ...prev]
+      );
+    }
+
+    function connect() {
+      if (cancelled) return;
+      const accessToken = localStorage.getItem("access_token");
+      if (!accessToken) {
+        // Not logged in yet (or a logout raced this reconnect) — this
+        // component only ever mounts behind the authenticated
+        // dashboard layout, so this is expected to resolve itself
+        // almost immediately rather than needing special handling.
+        scheduleReconnect();
+        return;
+      }
+
+      const es = new EventSource(getNotificationStreamUrl(accessToken));
+      source = es;
+
+      es.onopen = () => {
+        attempt = 0;
+      };
+
+      es.addEventListener("notification", handleNotificationEvent as EventListener);
+
+      es.onerror = () => {
+        es.close();
+        if (source === es) source = null;
+        scheduleReconnect();
+      };
+    }
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      source?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -156,11 +244,10 @@ export function TopNavbar() {
 
   const markAllRead = async () => {
     setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
-    setUnreadCount(0);
     try {
       await markAllNotificationsRead();
     } catch {
-      // ignore — next poll tick reconciles either way
+      // ignore — the next SSE event or manual refresh reconciles either way
     }
   };
 
@@ -169,7 +256,6 @@ export function TopNavbar() {
       setNotifications((prev) =>
         prev.map((n) => (n.notification_id === notification.notification_id ? { ...n, is_read: true } : n))
       );
-      setUnreadCount((prev) => Math.max(0, prev - 1));
       try {
         await markNotificationRead(notification.notification_id);
       } catch {
@@ -184,17 +270,12 @@ export function TopNavbar() {
 
   const removeNotification = (notificationId: string) => {
     dismissedIdsRef.current.add(notificationId);
-    const target = notifications.find((n) => n.notification_id === notificationId);
     setNotifications((prev) => prev.filter((n) => n.notification_id !== notificationId));
-    if (target && !target.is_read) {
-      setUnreadCount((count) => Math.max(0, count - 1));
-    }
   };
 
   const clearAllNotifications = () => {
     notifications.forEach((n) => dismissedIdsRef.current.add(n.notification_id));
     setNotifications([]);
-    setUnreadCount(0);
   };
 
   return (

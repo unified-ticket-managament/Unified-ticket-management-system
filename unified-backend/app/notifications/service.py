@@ -1,6 +1,11 @@
+import logging
 from uuid import UUID
 
 from app.notifications.repository import NotificationRepository
+from app.notifications.schemas import NotificationResponse
+from app.notifications.sse_manager import get_notification_stream_manager
+
+logger = logging.getLogger(__name__)
 
 
 class NotificationType:
@@ -95,4 +100,50 @@ class NotificationService:
             for uid in unique_ids
         ]
 
-        await self.notification_repository.create_many(rows)
+        created = await self.notification_repository.create_many(rows)
+        await self._publish_to_streams(created)
+
+    async def _publish_to_streams(self, created: list) -> None:
+        """
+        Pushes each freshly-created row to any open SSE connection(s)
+        for its own recipient (see app/notifications/sse_manager.py) —
+        the real-time counterpart to this being visible via the next
+        GET /notifications poll. Deliberately best-effort: skipped
+        entirely for a recipient with no open connection (has_subscribers
+        is a cheap in-memory check, avoiding the extra unread-count
+        query for the common case), and never raises — a stream-publish
+        failure must never fail the write path that created the
+        notification in the first place.
+        """
+
+        manager = get_notification_stream_manager()
+
+        for notification in created:
+            user_id_str = str(notification.user_id)
+            if not manager.has_subscribers(user_id_str):
+                continue
+
+            try:
+                unread_count = await self.notification_repository.count_for_user(
+                    notification.user_id, unread_only=True
+                )
+                payload = {
+                    "notification": NotificationResponse.model_validate(
+                        notification
+                    ).model_dump(mode="json"),
+                    "unread_count": unread_count,
+                }
+                await manager.publish(user_id_str, payload)
+            except Exception:
+                # Never let a stream-publish problem surface as a
+                # failure of the action that triggered the notification
+                # (a ticket transfer, an SLA breach, ...) — the row is
+                # already durably created; the caller's next ordinary
+                # GET /notifications poll/refresh still picks it up.
+                logger.warning(
+                    "SSE_PUBLISH_FAILED user_id=%s notification_id=%s",
+                    user_id_str,
+                    notification.notification_id,
+                    exc_info=True,
+                )
+                continue
