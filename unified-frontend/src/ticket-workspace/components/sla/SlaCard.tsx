@@ -148,6 +148,22 @@ export function SlaCard({
 
   const badgeTier = resolution.status === "RUNNING" ? tier : null;
 
+  // True from the moment an escalation is created until the accepting
+  // supervisor's Acknowledge & Assign completes (EscalationService.
+  // _complete_acceptance) — mirrors the backend's own "is a handling
+  // stage currently running" signal (handling_stage_due_at non-null),
+  // see that method's docstring. During this window nobody is actually
+  // on the hook for the Resolution SLA clock (the previous owner is
+  // frozen, the new owner hasn't accepted yet), so the clock's own
+  // due_at is stale/pre-escalation and showing it as a live countdown
+  // would misrepresent whose responsibility it currently is. Once
+  // acceptance completes, restart_resolution_clock_for_escalation has
+  // already reshifted due_at to the new stage's fresh target, so the
+  // normal RUNNING display below becomes accurate again for whoever
+  // the new owner is — no per-viewer logic needed.
+  const isAwaitingEscalationAcceptance =
+    !!escalation && escalation.status !== "CLOSED" && !escalation.handling_stage_due_at;
+
   return (
     <>
     <Card
@@ -177,20 +193,32 @@ export function SlaCard({
       <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium text-muted">Status</span>
-          {badgeTier ? (
+          {isAwaitingEscalationAcceptance ? (
+            <span className="rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
+              Awaiting acknowledgment
+            </span>
+          ) : badgeTier ? (
             <SlaBadge tier={badgeTier} />
           ) : (
             <span className="text-xs font-semibold text-slate-700">{resolution.status}</span>
           )}
         </div>
 
-        {resolution.status === "RUNNING" && elapsedFraction != null && (
-          <div className="flex flex-col gap-1.5">
-            <SlaProgressBar tier={tier ?? "healthy"} fraction={elapsedFraction} />
-            {remainingSeconds != null && (
-              <p className="text-xs text-muted">{formatRemainingLabel(remainingSeconds)}</p>
-            )}
-          </div>
+        {isAwaitingEscalationAcceptance ? (
+          <p className="rounded-md2 bg-warning/10 px-3 py-2 text-xs text-warning">
+            This ticket has been escalated and is awaiting acknowledgment — no one is actively
+            on the clock for it until the new owner accepts and it's assigned.
+          </p>
+        ) : (
+          resolution.status === "RUNNING" &&
+          elapsedFraction != null && (
+            <div className="flex flex-col gap-1.5">
+              <SlaProgressBar tier={tier ?? "healthy"} fraction={elapsedFraction} />
+              {remainingSeconds != null && (
+                <p className="text-xs text-muted">{formatRemainingLabel(remainingSeconds)}</p>
+              )}
+            </div>
+          )
         )}
 
         {resolution.status === "PAUSED" && resolution.paused_at && (
