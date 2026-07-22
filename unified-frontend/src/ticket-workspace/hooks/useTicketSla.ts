@@ -87,7 +87,18 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
   // above) and never re-fetched per ticket; this is a pure lookup, no
   // extra network call. Still used for display (ack window, handling-
   // stage percentages) — just no longer for targetMinutes below.
-  const policy = policies?.find((p) => p.priority === ticketPriority) ?? null;
+  //
+  // Keyed on the escalation's own original_priority when one exists,
+  // never on ticketPriority directly — ticketPriority becomes (and
+  // permanently stays) CRITICAL the instant a ticket escalates, but
+  // CRITICAL is not an independently configurable SLA tier (see the
+  // root CLAUDE.md's SLA & Escalation section): every real calculation
+  // (ack window, handling stages) is always resolved against the
+  // ticket's original, pre-escalation priority. Falling back to
+  // ticketPriority itself when there's no active escalation, since it
+  // IS the real priority in that case.
+  const displayPriority = sla?.escalation?.original_priority ?? ticketPriority;
+  const policy = policies?.find((p) => p.priority === displayPriority) ?? null;
 
   const resolution = sla?.resolution ?? null;
 
@@ -167,6 +178,11 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
     escalation: sla?.escalation ?? null,
     escalationHandlingSla: sla?.escalation_handling_sla ?? null,
     policy,
+    // The priority `policy` above was actually looked up by — the
+    // ticket's original priority once escalated, otherwise the same as
+    // the ticketPriority argument. Use this, not ticketPriority, for
+    // any "SLA Configuration — {priority}" label.
+    displayPriority,
     targetMinutes,
     elapsedFraction,
     remainingSeconds,

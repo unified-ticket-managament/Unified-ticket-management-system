@@ -18,10 +18,13 @@ from app.ticketing.enums import (
     EscalationStatus,
     TicketPriority,
 )
+from app.rbac.repositories.reporting_manager_repository import (
+    ReportingManagerRepository,
+)
 from app.ticketing.models.resolution_sla import ResolutionSLA
 from app.ticketing.models.ticket import Ticket
 from app.ticketing.models.ticket_escalation import TicketEscalation
-from app.ticketing.repositories.client_repository import ClientRepository
+from app.ticketing.repositories.category_repository import CategoryRepository
 from app.ticketing.repositories.resolution_sla_repository import ResolutionSLARepository
 from app.ticketing.repositories.sla_policy_repository import SLAPolicyRepository
 from app.ticketing.repositories.ticket_escalation_repository import (
@@ -569,7 +572,15 @@ class EscalationService:
         level, owner_ids = await self._resolve_owners_with_fallback(
             starting_level=starting_level, ticket=ticket
         )
-        ack_minutes = await self._ack_target_minutes(ticket.current_priority)
+        # Resolved from original_priority, not ticket.current_priority —
+        # by this point the priority flip above has already set the
+        # latter to CRITICAL, and the ack window (like the handling-
+        # stage target in _resolve_stage_target_minutes) must always
+        # follow the ticket's real, pre-escalation priority tier, never
+        # CRITICAL's own policy row (see sla_service.update_policy's
+        # matching guard — CRITICAL isn't an independently configurable
+        # tier at all).
+        ack_minutes = await self._ack_target_minutes(original_priority)
 
         return await self.ticket_escalation_repository.create(
             ticket_id=ticket.ticket_id,
@@ -912,20 +923,66 @@ class EscalationService:
     # flat list everyone shares.
     # ---------------------------------------------------------
 
+    async def _resolve_category_account_managers(self, ticket_type: str) -> list[User]:
+        """
+        Account Managers who are Reporting Managers for the ticket's own
+        category (ReportingManagerTeam — see that model's own docstring
+        and root CLAUDE.md's "Organization Structure" section) — the one
+        real Account-Manager-to-category relationship this data model
+        has. Returns [] rather than raising if the ticket's ticket_type
+        string doesn't match any seeded Category (same "degrade safely"
+        convention as _resolve_owners_with_fallback above), or if no AM
+        is currently mapped to it.
+        """
+
+        category_repository = CategoryRepository(self.ticket_repository.db)
+        categories = await category_repository.list_all()
+        category = next(
+            (c for c in categories if c.category_name.value == ticket_type), None
+        )
+        if category is None:
+            return []
+
+        reporting_manager_repository = ReportingManagerRepository(self.ticket_repository.db)
+        account_manager_ids = (
+            await reporting_manager_repository.list_account_manager_ids_by_category(
+                category.category_id
+            )
+        )
+        if not account_manager_ids:
+            return []
+
+        users = await self.user_repository.list_by_ids(account_manager_ids)
+        return [u for u in users if u.is_active]
+
     async def get_acknowledge_candidates(
         self, ticket_id: UUID, current_user: User
     ) -> AssignableAgentsResponse:
         """
-        Site Lead/Super Admin choose between the ticket's category Team
-        Lead(s) and the Account Manager who owns the ticket's client
-        (Client.account_manager_id — client ownership is the only real
-        AM-scoping concept in this data model, there is no "AM of a
-        category"). Account Manager chooses among their own reporting
-        Team Leads who also match the ticket's category. Team Lead
-        chooses among the ticket's category Staff — identical to the
-        flat listAgents(category) list this replaced, just reshaped
-        into a role-labeled group. The caller's own "assign to myself"
-        option is the separate `me` field, never included in `groups`.
+        Every role's candidate list is scoped to the ticket's own
+        category (ticket.ticket_type) and follows the same hierarchy
+        this workflow's ownership chain already uses (TEAM_LEAD ->
+        MANAGER -> SITE_LEAD, see the class docstring) one level down
+        from the caller's own rank:
+
+        - Site Lead/Super Admin: that category's Account Manager(s)
+          (via ReportingManagerTeam — see _resolve_category_account_managers;
+          this is the one real Account-Manager<->category relationship
+          in this data model, not Client.account_manager_id, which is a
+          single client's owner, not "AMs of this category"), Team
+          Lead(s), and Staff.
+        - Account Manager: that category's Team Lead(s) and Staff —
+          not narrowed to their own direct reports, since any of that
+          category's Team Leads is a valid hand-off target regardless
+          of real manager_id reporting line (mirrors the wider
+          ticket-assignment relationship documented in root CLAUDE.md's
+          "Organization Structure" section).
+        - Team Lead: that category's Staff.
+        - Staff: no candidates (unchanged — Staff was never given
+          escalation-assignment capability, and isn't granted it here).
+
+        The caller's own "assign to myself" option is the separate `me`
+        field, never included in `groups`.
         """
 
         ticket = await self.ticket_repository.get_by_id(ticket_id)
@@ -939,32 +996,31 @@ class EscalationService:
         role_name = current_user.role.name
 
         if role_name in GLOBAL_INBOX_ROLE_NAMES:
+            account_managers = await self._resolve_category_account_managers(
+                ticket.ticket_type
+            )
+            groups.append(_to_assignable_group(ACCOUNT_MANAGER_ROLE_NAME, account_managers))
+
             team_leads = await self.user_repository.list_active_by_role_and_category(
                 TEAM_LEAD_ROLE_NAME, ticket.ticket_type
             )
             groups.append(_to_assignable_group(TEAM_LEAD_ROLE_NAME, team_leads))
 
-            client_repository = ClientRepository(self.ticket_repository.db)
-            client = (
-                await client_repository.get_by_id(ticket.client_company_id)
-                if ticket.client_company_id is not None
-                else None
+            staff = await self.user_repository.list_active_by_role_and_category(
+                STAFF_ROLE_NAME, ticket.ticket_type
             )
-            if client is not None:
-                account_manager = await self.user_repository.get_by_id(
-                    client.account_manager_id
-                )
-                if account_manager is not None and account_manager.is_active:
-                    groups.append(
-                        _to_assignable_group(ACCOUNT_MANAGER_ROLE_NAME, [account_manager])
-                    )
+            groups.append(_to_assignable_group(STAFF_ROLE_NAME, staff))
 
         elif role_name == ACCOUNT_MANAGER_ROLE_NAME:
             team_leads = await self.user_repository.list_active_by_role_and_category(
                 TEAM_LEAD_ROLE_NAME, ticket.ticket_type
             )
-            team_leads = [tl for tl in team_leads if tl.manager_id == current_user.user_id]
             groups.append(_to_assignable_group(TEAM_LEAD_ROLE_NAME, team_leads))
+
+            staff = await self.user_repository.list_active_by_role_and_category(
+                STAFF_ROLE_NAME, ticket.ticket_type
+            )
+            groups.append(_to_assignable_group(STAFF_ROLE_NAME, staff))
 
         elif role_name == TEAM_LEAD_ROLE_NAME:
             staff = await self.user_repository.list_active_by_role_and_category(
@@ -1016,7 +1072,12 @@ class EscalationService:
                     new_level, owner_ids = await self._resolve_owners_with_fallback(
                         starting_level=target_level, ticket=ticket
                     )
-                    ack_minutes = await self._ack_target_minutes(ticket.current_priority)
+                    # original_priority, not ticket.current_priority —
+                    # see _create_escalation's matching comment. The
+                    # ticket has already been CRITICAL since its first
+                    # escalation, so ticket.current_priority is never
+                    # the right input here.
+                    ack_minutes = await self._ack_target_minutes(escalation.original_priority)
                     new_ack_due_at = now + timedelta(minutes=ack_minutes)
 
                     updated = await self.ticket_escalation_repository.advance(
@@ -1142,7 +1203,9 @@ class EscalationService:
         new_level, owner_ids = await self._resolve_owners_with_fallback(
             starting_level=target_level, ticket=ticket
         )
-        ack_minutes = await self._ack_target_minutes(ticket.current_priority)
+        # original_priority, not ticket.current_priority — see
+        # _create_escalation's matching comment.
+        ack_minutes = await self._ack_target_minutes(escalation.original_priority)
         new_ack_due_at = now + timedelta(minutes=ack_minutes)
 
         updated = await self.ticket_escalation_repository.advance(
@@ -1279,6 +1342,7 @@ class EscalationService:
             handling_stage=escalation.handling_stage,
             handling_stage_started_at=escalation.handling_stage_started_at,
             handling_stage_due_at=escalation.handling_stage_due_at,
+            original_priority=escalation.original_priority,
         )
 
 

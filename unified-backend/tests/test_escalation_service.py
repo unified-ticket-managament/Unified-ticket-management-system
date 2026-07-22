@@ -51,10 +51,23 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
-from shared_models.models import Role, User
+from shared_models.models import Category, Role, User
 
 from app.database.session import AsyncSessionLocal, engine
-from app.ticketing.enums import EscalationLevel, EscalationStatus, SLAClockStatus, TicketPriority
+from app.notifications.models import Notification
+from app.notifications.repository import NotificationRepository
+from app.notifications.service import NotificationService
+from app.rbac.models.reporting_manager_team import ReportingManagerTeam
+from app.rbac.repositories.reporting_manager_repository import ReportingManagerRepository
+from app.ticketing.enums import (
+    TRIGGERED_BY_MANUAL,
+    AuditEventType,
+    EscalationLevel,
+    EscalationStatus,
+    SLAClockStatus,
+    TicketPriority,
+)
+from app.ticketing.models.audit_log import AuditLog
 from app.ticketing.models.client import Client
 from app.ticketing.models.resolution_sla import ResolutionSLA
 from app.ticketing.models.ticket import Ticket
@@ -163,14 +176,16 @@ async def _make_scenario(session, *, agent_id=None):
     return team_lead, client, ticket, resolution_sla
 
 
-def _build_service(session) -> EscalationService:
+def _build_service(session, *, with_notifications: bool = False) -> EscalationService:
     return EscalationService(
         ticket_escalation_repository=TicketEscalationRepository(session),
         ticket_repository=TicketRepository(session),
         resolution_sla_repository=ResolutionSLARepository(session),
         sla_policy_repository=SLAPolicyRepository(session),
         user_repository=UserRepository(session),
-        notification_service=None,
+        notification_service=(
+            NotificationService(NotificationRepository(session)) if with_notifications else None
+        ),
     )
 
 
@@ -205,6 +220,19 @@ async def _get_site_lead(session) -> User:
     if site_leads:
         return site_leads[0]
     pytest.skip("No active seeded Site Lead found.")
+
+
+async def _get_staff_in_category(session, category_name: str) -> list[User]:
+    result = await session.execute(
+        select(User)
+        .options(joinedload(User.role), joinedload(User.category))
+        .join(Role, Role.role_id == User.role_id)
+        .where(Role.name == "Staff", User.is_active.is_(True))
+    )
+    staff = result.unique().scalars().all()
+    return [
+        u for u in staff if u.category is not None and u.category.category_name.value == category_name
+    ]
 
 
 async def test_escalation_of_team_lead_owned_ticket_starts_at_manager_level(db_session):
@@ -1025,3 +1053,597 @@ async def test_auto_escalate_is_noop_if_already_actively_escalated(db_session):
         ticket=ticket, resolution_clock=resolution_sla
     )
     assert created is False
+
+
+# =========================================================
+# Regression coverage for two fixes:
+#
+# 1. The escalation ack window (ack_due_at) must be resolved from the
+#    ticket's ORIGINAL priority, never Ticket.current_priority — by
+#    the time _create_escalation/evaluate_overdue/
+#    advance_for_handling_sla_breach compute it, current_priority is
+#    already (and permanently) CRITICAL, so using it there silently
+#    applied CRITICAL's own ack target (a fixed, unrelated tier)
+#    instead of the ticket's real priority's. CRITICAL is not an
+#    independently configurable SLA tier at all (see
+#    sla_service.update_policy's matching guard) — nothing should ever
+#    read its policy row for a real calculation.
+# 2. get_acknowledge_candidates' role-scoped candidate groups: Site
+#    Lead/Super Admin were missing a Staff group and resolved Account
+#    Manager via the ticket's own client owner (a single person)
+#    rather than the ticket's category's actual Reporting Manager(s)
+#    (ReportingManagerTeam); Account Manager was missing a Staff group
+#    entirely and incorrectly narrowed Team Leads to their own direct
+#    reports instead of the ticket's whole category.
+# =========================================================
+
+
+async def test_create_escalation_ack_window_uses_original_priority_not_critical(db_session):
+    """
+    A MEDIUM-priority ticket's ack window must be MEDIUM's
+    escalation_ack_target_minutes — never CRITICAL's — even though
+    Ticket.current_priority is already CRITICAL by the time ack_due_at
+    is computed (_set_ticket_priority_to_critical runs first in
+    _create_escalation).
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    medium_policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
+    critical_policy = await SLAPolicyRepository(db_session).get_by_priority(
+        TicketPriority.CRITICAL
+    )
+    # A real, meaningful regression test requires these two targets to
+    # actually differ in the seeded data — if they were ever seeded
+    # equal, this test would pass even with the bug still present.
+    assert medium_policy.escalation_ack_target_minutes != critical_policy.escalation_ack_target_minutes
+
+    service = _build_service(db_session)
+    result = await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    reloaded_ticket = await service.ticket_repository.get_by_id(ticket.ticket_id)
+    assert reloaded_ticket.current_priority == TicketPriority.CRITICAL
+
+    assert escalation.original_priority == TicketPriority.MEDIUM
+    actual_ack_minutes = round(
+        (escalation.ack_due_at - result.created_at).total_seconds() / 60
+    )
+    assert actual_ack_minutes == medium_policy.escalation_ack_target_minutes
+    assert actual_ack_minutes != critical_policy.escalation_ack_target_minutes
+
+
+async def test_evaluate_overdue_advance_uses_original_priority_for_new_ack_window(db_session):
+    """
+    Same fix, exercised through the ack-window-lapse ladder advance
+    (evaluate_overdue) rather than creation — the new ack_due_at it
+    computes for the next level must also be resolved from
+    escalation.original_priority, not ticket.current_priority.
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    medium_policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    escalation.ack_due_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    await db_session.flush()
+
+    now = datetime.now(timezone.utc)
+    # Deliberately not asserting evaluate_overdue's returned count here —
+    # list_overdue_active scans the ENTIRE ticket_escalations table, not
+    # just rows created in this test's own rolled-back transaction, so
+    # against the shared dev database this count is unreliable (see
+    # test_overdue_active_escalation_advances_without_touching_sla's own
+    # docstring/comment for the same pre-existing, documented fragility).
+    # This test only cares that THIS ticket's own escalation was
+    # advanced with the correct ack window.
+    await service.evaluate_overdue(now=now)
+
+    advanced = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert advanced.level != EscalationLevel.TEAM_LEAD
+    actual_ack_minutes = round((advanced.ack_due_at - now).total_seconds() / 60)
+    assert actual_ack_minutes == medium_policy.escalation_ack_target_minutes
+
+
+async def test_advance_for_handling_sla_breach_uses_original_priority_for_new_ack_window(
+    db_session,
+):
+    """
+    Same fix again, through the handling-SLA-breach advance path.
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    medium_policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.acknowledge(ticket.ticket_id, team_lead)
+    await service.confirm_assignment(ticket.ticket_id, team_lead)
+
+    before = await service.ticket_escalation_repository.get_active_by_ticket_id(ticket.ticket_id)
+    assert before.handling_stage == 1
+
+    result = await service.advance_for_handling_sla_breach(ticket.ticket_id)
+    assert result is True
+
+    after = await service.ticket_escalation_repository.get_active_by_ticket_id(ticket.ticket_id)
+    actual_ack_minutes = round(
+        (after.ack_due_at - after.level_started_at).total_seconds() / 60
+    )
+    assert actual_ack_minutes == medium_policy.escalation_ack_target_minutes
+
+
+async def test_acknowledge_candidates_team_lead_sees_only_own_category_staff(db_session):
+    """
+    Unchanged behavior — Team Lead's candidate list is exactly their
+    own category's Staff, nothing else.
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    staff_in_category = await _get_staff_in_category(db_session, TEAM_LEAD_CATEGORY)
+    if not staff_in_category:
+        pytest.skip(f"No active seeded Staff found for category {TEAM_LEAD_CATEGORY!r}.")
+
+    service = _build_service(db_session)
+    response = await service.get_acknowledge_candidates(ticket.ticket_id, team_lead)
+
+    assert response.me.user_id == team_lead.user_id
+    assert [g.role for g in response.groups] == ["Staff"]
+    returned_ids = {u.user_id for u in response.groups[0].users}
+    assert returned_ids == {u.user_id for u in staff_in_category}
+
+
+async def test_acknowledge_candidates_account_manager_sees_category_team_leads_and_staff(
+    db_session,
+):
+    """
+    Regression test for the fix: Account Manager's candidate list must
+    be the ticket's whole category's Team Leads (not narrowed to their
+    own direct reports via manager_id) plus that category's Staff
+    (previously missing entirely).
+    """
+
+    account_manager = await _get_account_manager(db_session)
+    _team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    staff_in_category = await _get_staff_in_category(db_session, TEAM_LEAD_CATEGORY)
+    if not staff_in_category:
+        pytest.skip(f"No active seeded Staff found for category {TEAM_LEAD_CATEGORY!r}.")
+
+    service = _build_service(db_session)
+    response = await service.get_acknowledge_candidates(ticket.ticket_id, account_manager)
+
+    assert response.me.user_id == account_manager.user_id
+    roles_returned = [g.role for g in response.groups]
+    assert "Site Lead" not in roles_returned
+    assert "Account Manager" not in roles_returned
+    assert set(roles_returned) == {"Team Lead", "Staff"}
+
+    team_lead_group = next(g for g in response.groups if g.role == "Team Lead")
+    all_category_team_leads = await UserRepository(db_session).list_active_by_role_and_category(
+        "Team Lead", TEAM_LEAD_CATEGORY
+    )
+    assert {u.user_id for u in team_lead_group.users} == {u.user_id for u in all_category_team_leads}
+
+    staff_group = next(g for g in response.groups if g.role == "Staff")
+    assert {u.user_id for u in staff_group.users} == {u.user_id for u in staff_in_category}
+
+
+async def test_acknowledge_candidates_site_lead_sees_reporting_manager_am_team_leads_and_staff(
+    db_session,
+):
+    """
+    Regression test for the fix: Site Lead's candidate list must
+    include every Account Manager who is the Reporting Manager for the
+    ticket's category (ReportingManagerTeam), not just the ticket's
+    client's own account_manager_id — plus that category's Team
+    Lead(s) and Staff (Staff was previously missing entirely).
+    """
+
+    site_lead = await _get_site_lead(db_session)
+    account_manager = await _get_account_manager(db_session)
+    _team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    staff_in_category = await _get_staff_in_category(db_session, TEAM_LEAD_CATEGORY)
+    if not staff_in_category:
+        pytest.skip(f"No active seeded Staff found for category {TEAM_LEAD_CATEGORY!r}.")
+
+    category_result = await db_session.execute(
+        select(Category).where(Category.category_name == TEAM_LEAD_CATEGORY)
+    )
+    category = category_result.scalar_one()
+
+    # Idempotent — the dev database may already have a real, seeded
+    # Reporting Manager mapping for this exact (account_manager,
+    # category) pair (this is genuine seed/admin data, not test
+    # pollution — see ReportingManagerRepository's own docstring), so
+    # this only inserts one if it isn't already there, same convention
+    # as ReportingManagerService.assign's own pre-check.
+    reporting_manager_repository = ReportingManagerRepository(db_session)
+    if not await reporting_manager_repository.exists(
+        account_manager.user_id, category.category_id
+    ):
+        db_session.add(
+            ReportingManagerTeam(
+                account_manager_id=account_manager.user_id,
+                category_id=category.category_id,
+            )
+        )
+        await db_session.flush()
+
+    service = _build_service(db_session)
+    response = await service.get_acknowledge_candidates(ticket.ticket_id, site_lead)
+
+    assert response.me.user_id == site_lead.user_id
+    roles_returned = {g.role for g in response.groups}
+    assert roles_returned == {"Account Manager", "Team Lead", "Staff"}
+
+    # Ground-truth comparison, not a hardcoded {account_manager} set —
+    # the dev database may already map more than one Account Manager as
+    # Reporting Manager for this category (the model deliberately
+    # allows this, see its own docstring), and our ensured mapping only
+    # guarantees account_manager is *among* them, not the only one.
+    # Filtered to active users, matching _resolve_category_account_
+    # managers' own filter — a mapped-but-deactivated AM must not
+    # appear.
+    am_group = next(g for g in response.groups if g.role == "Account Manager")
+    mapped_am_ids = await reporting_manager_repository.list_account_manager_ids_by_category(
+        category.category_id
+    )
+    mapped_ams = await UserRepository(db_session).list_by_ids(mapped_am_ids)
+    expected_am_ids = {u.user_id for u in mapped_ams if u.is_active}
+    assert account_manager.user_id in expected_am_ids
+    assert {u.user_id for u in am_group.users} == expected_am_ids
+
+    staff_group = next(g for g in response.groups if g.role == "Staff")
+    assert {u.user_id for u in staff_group.users} == {u.user_id for u in staff_in_category}
+
+
+async def test_acknowledge_candidates_site_lead_am_group_matches_reporting_manager_ground_truth(
+    db_session,
+):
+    """
+    The Account Manager group Site Lead sees must exactly match
+    ReportingManagerTeam's own data for the ticket's category — whether
+    that's empty (group absent entirely, not an error or a fallback to
+    some unrelated AM) or already populated by real, pre-existing
+    seed/admin data. This intentionally makes no assumption about
+    whether the dev database already has a mapping for this category —
+    see the sibling test above for the "ensure at least one mapping
+    exists" case.
+    """
+
+    site_lead = await _get_site_lead(db_session)
+    _team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+
+    category_result = await db_session.execute(
+        select(Category).where(Category.category_name == TEAM_LEAD_CATEGORY)
+    )
+    category = category_result.scalar_one()
+    mapped_am_ids = await ReportingManagerRepository(db_session).list_account_manager_ids_by_category(
+        category.category_id
+    )
+    mapped_ams = await UserRepository(db_session).list_by_ids(mapped_am_ids)
+    expected_am_ids = {u.user_id for u in mapped_ams if u.is_active}
+
+    service = _build_service(db_session)
+    response = await service.get_acknowledge_candidates(ticket.ticket_id, site_lead)
+
+    roles_returned = {g.role for g in response.groups}
+    if expected_am_ids:
+        assert "Account Manager" in roles_returned
+        am_group = next(g for g in response.groups if g.role == "Account Manager")
+        assert {u.user_id for u in am_group.users} == expected_am_ids
+    else:
+        assert "Account Manager" not in roles_returned
+
+
+# =========================================================
+# Manual Escalate button / workflow — new coverage.
+#
+# manual_escalate() itself already existed, fully wired (permission
+# check, _create_escalation reuse, audit log, notifications) and
+# already reachable via POST /tickets/{id}/escalate — these tests fill
+# in gaps the rest of this file's manual_escalate-driven tests above
+# don't already cover explicitly: escalating before any SLA breach,
+# the actual audit-log row and notification row it writes, and its own
+# permission gate rejecting an unauthorized caller. No new service
+# code was needed for any of this — see the frontend's SlaCard.tsx for
+# the only change this feature required (a confirmation dialog in
+# front of the same, already-existing Escalate button/API call).
+# =========================================================
+
+
+async def _make_unbreached_scenario(session):
+    """
+    Same shape as _make_scenario, but the Resolution SLA clock is
+    freshly started and far from its target — manual_escalate has no
+    elapsed-fraction precondition at all (only "not already escalated"
+    and "not closed"), so this proves escalating doesn't require a
+    breach, at-risk state, or any SLA threshold to have been crossed.
+    """
+
+    team_lead = await _get_team_lead(session)
+
+    client = Client(
+        client_id=uuid.uuid4(),
+        name="Escalation Test Client (unbreached)",
+        inbox_email=f"escalation-test-{uuid.uuid4().hex[:8]}@example.com",
+        account_manager_id=team_lead.manager_id or team_lead.user_id,
+        is_active=True,
+    )
+    session.add(client)
+
+    started_at = datetime.now(timezone.utc)
+    due_at = started_at + timedelta(days=7)  # nowhere near elapsed
+
+    ticket = Ticket(
+        ticket_id=uuid.uuid4(),
+        client_company_id=client.client_id,
+        agent_id=None,
+        title="Escalation regression test ticket (unbreached)",
+        ticket_type=TEAM_LEAD_CATEGORY,
+        current_status="OPEN",
+        current_priority=TicketPriority.MEDIUM,
+        created_at=started_at,
+    )
+    session.add(ticket)
+    await session.flush()
+
+    medium_policy = await SLAPolicyRepository(session).get_by_priority(TicketPriority.MEDIUM)
+    resolution_sla = ResolutionSLA(
+        resolution_sla_id=uuid.uuid4(),
+        ticket_id=ticket.ticket_id,
+        client_id=client.client_id,
+        priority=TicketPriority.MEDIUM,
+        status=SLAClockStatus.RUNNING,
+        started_at=started_at,
+        due_at=due_at,
+        active_target_minutes=medium_policy.resolution_target_minutes,
+    )
+    session.add(resolution_sla)
+    await session.flush()
+
+    return team_lead, client, ticket, resolution_sla
+
+
+async def test_manual_escalate_works_before_sla_breach(db_session):
+    """
+    manual_escalate has no SLA-state precondition — a ticket nowhere
+    near its Resolution SLA target can still be escalated on demand,
+    exactly like an already-breached one.
+    """
+
+    team_lead, _client, ticket, resolution_sla = await _make_unbreached_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    assert resolution_sla.due_at > datetime.now(timezone.utc) + timedelta(days=1)
+
+    service = _build_service(db_session)
+    result = await service.manual_escalate(ticket.ticket_id, team_lead)
+    assert result.ticket_id == ticket.ticket_id
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation is not None
+    assert escalation.status == EscalationStatus.ACTIVE
+    assert escalation.triggered_by == TRIGGERED_BY_MANUAL
+
+    # The clock itself is completely untouched by escalating, same as
+    # every other manual_escalate test in this file — still true when
+    # nowhere near its target.
+    reloaded = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    assert reloaded.due_at == resolution_sla.due_at
+    assert reloaded.status == SLAClockStatus.RUNNING
+
+
+async def test_manual_escalate_writes_audit_log_and_notifies_new_owner(db_session):
+    """
+    manual_escalate must write a real ESCALATION_CREATED audit row
+    (triggered_by=MANUAL, distinguishable from an automatic one) and
+    send a real in-app notification to the resolved owner — the same
+    two side effects auto_escalate_if_needed produces, via the exact
+    same _create_escalation/_notify_owners calls.
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session, with_notifications=True)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation is not None
+    new_owner_id = uuid.UUID(escalation.owner_ids[0])
+
+    audit_result = await db_session.execute(
+        select(AuditLog)
+        .where(
+            AuditLog.entity_id == ticket.ticket_id,
+            AuditLog.event_type == AuditEventType.ESCALATION_CREATED,
+        )
+        .order_by(AuditLog.created_at.desc())
+    )
+    audit_row = audit_result.scalars().first()
+    assert audit_row is not None
+    assert audit_row.new_values["triggered_by"] == TRIGGERED_BY_MANUAL
+    assert audit_row.new_values["level"] == escalation.level.value
+    assert audit_row.actor_id == team_lead.user_id
+
+    notification_result = await db_session.execute(
+        select(Notification).where(
+            Notification.user_id == new_owner_id,
+            Notification.related_entity_id == ticket.ticket_id,
+        )
+    )
+    notification_row = notification_result.scalars().first()
+    assert notification_row is not None
+    assert ticket.title in notification_row.message or ticket.title in notification_row.title
+
+
+async def test_manual_escalate_requires_ticket_escalate_permission(db_session):
+    """
+    manual_escalate's own permission gate (ensure_has_permission(...,
+    "ticket:escalate")) must reject a caller who doesn't hold it —
+    the same RBAC permission the frontend's canEscalate check (and the
+    Manual Escalate button's visibility) already reuses, no new
+    permission introduced.
+    """
+
+    _team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+
+    stranger = User(
+        user_id=uuid.uuid4(),
+        role=(await _get_team_lead(db_session)).role,
+        name="No Permission User",
+    )
+    stranger.permissions = []  # no ticket:escalate
+
+    service = _build_service(db_session)
+
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.manual_escalate(ticket.ticket_id, stranger)
+    assert exc_info.value.status_code == 403
+
+    # Confirm no escalation was created despite the attempt.
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation is None
+
+
+# ---------------------------------------------------------------------
+# Manual escalation's own escalation-handling-SLA timer behavior — added
+# to close the loop explicitly, even though it already follows from
+# test_manual_escalate_bumps_priority_but_leaves_sla_untouched +
+# test_acknowledge_alone_does_not_reshift_sla +
+# test_confirm_assignment_reshifts_sla_to_stage_1_on_first_acceptance
+# above. A reported "bug" claimed the handling-SLA timer keeps running
+# after Manual Escalate, before the new owner acknowledges. Live testing
+# against the running backend (manual_escalate -> inspect
+# TicketEscalation.handling_stage/_started_at/_due_at -> confirm_assignment
+# -> re-inspect) confirmed the premise is false: _create_escalation (the
+# helper manual_escalate and auto_escalate_if_needed both call) never
+# passes handling-stage fields to TicketEscalationRepository.create, so a
+# freshly created escalation always starts at handling_stage=0 with both
+# timestamps NULL — no timer running — regardless of trigger. The timer
+# only ever starts inside _complete_acceptance, reached from
+# acknowledge_via_assignment/confirm_assignment, i.e. only once a
+# supervisor has actually accepted the ticket. These tests make that
+# explicit for the manual-escalation path specifically, and confirm parity
+# with the automatic path.
+# ---------------------------------------------------------------------
+
+
+async def test_manual_escalate_does_not_start_handling_sla_timer(db_session):
+    """
+    Immediately after manual_escalate, no handling-SLA timer is running
+    and ticket ownership (agent_id) has not moved — only the escalation's
+    own owner_ids (who is responsible for acknowledging) reflects the new
+    level. The ticket sits "awaiting acknowledgement" until a supervisor
+    actually accepts it.
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    original_agent_id = ticket.agent_id
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation is not None
+    assert escalation.status == EscalationStatus.ACTIVE
+    assert escalation.handling_stage == 0
+    assert escalation.handling_stage_started_at is None
+    assert escalation.handling_stage_due_at is None
+
+    reloaded_ticket = await service.ticket_repository.get_by_id(ticket.ticket_id)
+    assert reloaded_ticket.agent_id == original_agent_id
+
+
+async def test_manual_escalate_then_accept_starts_handling_sla_at_full_duration(db_session):
+    """
+    Once the new owner acknowledges and the assignment is settled
+    (confirm_assignment), the handling-SLA timer starts fresh — from the
+    call's own timestamp, for the FULL configured stage-1 duration —
+    never a partial or carried-over remainder from any prior state.
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.acknowledge(ticket.ticket_id, team_lead)
+
+    still_pending = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert still_pending.handling_stage == 0
+    assert still_pending.handling_stage_due_at is None
+
+    before_accept = datetime.now(timezone.utc)
+    await service.confirm_assignment(ticket.ticket_id, team_lead)
+    after_accept = datetime.now(timezone.utc)
+
+    policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
+    expected_target_minutes = round(
+        policy.resolution_target_minutes * policy.handling_stage_percentages[0] / 100
+    )
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation.handling_stage == 1
+    assert before_accept <= escalation.handling_stage_started_at <= after_accept
+    actual_minutes = (
+        escalation.handling_stage_due_at - escalation.handling_stage_started_at
+    ).total_seconds() / 60
+    assert round(actual_minutes) == expected_target_minutes
+
+
+async def test_auto_escalate_also_does_not_start_handling_sla_timer_immediately(db_session):
+    """
+    Regression parity check: the automatic escalation trigger
+    (auto_escalate_if_needed, called from the SLA sweep) shares the exact
+    same _create_escalation helper as manual_escalate, so it must exhibit
+    the identical "no handling timer until acceptance" behavior — this
+    guards against the two triggers ever silently diverging.
+    """
+
+    team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
+
+    service = _build_service(db_session)
+    created = await service.auto_escalate_if_needed(
+        ticket=ticket, resolution_clock=resolution_sla
+    )
+    assert created is True
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation is not None
+    assert escalation.triggered_by != TRIGGERED_BY_MANUAL
+    assert escalation.handling_stage == 0
+    assert escalation.handling_stage_started_at is None
+    assert escalation.handling_stage_due_at is None

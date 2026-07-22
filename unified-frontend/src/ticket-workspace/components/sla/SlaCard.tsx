@@ -1,7 +1,10 @@
 "use client";
 
+import { useState } from "react";
+import { ArrowUpCircle } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
+import { Modal } from "@tw/components/common/Modal";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useTicketSla } from "@tw/hooks/useTicketSla";
@@ -40,6 +43,7 @@ export function SlaCard({
     escalation,
     escalationHandlingSla,
     policy,
+    displayPriority,
     targetMinutes,
     elapsedFraction,
     remainingSeconds,
@@ -63,6 +67,14 @@ export function SlaCard({
     !!currentUser?.permissions.includes("ticket:escalate") &&
     !escalation &&
     resolution?.status !== "COMPLETED";
+
+  // Confirmation gate in front of the same escalate() call below —
+  // manual escalation "cannot be undone" (see EscalationService.
+  // manual_escalate: 400s if an escalation is already active, and
+  // priority permanently becomes CRITICAL), so it's a Modal + explicit
+  // confirm, same convention as TicketActions.tsx's Close Ticket
+  // confirmation, not a bare one-click button.
+  const [isConfirmingEscalate, setIsConfirmingEscalate] = useState(false);
 
   // Strictly owner_ids membership — no Site Lead/Super Admin bypass,
   // and deliberately no ticket:acknowledge_escalation permission
@@ -114,6 +126,7 @@ export function SlaCard({
   // header/properties card keeps showing the pre-escalation priority.
   async function handleEscalate() {
     const result = await escalate();
+    setIsConfirmingEscalate(false);
     if (result) onActionComplete();
   }
 
@@ -148,8 +161,14 @@ export function SlaCard({
             </Button>
           )}
           {canEscalate && (
-            <Button size="sm" variant="secondary" isLoading={isEscalating} onClick={handleEscalate}>
-              Escalate
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<ArrowUpCircle size={14} />}
+              isLoading={isEscalating}
+              onClick={() => setIsConfirmingEscalate(true)}
+            >
+              Manual Escalate
             </Button>
           )}
         </div>
@@ -225,17 +244,21 @@ export function SlaCard({
         {/*
           Read-only config summary for THIS ticket's own priority only —
           sourced from the same one-time listSlaPolicies() fetch
-          useTicketSla already does (filtered to ticketPriority, no
-          extra request), never the full Critical/High/Medium/Low
-          matrix (that lives only in Settings -> SLA Timing Matrix,
-          Super Admin only). Values here are the configured policy,
-          not this ticket's own live/running state, so they don't
-          change if the matrix is edited after this ticket started.
+          useTicketSla already does (filtered to displayPriority, no
+          extra request), never the full High/Medium/Low matrix (that
+          lives only in Settings -> SLA Timing Matrix, Super Admin
+          only — CRITICAL doesn't appear there at all, since it isn't
+          an independently configurable tier). Values here are the
+          configured policy, not this ticket's own live/running state,
+          so they don't change if the matrix is edited after this
+          ticket started. displayPriority is the ticket's ORIGINAL
+          priority once escalated, never CRITICAL — see useTicketSla's
+          own comment for why.
         */}
         {policy && (
           <div className="flex flex-col gap-2 rounded-md2 border border-border bg-canvas p-3">
             <span className="text-xs font-semibold text-slate-700">
-              SLA Configuration — {ticketPriority}
+              SLA Configuration — {displayPriority}
             </span>
             <dl className="grid grid-cols-2 gap-x-3 gap-y-3 text-xs">
               <div>
@@ -250,13 +273,11 @@ export function SlaCard({
                   Per-stage breakdown, replacing the old single flat
                   percentage — each stage's duration is this policy's
                   resolution_target_minutes x that stage's configured
-                  percentage. Note: this reflects {ticketPriority}'s own
-                  policy row, which is CRITICAL once escalated — the
-                  actual stage calculation is based on the ticket's
-                  ORIGINAL (pre-escalation) priority's policy instead,
-                  so these numbers are illustrative of the mechanism,
-                  not necessarily this specific ticket's exact figures
-                  once it has escalated.
+                  percentage. `policy` is already looked up by
+                  displayPriority (the ticket's ORIGINAL priority once
+                  escalated, see useTicketSla's own comment), so these
+                  figures match exactly what the engine actually uses,
+                  not CRITICAL's.
                 */}
                 <dd className="font-medium text-slate-800">
                   {policy.handling_stage_percentages.map((pct, index) => (
@@ -409,6 +430,31 @@ export function SlaCard({
         )}
       </div>
     </Card>
+
+    <Modal
+      open={isConfirmingEscalate}
+      title="Manually Escalate Ticket"
+      onClose={() => setIsConfirmingEscalate(false)}
+      footer={
+        <>
+          <Button variant="ghost" size="sm" onClick={() => setIsConfirmingEscalate(false)}>
+            Cancel
+          </Button>
+          <Button variant="danger" size="sm" isLoading={isEscalating} onClick={handleEscalate}>
+            Escalate
+          </Button>
+        </>
+      }
+    >
+      <p className="flex items-start gap-2 text-sm text-slate-700">
+        <ArrowUpCircle size={15} className="mt-0.5 flex-none text-muted" />
+        <span>
+          This ticket will be escalated immediately to the next escalation level.
+          <br />
+          This action cannot be undone.
+        </span>
+      </p>
+    </Modal>
 
     <AcknowledgeAssignModal
       open={acknowledgeAndAssign.isOpen}

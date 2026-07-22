@@ -162,8 +162,15 @@ export default function SlaTimingMatrixPage() {
     setIsLoading(true);
     listSlaPolicies(controller.signal)
       .then((data) => {
-        setPolicies(data);
-        setDrafts(data.map(toDraft));
+        // CRITICAL is not an independently configurable SLA tier — a
+        // ticket's original priority's timings always apply, even
+        // after it escalates and displays as Critical (see
+        // EscalationService._set_ticket_priority_to_critical). Filtered
+        // out here rather than at the API layer so GET /sla/policies
+        // itself stays unchanged for any other consumer.
+        const editable = data.filter((policy) => policy.priority !== "CRITICAL");
+        setPolicies(editable);
+        setDrafts(editable.map(toDraft));
         setLoadError(null);
       })
       .catch((error) => {

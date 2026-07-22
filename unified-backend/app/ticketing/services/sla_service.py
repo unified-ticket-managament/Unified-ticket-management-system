@@ -592,6 +592,26 @@ class SLAService:
                 detail="SLA policy not found.",
             )
 
+        # CRITICAL is not an independently configurable SLA tier — it's
+        # a permanent, escalation-only display priority (see
+        # EscalationService._set_ticket_priority_to_critical); every
+        # real SLA calculation (ack window, handling stages) is always
+        # resolved against the ticket's ORIGINAL pre-escalation priority,
+        # never CRITICAL's own row. Editing this row would configure
+        # numbers nothing ever reads, so it's rejected outright rather
+        # than silently accepted. The row itself is left in place (seed
+        # data, no migration change) — only writes are blocked.
+        if policy.priority == TicketPriority.CRITICAL:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "CRITICAL is not an independently configurable SLA policy — "
+                    "it is a permanent, display-only escalation indicator. A "
+                    "ticket's original priority's timings continue to apply "
+                    "after it escalates."
+                ),
+            )
+
         # Cross-field validation the per-field Pydantic bounds on
         # SLAPolicyUpdate can't express on their own: Warning 1 ("Half
         # Elapsed") must fire before Warning 2 ("At Risk") as elapsed

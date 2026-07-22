@@ -144,6 +144,14 @@ class TicketEscalationState(BaseModel):
     handling_stage: int
     handling_stage_started_at: datetime | None
     handling_stage_due_at: datetime | None
+    # The ticket's real, pre-escalation priority — Ticket.current_priority
+    # itself becomes (and permanently stays) CRITICAL the instant this
+    # escalation was created, but every actual SLA calculation (ack
+    # window, handling stages) is resolved against this snapshotted
+    # value, never CRITICAL's own policy row. Exposed here so the
+    # frontend's SLA Configuration summary can display the same policy
+    # the engine actually uses, instead of CRITICAL's.
+    original_priority: TicketPriority
 
 
 class EscalationHandlingSLAState(BaseModel):

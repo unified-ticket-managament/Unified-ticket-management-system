@@ -5,7 +5,7 @@ A combined RBAC (authentication, users, roles, permissions) and support-ticketin
 ## Architecture at a glance
 
 | Directory | What it is | Runs on |
-|---|---|---|
+|---|---|--|
 | `unified-frontend/` | The shell application — login, RBAC (Users/Roles/Audit Logs/Settings), and an embedded copy of the ticket workspace (Mail, Tickets, Reports, per-role dashboards). Next.js 16. **This is the primary, currently-maintained frontend.** | `:3000` |
 | `unified-backend/` | A single FastAPI process serving both the RBAC API (`/api/v1/...`) and the Ticketing API (unprefixed — `/tickets`, `/inbox`, ...). RBAC is the sole issuer of JWTs; Ticketing verifies them. | `:8000` |
 | `ticketing-service/` | The standalone Vite/React ticket-workspace app this product started from, with its own login flow. Still runs independently, but `unified-frontend`'s embedded copy has since pulled ahead (see its own `CLAUDE.md`'s "Mail v2" section) and is not kept in sync automatically. Optional — only needed if you're testing this app directly. | `:5173` |

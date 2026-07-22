@@ -732,6 +732,13 @@ export interface TicketEscalationState {
   handling_stage: number;
   handling_stage_started_at: string | null;
   handling_stage_due_at: string | null;
+  // The ticket's real, pre-escalation priority — Ticket.current_priority
+  // itself becomes (and permanently stays) CRITICAL once escalated, but
+  // every actual SLA calculation (ack window, handling stages) is
+  // resolved against this value, never CRITICAL's own policy row. Use
+  // this, not the ticket's own current_priority, to look up which SLA
+  // Timing Matrix row actually applies once an escalation exists.
+  original_priority: TicketPriority;
 }
 
 // Internal escalation-handling clock — a second, wholly separate timer
