@@ -63,17 +63,24 @@ export function SlaCard({
       !!currentUser.permissions.includes("ticket:change_sla")
     : false;
 
+  // Available whenever another escalation level exists above the
+  // current one — not just when there's no escalation yet. Mirrors
+  // EscalationService.manual_escalate exactly: no active escalation ->
+  // starts one at the usual starting level; an active one below the
+  // terminal SITE_LEAD level -> advances it one level further; already
+  // at SITE_LEAD -> nothing left to escalate to, so the button hides.
   const canEscalate =
     !!currentUser?.permissions.includes("ticket:escalate") &&
-    !escalation &&
+    (!escalation || escalation.level !== "SITE_LEAD") &&
     resolution?.status !== "COMPLETED";
 
   // Confirmation gate in front of the same escalate() call below —
-  // manual escalation "cannot be undone" (see EscalationService.
-  // manual_escalate: 400s if an escalation is already active, and
-  // priority permanently becomes CRITICAL), so it's a Modal + explicit
-  // confirm, same convention as TicketActions.tsx's Close Ticket
-  // confirmation, not a bare one-click button.
+  // manual escalation "cannot be undone" (each click permanently moves
+  // the ticket one escalation level further, and the first click also
+  // permanently bumps priority to CRITICAL — see EscalationService.
+  // manual_escalate/_set_ticket_priority_to_critical), so it's a Modal
+  // + explicit confirm, same convention as TicketActions.tsx's Close
+  // Ticket confirmation, not a bare one-click button.
   const [isConfirmingEscalate, setIsConfirmingEscalate] = useState(false);
 
   // Strictly owner_ids membership — no Site Lead/Super Admin bypass,

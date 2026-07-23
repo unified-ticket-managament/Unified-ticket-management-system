@@ -71,6 +71,7 @@ from app.ticketing.models.audit_log import AuditLog
 from app.ticketing.models.client import Client
 from app.ticketing.models.resolution_sla import ResolutionSLA
 from app.ticketing.models.ticket import Ticket
+from app.ticketing.models.ticket_escalation import TicketEscalation
 from app.ticketing.repositories.resolution_sla_repository import ResolutionSLARepository
 from app.ticketing.repositories.sla_policy_repository import SLAPolicyRepository
 from app.ticketing.repositories.ticket_escalation_repository import (
@@ -784,18 +785,322 @@ async def test_acknowledge_via_assignment_still_completes_after_prior_explicit_a
     assert escalation.handling_stage == 1
 
 
-async def test_escalating_twice_is_rejected_not_a_second_chain(db_session):
+async def _count_escalation_rows(session, ticket_id) -> int:
+    result = await session.execute(
+        select(TicketEscalation).where(TicketEscalation.ticket_id == ticket_id)
+    )
+    return len(result.scalars().all())
+
+
+async def test_manual_escalate_advances_existing_escalation_one_level_not_a_second_chain(
+    db_session,
+):
+    """
+    Manual Escalation must be usable more than once during a ticket's
+    lifetime: a second click while an escalation is already active
+    moves that SAME escalation one level further along the chain
+    (TEAM_LEAD -> MANAGER) rather than being rejected, and rather than
+    creating a second, parallel TicketEscalation row.
+    """
+
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
     team_lead.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
     await service.manual_escalate(ticket.ticket_id, team_lead)
 
+    first = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert first.level == EscalationLevel.TEAM_LEAD
+    first_escalation_id = first.escalation_id
+
+    # Second click — must succeed (not 400), and must move the SAME
+    # escalation forward one level.
+    result = await service.manual_escalate(ticket.ticket_id, team_lead)
+    assert result.ticket_id == ticket.ticket_id
+
+    second = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert second is not None
+    assert second.escalation_id == first_escalation_id
+    assert second.level == EscalationLevel.MANAGER
+    assert str(team_lead.manager_id) in second.owner_ids
+    # The Team Lead who owned the first level is no longer an owner —
+    # ownership moved one level up, exactly as an ack-window timeout
+    # would move it.
+    assert str(team_lead.user_id) not in second.owner_ids
+    # A fresh acknowledgment window for the new level, not the
+    # original — nobody at MANAGER has acknowledged anything yet.
+    assert second.status == EscalationStatus.ACTIVE
+    assert second.acknowledged_at is None
+
+    # Exactly one escalation row for this ticket, never two.
+    assert await _count_escalation_rows(db_session, ticket.ticket_id) == 1
+
+
+async def test_manual_escalate_full_chain_then_terminal_level_is_rejected(db_session):
+    """
+    Repeated manual escalation must climb the whole TEAM_LEAD -> MANAGER
+    -> SITE_LEAD chain one level per click (matching the spec's own
+    three-step worked example), and once SITE_LEAD (the highest
+    configured level) is reached, a further attempt must be rejected —
+    the backend equivalent of the Manual Escalation button being
+    disabled/hidden once there's nowhere left to escalate to.
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session)
+
+    await service.manual_escalate(ticket.ticket_id, team_lead)  # -> TEAM_LEAD
+    first = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    escalation_id = first.escalation_id
+    assert first.level == EscalationLevel.TEAM_LEAD
+
+    await service.manual_escalate(ticket.ticket_id, team_lead)  # -> MANAGER
+    second = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert second.level == EscalationLevel.MANAGER
+    assert second.escalation_id == escalation_id
+
+    await service.manual_escalate(ticket.ticket_id, team_lead)  # -> SITE_LEAD
+    third = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert third.level == EscalationLevel.SITE_LEAD
+    assert third.escalation_id == escalation_id
+
+    # SITE_LEAD is terminal — a fourth attempt must be rejected outright,
+    # never silently re-notify or advance past it.
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc_info:
         await service.manual_escalate(ticket.ticket_id, team_lead)
     assert exc_info.value.status_code == 400
+
+    unchanged = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert unchanged.level == EscalationLevel.SITE_LEAD
+    assert unchanged.escalation_id == escalation_id
+    assert await _count_escalation_rows(db_session, ticket.ticket_id) == 1
+
+
+async def test_manual_escalate_advance_writes_escalation_advanced_audit_and_notifies(
+    db_session,
+):
+    """
+    A manual re-escalation of an already-active chain must reuse the
+    exact same ESCALATION_ADVANCED audit event and owner-notification
+    mechanics the ack-window-timeout auto-advance (evaluate_overdue)
+    already uses — not a second ESCALATION_CREATED row, and not silence.
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session, with_notifications=True)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert escalation.level == EscalationLevel.MANAGER
+    new_owner_id = uuid.UUID(escalation.owner_ids[0])
+
+    # Exactly one ESCALATION_CREATED (the first click) and one
+    # ESCALATION_ADVANCED (the second) — never two CREATED rows.
+    created_result = await db_session.execute(
+        select(AuditLog).where(
+            AuditLog.entity_id == ticket.ticket_id,
+            AuditLog.event_type == AuditEventType.ESCALATION_CREATED,
+        )
+    )
+    assert len(created_result.scalars().all()) == 1
+
+    advanced_result = await db_session.execute(
+        select(AuditLog).where(
+            AuditLog.entity_id == ticket.ticket_id,
+            AuditLog.event_type == AuditEventType.ESCALATION_ADVANCED,
+        )
+    )
+    advanced_rows = advanced_result.scalars().all()
+    assert len(advanced_rows) == 1
+    advanced_row = advanced_rows[0]
+    assert advanced_row.old_values["level"] == EscalationLevel.TEAM_LEAD.value
+    assert advanced_row.new_values["level"] == EscalationLevel.MANAGER.value
+    assert advanced_row.new_values["triggered_by"] == TRIGGERED_BY_MANUAL
+    assert advanced_row.actor_id == team_lead.user_id
+    assert advanced_row.actor_name == team_lead.name
+
+    notification_result = await db_session.execute(
+        select(Notification).where(
+            Notification.user_id == new_owner_id,
+            Notification.related_entity_id == ticket.ticket_id,
+        )
+    )
+    notification_rows = notification_result.scalars().all()
+    assert len(notification_rows) >= 1
+    assert any(
+        ticket.title in n.message or ticket.title in n.title for n in notification_rows
+    )
+
+    # Still exactly one escalation row — the second manual_escalate
+    # advanced the existing chain, it never spawned a second one.
+    assert await _count_escalation_rows(db_session, ticket.ticket_id) == 1
+
+
+async def test_manual_escalate_after_acceptance_advances_and_resets_handling_stage(
+    db_session,
+):
+    """
+    Example 2 from the spec: the current owner (Team Lead) accepts the
+    ticket, THEN decides to manually escalate further. Must still
+    reuse the same advance mechanics — including clearing out the
+    now-stale escalation-handling-SLA window that acceptance started,
+    so the sweep never later evaluates a "breach" against a handling
+    window this advance has already superseded — while the Resolution
+    SLA clock itself, and the handling_stage counter, stay untouched
+    (only handling_stage_due_at is cleared; the next acceptance at the
+    new level is what bumps handling_stage again).
+    """
+
+    team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    # Team Lead accepts by claiming/being assigned the ticket —
+    # acknowledge_via_assignment is the same path claim_ticket/
+    # transfer_agent already call.
+    await service.acknowledge_via_assignment(ticket.ticket_id, team_lead)
+
+    accepted = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert accepted.handling_stage == 1
+    assert accepted.handling_stage_due_at is not None
+    reshifted_due_at = (
+        await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
+    ).due_at
+
+    # Team Lead now manually escalates further, per Example 2.
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    advanced = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert advanced.escalation_id == accepted.escalation_id
+    assert advanced.level == EscalationLevel.MANAGER
+    assert advanced.status == EscalationStatus.ACTIVE
+    assert advanced.acknowledged_at is None
+    # The now-superseded handling window is cleared...
+    assert advanced.handling_stage_due_at is None
+    # ...but the stage counter itself is left alone — the next real
+    # acceptance (at MANAGER) is what advances it to 2.
+    assert advanced.handling_stage == 1
+
+    # The Resolution SLA clock (reshifted onto the CRITICAL/handling
+    # target when Team Lead accepted) is untouched by this further
+    # escalation — advancing the escalation ladder never reshifts it;
+    # only a fresh acceptance at the new level does.
+    still_reshifted = await _reload_resolution_sla(
+        db_session, resolution_sla.resolution_sla_id
+    )
+    assert still_reshifted.due_at == reshifted_due_at
+
+
+async def test_manual_escalate_advance_requires_ticket_escalate_permission(db_session):
+    """
+    The permission gate applies to a re-escalation of an already-active
+    chain exactly as it does to the first escalation — a caller without
+    ticket:escalate can't advance someone else's active escalation
+    either.
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    stranger = User(
+        user_id=uuid.uuid4(),
+        role=(await _get_team_lead(db_session)).role,
+        name="No Permission User",
+    )
+    stranger.permissions = []  # no ticket:escalate
+
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.manual_escalate(ticket.ticket_id, stranger)
+    assert exc_info.value.status_code == 403
+
+    # No advance happened — still parked at the original level.
+    unchanged = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert unchanged.level == EscalationLevel.TEAM_LEAD
+
+
+async def test_evaluate_overdue_ack_timeout_advance_still_works_after_refactor(db_session):
+    """
+    Regression guard for the _advance_escalation_level extraction:
+    evaluate_overdue's own ack-window-timeout auto-advance (unrelated
+    to manual escalation, but now sharing the same underlying advance
+    helper) must keep behaving exactly as before — advancing an
+    overdue ACTIVE escalation one level and re-notifying, without any
+    manual trigger involved at all.
+    """
+
+    team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    team_lead.permissions = ["ticket:escalate"]
+
+    service = _build_service(db_session)
+    await service.manual_escalate(ticket.ticket_id, team_lead)
+
+    escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    # Force it overdue.
+    escalation.ack_due_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+    await db_session.flush()
+
+    # Deliberately not asserting evaluate_overdue's returned count here —
+    # list_overdue_active scans the ENTIRE ticket_escalations table, not
+    # just rows created in this test's own rolled-back transaction, so
+    # against the shared dev database this count is unreliable (see
+    # test_evaluate_overdue_advance_uses_original_priority_for_new_ack_window's
+    # identical comment). This test only cares that THIS ticket's own
+    # escalation was advanced correctly.
+    await service.evaluate_overdue(now=datetime.now(timezone.utc))
+
+    reloaded = await service.ticket_escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    assert reloaded.level == EscalationLevel.MANAGER
+    assert reloaded.escalation_id == escalation.escalation_id
+
+    advanced_audit = await db_session.execute(
+        select(AuditLog).where(
+            AuditLog.entity_id == ticket.ticket_id,
+            AuditLog.event_type == AuditEventType.ESCALATION_ADVANCED,
+        )
+    )
+    audit_row = advanced_audit.scalars().first()
+    assert audit_row is not None
+    assert audit_row.actor_name == "SLA Sweep"
+    # Distinguishable from a manual advance — no triggered_by:MANUAL tag.
+    assert "triggered_by" not in audit_row.new_values
 
 
 async def test_acknowledge_by_owner_stops_auto_advance(db_session):

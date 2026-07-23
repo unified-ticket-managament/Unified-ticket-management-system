@@ -264,12 +264,6 @@ export function MessageDetailsView({
   }, [email.interaction_id, email.ticket_id]);
 
   useEffect(() => {
-    if (categories.length > 0) {
-      setTicketType((current) => current || categories[0]?.category_name || "");
-    }
-  }, [categories]);
-
-  useEffect(() => {
     // Re-fetches whenever the dialog's own Category selection changes
     // (not just once on mount) — the Team Lead/Staff groups are scoped
     // to this category on the backend (see AssignmentService), so a
@@ -721,7 +715,7 @@ export function MessageDetailsView({
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Category</label>
               <Select value={ticketType} onValueChange={setTicketType}>
                 <SelectTrigger>
-                  <SelectValue />
+                  <SelectValue placeholder="Select" />
                 </SelectTrigger>
                 <SelectContent>
                   {categories.map((c) => (
@@ -818,6 +812,7 @@ export function MessageDetailsView({
               onClick={handleCreateTicket}
               disabled={
                 isCreating ||
+                !ticketType ||
                 (needsAssigneePick && (assignedToGroup?.users.length === 0 || !selectedAssigneeId))
               }
             >
