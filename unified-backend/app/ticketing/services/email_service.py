@@ -313,6 +313,13 @@ class EmailService:
 
             "references": email.references,
 
+            # The original message's own Cc/To-recipient list — empty
+            # for the N8N transport (see EmailRequest.cc/to_recipients'
+            # own docstrings). Backs the Reply-All prefill.
+            "cc": email.cc,
+
+            "to_recipients": email.to_recipients,
+
             # Graph's own native message id (None for the N8N
             # transport, which has no such concept) — unused today,
             # kept for a future native reply/replyAll/forward or

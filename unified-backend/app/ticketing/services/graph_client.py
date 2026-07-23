@@ -43,6 +43,18 @@ def _build_recipients(addresses: list[str]) -> list[dict]:
     return [{"emailAddress": {"address": address}} for address in addresses]
 
 
+def _build_graph_attachments(attachments: list) -> list[dict]:
+    return [
+        {
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": attachment.filename,
+            "contentType": attachment.content_type,
+            "contentBytes": attachment.content_base64,
+        }
+        for attachment in attachments
+    ]
+
+
 def _build_send_mail_message(envelope: OutboundEnvelope) -> dict:
     """
     Builds the Graph sendMail `message` object from an envelope.
@@ -69,6 +81,8 @@ def _build_send_mail_message(envelope: OutboundEnvelope) -> dict:
         message["ccRecipients"] = _build_recipients(envelope.cc)
     if envelope.bcc:
         message["bccRecipients"] = _build_recipients(envelope.bcc)
+    if envelope.attachments:
+        message["attachments"] = _build_graph_attachments(envelope.attachments)
 
     return message
 

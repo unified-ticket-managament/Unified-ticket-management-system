@@ -77,6 +77,8 @@ def map_external_email_to_interaction(payload: IncomingMailPayload) -> EmailRequ
         subject=payload.subject or "(no subject)",
         body=plain_body,
         html_body=payload.body.content if is_html else None,
+        cc=[recipient.emailAddress.address for recipient in payload.ccRecipients],
+        to_recipients=[recipient.emailAddress.address for recipient in payload.toRecipients],
         message_id=payload.internetMessageId,
         received_at=payload.receivedDateTime,
         in_reply_to=_extract_header(payload, "In-Reply-To"),

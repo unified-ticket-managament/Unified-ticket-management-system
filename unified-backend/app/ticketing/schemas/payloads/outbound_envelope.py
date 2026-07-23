@@ -1,6 +1,22 @@
 from pydantic import BaseModel, EmailStr, Field
 
 
+class EnvelopeAttachment(BaseModel):
+    """
+    One file ready to ride along on an outbound send — content
+    already read out of storage and base64-encoded, so the mail
+    transport (graph_client.py) needs no storage/DB access of its
+    own to embed it. See attachment_service.load_envelope_attachments,
+    the one place this is built, for the size limit this implies
+    (Graph's sendMail only accepts small inline attachments; anything
+    over that limit is dropped there before it ever reaches here).
+    """
+
+    filename: str
+    content_type: str
+    content_base64: str
+
+
 class OutboundEnvelope(BaseModel):
     """
     A fully-addressed outbound email, built by the platform before a
@@ -35,3 +51,5 @@ class OutboundEnvelope(BaseModel):
     references: list[str] = Field(default_factory=list)
 
     body: str
+
+    attachments: list[EnvelopeAttachment] = Field(default_factory=list)

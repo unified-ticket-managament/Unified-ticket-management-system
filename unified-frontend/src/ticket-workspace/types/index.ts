@@ -241,6 +241,7 @@ export interface OpenEmailResponse {
   from_name: string | null;
   cc: string[];
   bcc: string[];
+  to_recipients: string[];
   subject: string;
   body: string;
   message_id: string | null;
@@ -567,6 +568,11 @@ export interface ReplyRequest {
   cc?: string[];
   bcc?: string[];
   to_email?: string | null;
+  // Points at the interaction_id an immediately-preceding
+  // POST /tickets/{id}/attachments upload returned — set this so
+  // those files are embedded in the actual outbound email, not just
+  // recorded on the ticket's own timeline.
+  attachment_source_interaction_id?: string | null;
 }
 
 // ==========================================================

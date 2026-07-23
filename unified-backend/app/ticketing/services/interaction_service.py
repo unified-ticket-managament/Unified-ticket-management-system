@@ -109,9 +109,41 @@ from app.ticketing.models.interaction import Interaction
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.schemas.attachment import AttachmentMetadata
 from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
-from app.ticketing.schemas.payloads import EmailPayload, OutboundEnvelope
-from app.ticketing.services.attachment_service import AttachmentService, attachments_to_metadata
+from app.ticketing.schemas.payloads import EmailPayload, EnvelopeAttachment, OutboundEnvelope
+from app.ticketing.services.attachment_service import (
+    AttachmentService,
+    attachments_to_metadata,
+    load_envelope_attachments,
+)
 from app.ticketing.storage.base import StorageService
+
+
+def _build_compose_signature(current_user: User) -> str:
+    """
+    Compose-only signature block (see compose_email) — the shared
+    mailbox's From address gives a client no way to tell which agent
+    actually wrote a brand-new message, unlike Reply/Forward, where
+    the message threads onto a conversation the client already knows
+    is handled by "the team". Deliberately not used by add_reply/
+    add_interaction_reply/send_draft — those stay exactly as they
+    were.
+    """
+
+    divider = "-" * 40
+    role_name = current_user.role.name if current_user.role is not None else ""
+
+    lines = [divider, "Regards,", current_user.name]
+    if role_name:
+        lines.append(role_name)
+    lines.extend(
+        [
+            "Probe Practice Solutions",
+            "Sent via Ticketing Support",
+            "ticketing@probeps.com",
+            divider,
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _to_response(
@@ -492,6 +524,91 @@ class InteractionService:
             interaction, InteractionUpdate(payload=sent_payload)
         )
 
+    async def _attach_outbound_files(
+        self,
+        interaction: Interaction,
+        envelope: OutboundEnvelope | None,
+        files: list[UploadFile] | None,
+    ) -> OutboundEnvelope | None:
+        """
+        Stores `files` against `interaction` (already created, so its
+        interaction_id exists for the Attachment FK) and, when there's
+        a real envelope to send (None only for a reply that resolved
+        no recipient at all, e.g. NO_RECIPIENT), returns a new envelope
+        carrying their content, ready to embed in the actual outbound
+        Graph send — called after the interaction row exists but
+        strictly before dispatch, the one ordering that makes an
+        attachment actually ride along on the email instead of only
+        ever showing up in this platform's own UI. Also patches
+        `interaction.payload["envelope"]` in place so the persisted
+        record matches what was actually sent, not the attachment-less
+        envelope captured at creation time — `_dispatch_and_record`
+        reads `interaction.payload` fresh, so this is picked up
+        automatically. Files are still stored (for this app's own
+        Attachments display) even with no envelope to attach them to —
+        a message that couldn't be sent shouldn't also lose its files.
+        A no-op when there are no files or attachment storage isn't
+        configured.
+        """
+
+        if not files or self.attachment_repository is None or self.storage_service is None:
+            return envelope
+
+        attachment_service = AttachmentService(
+            attachment_repository=self.attachment_repository,
+            interaction_repository=self.interaction_repository,
+            ticket_repository=self.ticket_repository,
+            storage_service=self.storage_service,
+        )
+
+        stored = await attachment_service.validate_and_store_files(
+            files, interaction.interaction_id
+        )
+
+        if envelope is None:
+            return None
+
+        loaded = await load_envelope_attachments(stored, self.storage_service)
+        envelope = envelope.model_copy(update={"attachments": loaded})
+        interaction.payload["envelope"] = envelope.model_dump()
+
+        return envelope
+
+    async def _merge_existing_attachments_into_envelope(
+        self,
+        interaction: Interaction,
+        envelope: OutboundEnvelope,
+        source_interaction_id: UUID,
+    ) -> OutboundEnvelope:
+        """
+        Loads Attachment rows already stored against
+        `source_interaction_id` (a draft, or a ticket's own
+        attachment-upload interaction — see AttachmentService.
+        upload_attachment) and embeds them in `envelope`, patching
+        `interaction.payload["envelope"]` to match — the "attachments
+        already exist somewhere, just point this send at them"
+        counterpart to `_attach_outbound_files` (brand-new uploads
+        instead of pre-existing rows). A no-op if nothing is stored
+        there or attachment storage isn't configured.
+        """
+
+        if self.attachment_repository is None or self.storage_service is None:
+            return envelope
+
+        already_stored = await self.attachment_repository.list_by_interaction_id(
+            source_interaction_id
+        )
+        if not already_stored:
+            return envelope
+
+        loaded = await load_envelope_attachments(already_stored, self.storage_service)
+        envelope = envelope.model_copy(
+            update={"attachments": [*envelope.attachments, *loaded]}
+        )
+        interaction.payload["envelope"] = envelope.model_dump()
+
+        return envelope
+
     async def _create_ticket_interaction(
         self,
         *,
@@ -670,6 +787,16 @@ class InteractionService:
         client's shared inbox, To the original sender, threaded
         Subject/Message-ID) and hands it to the dispatch seam — the
         actual send is Task 1's transport layer.
+
+        `request.attachment_source_interaction_id`, when set, points
+        at an interaction that already has real, stored attachments —
+        in practice, the response of a just-completed
+        POST /tickets/{id}/attachments upload the frontend did right
+        before calling this endpoint. Those files get embedded in the
+        real outbound send here (via _merge_existing_attachments_into_
+        envelope), *before* dispatch — previously that upload's files
+        were only ever recorded on the ticket's own timeline, never on
+        the actual outgoing email.
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
@@ -779,6 +906,25 @@ class InteractionService:
             new_values={"ticket_id": ticket_id},
         )
 
+        if envelope is not None and request.attachment_source_interaction_id is not None:
+            # attachment_source_interaction_id is client-supplied — never
+            # trust it without checking it actually belongs to this same
+            # ticket, or any agent could reference an arbitrary
+            # interaction_id from a *different* ticket and have its
+            # files embedded (and emailed out) here.
+            source_interaction = await self.interaction_repository.get_by_id(
+                request.attachment_source_interaction_id
+            )
+            if source_interaction is None or source_interaction.ticket_id != ticket_id:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="attachment_source_interaction_id does not belong to this ticket.",
+                )
+
+            envelope = await self._merge_existing_attachments_into_envelope(
+                interaction, envelope, request.attachment_source_interaction_id
+            )
+
         if envelope is not None:
             await self._dispatch_and_record(interaction, envelope)
 
@@ -798,6 +944,7 @@ class InteractionService:
         interaction_id: UUID,
         request: InteractionReplyRequest,
         current_user: User,
+        existing_attachment_source_interaction_id: UUID | None = None,
     ) -> InteractionReplyResponse:
         """
         Replies to a client on an inbox conversation that hasn't
@@ -805,6 +952,17 @@ class InteractionService:
         no ticket needed" path. Builds the same kind of outbound
         envelope as a ticket reply, just addressed from the thread's
         root email instead of a ticket's email history.
+
+        `existing_attachment_source_interaction_id`, when given, is an
+        interaction that already has real, stored attachments (in
+        practice: send_draft's own draft row, whose files were
+        uploaded immediately at attach time, well before Send) — they
+        get embedded in the real outbound send here, *before*
+        dispatch. The caller is still responsible for reassigning
+        those Attachment rows onto this call's own new interaction
+        afterward (send_draft already does this for its own reasons,
+        unrelated to sending) — this parameter only affects what rides
+        along on the email itself.
         """
 
         root_interaction = await self.interaction_repository.get_by_id(interaction_id)
@@ -913,6 +1071,11 @@ class InteractionService:
             new_values={"parent_interaction_id": root.interaction_id},
         )
 
+        if envelope is not None and existing_attachment_source_interaction_id is not None:
+            envelope = await self._merge_existing_attachments_into_envelope(
+                interaction, envelope, existing_attachment_source_interaction_id
+            )
+
         if envelope is not None:
             await self._dispatch_and_record(interaction, envelope)
 
@@ -945,6 +1108,7 @@ class InteractionService:
         self,
         request: ComposeEmailRequest,
         current_user: User,
+        files: list[UploadFile] | None = None,
     ) -> ComposeEmailResponse:
         """
         Authors a brand-new outbound email to one of the platform's
@@ -959,6 +1123,11 @@ class InteractionService:
         exact same Mail UI/thread-open code path afterward — nothing
         downstream needs to know a message started life as a Compose
         rather than a Reply.
+
+        `files`, when given, are stored via _attach_outbound_files
+        *before* dispatch, so they actually ride along on the real
+        outbound Graph message — not just recorded for this app's own
+        UI, which is all that happened before this parameter existed.
         """
 
         if self.client_repository is None:
@@ -984,11 +1153,19 @@ class InteractionService:
         am_email = await self._resolve_account_manager_email(client)
         shared_mailbox_address = resolve_shared_mailbox_address(get_settings())
 
+        # Signed body — what actually gets sent and stored — so a
+        # client reading a brand-new Compose message (never a Reply,
+        # which threads under a conversation the client already knows
+        # is "the team") can tell which agent wrote it. Ticket history
+        # then reflects exactly what was sent, same principle as
+        # attachments (see _attach_outbound_files).
+        signed_message = f"{request.message}\n\n{_build_compose_signature(current_user)}"
+
         envelope = build_compose_envelope(
             from_email=shared_mailbox_address,
             to_email=request.to_email,
             subject=request.subject,
-            body=request.message,
+            body=signed_message,
             cc=request.cc,
             bcc=request.bcc,
             agent_name=current_user.name,
@@ -1002,7 +1179,7 @@ class InteractionService:
             from_email=shared_mailbox_address,
             from_name=current_user.name,
             subject=request.subject,
-            body=request.message,
+            body=signed_message,
             cc=request.cc,
             bcc=request.bcc,
         )
@@ -1045,6 +1222,8 @@ class InteractionService:
             actor_role=actor_role,
             new_values={"client_id": client.client_id, "to_email": request.to_email},
         )
+
+        envelope = await self._attach_outbound_files(interaction, envelope, files)
 
         await self._dispatch_and_record(interaction, envelope)
 
@@ -2392,11 +2571,13 @@ class InteractionService:
         text/Cc/Bcc to `add_interaction_reply`, which builds the same
         envelope/dispatch/audit trail a normal reply would get (there
         is deliberately no separate "draft becomes a reply" code path
-        to keep that logic in exactly one place), then repoints any
-        files already uploaded against the draft onto the newly
-        created reply before deleting the now-obsolete draft row —
-        otherwise those attachments would be left pointing at a
-        deleted interaction.
+        to keep that logic in exactly one place) and, via
+        `existing_attachment_source_interaction_id`, embeds any files
+        already uploaded against the draft in the real outbound send
+        itself — then repoints those same Attachment rows onto the
+        newly created reply before deleting the now-obsolete draft row,
+        so this app's own Attachments display still finds them there
+        too, not just the sent email.
 
         `to_email`, when the agent picked a contact from the "To"
         dropdown at send time, overrides the default recipient — it's
@@ -2430,6 +2611,7 @@ class InteractionService:
                 message=message, cc=cc, bcc=bcc, to_email=to_email
             ),
             current_user=current_user,
+            existing_attachment_source_interaction_id=draft_interaction_id,
         )
 
         if self.attachment_repository is not None:

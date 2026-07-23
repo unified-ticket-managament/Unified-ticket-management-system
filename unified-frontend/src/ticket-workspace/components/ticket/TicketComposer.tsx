@@ -179,19 +179,31 @@ export function TicketComposer({
     if (!activeTicket || !message.trim()) return;
     if (!isReply && !noteSubject.trim()) return;
 
+    // Reply attachments are uploaded *before* the reply itself (not
+    // after) so the reply can reference them via
+    // attachment_source_interaction_id — the backend embeds them in
+    // the actual outbound Graph email that way. Uploading afterward
+    // (the old order) only ever recorded them on the ticket's own
+    // timeline, never on the sent mail. See Mail's own ReplyComposer/
+    // MessageDetailsView.tsx for the identical fix applied there.
+    let attachmentSourceInteractionId: string | undefined;
+    if (isReply && replyFiles.length > 0) {
+      const uploadResult = await runUpload(activeTicket.ticket_id, replyFiles);
+      if (!uploadResult) return;
+      attachmentSourceInteractionId = uploadResult.interaction_id;
+    }
+
     const result = isReply
       ? await runReply(activeTicket.ticket_id, {
           message,
           to_email: selectedTo || undefined,
           cc: parseEmails(replyCc),
           bcc: parseEmails(replyBcc),
+          attachment_source_interaction_id: attachmentSourceInteractionId,
         })
       : await runNote(activeTicket.ticket_id, { note: message, subject: noteSubject });
 
     if (result) {
-      if (isReply && replyFiles.length > 0) {
-        await runUpload(activeTicket.ticket_id, replyFiles);
-      }
       setMessage("");
       setNoteSubject("");
       setReplyCc("");

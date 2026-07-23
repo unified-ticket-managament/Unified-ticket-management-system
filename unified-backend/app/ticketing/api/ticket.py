@@ -332,6 +332,8 @@ async def reply_to_client(
         client_repository=client_repository,
         edit_access_repository=edit_access_repository,
         escalation_service=build_escalation_service(db),
+        attachment_repository=AttachmentRepository(db),
+        storage_service=get_storage_service(),
     )
 
     return await service.add_reply(

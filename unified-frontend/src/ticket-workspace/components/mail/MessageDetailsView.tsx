@@ -66,6 +66,35 @@ const PRIORITY_VARIANT: Record<TicketPriority, "success" | "warning" | "destruct
   CRITICAL: "destructive",
 };
 
+// Reply-All's Cc prefill: the original message's own Cc list, plus
+// every other address the sender put directly in To (index 0 of
+// to_recipients is always the shared mailbox itself, already becoming
+// the reply's From) — minus the shared mailbox address and whoever's
+// about to be the reply's own To (the sender, already covered there).
+// Both source lists are empty for anything that didn't arrive via the
+// Graph transport (see OpenEmailResponse.cc/to_recipients), so this
+// degrades to "no Cc" exactly like the old email.cc-only behavior did
+// for those threads.
+function computeReplyAllCc(email: OpenEmailResponse): string[] {
+  const exclude = new Set(
+    [email.to_email, email.from_email]
+      .filter((address): address is string => Boolean(address))
+      .map((address) => address.toLowerCase())
+  );
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const address of [...(email.cc ?? []), ...(email.to_recipients ?? [])]) {
+    const key = address.toLowerCase();
+    if (exclude.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    result.push(address);
+  }
+
+  return result;
+}
+
 const STATUS_META: Record<string, { label: string; variant: "warning" | "success" | "secondary" }> = {
   PENDING: { label: "Pending", variant: "warning" },
   ASSIGNED: { label: "Replied", variant: "success" },
@@ -317,16 +346,26 @@ export function MessageDetailsView({
     to: string | null;
   }) {
     if (isTicketed && email.ticket_id) {
+      // Files are uploaded *before* the reply is sent (not after) so
+      // the reply can point at them via attachment_source_interaction_id
+      // — the backend embeds them in the actual outbound email that
+      // way; uploading afterward (the old order) only ever recorded
+      // them on the ticket's own timeline, never on the sent mail.
+      let attachmentSourceInteractionId: string | null = null;
+      if (payload.files.length > 0) {
+        const uploadResult = await runUploadAttachment(email.ticket_id, payload.files);
+        if (!uploadResult) return;
+        attachmentSourceInteractionId = uploadResult.interaction_id;
+      }
+
       const result = await runTicketReply(email.ticket_id, {
         message: payload.message,
         cc: payload.cc,
         bcc: payload.bcc,
         to_email: payload.to,
+        attachment_source_interaction_id: attachmentSourceInteractionId,
       });
       if (result) {
-        if (payload.files.length > 0) {
-          await runUploadAttachment(email.ticket_id, payload.files);
-        }
         setReplyMode(null);
         onRefreshList();
         setSelectedEmail({
@@ -685,7 +724,7 @@ export function MessageDetailsView({
           toEmail={email.from_email}
           contacts={contacts}
           subject={email.subject}
-          initialCc={hasDraft ? email.draft_cc : replyMode === "replyAll" ? email.cc : []}
+          initialCc={hasDraft ? email.draft_cc : replyMode === "replyAll" ? computeReplyAllCc(email) : []}
           initialBcc={hasDraft ? email.draft_bcc : []}
           initialMessage={hasDraft ? email.draft_message ?? "" : ""}
           isTicketed={isTicketed}
