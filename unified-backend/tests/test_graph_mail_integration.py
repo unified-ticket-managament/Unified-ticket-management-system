@@ -15,7 +15,7 @@ from app.ticketing.schemas.mail_integration import (
     GraphWebhookResourceData,
     IncomingMailPayload,
 )
-from app.ticketing.schemas.payloads import OutboundEnvelope
+from app.ticketing.schemas.payloads import EnvelopeAttachment, OutboundEnvelope
 from app.ticketing.services.graph_auth import _cached_graph_auth_client, build_graph_auth_client
 from app.ticketing.services.graph_client import (
     _build_recipients,
@@ -260,6 +260,44 @@ def test_build_send_mail_message_omits_empty_cc_bcc():
     assert "bccRecipients" not in message
 
 
+def test_build_send_mail_message_omits_attachments_when_none():
+    envelope = _envelope()
+
+    message = _build_send_mail_message(envelope)
+
+    assert "attachments" not in message
+
+
+def test_build_send_mail_message_includes_attachments_as_graph_file_attachments():
+    """
+    Regression test for the real bug this session's fix addresses:
+    attachments were uploaded/stored but never actually included in
+    the outbound Graph sendMail call at all — a completely separate,
+    silent gap from the In-Reply-To header bug above.
+    """
+
+    envelope = _envelope(
+        attachments=[
+            EnvelopeAttachment(
+                filename="invoice.pdf",
+                content_type="application/pdf",
+                content_base64="aGVsbG8=",
+            )
+        ]
+    )
+
+    message = _build_send_mail_message(envelope)
+
+    assert message["attachments"] == [
+        {
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": "invoice.pdf",
+            "contentType": "application/pdf",
+            "contentBytes": "aGVsbG8=",
+        }
+    ]
+
+
 # ---------------------------------------------------------
 # Mock fetch_message stays schema-valid (mail_provider.py)
 # ---------------------------------------------------------
@@ -442,3 +480,34 @@ def test_map_external_email_to_interaction_provider_message_id_none_when_absent(
     email = map_external_email_to_interaction(payload)
 
     assert email.provider_message_id is None
+
+
+def test_map_external_email_to_interaction_propagates_cc_and_to_recipients():
+    """
+    Backs Reply-All: the original message's Cc list and full To list
+    both need to survive the Graph -> EmailRequest mapping, not just
+    the single arrival address `to_email` already captured.
+    """
+
+    payload = _graph_payload("hello", "text")
+    payload.toRecipients.append(
+        GraphRecipient(emailAddress=GraphEmailAddress(address="colleague@client.com"))
+    )
+    payload.ccRecipients = [
+        GraphRecipient(emailAddress=GraphEmailAddress(address="cc1@client.com")),
+        GraphRecipient(emailAddress=GraphEmailAddress(address="cc2@client.com")),
+    ]
+
+    email = map_external_email_to_interaction(payload)
+
+    assert email.cc == ["cc1@client.com", "cc2@client.com"]
+    assert email.to_recipients == ["ticketing@probeps.com", "colleague@client.com"]
+
+
+def test_map_external_email_to_interaction_cc_and_to_recipients_empty_by_default():
+    payload = _graph_payload("hello", "text")
+
+    email = map_external_email_to_interaction(payload)
+
+    assert email.cc == []
+    assert email.to_recipients == ["ticketing@probeps.com"]

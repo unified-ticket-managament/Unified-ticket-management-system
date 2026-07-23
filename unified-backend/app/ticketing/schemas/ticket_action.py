@@ -35,6 +35,15 @@ class ReplyCreate(BaseModel):
     # None means "use the default".
     to_email: EmailStr | None = None
 
+    # Points at an interaction that already has real, stored
+    # attachments — in practice, the interaction_id a preceding
+    # POST /tickets/{id}/attachments upload just returned. Set this so
+    # those files are embedded in the actual outbound email, not just
+    # recorded on the ticket's own timeline (see InteractionService.
+    # add_reply). None (the default) sends with no attachments,
+    # exactly as before this field existed.
+    attachment_source_interaction_id: UUID | None = None
+
 
 class InteractionReplyRequest(BaseModel):
     """

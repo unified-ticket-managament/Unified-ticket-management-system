@@ -306,6 +306,8 @@ async def compose_email(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         client_repository=client_repository,
+        attachment_repository=attachment_repository,
+        storage_service=storage_service,
     )
 
     composed = await interaction_service.compose_email(
@@ -318,17 +320,16 @@ async def compose_email(
             bcc=_split_emails(bcc),
         ),
         current_user=current_user,
+        files=files,
     )
 
     if files:
-        attachment_service = AttachmentService(
-            attachment_repository=attachment_repository,
-            interaction_repository=interaction_repository,
-            ticket_repository=ticket_repository,
-            storage_service=storage_service,
-        )
-        stored = await attachment_service.validate_and_store_files(
-            files, composed.interaction_id
+        # compose_email already stored these (before dispatch, so they
+        # actually ride along on the real outbound email — see
+        # InteractionService._attach_outbound_files) — just re-fetch
+        # for the response's attachment metadata.
+        stored = await attachment_repository.list_by_interaction_id(
+            composed.interaction_id
         )
         composed.attachments = await attachments_to_metadata(stored, storage_service)
 

@@ -1,6 +1,7 @@
 # attachment_service.py
 
 import asyncio
+import base64
 import logging
 from uuid import UUID
 
@@ -24,6 +25,7 @@ from app.ticketing.schemas.attachment import (
     AttachmentUploadResponse,
 )
 from app.ticketing.schemas.interaction import InteractionCreate
+from app.ticketing.schemas.payloads import EnvelopeAttachment
 from app.ticketing.services.access_control import (
     SUPERVISOR_ROLE_NAMES,
     ensure_account_manager_owns_ticket_client,
@@ -40,6 +42,14 @@ from app.ticketing.utils.validators import (
     sanitize_filename,
     validate_attachment_type,
 )
+
+# Microsoft Graph's sendMail only accepts small attachments embedded
+# directly in the message body (`contentBytes`) — anything larger
+# needs a draft message plus a chunked upload session, which isn't
+# implemented here. 3MB/file is comfortably under Graph's own ~4MB
+# whole-message ceiling once the base64 inflation (~33%) and the rest
+# of the message are accounted for.
+GRAPH_INLINE_ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024
 
 
 async def attachment_to_metadata(
@@ -78,6 +88,61 @@ async def _none() -> None:
 
 
 logger = logging.getLogger(__name__)
+
+
+async def load_envelope_attachments(
+    attachments: list[Attachment],
+    storage_service: StorageService,
+) -> list[EnvelopeAttachment]:
+    """
+    Reads each attachment's real bytes back out of storage and
+    base64-encodes them, ready to embed directly in an outbound Graph
+    sendMail call (see graph_client.py's _build_graph_attachments) —
+    the one place these two things (a DB-tracked Attachment row and
+    the file content Graph needs inline) actually meet.
+
+    An attachment over GRAPH_INLINE_ATTACHMENT_MAX_BYTES, or one whose
+    object read fails outright (e.g. deleted from the bucket), is
+    skipped and logged rather than failing the whole send — a missing
+    or oversized attachment shouldn't block an otherwise-good email
+    from going out.
+    """
+
+    loaded: list[EnvelopeAttachment] = []
+
+    for attachment in attachments:
+        if (attachment.size_bytes or 0) > GRAPH_INLINE_ATTACHMENT_MAX_BYTES:
+            logger.warning(
+                "Skipping attachment %s (%r, %d bytes) on outbound send — exceeds "
+                "the %d byte inline-attachment limit; large-attachment upload "
+                "sessions aren't implemented.",
+                attachment.attachment_id,
+                attachment.filename,
+                attachment.size_bytes or 0,
+                GRAPH_INLINE_ATTACHMENT_MAX_BYTES,
+            )
+            continue
+
+        try:
+            data = await storage_service.download(object_key=attachment.storage_key)
+        except Exception:
+            logger.exception(
+                "Failed to read attachment %s (object_key=%s) for outbound send — "
+                "sending without it.",
+                attachment.attachment_id,
+                attachment.storage_key,
+            )
+            continue
+
+        loaded.append(
+            EnvelopeAttachment(
+                filename=attachment.filename,
+                content_type=attachment.mime_type or "application/octet-stream",
+                content_base64=base64.b64encode(data).decode("ascii"),
+            )
+        )
+
+    return loaded
 
 
 async def attachments_to_metadata(

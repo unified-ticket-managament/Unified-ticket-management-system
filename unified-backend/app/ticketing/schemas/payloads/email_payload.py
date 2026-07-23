@@ -51,14 +51,24 @@ class EmailPayload(BaseModel):
 
     references: list[str] = Field(default_factory=list)
 
-    # Only ever populated on a Compose-authored root (an agent-
-    # originated outbound email with no prior inbound message to
-    # reply to) — an inbound email has no Cc/Bcc of its own. Optional
-    # with an empty-list default so every pre-existing stored payload
-    # (which never had these keys) still deserializes unchanged.
+    # On a Compose-authored root (an agent-originated outbound email
+    # with no prior inbound message to reply to), this is our own
+    # outgoing Cc. On an inbound root received via the Graph transport,
+    # this is instead the *original* message's own Cc recipients —
+    # populated by EmailService.receive_email from EmailRequest.cc, and
+    # what backs the Reply-All prefill (see OpenEmailResponse.cc).
+    # Empty for the N8N transport (no such concept) and for anything
+    # ingested before this field existed — optional with an empty-list
+    # default so every pre-existing stored payload still deserializes
+    # unchanged either way.
     cc: list[EmailStr] = Field(default_factory=list)
 
     bcc: list[EmailStr] = Field(default_factory=list)
+
+    # Inbound-only: the original message's full To recipient list (see
+    # EmailRequest.to_recipients — same Graph-only/empty-otherwise
+    # convention). Never set on a Compose-authored root.
+    to_recipients: list[EmailStr] = Field(default_factory=list)
 
     # Microsoft Graph's own native message id, when this email arrived
     # via the Graph transport (None for N8N-transport rows, which have

@@ -212,6 +212,7 @@ class OpenEmailService:
             from_name=payload.from_name,
             cc=payload.cc,
             bcc=payload.bcc,
+            to_recipients=payload.to_recipients,
             subject=payload.subject,
             body=payload.body,
             message_id=interaction.message_id,

@@ -29,12 +29,20 @@ class OpenEmailResponse(BaseModel):
 
     from_name: str | None
 
-    # Only ever non-empty on a Compose-authored root — an inbound
-    # email has no Cc/Bcc of its own (see EmailPayload's matching
-    # fields).
+    # On a Compose-authored root, our own outgoing Cc; on an inbound
+    # Graph-transport root, the original message's own Cc recipients —
+    # empty for the N8N transport (see EmailPayload's matching fields).
+    # Backs the Reply-All prefill together with to_recipients below.
     cc: list[str] = Field(default_factory=list)
 
     bcc: list[str] = Field(default_factory=list)
+
+    # Inbound-only: the original message's full To recipient list
+    # (index 0 is always this same root's own to_email) — lets
+    # Reply-All Cc in anyone the sender addressed directly alongside
+    # the shared mailbox, not just their Cc list. Empty for a
+    # Compose-authored root and for the N8N transport.
+    to_recipients: list[str] = Field(default_factory=list)
 
     subject: str
 

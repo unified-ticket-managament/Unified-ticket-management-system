@@ -107,9 +107,36 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Covers Forward (which opens Compose with clientId preset but
+  // toEmail intentionally blank, see InboxPage.tsx's handleForward)
+  // and a restored local draft whose client list wasn't loaded yet at
+  // mount — resolves the recipient from the preset client once the
+  // client list is available. The "To" dropdown is the only recipient
+  // input now (no separate free-text field to preserve), so this
+  // always wins once clientId is set.
+  useEffect(() => {
+    if (!clientId || toEmail.trim()) return;
+    const client = composableClients.find((c) => c.client_id === clientId);
+    if (client?.inbox_email) setToEmail(client.inbox_email);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [composableClients]);
+
   const canCompose = composableClients.length > 0;
   const isEmpty = isRichTextEmpty(bodyHtml);
-  const canSend = Boolean(clientId && toEmail.trim() && subject.trim() && !isEmpty);
+  const canSend = Boolean(clientId && subject.trim() && !isEmpty);
+
+  // Every real client now sends/receives through the one shared
+  // ticketing@probeps.com mailbox — there's no more per-client "From"
+  // identity to pick (see root CLAUDE.md's client-matching rework).
+  // The "To" dropdown is the single source of recipient selection —
+  // picking a client resolves the actual recipient address internally
+  // from that client's own real address (Client.inbox_email); there's
+  // no separate recipient-email input to keep in sync.
+  function handleClientChange(nextClientId: string) {
+    setClientId(nextClientId);
+    const client = composableClients.find((c) => c.client_id === nextClientId);
+    setToEmail(client?.inbox_email ?? "");
+  }
 
   function handleSaveDraft() {
     const draft: LocalDraft = { clientId, toEmail, cc, bcc, subject, bodyHtml };
@@ -158,10 +185,17 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
         ) : (
           <div className="flex flex-col gap-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">From (Client)</label>
-              <Select value={clientId} onValueChange={setClientId}>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">From</label>
+              <div className="flex h-9 items-center rounded-md border border-border bg-muted/30 px-3 text-sm text-muted-foreground">
+                Ticketing Support &lt;ticketing@probeps.com&gt;
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">To</label>
+              <Select value={clientId} onValueChange={handleClientChange}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Choose which client's shared inbox to send from" />
+                  <SelectValue placeholder="Choose a client to email" />
                 </SelectTrigger>
                 <SelectContent>
                   {composableClients.map((client) => (
@@ -171,16 +205,6 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">To</label>
-              <Input
-                value={toEmail}
-                onChange={(e) => setToEmail(e.target.value)}
-                placeholder="recipient@example.com"
-                type="email"
-              />
             </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

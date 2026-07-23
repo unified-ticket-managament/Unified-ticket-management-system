@@ -43,6 +43,22 @@ class EmailRequest(BaseModel):
 
     html_body: str | None = None
 
+    # The original message's own Cc recipients — populated for the
+    # Graph transport (mail_mapping_service.py maps Graph's
+    # ccRecipients here), empty for the N8N transport (which has no
+    # such concept) and for anything ingested before this field
+    # existed. Backs the Reply-All prefill (see OpenEmailResponse.cc).
+    cc: list[EmailStr] = Field(default_factory=list)
+
+    # The original message's full To recipient list, in order (index 0
+    # is always the arrival address already captured in `to_email` —
+    # this is the *complete* list, not just the extras). Only ever has
+    # more than one entry when the sender addressed the shared mailbox
+    # alongside other recipients directly (not via Cc); Reply-All uses
+    # this to Cc them too. Same Graph-only/empty-otherwise convention
+    # as `cc` above.
+    to_recipients: list[EmailStr] = Field(default_factory=list)
+
     message_id: str = Field(
         ...,
         min_length=1,
