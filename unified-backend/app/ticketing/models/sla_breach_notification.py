@@ -79,6 +79,17 @@ class SLABreachNotification(Base):
         nullable=False,
     )
 
+    # Not yet read or written by any business logic — reserved for a
+    # future re-notification-per-escalation-cycle feature (see
+    # ResolutionSLA.escalation_cycle's own comment). Exists on the live
+    # table already, with a server_default so try_record/try_record_many
+    # (which never set this explicitly) keep inserting successfully.
+    cycle: Mapped[int] = mapped_column(
+        Integer,
+        server_default="0",
+        nullable=False,
+    )
+
     __table_args__ = (
         # THE idempotency guarantee — one notification per
         # (clock, threshold, cycle) triple, ever. `cycle` is what lets

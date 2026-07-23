@@ -90,6 +90,33 @@ services:
       # different cadence than the app's own default.
       - key: SLA_SWEEP_INTERVAL_MINUTES
         value: "1"
+      # Microsoft Graph mail integration (app/ticketing/services/
+      # graph_client.py, graph_auth.py, graph_subscription_service.py).
+      # All five optional — get_mail_provider_client() falls back to
+      # MockMailProviderClient and the subscription scheduler no-ops
+      # whenever any of these is unset, so leaving them unset here is
+      # safe and keeps the existing mocked behavior. See
+      # AZURE_SETUP_GUIDE.md for how to obtain each value.
+      - key: GRAPH_TENANT_ID
+        sync: false
+      - key: GRAPH_CLIENT_ID
+        sync: false
+      - key: GRAPH_CLIENT_SECRET
+        sync: false
+      - key: GRAPH_MAILBOX_ADDRESS
+        sync: false
+      # App-generated anti-spoofing secret verified against every Graph
+      # webhook notification's own clientState — not something Azure
+      # issues, generate a random 32+ character value.
+      - key: GRAPH_WEBHOOK_CLIENT_STATE
+        sync: false
+      # SECOND PASS: this service's own real Render URL + /api/mail/incoming
+      # (e.g. https://unified-backend-xxxx.onrender.com/api/mail/incoming) —
+      # only knowable after first deploy, same "second pass" pattern as
+      # CORS_ORIGINS/NEXT_PUBLIC_API_URL above. Only used for Graph
+      # subscription creation/renewal; leave unset until then.
+      - key: GRAPH_WEBHOOK_NOTIFICATION_URL
+        sync: false
 
   # ---------------------------------------------------------------------
   # There used to be a `type: cron` "sla-sweep" service here (Render

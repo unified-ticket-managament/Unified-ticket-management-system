@@ -116,6 +116,39 @@ class IncomingMailPayload(BaseModel):
 
 
 # ---------------------------------------------------------
+# Real Graph change-notification envelope — what Graph actually posts
+# to a webhook's notificationUrl (a lightweight pointer, NOT the
+# message itself; see GraphWebhookNotificationItem.resourceData.id,
+# which the route fetches via MailProviderClient.fetch_message before
+# it has an IncomingMailPayload to work with).
+# ---------------------------------------------------------
+
+
+class GraphWebhookResourceData(BaseModel):
+    """The one field this integration actually needs from Graph's
+    resourceData — the id to pass to fetch_message()."""
+
+    id: str
+
+
+class GraphWebhookNotificationItem(BaseModel):
+    subscriptionId: str
+    clientState: str | None = None
+    changeType: str
+    resource: str
+    resourceData: GraphWebhookResourceData
+
+
+class GraphWebhookNotificationEnvelope(BaseModel):
+    """The real shape of a POST to a Graph subscription's
+    notificationUrl — always a `value` array, since Graph batches
+    multiple notifications into one delivery when they arrive close
+    together."""
+
+    value: list[GraphWebhookNotificationItem]
+
+
+# ---------------------------------------------------------
 # Outgoing send request/response
 # ---------------------------------------------------------
 

@@ -13,6 +13,7 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from app.core.config import get_settings
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.schemas.mail_integration import (
     OutgoingEmailRequest,
@@ -20,6 +21,7 @@ from app.ticketing.schemas.mail_integration import (
 )
 from app.ticketing.schemas.payloads import OutboundEnvelope
 from app.ticketing.services.email_envelope import build_compose_envelope
+from app.ticketing.services.email_service import resolve_shared_mailbox_address
 from app.ticketing.services.mail_provider import MailProviderClient
 
 
@@ -58,10 +60,13 @@ class OutgoingMailService:
                 raise ValueError("Client not found.")
 
             # Reuses the same envelope builder Compose already uses,
-            # so the "From is always the client's shared inbox"
-            # invariant is enforced in exactly one place.
+            # so the "From is always the shared support mailbox"
+            # invariant is enforced in exactly one place. `client` is
+            # only used to validate request.client_id here — the From
+            # address itself comes from the shared mailbox, never
+            # Client.inbox_email (the client's own address).
             return build_compose_envelope(
-                client,
+                from_email=resolve_shared_mailbox_address(get_settings()),
                 to_email=request.to_email,
                 subject=request.subject,
                 body=request.body,

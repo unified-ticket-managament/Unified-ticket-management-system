@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from shared_models.models import User
 
+from app.core.config import get_settings
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
@@ -82,9 +83,10 @@ from app.ticketing.services.audit_to_interaction import (
     synthesize_interaction_from_audit,
 )
 from app.ticketing.services.email_envelope import build_compose_envelope, build_reply_envelope
+from app.ticketing.services.email_service import resolve_shared_mailbox_address
 from app.ticketing.services.escalation_service import EscalationService
 from app.ticketing.services.interaction_summary import trim_payload_for_list
-from app.ticketing.services.outbound_dispatcher import OutboundDispatcher
+from app.ticketing.services.outbound_dispatcher import OutboundDispatchError, OutboundDispatcher
 from app.ticketing.services.sla_escalation_rules import TEAM_LEAD_ROLE_NAME
 from app.ticketing.services.sla_service import SLAService
 from app.ticketing.services.sla_escalation_rules import (
@@ -107,7 +109,7 @@ from app.ticketing.models.interaction import Interaction
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.schemas.attachment import AttachmentMetadata
 from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
-from app.ticketing.schemas.payloads import EmailPayload
+from app.ticketing.schemas.payloads import EmailPayload, OutboundEnvelope
 from app.ticketing.services.attachment_service import AttachmentService, attachments_to_metadata
 from app.ticketing.storage.base import StorageService
 
@@ -441,6 +443,55 @@ class InteractionService:
         manager = await self.user_repository.get_by_id(client.account_manager_id)
         return manager.email if manager is not None else None
 
+    async def _dispatch_and_record(
+        self, interaction: Interaction, envelope: OutboundEnvelope
+    ) -> None:
+        """
+        Calls OutboundDispatcher.dispatch() and updates the
+        already-persisted interaction's dispatch_status to the two
+        states outbound_dispatcher.py's own docstring always intended
+        it to reach: "SENT" (with the real provider_message_id) or
+        "FAILED" (with an error message), instead of staying "QUEUED"
+        forever. Shared by every reply/compose call site so real Graph
+        delivery is wired in exactly once.
+
+        On failure, the FAILED status is committed explicitly before
+        raising — get_db()'s own dependency wrapper rolls back the
+        whole request's session on any exception, which would
+        otherwise silently undo this write (and the interaction's own
+        creation) along with it, defeating the point of keeping a
+        failed send visible to the agent rather than vanishing it.
+        """
+
+        try:
+            result = await self.outbound_dispatcher.dispatch(
+                interaction.interaction_id, envelope
+            )
+        except OutboundDispatchError as exc:
+            failed_payload = {
+                **interaction.payload,
+                "dispatch_status": "FAILED",
+                "dispatch_error": str(exc),
+            }
+            await self.interaction_repository.update(
+                interaction, InteractionUpdate(payload=failed_payload)
+            )
+            await self.interaction_repository.db.commit()
+
+            raise HTTPException(
+                status_code=http_status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to send email: {exc}",
+            ) from exc
+
+        sent_payload = {
+            **interaction.payload,
+            "dispatch_status": "SENT",
+            "provider_message_id": result.provider_message_id,
+        }
+        await self.interaction_repository.update(
+            interaction, InteractionUpdate(payload=sent_payload)
+        )
+
     async def _create_ticket_interaction(
         self,
         *,
@@ -663,13 +714,29 @@ class InteractionService:
             )
 
         envelope = None
-        if self.client_repository is not None and ticket.client_company_id is not None:
-            client = await self.client_repository.get_by_id(ticket.client_company_id)
-            if client is not None and latest_email is not None:
-                inbound_payload = EmailPayload.model_validate(latest_email.payload)
-                am_email = await self._resolve_account_manager_email(client)
+        if latest_email is not None:
+            inbound_payload = EmailPayload.model_validate(latest_email.payload)
+
+            client = None
+            if self.client_repository is not None and ticket.client_company_id is not None:
+                client = await self.client_repository.get_by_id(ticket.client_company_id)
+
+            # A reply always goes From the address the original message
+            # arrived AT (the shared support mailbox), whether or not
+            # a Client resolved for this ticket — never Client.inbox_email,
+            # which now stores the client's own real address (the one
+            # they send FROM, used to identify them on inbound), not an
+            # address this platform can send from. This also covers the
+            # ticket-with-no-resolvable-Client case (e.g. one created
+            # from a Graph-mailbox Site Lead fallback message — see
+            # email_service.is_configured_graph_mailbox()) for free,
+            # since inbound_payload.to_email is populated either way.
+            am_email = await self._resolve_account_manager_email(client) if client is not None else None
+            reply_from_email = inbound_payload.to_email
+
+            if reply_from_email:
                 envelope = build_reply_envelope(
-                    client=client,
+                    from_email=reply_from_email,
                     inbound_payload=inbound_payload,
                     inbound_message_id=latest_email.message_id,
                     body=request.message,
@@ -713,7 +780,7 @@ class InteractionService:
         )
 
         if envelope is not None:
-            await self.outbound_dispatcher.dispatch(interaction.interaction_id, envelope)
+            await self._dispatch_and_record(interaction, envelope)
 
         return TicketActionResponse(
             interaction_id=interaction.interaction_id,
@@ -780,22 +847,35 @@ class InteractionService:
 
         inbound_payload = EmailPayload.model_validate(root.payload)
 
-        envelope = None
+        client = None
         if self.client_repository is not None and root.client_id is not None:
             client = await self.client_repository.get_by_id(root.client_id)
-            if client is not None:
-                am_email = await self._resolve_account_manager_email(client)
-                envelope = build_reply_envelope(
-                    client=client,
-                    inbound_payload=inbound_payload,
-                    inbound_message_id=root.message_id,
-                    body=request.message,
-                    agent_name=current_user.name,
-                    account_manager_email=am_email,
-                    cc=request.cc,
-                    bcc=request.bcc,
-                    to_email_override=request.to_email,
-                )
+
+        # A reply always goes From the address the original message
+        # arrived AT (the shared support mailbox), whether or not this
+        # thread has a resolved Client — never Client.inbox_email, which
+        # now stores the client's own real address (the one they send
+        # FROM, used to identify them on inbound), not an address this
+        # platform can send from. This also covers a client-less thread
+        # (the Graph-mailbox Site Lead fallback — see
+        # email_service.is_configured_graph_mailbox()) for free, since
+        # inbound_payload.to_email is populated either way.
+        am_email = await self._resolve_account_manager_email(client) if client is not None else None
+        reply_from_email = inbound_payload.to_email
+
+        envelope = None
+        if reply_from_email:
+            envelope = build_reply_envelope(
+                from_email=reply_from_email,
+                inbound_payload=inbound_payload,
+                inbound_message_id=root.message_id,
+                body=request.message,
+                agent_name=current_user.name,
+                account_manager_email=am_email,
+                cc=request.cc,
+                bcc=request.bcc,
+                to_email_override=request.to_email,
+            )
 
         payload: dict[str, Any] = {"message": request.message}
         if envelope is not None:
@@ -834,7 +914,7 @@ class InteractionService:
         )
 
         if envelope is not None:
-            await self.outbound_dispatcher.dispatch(interaction.interaction_id, envelope)
+            await self._dispatch_and_record(interaction, envelope)
 
         # The root leaves the Pending triage queue once it's been
         # replied to — "general communication, no ticket needed" is
@@ -902,9 +982,10 @@ class InteractionService:
         )
 
         am_email = await self._resolve_account_manager_email(client)
+        shared_mailbox_address = resolve_shared_mailbox_address(get_settings())
 
         envelope = build_compose_envelope(
-            client=client,
+            from_email=shared_mailbox_address,
             to_email=request.to_email,
             subject=request.subject,
             body=request.message,
@@ -918,7 +999,7 @@ class InteractionService:
             client_id=client.client_id,
             client_name=client.name,
             to_email=request.to_email,
-            from_email=client.inbox_email,
+            from_email=shared_mailbox_address,
             from_name=current_user.name,
             subject=request.subject,
             body=request.message,
@@ -965,7 +1046,7 @@ class InteractionService:
             new_values={"client_id": client.client_id, "to_email": request.to_email},
         )
 
-        await self.outbound_dispatcher.dispatch(interaction.interaction_id, envelope)
+        await self._dispatch_and_record(interaction, envelope)
 
         return ComposeEmailResponse(
             interaction_id=interaction.interaction_id,

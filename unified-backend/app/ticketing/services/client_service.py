@@ -15,9 +15,11 @@ from app.ticketing.services.audit_log_service import AuditLogService
 
 class ClientService:
     """
-    Client (company) onboarding — the entity that maps a dedicated
-    shared inbox address to an owning Account Manager. Every inbound
-    email is resolved against this table before anything else happens.
+    Client (company) onboarding — the entity that maps a real client
+    email address (see Client model's own docstring for what address
+    this actually is, which depends on transport) to an owning Account
+    Manager. Every inbound email is resolved against this table before
+    anything else happens.
     """
 
     def __init__(

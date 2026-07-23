@@ -19,6 +19,19 @@ cryptography==49.0.0
 httpx==0.28.1
 boto3==1.43.39
 
+# Microsoft Graph mail integration — MSAL client-credentials token
+# acquisition only (Graph REST calls themselves go through the httpx
+# client already listed above, not the msal-graph SDK). 1.37.0
+# specifically because 1.32.0's cryptography<47 ceiling forces a
+# downgrade of this repo's pinned cryptography==49.0.0 (needed by
+# python-jose above) — 1.37.0 is the first version compatible with it.
+msal==1.37.0
+# HTML-to-plain-text extraction for Graph-sourced inbound mail bodies
+# (mail_mapping_service.py) — Graph returns body.contentType="html" for
+# effectively every real-world sender; used with the built-in
+# html.parser backend only, no lxml dependency needed.
+beautifulsoup4==4.15.0
+
 # In-process SLA sweep scheduler (app/core/sla_scheduler.py) — replaces
 # the external GitHub Actions cron trigger. 3.x is the stable,
 # production-proven line; 4.x is still a pre-release rewrite.

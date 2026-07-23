@@ -39,13 +39,20 @@ from app.ticketing.schemas.client import ClientCreate  # noqa: E402
 from app.ticketing.services.access_control import ACCOUNT_MANAGER_ROLE_NAME  # noqa: E402
 
 DEMO_CLIENTS = [
-    {"name": "ABC Clinic", "inbox_email": "abc@probeps.com"},
-    {"name": "XYZ Medical Group", "inbox_email": "xyz@probeps.com"},
-    {"name": "Sunrise Health", "inbox_email": "sunrise@probeps.com"},
+    # These four were switched from dummy @probeps.com placeholders
+    # (abc@, xyz@, sunrise@, riverbend@) to real, reachable internal
+    # mailboxes once Graph deliverability to external addresses proved
+    # unreliable — see M365_OUTBOUND_DELIVERY_ISSUE.md. Inbound/outbound
+    # between probeps.com and painmedpa.com is confirmed working, so
+    # these are usable for genuine end-to-end mail testing today.
+    # Lakeside Pediatrics stays on its original dummy address.
+    {"name": "ABC Clinic", "inbox_email": "deva@painmedpa.com"},
+    {"name": "XYZ Medical Group", "inbox_email": "shreyojit@probeps.com"},
+    {"name": "Sunrise Health", "inbox_email": "revanth@probeps.com"},
     {"name": "Lakeside Pediatrics", "inbox_email": "lakeside@probeps.com"},
     {"name": "Metro Family Care", "inbox_email": "metro@probeps.com"},
     {"name": "Golden State Orthopedics", "inbox_email": "goldenstate@probeps.com"},
-    {"name": "Riverbend Dental Group", "inbox_email": "riverbend@probeps.com"},
+    {"name": "Riverbend Dental Group", "inbox_email": "gogineni@painmedpa.com"},
 ]
 
 

@@ -1,3 +1,4 @@
+import logging
 import time
 from contextlib import asynccontextmanager
 
@@ -7,6 +8,14 @@ from fastapi.responses import JSONResponse
 from starlette.datastructures import MutableHeaders
 
 from app.core.config import get_settings
+from app.core.graph_mail_poll_scheduler import (
+    shutdown_scheduler as shutdown_graph_mail_poll_scheduler,
+    start_scheduler as start_graph_mail_poll_scheduler,
+)
+from app.core.graph_subscription_scheduler import (
+    shutdown_scheduler as shutdown_graph_subscription_scheduler,
+    start_scheduler as start_graph_subscription_scheduler,
+)
 from app.core.request_timing import get_stage_times, reset_stage_times
 from app.core.sla_scheduler import shutdown_scheduler, start_scheduler
 from app.database.timing import get_db_time_ms, reset_db_time
@@ -29,12 +38,29 @@ from app.ticketing.storage.base import StorageConfigurationError
 
 settings = get_settings()
 
+# Every service module in this codebase logs via plain
+# logging.getLogger(__name__) (SLA sweep, escalation service, the
+# Graph mail integration, etc.) — but nothing before this line ever
+# configured Python's root logger, so none of those calls below
+# WARNING actually reached the console; only uvicorn's own request
+# logs were visible. settings.log_level (config.py) existed but was
+# never wired to anything. This is the one place that now does that,
+# for every logger in the process, not just uvicorn's own.
+logging.basicConfig(
+    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Starting Unified Backend (RBAC + Ticketing)...")
     start_scheduler()
+    start_graph_subscription_scheduler()
+    start_graph_mail_poll_scheduler()
     yield
+    shutdown_graph_mail_poll_scheduler()
+    shutdown_graph_subscription_scheduler()
     shutdown_scheduler()
     print("Stopping Unified Backend...")
 

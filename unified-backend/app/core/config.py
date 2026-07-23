@@ -113,6 +113,32 @@ class Settings(BaseSettings):
     # relative path instead of a clickable URL.
     app_frontend_url: str | None = None
 
+    # Microsoft Graph mail integration (app.ticketing.services.graph_client).
+    # All optional, same convention as smtp_* above: get_mail_provider_client()
+    # falls back to MockMailProviderClient whenever any of the four
+    # identity/mailbox fields is unset, so the app boots and the existing
+    # mocked send/receive seam keeps working with no Azure credentials
+    # provisioned yet. Once all four are set, that factory switches to the
+    # real GraphMailProviderClient automatically — no other code changes.
+    graph_tenant_id: str | None = None
+    graph_client_id: str | None = None
+    graph_client_secret: str | None = None
+    graph_mailbox_address: str | None = None
+    # Anti-spoofing secret this app itself generates and echoes into every
+    # subscription request's clientState — verified against every inbound
+    # webhook notification before it's trusted. Required only once a real
+    # subscription is created; has no default (never a well-known fallback
+    # value for something whose only job is not being guessable).
+    graph_webhook_client_state: str | None = None
+    graph_api_base_url: str = "https://graph.microsoft.com/v1.0"
+    # This app's own externally-reachable HTTPS URL for the incoming
+    # route (e.g. "https://unified-backend-xxxx.onrender.com/api/mail/
+    # incoming") — a service can't reliably determine its own public
+    # URL, especially behind Render, so it's supplied explicitly rather
+    # than derived. Only needed for subscription creation/renewal
+    # (graph_subscription_service.py); send/fetch don't use it.
+    graph_webhook_notification_url: str | None = None
+
     @property
     def cors_origins_list(self) -> List[str]:
         value = self.cors_origins.strip()

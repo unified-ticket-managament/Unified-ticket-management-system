@@ -59,3 +59,10 @@ class EmailPayload(BaseModel):
     cc: list[EmailStr] = Field(default_factory=list)
 
     bcc: list[EmailStr] = Field(default_factory=list)
+
+    # Microsoft Graph's own native message id, when this email arrived
+    # via the Graph transport (None for N8N-transport rows, which have
+    # no such concept, and for anything ingested before this field
+    # existed) — see EmailRequest.provider_message_id's own docstring
+    # for what this is being kept for.
+    provider_message_id: str | None = None

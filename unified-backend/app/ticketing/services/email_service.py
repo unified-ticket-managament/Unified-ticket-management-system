@@ -24,6 +24,7 @@ from app.ticketing.schemas.email import (
 from app.ticketing.schemas.interaction import (
     InteractionCreate,
 )
+from app.core.config import Settings, get_settings
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
     GLOBAL_INBOX_ROLE_NAMES,
@@ -40,6 +41,39 @@ from app.notifications.service import NotificationService, NotificationType
 logger = logging.getLogger(__name__)
 
 
+def is_configured_graph_mailbox(to_email: str, settings: Settings) -> bool:
+    """
+    True when `to_email` is the one Graph-connected shared mailbox
+    configured via GRAPH_MAILBOX_ADDRESS — the mailbox this platform's
+    Microsoft Graph integration actually sends from/receives into (see
+    graph_client.py), which is not necessarily tied to any single
+    Client.inbox_email the way every other client-specific shared
+    inbox is. Used by receive_email's client-lookup fallback below:
+    mail landing on this specific address is never rejected as
+    "Unknown inbox address" purely for lacking a Client row — it
+    routes to Site Lead instead (see the notification branch).
+    """
+
+    return bool(
+        settings.graph_mailbox_address
+        and to_email.strip().lower() == settings.graph_mailbox_address.strip().lower()
+    )
+
+
+def resolve_shared_mailbox_address(settings: Settings) -> str:
+    """
+    The one address every outbound Compose/Reply-with-no-inbound-thread
+    is sent From — the configured Microsoft Graph shared mailbox, or a
+    placeholder for local/dev environments still running
+    MockMailProviderClient with no real Graph credentials set. Never
+    Client.inbox_email, which stores the client's own real address
+    (the one they send FROM), not an address this platform can send
+    from — see build_compose_envelope's own docstring.
+    """
+
+    return settings.graph_mailbox_address or "support@probeps.com"
+
+
 class EmailService:
     """
     Handles incoming emails.
@@ -52,8 +86,14 @@ class EmailService:
     Validate Duplicate
             │
             ▼
-    Resolve Client (by the shared inbox address it arrived at,
-    NOT by matching the sender to a platform user)
+    Resolve Client — by the message's `from` address for mail arriving
+    at the one configured Graph shared mailbox (GRAPH_MAILBOX_ADDRESS,
+    where every real client sends today; see is_configured_graph_mailbox()),
+    since every client shares the same `to` address there; by the
+    message's `to` address for any other, legacy dedicated-inbox-per-
+    client address. Either way, no matching Client is never rejected
+    outright when it happened at the Graph shared mailbox — that
+    routes to Site Lead instead of "Unknown inbox address."
             │
             ▼
     Thread Check (In-Reply-To / References against stored
@@ -116,15 +156,45 @@ class EmailService:
             )
 
         # ---------------------------------------
-        # Client Lookup — by the shared inbox address this
-        # email arrived at, not by who sent it.
+        # Client Lookup
+        #
+        # Every client now sends into the one Graph-connected shared
+        # mailbox (GRAPH_MAILBOX_ADDRESS) rather than each having its
+        # own dedicated arrival address, so `to_email` is the same for
+        # every client and can no longer identify which one this is —
+        # the sender's own address (Client.inbox_email, despite the
+        # name, now stores that real personal/company address) does.
+        # A legacy/dedicated-inbox-per-client address (anything other
+        # than the configured shared mailbox — e.g. a still-dummy demo
+        # client, or another transport that hands each client its own
+        # arrival address) keeps the original to_email-based match.
         # ---------------------------------------
 
-        client = await self.client_repository.get_active_by_inbox_email(
-            email.to_email
-        )
+        settings = get_settings()
+        arrived_at_shared_mailbox = is_configured_graph_mailbox(email.to_email, settings)
 
-        if client is None:
+        if arrived_at_shared_mailbox:
+            client = (
+                await self.client_repository.get_active_by_inbox_email(email.from_email)
+                if email.from_email
+                else None
+            )
+        else:
+            client = await self.client_repository.get_active_by_inbox_email(
+                email.to_email
+            )
+
+        # The Graph-connected shared mailbox (GRAPH_MAILBOX_ADDRESS) is
+        # not necessarily mapped to any one Client — unlike every other
+        # inbox address, which is always a specific client's dedicated
+        # address. Mail arriving there from a sender with no matching
+        # Client row is never rejected as an unknown address; it's
+        # routed to Site Lead instead (see the notification branch
+        # further down). Everything else keeps the original,
+        # unconditional rejection.
+        routes_to_site_lead = client is None and arrived_at_shared_mailbox
+
+        if client is None and not routes_to_site_lead:
             raise ValueError(
                 "Unknown inbox address."
             )
@@ -136,8 +206,9 @@ class EmailService:
         # user who no longer qualifies. Never drop/bounce real
         # customer email over this; just make it loud in the logs so
         # it gets fixed. Supervisors' existing scope=all inbox view
-        # already covers visibility in the meantime.
-        if self.user_repository is not None:
+        # already covers visibility in the meantime. N/A when there's
+        # no client at all (the Site Lead fallback above).
+        if client is not None and self.user_repository is not None:
             manager = await self.user_repository.get_by_id(client.account_manager_id)
             if (
                 manager is None
@@ -222,9 +293,9 @@ class EmailService:
 
         payload = {
 
-            "client_id": str(client.client_id),
+            "client_id": str(client.client_id) if client is not None else None,
 
-            "client_name": client.name,
+            "client_name": client.name if client is not None else None,
 
             "to_email": email.to_email,
 
@@ -241,6 +312,13 @@ class EmailService:
             "in_reply_to": email.in_reply_to,
 
             "references": email.references,
+
+            # Graph's own native message id (None for the N8N
+            # transport, which has no such concept) — unused today,
+            # kept for a future native reply/replyAll/forward or
+            # Sent-Items reconciliation feature. See
+            # EmailRequest.provider_message_id's own docstring.
+            "provider_message_id": email.provider_message_id,
         }
 
         # ---------------------------------------
@@ -268,7 +346,7 @@ class EmailService:
 
     message_id=email.message_id,
 
-    client_id=client.client_id,
+    client_id=client.client_id if client is not None else None,
 
     parent_interaction_id=parent_interaction_id,
 
@@ -328,8 +406,8 @@ class EmailService:
             new_values={
                 "subject": email.subject,
                 "message_id": email.message_id,
-                "client_id": client.client_id,
-                "client_name": client.name,
+                "client_id": client.client_id if client is not None else None,
+                "client_name": client.name if client is not None else None,
                 "ticket_id": ticket_id,
             },
         )
@@ -337,17 +415,28 @@ class EmailService:
         # ---------------------------------------
         # Notifications
         #
-        # Two distinct audiences, matching the two branches above: a
-        # brand-new pending item goes to whoever's inbox it lands in
-        # (the owning Account Manager, plus the always-global Site
-        # Lead/Super Admin inboxes); a reply on an already-ticketed
-        # thread goes to whoever is actually working that ticket (its
-        # assigned agent), not the AM.
+        # Three distinct audiences: a brand-new pending item on a
+        # client's own inbox goes to that client's Account Manager
+        # plus the always-global Site Lead/Super Admin inboxes; a
+        # brand-new item with no Client at all (the Graph-mailbox
+        # fallback above — routes_to_site_lead) goes to Site Lead only,
+        # since there's no Account Manager to notify; a reply on an
+        # already-ticketed thread goes to whoever is actually working
+        # that ticket (its assigned agent), not the AM.
         # ---------------------------------------
 
         if self.notification_service is not None:
             if ticket_id is None:
-                recipient_ids = {client.account_manager_id}
+                if client is not None:
+                    recipient_ids = {client.account_manager_id}
+                    mail_source_label = client.name
+                else:
+                    # routes_to_site_lead: no Client, so no Account
+                    # Manager to seed the recipient set with — Site Lead
+                    # (added via GLOBAL_INBOX_ROLE_NAMES just below) is
+                    # the only audience.
+                    recipient_ids = set()
+                    mail_source_label = f"the {email.to_email} mailbox"
 
                 if self.user_repository is not None:
                     for role_name in GLOBAL_INBOX_ROLE_NAMES:
@@ -359,7 +448,7 @@ class EmailService:
                 await self.notification_service.notify(
                     recipient_ids,
                     NotificationType.MAIL_RECEIVED,
-                    title=f"New mail from {client.name}",
+                    title=f"New mail from {mail_source_label}",
                     message=email.subject or "(no subject)",
                     link="/inbox",
                     related_entity_type="interaction",
@@ -383,10 +472,18 @@ class EmailService:
                         team_lead_ctx = RecipientContext(assigned_agent=assigned_agent)
                         reply_recipient_ids |= resolve_team_lead(team_lead_ctx)
 
+                    # client can be None here too (a Graph-mailbox-
+                    # fallback message that happened to thread onto an
+                    # existing ticket's own ticketed conversation) —
+                    # the ticket's own client relationship, not this
+                    # possibly-absent lookup, is the source of truth
+                    # for who the ticket belongs to.
+                    reply_source_label = client.name if client is not None else "the client"
+
                     await self.notification_service.notify(
                         reply_recipient_ids,
                         NotificationType.CLIENT_REPLY,
-                        title=f"New reply from {client.name}",
+                        title=f"New reply from {reply_source_label}",
                         message=email.subject or "(no subject)",
                         link=f"/tickets/{ticket_id}",
                         related_entity_type="ticket",
@@ -419,9 +516,9 @@ class EmailService:
                 created.interaction_id
             ),
 
-            client_id=str(client.client_id),
+            client_id=str(client.client_id) if client is not None else None,
 
-            client_name=client.name,
+            client_name=client.name if client is not None else None,
 
             ticket_id=str(ticket_id) if ticket_id else None,
 

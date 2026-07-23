@@ -1,6 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import { isAxiosError } from "axios";
 import { AnimatePresence, motion } from "framer-motion";
 import { CheckCircle2, Eye, EyeOff, Loader2, Ticket } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -38,7 +39,7 @@ export default function LoginPage() {
   const [status, setStatus] = useState<Status>("idle");
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
-  const [invalidCredentials, setInvalidCredentials] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
 
   const {
     register,
@@ -62,7 +63,7 @@ export default function LoginPage() {
 
   const onSubmit = async (values: LoginValues) => {
     setStatus("loading");
-    setInvalidCredentials(false);
+    setLoginError(null);
 
     try {
       await authService.login(values);
@@ -78,14 +79,24 @@ export default function LoginPage() {
       setStatus("success");
 
       setTimeout(() => router.push("/dashboard"), 600);
-    } catch {
+    } catch (error) {
       setStatus("idle");
-      setInvalidCredentials(true);
+
+      let description = "Invalid email or password. Please try again.";
+      if (isAxiosError(error)) {
+        if (!error.response) {
+          description = "Can't reach the server. Check your connection and try again.";
+        } else if (error.response.status !== 401) {
+          description = error.response.data?.detail ?? "Something went wrong. Please try again.";
+        }
+      }
+
+      setLoginError(description);
       setValue("password", "");
       toast({
         variant: "destructive",
         title: "Sign in failed",
-        description: "Invalid email or password. Please try again.",
+        description,
       });
     }
   };
@@ -156,9 +167,9 @@ export default function LoginPage() {
                         type="email"
                         placeholder="Enter your email"
                         disabled={isLoading}
-                        className={cn(invalidCredentials && "border-destructive focus-visible:ring-destructive/20")}
+                        className={cn(loginError && "border-destructive focus-visible:ring-destructive/20")}
                         {...register("email", {
-                          onChange: () => setInvalidCredentials(false),
+                          onChange: () => setLoginError(null),
                         })}
                       />
                       {errors.email && (
@@ -176,10 +187,10 @@ export default function LoginPage() {
                           disabled={isLoading}
                           className={cn(
                             "pr-10",
-                            invalidCredentials && "border-destructive focus-visible:ring-destructive/20"
+                            loginError && "border-destructive focus-visible:ring-destructive/20"
                           )}
                           {...register("password", {
-                            onChange: () => setInvalidCredentials(false),
+                            onChange: () => setLoginError(null),
                           })}
                         />
                         <button
@@ -199,8 +210,8 @@ export default function LoginPage() {
                       {errors.password && (
                         <p className="text-sm text-destructive">{errors.password.message}</p>
                       )}
-                      {invalidCredentials && !errors.password && (
-                        <p className="text-sm text-destructive">Invalid email or password</p>
+                      {loginError && !errors.password && (
+                        <p className="text-sm text-destructive">{loginError}</p>
                       )}
                     </div>
 
