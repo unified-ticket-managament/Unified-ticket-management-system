@@ -208,3 +208,12 @@ class SLASweepResponse(BaseModel):
     escalations_advanced: int
     escalation_handling_sla_breaches: int
     errors: int
+    # A newly-crossed threshold whose idempotency ledger row was
+    # recorded (so it will NEVER be retried on a later sweep) but whose
+    # recipient resolution came back empty — e.g. an orphaned/
+    # deactivated agent_id, an unclaimed ticket in a category with no
+    # Team Lead, or a missing client/account manager. Previously this
+    # was completely silent: zero log line, zero counter, and the
+    # notification was gone for good. Does not affect who gets
+    # notified — purely a visibility counter alongside errors above.
+    recipients_empty: int = 0

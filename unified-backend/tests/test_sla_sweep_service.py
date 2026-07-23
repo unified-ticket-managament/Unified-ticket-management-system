@@ -42,6 +42,7 @@
 # scoped to this test's own ticket/notifications, never to aggregate
 # sweep counts, so that pre-existing data can't affect pass/fail.
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -564,3 +565,99 @@ async def test_escalation_starting_level_reflects_ownership_as_of_escalation_tim
     )
     assert escalation is not None
     assert escalation.level == EscalationLevel.MANAGER
+
+
+# ---------------------------------------------------------------------
+# Regression test: a threshold whose recipient resolution comes back
+# empty must never be silently, permanently lost — see
+# SLASweepService._notify_resolution's own docstring. The idempotency
+# ledger row is still recorded either way (unchanged, intentional — see
+# SLABreachNotificationRepository.try_record_many's own docstring), but
+# this must now be logged and counted, not invisible.
+# ---------------------------------------------------------------------
+
+
+async def test_empty_recipients_are_logged_and_counted_not_silently_lost(
+    db_session, caplog
+):
+    """
+    An unclaimed ticket whose category resolves (for this call) to no
+    Team Lead/staff produces zero recipients. Uses a hand-seeded,
+    deliberately-empty category_cache entry (which _get_category_team
+    checks before ever querying the database) rather than depending on
+    the real dev database happening to have a Team-Lead-less category —
+    this makes the scenario deterministic regardless of seed data.
+    """
+
+    _client, ticket, resolution_sla = await _make_ticket_with_resolution_clock(
+        db_session, agent_id=None, fraction=1.0
+    )
+
+    service = _build_sweep_service(db_session)
+    global_inbox_ids = await service._global_inbox_user_ids()
+    category_cache = {ticket.ticket_type: ([], [])}
+
+    with caplog.at_level(
+        logging.WARNING, logger="app.ticketing.services.sla_sweep_service"
+    ):
+        sent, recipients_were_empty = await service._notify_resolution(
+            resolution_sla,
+            "BREACHED",
+            global_inbox_ids,
+            category_cache,
+            {ticket.ticket_id: ticket},
+            {},
+            {},
+            {},
+        )
+
+    assert sent is False
+    assert recipients_were_empty is True
+    assert "SLA notification skipped" in caplog.text
+    assert str(ticket.ticket_id) in caplog.text
+
+    # This call alone must not have created a Notification row either,
+    # since there was nobody to notify — the idempotency ledger write
+    # itself is out of scope here (that's run_sweep's own
+    # try_record_many, called before _notify_resolution ever runs).
+    result = await db_session.execute(
+        select(Notification).where(Notification.related_entity_id == ticket.ticket_id)
+    )
+    assert result.scalars().all() == []
+
+
+async def test_missing_ticket_is_logged_and_counted_not_silently_lost(
+    db_session, caplog
+):
+    """
+    Sibling regression test for the OTHER silent-loss branch: a clock
+    whose ticket isn't present in the batch-prefetched tickets_by_id
+    dict at all (e.g. a genuinely deleted ticket, or a prefetch bug) —
+    must also log and count, not just return False unnoticed.
+    """
+
+    _client, ticket, resolution_sla = await _make_ticket_with_resolution_clock(
+        db_session, agent_id=None, fraction=1.0
+    )
+
+    service = _build_sweep_service(db_session)
+    global_inbox_ids = await service._global_inbox_user_ids()
+
+    with caplog.at_level(
+        logging.WARNING, logger="app.ticketing.services.sla_sweep_service"
+    ):
+        sent, recipients_were_empty = await service._notify_resolution(
+            resolution_sla,
+            "BREACHED",
+            global_inbox_ids,
+            {},
+            {},  # tickets_by_id deliberately empty — ticket "missing"
+            {},
+            {},
+            {},
+        )
+
+    assert sent is False
+    assert recipients_were_empty is True
+    assert "SLA notification skipped" in caplog.text
+    assert str(resolution_sla.resolution_sla_id) in caplog.text

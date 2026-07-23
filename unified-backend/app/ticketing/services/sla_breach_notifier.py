@@ -1,5 +1,6 @@
 # sla_breach_notifier.py
 
+import logging
 from uuid import UUID
 
 from app.core.config import get_settings
@@ -69,6 +70,8 @@ NOTIFICATION_TYPE_BY_THRESHOLD = {
 }
 
 CLOCK_TYPE_FIRST_RESPONSE = "FIRST_RESPONSE"
+
+logger = logging.getLogger(__name__)
 
 
 async def resolve_global_inbox_user_ids(user_repository: UserRepository) -> set[UUID]:
@@ -155,6 +158,25 @@ async def notify_first_response_threshold(
     recipient_ids = resolve_recipients(FIRST_RESPONSE_RULES, threshold, ctx)
 
     if not recipient_ids:
+        # Previously completely silent: the idempotency ledger row for
+        # this (clock, threshold) was already committed by the caller's
+        # own try_record_many batch insert before this function was
+        # ever called, so this specific crossing will NEVER be
+        # retried — yet nothing was logged, and no counter reflected
+        # it. Logged here (not just for the sweep's own counter, which
+        # only covers Resolution SLA — see SLASweepService.
+        # _notify_resolution) since this function is also called
+        # directly from SLAService.complete_first_response_clock,
+        # outside any sweep tick.
+        logger.warning(
+            "SLA notification skipped — no recipients resolved for "
+            "FIRST_RESPONSE clock %s threshold %s (client=%s, "
+            "global_inbox_ids=%d). This crossing will not be retried.",
+            clock.first_response_sla_id,
+            threshold,
+            client.client_id if client is not None else None,
+            len(global_inbox_ids),
+        )
         return False
 
     title, message = _first_response_notification_copy(

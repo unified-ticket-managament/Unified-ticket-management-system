@@ -161,6 +161,11 @@ class SLASweepService:
         notifications_sent = 0
         escalations_created = 0
         errors = 0
+        # A newly-crossed threshold whose ledger row was recorded (so
+        # it will never be retried) but whose recipient resolution came
+        # back empty — see _notify_resolution's own comment. Previously
+        # completely invisible; now surfaced both in logs and here.
+        recipients_empty = 0
 
         global_inbox_ids = await self._global_inbox_user_ids()
 
@@ -503,8 +508,9 @@ class SLASweepService:
                             fr_clients_by_id,
                             fr_interactions_by_id,
                         )
+                        notifications_sent += int(sent)
                     else:
-                        sent = await self._notify_resolution(
+                        sent, was_empty = await self._notify_resolution(
                             res_clock_by_id[clock_id],
                             threshold,
                             global_inbox_ids,
@@ -514,7 +520,8 @@ class SLASweepService:
                             agents_by_id,
                             escalations_by_ticket_id,
                         )
-                notifications_sent += int(sent)
+                        notifications_sent += int(sent)
+                        recipients_empty += int(was_empty)
             except Exception:
                 logger.warning(
                     "SLA sweep: failed processing %s clock %s threshold %s",
@@ -606,6 +613,7 @@ class SLASweepService:
             escalations_advanced=escalations_advanced,
             escalation_handling_sla_breaches=escalation_handling_sla_breaches,
             errors=errors,
+            recipients_empty=recipients_empty,
         )
 
     # ---------------------------------------------------------
@@ -656,11 +664,21 @@ class SLASweepService:
         clients_by_id: dict,
         agents_by_id: dict,
         escalations_by_ticket_id: dict,
-    ) -> bool:
+    ) -> tuple[bool, bool]:
         """
         Only ever called for a triple try_record_many just confirmed
         is newly-crossed — no idempotency check here, that already
-        happened in the batch. Returns whether a notification was sent.
+        happened in the batch. Returns (sent, recipients_were_empty):
+        `sent` is whether a notification was actually sent; `recipients_
+        were_empty` is True whenever this crossing's idempotency ledger
+        row was already permanently recorded (by the caller's batch
+        try_record_many, before this method ever ran) but recipient
+        resolution came back with nobody to notify — this specific
+        crossing can now never be retried, so the caller surfaces it via
+        SLASweepResponse.recipients_empty and a logged warning instead
+        of it vanishing silently. Deliberately False for the ESCALATED
+        threshold (which intentionally sends nothing — see below), that
+        is not an empty-recipient failure, it's by design.
 
         Auto-escalation creation is NOT triggered from here (it used to
         be) — see the classification loop in run_sweep, which now calls
@@ -692,9 +710,18 @@ class SLASweepService:
 
         ticket = tickets_by_id.get(clock.ticket_id)
         if ticket is None:
-            return False
+            logger.warning(
+                "SLA notification skipped — RESOLUTION clock %s (ticket %s) "
+                "threshold %s: ticket missing from batch prefetch. This "
+                "crossing will not be retried.",
+                clock.resolution_sla_id,
+                clock.ticket_id,
+                threshold,
+            )
+            return False, True
 
         sent = False
+        recipients_were_empty = False
 
         if threshold != "ESCALATED":
             client = clients_by_id.get(clock.client_id) if clock.client_id is not None else None
@@ -767,6 +794,31 @@ class SLASweepService:
                     body=f"{message}\n\nView it here: {build_absolute_link(f'/tickets/{ticket.ticket_id}')}",
                     user_repository=self.user_repository,
                 )
+            else:
+                # Previously completely silent: the idempotency ledger
+                # row for this (clock, threshold, cycle) was already
+                # committed by try_record_many before this method ever
+                # ran (see run_sweep), so this specific crossing can
+                # now NEVER be retried — yet nothing was logged and
+                # SLASweepResponse.errors never counted it, so it looked
+                # identical to "nothing crossed" from the outside.
+                recipients_were_empty = True
+                if ticket.agent_id is None:
+                    reason = "ticket unclaimed and no active Team Lead for its category"
+                elif agents_by_id.get(ticket.agent_id) is None:
+                    reason = f"agent_id={ticket.agent_id} not found (orphaned/deactivated)"
+                elif escalation_owner_ids and not escalation_acceptance_completed:
+                    reason = "active escalation has empty owner_ids"
+                else:
+                    reason = "resolve_current_owner returned no recipients"
+                logger.warning(
+                    "SLA notification skipped — RESOLUTION clock %s (ticket %s) "
+                    "threshold %s: %s. This crossing will not be retried.",
+                    clock.resolution_sla_id,
+                    ticket.ticket_id,
+                    threshold,
+                    reason,
+                )
 
         if threshold in ("BREACHED", "ESCALATED"):
             await AuditLogService.log_event(
@@ -784,7 +836,7 @@ class SLASweepService:
                 new_values={"threshold": threshold, "ticket_id": ticket.ticket_id},
             )
 
-        return sent
+        return sent, recipients_were_empty
 
     async def _get_category_team(
         self,
