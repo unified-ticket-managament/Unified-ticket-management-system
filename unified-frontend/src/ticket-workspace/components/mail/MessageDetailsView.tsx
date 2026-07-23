@@ -512,6 +512,14 @@ export function MessageDetailsView({
     <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card">
       {/* Message Header — subject, priority/category badges, received date/time */}
       <div className="border-b border-border px-5 py-4">
+        <button
+          type="button"
+          onClick={onBack}
+          className="mb-3 flex w-fit items-center gap-1.5 text-xs font-semibold text-muted transition-colors hover:text-slate-900"
+        >
+          <ArrowLeft size={14} />
+          Back
+        </button>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <h2 className="min-w-0 truncate text-[16px] font-semibold text-foreground">{email.subject}</h2>
           <div className="flex flex-none flex-wrap items-center gap-1.5">
@@ -669,13 +677,6 @@ export function MessageDetailsView({
             Archive
           </Button>
         )}
-
-        <div className="ml-auto flex items-center gap-1.5">
-          <Button size="sm" variant="ghost" className="gap-1.5" onClick={onBack}>
-            <ArrowLeft className="h-3.5 w-3.5" />
-            Back to Message List
-          </Button>
-        </div>
       </div>
 
       {isClosed && (

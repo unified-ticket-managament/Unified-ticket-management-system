@@ -380,14 +380,35 @@ class SLAService:
             triggering_interaction_id=triggering_interaction_id,
         )
 
-    async def complete_resolution_clock(self, *, ticket_id: UUID) -> None:
+    async def complete_resolution_clock(
+        self, *, ticket_id: UUID, close_escalation: bool = True
+    ) -> None:
         """
-        Called from InteractionService.change_status on entry into
-        CLOSED. Also closes any active internal escalation for this
-        ticket (see EscalationService.close_for_ticket_resolution) —
-        an escalation never outlives the ticket it was raised on, but
-        this never touches the Resolution SLA row itself beyond the
-        usual `complete()` call already below.
+        Called from InteractionService.close_ticket on entry into
+        CLOSED (close_escalation defaults to True there, its
+        pre-existing behavior, unchanged) and from
+        InteractionService.change_status on entry into RESOLVED
+        (passing close_escalation=False) — the Resolution SLA measures
+        time-to-resolve, so it completes the moment the issue is
+        actually Resolved, not only once a supervisor later formally
+        Closes the ticket for customer-verification purposes.
+        ResolutionSLARepository.complete() is itself idempotent (a
+        no-op if already COMPLETED, preserving the original
+        completed_at) — so a ticket Resolved now and Closed later
+        completes its clock once, at the Resolved moment, and the
+        later close_ticket call is a harmless no-op here, satisfying
+        "closing a ticket later must not affect SLA metrics" with no
+        extra bookkeeping.
+
+        `close_escalation` gates whether this also closes any active
+        internal escalation (see EscalationService.
+        close_for_ticket_resolution) — an escalation never outlives
+        the ticket it was raised on, but that's a CLOSED-ticket fact,
+        not a Resolved one: the internal ownership/escalation workflow
+        is deliberately left running (unchanged) across a RESOLVED
+        transition, only the separate Resolution SLA measurement ends
+        there. Never touches the Resolution SLA row itself beyond the
+        usual `complete()` call above, regardless of this flag.
         """
 
         clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
@@ -398,7 +419,7 @@ class SLAService:
             clock, completed_at=datetime.now(timezone.utc)
         )
 
-        if self.ticket_repository is not None:
+        if close_escalation and self.ticket_repository is not None:
             escalation_service = build_escalation_service(self.ticket_repository.db)
             await escalation_service.close_for_ticket_resolution(ticket_id)
 

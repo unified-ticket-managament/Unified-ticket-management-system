@@ -125,24 +125,40 @@ class TicketEscalationRepository:
         return escalation
 
     async def list_active_by_ticket_ids(
-        self, ticket_ids: list[UUID]
+        self, ticket_ids: list[UUID], *, populate_existing: bool = False
     ) -> dict[UUID, TicketEscalation]:
         """
         Bulk form of get_active_by_ticket_id — one query for every
         ticket in a sweep batch, mirroring the sweep's other batch
         prefetches (tickets_by_id/res_clients_by_id/agents_by_id in
         SLASweepService.run_sweep) instead of a per-ticket round trip.
+
+        `populate_existing` defaults to False (the ORM's own default),
+        matching every other repository in this codebase — pass True
+        when the caller specifically needs a genuinely fresh read of
+        rows that might already be loaded in this session's identity
+        map. SLASweepService's own refresh-before-notify step needs
+        this: an escalation already prefetched at the top of a sweep
+        tick (e.g. accepted, advanced, or closed by a concurrent
+        request mid-tick) would otherwise silently come back as the
+        same stale, already-loaded row, since AsyncSessionLocal is
+        configured with expire_on_commit=False (app/database/session.py)
+        and a plain SELECT never overwrites an already-mapped,
+        unexpired object's attributes on its own — see
+        TicketRepository.get_by_id's own docstring for the same
+        explanation.
         """
 
         if not ticket_ids:
             return {}
 
-        result = await self.db.execute(
-            select(TicketEscalation).where(
-                TicketEscalation.ticket_id.in_(ticket_ids),
-                TicketEscalation.status != EscalationStatus.CLOSED,
-            )
+        stmt = select(TicketEscalation).where(
+            TicketEscalation.ticket_id.in_(ticket_ids),
+            TicketEscalation.status != EscalationStatus.CLOSED,
         )
+        if populate_existing:
+            stmt = stmt.execution_options(populate_existing=True)
+        result = await self.db.execute(stmt)
         return {row.ticket_id: row for row in result.scalars().all()}
 
     async def acknowledge(

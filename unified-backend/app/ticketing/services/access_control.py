@@ -165,6 +165,74 @@ def ensure_agent_can_view_ticket(
         )
 
 
+async def ensure_ticket_not_frozen_by_escalation(
+    ticket: Ticket,
+    escalation_repository=None,
+    escalation_handling_sla_repository=None,
+) -> None:
+    """
+    Raises 403 if `ticket` has a non-CLOSED escalation that hasn't yet
+    been *accepted* (acknowledged AND assigned — see
+    EscalationService._complete_acceptance) — for **everyone**,
+    including supervisors, since every possible escalation owner
+    (TicketEscalation.owner_ids can only ever name a Team Lead/Account
+    Manager/Site Lead/Super Admin) is itself a supervisor. Extracted
+    out of ensure_agent_can_act_on_ticket (which still calls this first,
+    before its own supervisor bypass) so a caller that deliberately
+    skips that function's ownership/editother_ticket check — today,
+    only InteractionService.change_priority, which intentionally lets
+    any ticket:change_priority holder act on any ticket in their
+    visibility scope, not just an assigned one — can still apply this
+    one, narrower rule without also gaining the ownership restriction
+    it doesn't want.
+
+    Whether acceptance has completed is read off the EscalationHandlingSLA
+    table (`escalation_handling_sla_repository`, optional): a row exists
+    for an escalation_id if and only if _complete_acceptance has already
+    run for it. Falls back to the coarser "frozen only while status is
+    still ACTIVE" rule if that repository isn't supplied, so a caller
+    passing only `escalation_repository` still gets a safe (if slightly
+    less precise) check rather than none at all. `escalation_repository`
+    is optional — a caller that omits it skips this check entirely
+    (a plain no-op, not a bypass an attacker could trigger, since only
+    the caller's own code decides whether to pass it).
+    """
+
+    if escalation_repository is None:
+        return
+
+    active_escalation = await escalation_repository.get_active_by_ticket_id(
+        ticket.ticket_id
+    )
+    if active_escalation is None:
+        return
+
+    if escalation_handling_sla_repository is not None:
+        # Any row at all — active or already-breached-and-superseded —
+        # means acceptance has happened at least once for this
+        # escalation; that's what unfreezes the previous owner,
+        # regardless of whether the level has since advanced again.
+        accepted = (
+            await escalation_handling_sla_repository.get_latest_by_escalation_id(
+                active_escalation.escalation_id
+            )
+            is not None
+        )
+        frozen = not accepted
+    else:
+        frozen = active_escalation.status == EscalationStatus.ACTIVE
+
+    if frozen:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "This ticket has been escalated and is awaiting "
+                "acknowledgment and assignment — it cannot be worked "
+                "until a supervisor acknowledges and assigns it."
+            ),
+        )
+
+
 async def ensure_agent_can_act_on_ticket(
     ticket: Ticket,
     current_user: User,
@@ -183,15 +251,26 @@ async def ensure_agent_can_act_on_ticket(
     this, same as they bypass ownership scoping everywhere else in
     this file.
 
-    A non-CLOSED escalated ticket is frozen for its currently-assigned
-    agent until the escalation has actually been *accepted* — not
-    merely acknowledged. Acknowledging alone (EscalationService.
-    acknowledge) only stops the ack-window auto-advance; the Resolution
-    SLA (and this freeze) only lift once a supervisor has *also*
-    assigned the ticket to someone (claim/transfer/confirm-unchanged —
-    see EscalationService._complete_acceptance), matching "Resolution
-    SLA starts only after Acknowledge AND Assign." Whether acceptance
-    has completed is read off the EscalationHandlingSLA table
+    A non-CLOSED escalated ticket is frozen for **everyone** — the
+    previous assignee and the new escalation owner alike, supervisors
+    included — until the escalation has actually been *accepted*, not
+    merely acknowledged. This check therefore now runs before the
+    supervisor bypass below, not after it: every possible escalation
+    owner (TicketEscalation.owner_ids can only ever name a Team
+    Lead/Account Manager/Site Lead/Super Admin — see
+    EscalationService._resolve_owners_for_level) is itself a
+    supervisor, so checking the freeze after the bypass made it
+    unreachable for exactly the population it exists to restrict — a
+    real, confirmed bug (a Team Lead a ticket just escalated to could
+    reply/change status/upload attachments/close the ticket immediately,
+    before ever clicking Acknowledge). Acknowledging alone
+    (EscalationService.acknowledge) only stops the ack-window
+    auto-advance; the Resolution SLA (and this freeze) only lift once a
+    supervisor has *also* assigned the ticket to someone (claim/
+    transfer/confirm-unchanged — see
+    EscalationService._complete_acceptance), matching "Resolution SLA
+    starts only after Acknowledge AND Assign." Whether acceptance has
+    completed is read off the EscalationHandlingSLA table
     (`escalation_handling_sla_repository`, optional): a row exists for
     an escalation_id if and only if _complete_acceptance has already
     run for it (it's the one and only place that row gets created) —
@@ -200,13 +279,15 @@ async def ensure_agent_can_act_on_ticket(
     back to the older, coarser rule (frozen only while status is
     still ACTIVE i.e. never acknowledged at all) so existing callers
     that haven't been updated to pass it keep their prior behavior
-    rather than becoming newly, incorrectly frozen forever. Checked
-    right after the supervisor bypass above (deliberately not applied
-    to supervisors themselves — acknowledging/assigning is how a
-    supervisor is meant to interact with an active escalation, not
-    this "work it normally" path). `escalation_repository` is
-    optional, same convention as `edit_access_repository` below —
-    callers that don't pass one simply skip this check entirely.
+    rather than becoming newly, incorrectly frozen forever.
+    `escalation_repository` is optional, same convention as
+    `edit_access_repository` below — callers that don't pass one
+    simply skip this check entirely. Acknowledge/claim_ticket/
+    transfer_agent/confirm_assignment — the only ways this freeze ever
+    lifts — all have their own, separate authorization (owner_ids
+    membership, or the supervisor-only ensure_can_reassign_ticket) and
+    never call this function, so none of them are affected by the
+    freeze they exist to resolve.
 
     Own-ticket access is gated by ticket:editown_ticket (default for
     every role, so this is normally a formality, but it's now a real,
@@ -237,39 +318,12 @@ async def ensure_agent_can_act_on_ticket(
 
     ensure_agent_can_view_ticket(ticket, current_user)
 
+    await ensure_ticket_not_frozen_by_escalation(
+        ticket, escalation_repository, escalation_handling_sla_repository
+    )
+
     if current_user.role.name in SUPERVISOR_ROLE_NAMES:
         return
-
-    if escalation_repository is not None:
-        active_escalation = await escalation_repository.get_active_by_ticket_id(
-            ticket.ticket_id
-        )
-        if active_escalation is not None:
-            if escalation_handling_sla_repository is not None:
-                # Any row at all — active or already-breached-and-
-                # superseded — means acceptance has happened at least
-                # once for this escalation; that's what unfreezes the
-                # previous owner, regardless of whether the level has
-                # since advanced again.
-                accepted = (
-                    await escalation_handling_sla_repository.get_latest_by_escalation_id(
-                        active_escalation.escalation_id
-                    )
-                    is not None
-                )
-                frozen = not accepted
-            else:
-                frozen = active_escalation.status == EscalationStatus.ACTIVE
-
-            if frozen:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=(
-                        "This ticket has been escalated and is awaiting "
-                        "acknowledgment and assignment — it cannot be worked "
-                        "until a supervisor acknowledges and assigns it."
-                    ),
-                )
 
     if ticket.agent_id == current_user.user_id:
         if has_permission(current_user, "ticket:editown_ticket"):

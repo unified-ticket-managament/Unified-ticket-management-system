@@ -182,22 +182,25 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
       r.status === "APPROVED" &&
       (!r.expires_at || new Date(r.expires_at) > new Date())
   );
-  // An actively (not yet acknowledged) escalated ticket is frozen for
-  // its currently-assigned agent — mirrors the backend's own new gate
-  // in ensure_agent_can_act_on_ticket. Supervisors are exempt here too
-  // (same bypass the backend grants them) — acknowledging/assigning is
-  // how a supervisor is meant to interact with an active escalation,
-  // not this "work it normally" set of actions.
-  const SUPERVISOR_ROLES = new Set(["Team Lead", "Account Manager", "Site Lead", "Super Admin"]);
-  const isSupervisor = !!currentUser && SUPERVISOR_ROLES.has(currentUser.role);
-  const isFrozenByEscalation =
-    !isSupervisor &&
-    activeTicket.is_escalated &&
-    activeTicket.escalation_status === "ACTIVE";
+  // A ticket whose escalation hasn't yet been *accepted* (acknowledged
+  // AND assigned — see EscalationService._complete_acceptance) is
+  // frozen for **everyone**, supervisors included — mirrors the
+  // backend's own ensure_ticket_not_frozen_by_escalation gate exactly,
+  // via the same escalation_pending_acceptance field the backend now
+  // computes (not per-viewer; true for every viewer alike). This used
+  // to exempt supervisors, on the theory that acknowledging/assigning
+  // is how a supervisor is meant to interact with an active escalation
+  // — but every possible escalation owner IS a supervisor (Team
+  // Lead/Account Manager/Site Lead/Super Admin), and supervisors also
+  // hold ticket:editother_ticket by role default, so the exemption
+  // actually meant a fresh escalation owner had full edit access the
+  // instant it escalated to them, before ever clicking Acknowledge — a
+  // real, confirmed bug, not a hypothetical one.
+  const isFrozenByEscalation = !!activeTicket.escalation_pending_acceptance;
   const canActOnTicket =
     !isFrozenByEscalation && (isOwnTicket || hasEditOther || hasActiveEditAccessGrant);
   const noAccessTitle = isFrozenByEscalation
-    ? "This ticket has been escalated and is awaiting acknowledgment — it cannot be worked until reassigned"
+    ? "This ticket has been escalated and is awaiting acknowledgment and assignment — it cannot be worked until a supervisor acknowledges and assigns it"
     : canActOnTicket
       ? undefined
       : "You don't have access to work on this ticket";
@@ -367,6 +370,8 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
                 <button
                   type="button"
                   className={menuItemClass}
+                  disabled={isFrozenByEscalation}
+                  title={isFrozenByEscalation ? noAccessTitle : undefined}
                   onClick={() => openMoreItem("close")}
                 >
                   <Lock size={14} className="text-muted" />
@@ -377,6 +382,8 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
                 <button
                   type="button"
                   className={menuItemClass}
+                  disabled={isFrozenByEscalation}
+                  title={isFrozenByEscalation ? noAccessTitle : undefined}
                   onClick={() => openMoreItem("reopen")}
                 >
                   <RotateCcw size={14} className="text-muted" />

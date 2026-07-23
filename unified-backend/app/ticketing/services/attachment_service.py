@@ -133,12 +133,24 @@ class AttachmentService:
         ticket_repository: TicketRepository,
         storage_service: StorageService,
         client_repository=None,
+        escalation_repository=None,
+        escalation_handling_sla_repository=None,
     ):
         self.attachment_repository = attachment_repository
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
         self.storage_service = storage_service
         self.client_repository = client_repository
+        # Optional, same convention as InteractionService's own
+        # escalation-aware call sites — threaded into
+        # ensure_agent_can_act_on_ticket so upload_attachment is
+        # frozen while a ticket's escalation is still awaiting
+        # acceptance, same as reply/internal-note/status-change.
+        # upload_attachment previously passed neither at all, so this
+        # check never ran for it — a real, confirmed gap, not a
+        # hypothetical one.
+        self.escalation_repository = escalation_repository
+        self.escalation_handling_sla_repository = escalation_handling_sla_repository
 
     # ---------------------------------------------------------
     # Shared validation + storage choke point
@@ -229,7 +241,12 @@ class AttachmentService:
         # a coroutine object and never ran it, meaning this check never
         # actually executed and any authenticated agent could upload to
         # any ticket regardless of category/ownership. Fixed here.
-        await ensure_agent_can_act_on_ticket(ticket, current_user)
+        await ensure_agent_can_act_on_ticket(
+            ticket,
+            current_user,
+            escalation_repository=self.escalation_repository,
+            escalation_handling_sla_repository=self.escalation_handling_sla_repository,
+        )
         await ensure_account_manager_owns_ticket_client(
             ticket, current_user, self.client_repository
         )

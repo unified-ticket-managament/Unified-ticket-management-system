@@ -95,8 +95,11 @@ class EscalationService:
     (TicketEscalation) — a chain of TEAM_LEAD -> MANAGER -> SITE_LEAD
     ownership hand-offs that starts only when a ticket is escalated
     (manually via ticket:escalate, or automatically the first time its
-    Resolution SLA crosses BREACHED/ESCALATED with nothing already
-    active) and advances only if the current owner ignores their
+    Resolution SLA crosses ESCALATED (150% elapsed) with nothing
+    already active — deliberately not BREACHED (100%), so the current
+    owner's own Breached notification isn't pre-empted by an ownership
+    handoff in the same tick it fires) and advances only if the current
+    owner ignores their
     acknowledgment window (waiting the full ack window at each level
     before moving to the next, via evaluate_overdue below).
 
@@ -384,7 +387,8 @@ class EscalationService:
     ) -> bool:
         """
         Called from SLASweepService the first time a Resolution SLA
-        clock crosses BREACHED/ESCALATED — a no-op if this ticket
+        clock crosses ESCALATED (150% elapsed, never BREACHED at 100% —
+        see run_sweep's own comment for why) — a no-op if this ticket
         already has an active escalation (manual or automatic), so a
         supervisor who pre-emptively escalated before the breach (see
         the spec's own 12:30-escalation-before-13:00-breach example)

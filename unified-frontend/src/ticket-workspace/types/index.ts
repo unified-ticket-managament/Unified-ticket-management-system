@@ -397,6 +397,16 @@ export interface TicketResponse {
   // Acknowledge action on this field, not on is_escalated alone.
   is_escalation_owner?: boolean;
 
+  // True while is_escalated and the escalation hasn't yet been
+  // *accepted* (acknowledged AND assigned) — mirrors the backend's
+  // ensure_ticket_not_frozen_by_escalation gate exactly. Unlike
+  // is_escalation_owner, this is NOT per-viewer: it's true for every
+  // viewer alike, since nobody (supervisors included) may edit a
+  // ticket frozen this way. Gate every edit action (reply, internal
+  // note, status/priority change, transfer, attachment upload,
+  // close/reopen) on this being false, not on role or ownership.
+  escalation_pending_acceptance?: boolean;
+
   // Resolution SLA clock's own risk tier — same LEFT JOIN-sourced,
   // display-only shape as the escalation fields above, but an
   // independent signal (see lib/slaMath.ts's SlaTier — kept as an

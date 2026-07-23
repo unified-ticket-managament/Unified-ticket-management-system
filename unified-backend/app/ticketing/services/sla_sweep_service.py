@@ -323,21 +323,35 @@ class SLASweepService:
             # Auto-escalation creation is deliberately evaluated here,
             # independent of the notify-once idempotency ledger below —
             # NOT nested inside the newly-recorded notification loop
-            # further down, where it used to live. A clock's BREACHED/
-            # ESCALATED crossing only ever notifies once (the ledger's
-            # whole point), but a ticket that crossed that threshold
-            # before ever getting an escalation created — a past
-            # transient failure, or simply because this auto-escalation
-            # feature didn't exist yet when the notification first
-            # fired — would otherwise never be retried on any later
-            # sweep tick, since "newly recorded" would stay false
-            # forever for that (clock, threshold) pair. This runs on
-            # every tick a clock remains BREACHED/ESCALATED instead,
-            # relying entirely on auto_escalate_if_needed's own
-            # idempotency (a no-op once an active escalation already
-            # exists) to stay safe to call repeatedly. Isolated in its
-            # own SAVEPOINT, same as every other per-clock action in
-            # this sweep, so one ticket's failure can't affect another.
+            # further down, where it used to live. A clock's ESCALATED
+            # crossing only ever notifies once (the ledger's whole
+            # point), but a ticket that crossed that threshold before
+            # ever getting an escalation created — a past transient
+            # failure, or simply because this auto-escalation feature
+            # didn't exist yet when the notification first fired —
+            # would otherwise never be retried on any later sweep tick,
+            # since "newly recorded" would stay false forever for that
+            # (clock, threshold) pair. This runs on every tick a clock
+            # remains ESCALATED instead, relying entirely on
+            # auto_escalate_if_needed's own idempotency (a no-op once
+            # an active escalation already exists) to stay safe to call
+            # repeatedly. Isolated in its own SAVEPOINT, same as every
+            # other per-clock action in this sweep, so one ticket's
+            # failure can't affect another.
+            #
+            # Gated on ESCALATED (150%) only, deliberately NOT BREACHED
+            # (100%) — a clock crossing BREACHED still notifies the
+            # current owner (assigned agent) via RESOLUTION_RULES_
+            # CURRENT_OWNER below, same as HALF_ELAPSED/AT_RISK, with no
+            # ownership handoff yet. Creating the escalation any earlier
+            # than ESCALATED would flip resolve_current_owner's
+            # escalation-owner-takes-priority branch on in the very same
+            # tick BREACHED first fires, silently redirecting that
+            # Breached notification away from the current owner to the
+            # escalation's owner before the owner ever had a chance to
+            # receive it — confirmed as a real, reported routing defect,
+            # not a hypothetical one (see the matching regression test
+            # in tests/test_sla_sweep_service.py).
             #
             # Skipped entirely for a ticket already present in
             # escalations_by_ticket_id (the batch prefetch above) —
@@ -352,8 +366,47 @@ class SLASweepService:
             # ticket's redundant re-check first. Only tickets with no
             # prefetched active escalation still pay that round trip,
             # and only once they actually need it.
-            if ("BREACHED" in reached or "ESCALATED" in reached) and clock.ticket_id not in escalations_by_ticket_id:
-                ticket = tickets_by_id.get(clock.ticket_id)
+            if "ESCALATED" in reached and clock.ticket_id not in escalations_by_ticket_id:
+                # Re-fetched fresh here rather than reusing the
+                # tickets_by_id snapshot taken at the top of this tick —
+                # this classification+auto-escalation loop can run for
+                # many seconds (one round trip per ticket, per the
+                # class docstring), during which a claim/transfer could
+                # land on this exact ticket. Using the stale snapshot's
+                # agent_id would feed _resolve_starting_level a
+                # possibly-already-superseded owner, picking the wrong
+                # starting escalation level (e.g. starting at TEAM_LEAD
+                # for a ticket a Team Lead has since claimed themselves,
+                # instead of correctly skipping to MANAGER). Only paid
+                # for tickets actually about to escalate — typically a
+                # small set — same "narrow, targeted re-fetch" trade-off
+                # as the newly_recorded refresh below.
+                #
+                # populate_existing=True is not optional here — this
+                # exact ticket is already loaded in this session's
+                # identity map from the batch snapshot above, and
+                # AsyncSessionLocal is configured with
+                # expire_on_commit=False (app/database/session.py), so
+                # a plain re-query would otherwise silently hand back
+                # the SAME stale, already-loaded object rather than
+                # observing a concurrent commit — see
+                # TicketRepository.get_by_id's own docstring. Note:
+                # EscalationService._set_ticket_priority_to_critical
+                # (the first thing _create_escalation does) also
+                # happens to refresh this same ticket object as a side
+                # effect of its own update()+session.refresh() call —
+                # but ONLY the first time a ticket ever escalates; it
+                # no-ops without refreshing if the ticket is already
+                # CRITICAL from a prior, since-closed escalation. This
+                # explicit re-fetch is what keeps a *re*-escalation of
+                # an already-CRITICAL ticket correct too, rather than
+                # depending on that incidental side effect.
+                fresh_ticket = await self.ticket_repository.get_by_id(
+                    clock.ticket_id, populate_existing=True
+                )
+                if fresh_ticket is not None:
+                    tickets_by_id[fresh_ticket.ticket_id] = fresh_ticket
+                ticket = fresh_ticket if fresh_ticket is not None else tickets_by_id.get(clock.ticket_id)
                 if ticket is not None:
                     try:
                         async with db.begin_nested():
@@ -391,6 +444,21 @@ class SLASweepService:
         # (newly_recorded is typically small) rather than the whole
         # batch, so this doesn't reintroduce the per-ticket round-trip
         # cost the original snapshot was built to avoid.
+        #
+        # populate_existing=True is required for this refresh to
+        # actually do anything — every ticket here is already loaded in
+        # this session's identity map from the batch snapshot above,
+        # and AsyncSessionLocal is configured with
+        # expire_on_commit=False (app/database/session.py), so without
+        # it this re-query would silently hand back the SAME
+        # already-loaded, stale objects rather than observing a
+        # concurrent commit — this was a real, latent gap in this exact
+        # mechanism (confirmed by writing a regression test against it
+        # in tests/test_sla_sweep_service.py: it passed even with the
+        # ticket-refetch reverted to a plain, non-populate_existing
+        # query, until this option was added), not a hypothetical one.
+        # See TicketRepository.get_by_id's own docstring for the same
+        # explanation.
         resolution_ticket_ids_to_refresh = {
             res_clock_by_id[clock_id].ticket_id
             for clock_type, clock_id, _threshold, _cycle in newly_recorded
@@ -398,7 +466,7 @@ class SLASweepService:
         }
         if resolution_ticket_ids_to_refresh:
             fresh_tickets = await self.ticket_repository.list_by_ids(
-                list(resolution_ticket_ids_to_refresh)
+                list(resolution_ticket_ids_to_refresh), populate_existing=True
             )
             for fresh_ticket in fresh_tickets:
                 tickets_by_id[fresh_ticket.ticket_id] = fresh_ticket
@@ -414,7 +482,9 @@ class SLASweepService:
 
             fresh_escalations = (
                 await self.escalation_service.ticket_escalation_repository
-                .list_active_by_ticket_ids(list(resolution_ticket_ids_to_refresh))
+                .list_active_by_ticket_ids(
+                    list(resolution_ticket_ids_to_refresh), populate_existing=True
+                )
             )
             for ticket_id in resolution_ticket_ids_to_refresh:
                 if ticket_id in fresh_escalations:
@@ -595,14 +665,15 @@ class SLASweepService:
         Auto-escalation creation is NOT triggered from here (it used to
         be) — see the classification loop in run_sweep, which now calls
         EscalationService.auto_escalate_if_needed independently of this
-        newly-crossed gate. Nesting it here meant a ticket only ever
-        got one chance, ever, to auto-escalate: the single sweep tick
-        where its threshold was first recorded in the notification
-        ledger. A ticket that crossed BREACHED/ESCALATED before that
-        auto-escalation call existed (or on a tick where it failed)
-        would then never retry, since "newly recorded" stays false
-        forever for that (clock, threshold) pair — this was a real bug,
-        not a hypothetical one.
+        newly-crossed gate, gated on the ESCALATED (150%) crossing only
+        (never BREACHED — see that loop's own comment for why). Nesting
+        it here meant a ticket only ever got one chance, ever, to
+        auto-escalate: the single sweep tick where its threshold was
+        first recorded in the notification ledger. A ticket that
+        crossed ESCALATED before that auto-escalation call existed (or
+        on a tick where it failed) would then never retry, since
+        "newly recorded" stays false forever for that (clock,
+        threshold) pair — this was a real bug, not a hypothetical one.
 
         HALF_ELAPSED/AT_RISK/BREACHED resolve recipients via
         RESOLUTION_RULES_CURRENT_OWNER — whoever is actually working the
@@ -611,11 +682,12 @@ class SLASweepService:
         this sweep alone; they only learn about it through the
         escalation workflow's own hierarchical notifications
         (EscalationService._notify_owners) once the ticket is actually
-        escalated. ESCALATED (150% elapsed) sends no notification at
-        all — by that point the real escalation-created notification
-        (fired earlier, at the crossing that first creates the
-        TicketEscalation) has already informed the actual owner; still
-        audit-logged (SLA_ESCALATED) below, just not notified/emailed.
+        escalated. ESCALATED (150% elapsed) sends no notification of
+        its own at all — that's the exact same crossing that creates
+        the TicketEscalation (see run_sweep's classification loop), so
+        the real escalation-created notification has already informed
+        the actual owner earlier in this same tick; still audit-logged
+        (SLA_ESCALATED) below, just not notified/emailed a second time.
         """
 
         ticket = tickets_by_id.get(clock.ticket_id)

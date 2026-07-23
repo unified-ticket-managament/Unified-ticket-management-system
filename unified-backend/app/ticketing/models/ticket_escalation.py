@@ -142,7 +142,8 @@ class TicketEscalation(Base):
 
     # MANUAL (an agent/supervisor used ticket:escalate) or
     # AUTO_SLA_BREACH (the sweep created it the moment Resolution SLA
-    # first crossed BREACHED/ESCALATED with nothing already active).
+    # first crossed ESCALATED, 150% elapsed, with nothing already
+    # active).
     triggered_by: Mapped[str] = mapped_column(String(20), nullable=False)
 
     triggered_by_user_id: Mapped[uuid.UUID | None] = mapped_column(

@@ -80,25 +80,50 @@ class TicketRepository:
         await self.db.refresh(ticket)
         return ticket
 
-    async def get_by_id(self, ticket_id: UUID) -> Ticket | None:
-        result = await self.db.execute(
-            select(Ticket).where(Ticket.ticket_id == ticket_id)
-        )
+    async def get_by_id(self, ticket_id: UUID, *, populate_existing: bool = False) -> Ticket | None:
+        """
+        `populate_existing` defaults to False (the ORM's own default) —
+        a second call for a ticket already in this session's identity
+        map otherwise just returns the same, already-loaded object
+        as-is, NOT refreshed from a newer row, since AsyncSessionLocal
+        is configured with expire_on_commit=False (see
+        app/database/session.py) and a plain SELECT never overwrites an
+        already-mapped, unexpired object's attributes on its own. Pass
+        True when the caller specifically needs a genuinely fresh read
+        of a ticket that might already be loaded — e.g.
+        SLASweepService's own mid-tick re-fetch immediately before
+        creating an escalation, where a concurrent claim/transfer could
+        have landed after this session's own earlier snapshot of the
+        same row.
+        """
+
+        stmt = select(Ticket).where(Ticket.ticket_id == ticket_id)
+        if populate_existing:
+            stmt = stmt.execution_options(populate_existing=True)
+        result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def list_by_ids(self, ticket_ids: list[UUID]) -> list[Ticket]:
+    async def list_by_ids(
+        self, ticket_ids: list[UUID], *, populate_existing: bool = False
+    ) -> list[Ticket]:
         """
         Batch fetch — used by InboxService.get_inbox to enrich
         ticketed inbox rows with priority/category in one query
-        instead of a get_by_id call per row.
+        instead of a get_by_id call per row. See get_by_id's own
+        docstring for why `populate_existing` exists and when to pass
+        True — SLASweepService's own refresh-before-notify step
+        (resolution_ticket_ids_to_refresh) is the other caller that
+        needs it, for the same "ticket already loaded earlier this
+        tick, must reflect an intervening reassignment" reason.
         """
 
         if not ticket_ids:
             return []
 
-        result = await self.db.execute(
-            select(Ticket).where(Ticket.ticket_id.in_(ticket_ids))
-        )
+        stmt = select(Ticket).where(Ticket.ticket_id.in_(ticket_ids))
+        if populate_existing:
+            stmt = stmt.execution_options(populate_existing=True)
+        result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
     # Every sortable column the ticket-list page's SortHeader offers —
@@ -711,6 +736,20 @@ class TicketRepository:
             else literal(False)
         )
 
+        # True while a (non-CLOSED, already-filtered-for-by-the-join-
+        # condition-below) escalation exists but hasn't yet been
+        # *accepted* — mirrors the exact signal
+        # ensure_ticket_not_frozen_by_escalation/SlaCard.tsx's own
+        # isAwaitingEscalationAcceptance already use:
+        # handling_stage_due_at is non-null iff and only if
+        # EscalationService._complete_acceptance has run for this
+        # escalation. Lets the frontend render the read-only state
+        # without re-deriving the backend's own freeze rule.
+        escalation_pending_acceptance_expr = and_(
+            TicketEscalation.escalation_id.isnot(None),
+            TicketEscalation.handling_stage_due_at.is_(None),
+        )
+
         def _base_select(*extra_columns):
             return (
                 select(
@@ -723,6 +762,9 @@ class TicketRepository:
                     TicketEscalation.status.label("escalation_status"),
                     TicketEscalation.ack_due_at.label("escalation_ack_due_at"),
                     is_escalation_owner_expr.label("is_escalation_owner"),
+                    escalation_pending_acceptance_expr.label(
+                        "escalation_pending_acceptance"
+                    ),
                     resolution_sla_tier.label("resolution_sla_tier"),
                     *extra_columns,
                 )

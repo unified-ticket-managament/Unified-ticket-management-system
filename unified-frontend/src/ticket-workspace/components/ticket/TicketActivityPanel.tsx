@@ -3,15 +3,7 @@ import { TicketTimeline } from "@tw/components/ticket/TicketTimeline";
 import { TicketAuditLog } from "@tw/components/ticket/TicketAuditLog";
 import { TicketComposer } from "@tw/components/ticket/TicketComposer";
 import { TicketAttachmentsTab } from "@tw/components/ticket/TicketAttachmentsTab";
-import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
-
-// Mirrors TicketActions.tsx's own isFrozenByEscalation — an actively
-// (not yet acknowledged) escalated ticket is frozen for its currently-
-// assigned agent, everywhere an action lives, not just the top-right
-// action row. Supervisors are exempt (acknowledging/assigning is how
-// they're meant to interact with it).
-const SUPERVISOR_ROLES = new Set(["Team Lead", "Account Manager", "Site Lead", "Super Admin"]);
 
 export type ActivityTab = "timeline" | "audit" | "reply" | "note" | "attachments";
 
@@ -41,13 +33,14 @@ export function TicketActivityPanel({
   onTimelineChanged,
   auditRefreshToken,
 }: TicketActivityPanelProps) {
-  const { currentUser } = useAuthContext();
   const { activeTicket } = useWorkflowContext();
-  const isSupervisor = !!currentUser && SUPERVISOR_ROLES.has(currentUser.role);
-  const isFrozenByEscalation =
-    !isSupervisor &&
-    !!activeTicket?.is_escalated &&
-    activeTicket.escalation_status === "ACTIVE";
+  // Mirrors TicketActions.tsx's own isFrozenByEscalation exactly — a
+  // ticket whose escalation hasn't yet been accepted (acknowledged AND
+  // assigned) is frozen for everyone, supervisors included, since
+  // every possible escalation owner is itself a supervisor (see that
+  // file's own comment for the bug this fixes). Sourced from the same
+  // backend-computed, not-per-viewer field.
+  const isFrozenByEscalation = !!activeTicket?.escalation_pending_acceptance;
 
   return (
     <div className="rounded-md2 border border-border bg-surface shadow-xs">

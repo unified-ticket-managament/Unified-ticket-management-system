@@ -74,6 +74,7 @@ from app.ticketing.services.access_control import (
     ensure_can_reopen_ticket,
     ensure_has_permission,
     ensure_ticket_not_closed,
+    ensure_ticket_not_frozen_by_escalation,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
 from app.ticketing.services.audit_to_interaction import (
@@ -1073,11 +1074,12 @@ class InteractionService:
         # ---------------------------------------------------------
         # Resolution SLA — pause/resume key off this chokepoint,
         # matching this repo's existing "change_status is the one place
-        # status transitions happen" principle. Entering RESOLVED
-        # deliberately never completes the clock; entering CLOSED is no
+        # status transitions happen" principle. Entering CLOSED is no
         # longer reachable through this method at all (see the gate
-        # above) — close_ticket below is the only place the clock is
-        # ever completed now.
+        # above) — close_ticket below still completes the clock too,
+        # but for a ticket that already Resolved first, that later call
+        # is a harmless no-op (see complete_resolution_clock's own
+        # docstring) since this is the one that actually completes it.
         # ---------------------------------------------------------
 
         if self.sla_service is not None:
@@ -1122,6 +1124,25 @@ class InteractionService:
                         actor_role=actor_role,
                         new_values={"new_status": new_status.value},
                     )
+
+            if not was_closed and will_be_closed:
+                # Runs after the WAITING_FOR_CLIENT resume branch above
+                # (not before) — a ticket resolved directly out of
+                # WAITING_FOR_CLIENT must genuinely resume first (so
+                # SLA_RESUMED's audit log stays accurate) and only then
+                # complete, rather than completing against a clock
+                # that's still PAUSED and making that resume call a
+                # silent no-op behind a misleading audit row. The
+                # Resolution SLA measures time-to-resolve, so it
+                # completes the instant the ticket reaches RESOLVED,
+                # not only once a supervisor later formally Closes it
+                # for customer verification. close_escalation=False:
+                # the separate internal escalation/ownership workflow
+                # is untouched by this transition, only by an actual
+                # Close (see close_for_ticket_resolution).
+                await self.sla_service.complete_resolution_clock(
+                    ticket_id=ticket_id, close_escalation=False
+                )
 
         if self.notification_service is not None:
             stakeholder_ids = await self._resolve_ticket_stakeholder_ids(
@@ -1182,7 +1203,15 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
-        await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_agent_can_act_on_ticket(
+            ticket,
+            current_user,
+            self.edit_access_repository,
+            self.escalation_service.ticket_escalation_repository
+            if self.escalation_service is not None
+            else None,
+            self._escalation_handling_sla_repository_or_none(),
+        )
         await ensure_account_manager_owns_ticket_client(
             ticket, current_user, self.client_repository
         )
@@ -1273,7 +1302,15 @@ class InteractionService:
                 detail="Only a closed ticket can be reopened.",
             )
 
-        await ensure_agent_can_act_on_ticket(ticket, current_user, self.edit_access_repository)
+        await ensure_agent_can_act_on_ticket(
+            ticket,
+            current_user,
+            self.edit_access_repository,
+            self.escalation_service.ticket_escalation_repository
+            if self.escalation_service is not None
+            else None,
+            self._escalation_handling_sla_repository_or_none(),
+        )
         await ensure_account_manager_owns_ticket_client(
             ticket, current_user, self.client_repository
         )
@@ -1363,6 +1400,18 @@ class InteractionService:
         ensure_agent_can_view_ticket(ticket, current_user)
         await ensure_account_manager_owns_ticket_client(
             ticket, current_user, self.client_repository
+        )
+        # A narrower check than ensure_agent_can_act_on_ticket — this
+        # method deliberately keeps its own ownership-skipping design
+        # (see above), it only additionally refuses to run while the
+        # ticket is frozen by an unaccepted escalation, same as every
+        # other mutating action.
+        await ensure_ticket_not_frozen_by_escalation(
+            ticket,
+            self.escalation_service.ticket_escalation_repository
+            if self.escalation_service is not None
+            else None,
+            self._escalation_handling_sla_repository_or_none(),
         )
         ensure_has_permission(current_user, "ticket:change_priority")
 

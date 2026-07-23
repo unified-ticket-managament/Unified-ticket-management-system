@@ -94,11 +94,14 @@ FIRST_RESPONSE_RULES: dict[str, tuple[str, ...]] = {
 # SLASweepService._notify_resolution skips notification entirely at
 # that tier. The old CLAIMED/UNCLAIMED role-ladder tables this
 # threshold used to consult (RESOLUTION_RULES_CLAIMED/UNCLAIMED) were
-# removed outright: by 150%, the real escalation-created notification
-# (fired earlier, at the BREACHED/ESCALATED crossing that first creates
-# the TicketEscalation) has already informed the actual owner — a
-# second, generic "Resolution SLA Escalated" notification on top of
-# that was pure noise, not a second real signal.
+# removed outright: 150% is the exact crossing that creates the
+# TicketEscalation (see run_sweep's classification loop — deliberately
+# not BREACHED/100%, so the current owner's own Breached notification
+# at 100% isn't pre-empted by an ownership handoff), so the real
+# escalation-created notification has already informed the actual
+# owner earlier in this same tick — a second, generic "Resolution SLA
+# Escalated" notification on top of that would be pure noise, not a
+# second real signal.
 RESOLUTION_RULES_CURRENT_OWNER: dict[str, tuple[str, ...]] = {
     "HALF_ELAPSED": (RecipientRole.CURRENT_OWNER,),
     "AT_RISK": (RecipientRole.CURRENT_OWNER,),

@@ -376,6 +376,9 @@ class TicketService:
                 response.is_escalation_owner = (
                     str(current_user.user_id) in escalation.owner_ids
                 )
+                response.escalation_pending_acceptance = (
+                    escalation.handling_stage_due_at is None
+                )
 
         return response
 
@@ -638,6 +641,7 @@ class TicketService:
                     escalation_status=escalation_status,
                     escalation_ack_due_at=escalation_ack_due_at,
                     is_escalation_owner=is_escalation_owner,
+                    escalation_pending_acceptance=escalation_pending_acceptance,
                     resolution_sla_tier=resolution_sla_tier,
                 )
                 for (
@@ -650,6 +654,7 @@ class TicketService:
                     escalation_status,
                     escalation_ack_due_at,
                     is_escalation_owner,
+                    escalation_pending_acceptance,
                     resolution_sla_tier,
                     *_,
                 ) in page.items
@@ -782,6 +787,7 @@ class TicketService:
                 escalation_status,
                 escalation_ack_due_at,
                 is_escalation_owner,
+                escalation_pending_acceptance,
                 resolution_sla_tier,
                 *_,
             ) = row
@@ -808,6 +814,7 @@ class TicketService:
                 escalation_status=escalation_status,
                 escalation_ack_due_at=escalation_ack_due_at,
                 is_escalation_owner=is_escalation_owner,
+                escalation_pending_acceptance=escalation_pending_acceptance,
                 resolution_sla_tier=resolution_sla_tier,
             )
 

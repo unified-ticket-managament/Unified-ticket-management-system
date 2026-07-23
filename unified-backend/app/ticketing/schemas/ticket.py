@@ -148,6 +148,19 @@ class TicketResponse(ORMBase):
     # the same ticket.
     is_escalation_owner: bool = False
 
+    # True while is_escalated and the escalation hasn't yet been
+    # *accepted* (acknowledged AND assigned — see
+    # EscalationService._complete_acceptance) — mirrors the backend's
+    # own ensure_ticket_not_frozen_by_escalation gate exactly (sourced
+    # from the same TicketEscalation.handling_stage_due_at signal), so
+    # the frontend can render the ticket read-only and disable every
+    # edit action without re-deriving that rule itself. Unlike
+    # is_escalation_owner, this is NOT per-viewer — it reflects the
+    # ticket's own state, true for every viewer alike, since nobody
+    # (not even a supervisor outside the escalation chain) may edit a
+    # ticket frozen this way.
+    escalation_pending_acceptance: bool = False
+
     # Resolution SLA clock's own risk tier — sourced from a LEFT JOIN
     # against resolution_slas/sla_policies (see TicketRepository.
     # list_visible_page / _resolution_sla_tier_case), independent of
@@ -203,6 +216,11 @@ class TicketListItemResponse(ORMBase):
     # whether the *viewing* user is a current owner of this ticket's
     # escalation, not just whether it's escalated at all.
     is_escalation_owner: bool = False
+
+    # See TicketResponse's own matching field for the full rationale —
+    # not per-viewer, true for everyone while the escalation is still
+    # awaiting acceptance.
+    escalation_pending_acceptance: bool = False
 
     # See TicketResponse's own matching field for the full rationale.
     resolution_sla_tier: Literal["healthy", "at_risk", "breached", "escalated"] | None = None

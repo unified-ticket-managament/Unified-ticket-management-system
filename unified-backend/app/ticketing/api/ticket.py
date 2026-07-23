@@ -29,6 +29,9 @@ from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.ticketing.repositories.escalation_handling_sla_repository import (
+    EscalationHandlingSlaRepository,
+)
 from app.ticketing.repositories.ticket_escalation_repository import (
     TicketEscalationRepository,
 )
@@ -448,6 +451,7 @@ async def change_ticket_priority(
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         sla_service=build_sla_service(db),
+        escalation_service=build_escalation_service(db),
         client_repository=client_repository,
     )
 
@@ -491,6 +495,8 @@ async def upload_ticket_attachment(
         ticket_repository=ticket_repository,
         storage_service=get_storage_service(),
         client_repository=client_repository,
+        escalation_repository=TicketEscalationRepository(db),
+        escalation_handling_sla_repository=EscalationHandlingSlaRepository(db),
     )
 
     return await service.upload_attachment(
@@ -621,6 +627,7 @@ async def close_ticket(
         user_repository=user_repository,
         edit_access_repository=edit_access_repository,
         sla_service=build_sla_service(db),
+        escalation_service=build_escalation_service(db),
         client_repository=client_repository,
     )
 
@@ -662,6 +669,7 @@ async def reopen_ticket(
         user_repository=user_repository,
         edit_access_repository=edit_access_repository,
         sla_service=build_sla_service(db),
+        escalation_service=build_escalation_service(db),
         client_repository=client_repository,
     )
 
