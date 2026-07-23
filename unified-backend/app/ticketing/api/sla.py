@@ -123,10 +123,15 @@ async def escalate_ticket(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Manually raises an internal escalation (ticket:escalate) — starts a
-    TEAM_LEAD -> MANAGER -> SITE_LEAD ownership/acknowledgment chain
+    Manually raises or advances an internal escalation (ticket:escalate)
+    — a TEAM_LEAD -> MANAGER -> SITE_LEAD ownership/acknowledgment chain
     entirely separate from, and never restarting, this ticket's own
-    Resolution SLA clock. 400s if an escalation is already active.
+    Resolution SLA clock. If no escalation is active yet, starts one at
+    the usual starting level; if one is already active, moves it one
+    level further along the same chain (reusing the exact mechanics
+    the ack-window-timeout auto-advance already uses) rather than
+    creating a second, parallel chain. 400s only once the chain has
+    already reached its terminal SITE_LEAD level.
     """
 
     escalation_service = build_escalation_service(

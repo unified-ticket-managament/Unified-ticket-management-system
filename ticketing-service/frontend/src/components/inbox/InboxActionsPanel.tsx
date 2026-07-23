@@ -44,7 +44,12 @@ export function InboxActionsPanel() {
     listCategories()
       .then((result) => {
         setCategories(result);
-        setTicketType((current) => current || result[0]?.category_name || "");
+        // Deliberately no default selection here — the agent must
+        // explicitly pick a category before creating a ticket, rather
+        // than the dialog silently pre-selecting whichever category
+        // happens to come back first. See the Category <select>'s own
+        // "Select" placeholder option below and handleCreateTicket's
+        // guard against submitting with none chosen.
       })
       .catch(() => {
         // Category fetch failing shouldn't block the rest of the
@@ -329,6 +334,7 @@ export function InboxActionsPanel() {
               variant="primary"
               size="sm"
               isLoading={isCreating}
+              disabled={!ticketType}
               onClick={handleCreateTicket}
             >
               Create Ticket
@@ -348,6 +354,7 @@ export function InboxActionsPanel() {
             value={ticketType}
             onChange={(e) => setTicketType(e.target.value)}
           >
+            <option value="">Select</option>
             {categories.map((c) => (
               <option key={c.category_id} value={c.category_name}>
                 {c.category_name}

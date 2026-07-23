@@ -325,51 +325,114 @@ class EscalationService:
         existing = await self.ticket_escalation_repository.get_active_by_ticket_id(
             ticket_id
         )
-        if existing is not None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="This ticket already has an active escalation.",
-            )
-
-        resolution_clock = await self.resolution_sla_repository.get_by_ticket_id(
-            ticket_id
-        )
-
-        escalation = await self._create_escalation(
-            ticket=ticket,
-            resolution_clock=resolution_clock,
-            triggered_by=TRIGGERED_BY_MANUAL,
-            triggered_by_user_id=current_user.user_id,
-        )
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
         )
+
+        if existing is None:
+            resolution_clock = await self.resolution_sla_repository.get_by_ticket_id(
+                ticket_id
+            )
+
+            escalation = await self._create_escalation(
+                ticket=ticket,
+                resolution_clock=resolution_clock,
+                triggered_by=TRIGGERED_BY_MANUAL,
+                triggered_by_user_id=current_user.user_id,
+            )
+
+            await AuditLogService.log_event(
+                self.ticket_repository.db,
+                entity_type=AuditEntityType.TICKET,
+                entity_id=ticket_id,
+                event_type=AuditEventType.ESCALATION_CREATED,
+                actor_id=actor_id,
+                actor_name=actor_name,
+                actor_role=actor_role,
+                new_values={
+                    "level": escalation.level.value,
+                    "owner_ids": escalation.owner_ids,
+                    "triggered_by": TRIGGERED_BY_MANUAL,
+                },
+            )
+
+            await self._notify_owners(
+                ticket=ticket,
+                owner_ids={UUID(u) for u in escalation.owner_ids},
+                notification_type=NotificationType.ESCALATION_CREATED,
+                title=f"Ticket Escalated: {ticket.title}",
+                message=(
+                    f"{current_user.name} escalated ticket \"{ticket.title}\" "
+                    f"({ticket.current_priority.value} priority) to "
+                    f"{escalation.level.value.replace('_', ' ').title()}.\n\n"
+                    f"Please acknowledge by {escalation.ack_due_at.strftime('%Y-%m-%d %H:%M UTC')} "
+                    "— if this isn't acknowledged in time, it will automatically "
+                    "advance to the next level."
+                ),
+            )
+
+            return TicketActionResponse(
+                interaction_id=None,
+                ticket_id=ticket_id,
+                message="Ticket escalated.",
+                created_at=escalation.created_at,
+            )
+
+        # An escalation is already active — a manual escalation now
+        # means "move it one level further along the same chain,"
+        # reusing _advance_escalation_level (the exact ack-window-
+        # timeout advance mechanics: owner resolution, handling-stage
+        # cleanup, escalation history) rather than standing up a
+        # second, parallel chain. allow_terminal_renotify=False turns
+        # an already-at-SITE_LEAD ticket into a 400 instead of a
+        # same-level re-notify — there's no level above SITE_LEAD to
+        # manually escalate to.
+        old_level = existing.level
+        now = datetime.now(timezone.utc)
+        result = await self._advance_escalation_level(
+            escalation=existing,
+            ticket=ticket,
+            now=now,
+            allow_terminal_renotify=False,
+        )
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "This ticket has already reached the highest escalation "
+                    "level and cannot be escalated further."
+                ),
+            )
+        new_level, new_ack_due_at, updated = result
+
         await AuditLogService.log_event(
             self.ticket_repository.db,
             entity_type=AuditEntityType.TICKET,
             entity_id=ticket_id,
-            event_type=AuditEventType.ESCALATION_CREATED,
+            event_type=AuditEventType.ESCALATION_ADVANCED,
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
+            old_values={"level": old_level.value},
             new_values={
-                "level": escalation.level.value,
-                "owner_ids": escalation.owner_ids,
+                "level": new_level.value,
+                "owner_ids": updated.owner_ids,
                 "triggered_by": TRIGGERED_BY_MANUAL,
             },
         )
 
         await self._notify_owners(
             ticket=ticket,
-            owner_ids={UUID(u) for u in escalation.owner_ids},
-            notification_type=NotificationType.ESCALATION_CREATED,
+            owner_ids={UUID(u) for u in updated.owner_ids},
+            notification_type=NotificationType.ESCALATION_ADVANCED,
             title=f"Ticket Escalated: {ticket.title}",
             message=(
-                f"{current_user.name} escalated ticket \"{ticket.title}\" "
-                f"({ticket.current_priority.value} priority) to "
-                f"{escalation.level.value.replace('_', ' ').title()}.\n\n"
-                f"Please acknowledge by {escalation.ack_due_at.strftime('%Y-%m-%d %H:%M UTC')} "
+                f"{current_user.name} manually escalated ticket \"{ticket.title}\" "
+                f"({ticket.current_priority.value} priority) from "
+                f"{old_level.value.replace('_', ' ').title()} to "
+                f"{new_level.value.replace('_', ' ').title()}.\n\n"
+                f"Please acknowledge by {new_ack_due_at.strftime('%Y-%m-%d %H:%M UTC')} "
                 "— if this isn't acknowledged in time, it will automatically "
                 "advance to the next level."
             ),
@@ -379,7 +442,7 @@ class EscalationService:
             interaction_id=None,
             ticket_id=ticket_id,
             message="Ticket escalated.",
-            created_at=escalation.created_at,
+            created_at=now,
         )
 
     async def auto_escalate_if_needed(
@@ -1070,6 +1133,81 @@ class EscalationService:
         )
 
     # ---------------------------------------------------------
+    # Shared advance mechanics — the one place an escalation actually
+    # moves to the next level in the chain, used by both the
+    # ack-window-timeout trigger (evaluate_overdue below) and the
+    # manual trigger (manual_escalate's re-escalate branch above), so
+    # owner resolution / SLA handling-stage cleanup / escalation
+    # history can never diverge between the two triggers — only what
+    # caused the advance and how it's announced differs per caller.
+    # ---------------------------------------------------------
+
+    async def _advance_escalation_level(
+        self,
+        *,
+        escalation: TicketEscalation,
+        ticket: Ticket,
+        now: datetime,
+        allow_terminal_renotify: bool,
+    ) -> tuple[EscalationLevel, datetime, TicketEscalation] | None:
+        """
+        Returns None when there's nothing to do: either another process
+        already changed this escalation's level since it was read
+        (advance()'s own optimistic-concurrency guard lost the race),
+        or the chain is already at its terminal SITE_LEAD level and the
+        caller doesn't want a same-level re-notify
+        (allow_terminal_renotify=False — manual_escalate's case, since
+        a manual re-escalate at the terminal level should be rejected
+        outright rather than silently re-pinging the same owners).
+        evaluate_overdue passes True, preserving its own pre-existing
+        "re-notify at terminal" behavior.
+
+        On success, returns (new_level, new_ack_due_at, updated) — the
+        caller already has the pre-advance level (it's whatever
+        `escalation.level` was before calling this), so that's not
+        returned again here.
+        """
+
+        old_level = escalation.level
+        upcoming = next_level(old_level)
+        if upcoming is None and not allow_terminal_renotify:
+            return None
+        target_level = upcoming if upcoming is not None else old_level
+
+        new_level, owner_ids = await self._resolve_owners_with_fallback(
+            starting_level=target_level, ticket=ticket
+        )
+        # original_priority, not ticket.current_priority — see
+        # _create_escalation's matching comment. The ticket has already
+        # been CRITICAL since its first escalation, so
+        # ticket.current_priority is never the right input here.
+        ack_minutes = await self._ack_target_minutes(escalation.original_priority)
+        new_ack_due_at = now + timedelta(minutes=ack_minutes)
+
+        # A handling stage running at the level being left behind no
+        # longer means anything once ownership moves again — cleared
+        # the same way advance_for_handling_sla_breach already clears
+        # it, so the sweep never later evaluates a breach against a
+        # window this advance has already superseded. A no-op for the
+        # ack-window-timeout path, which never reaches this with a
+        # stage active (a stage only ever starts once ACKNOWLEDGED, and
+        # evaluate_overdue only ever considers still-ACTIVE
+        # escalations).
+        escalation.handling_stage_due_at = None
+
+        updated = await self.ticket_escalation_repository.advance(
+            escalation,
+            new_level=new_level,
+            owner_ids=owner_ids,
+            ack_due_at=new_ack_due_at,
+            now=now,
+        )
+        if updated is None:
+            return None
+
+        return new_level, new_ack_due_at, updated
+
+    # ---------------------------------------------------------
     # Sweep hook — advance any ACTIVE escalation past its ack window
     # ---------------------------------------------------------
 
@@ -1102,34 +1240,21 @@ class EscalationService:
                         continue
 
                     old_level = escalation.level
-                    upcoming = next_level(old_level)
-                    target_level = upcoming if upcoming is not None else old_level
-
-                    new_level, owner_ids = await self._resolve_owners_with_fallback(
-                        starting_level=target_level, ticket=ticket
-                    )
-                    # original_priority, not ticket.current_priority —
-                    # see _create_escalation's matching comment. The
-                    # ticket has already been CRITICAL since its first
-                    # escalation, so ticket.current_priority is never
-                    # the right input here.
-                    ack_minutes = await self._ack_target_minutes(escalation.original_priority)
-                    new_ack_due_at = now + timedelta(minutes=ack_minutes)
-
-                    updated = await self.ticket_escalation_repository.advance(
-                        escalation,
-                        new_level=new_level,
-                        owner_ids=owner_ids,
-                        ack_due_at=new_ack_due_at,
+                    result = await self._advance_escalation_level(
+                        escalation=escalation,
+                        ticket=ticket,
                         now=now,
+                        allow_terminal_renotify=True,
                     )
-                    if updated is None:
+                    if result is None:
                         # Lost the race — another process (e.g. an
                         # overlapping sweep on a second backend
                         # instance) already advanced this escalation
                         # since list_overdue_active read it. Nothing
                         # left to do for this one.
                         continue
+                    new_level, new_ack_due_at, updated = result
+                    owner_ids = {UUID(u) for u in updated.owner_ids}
                     advanced += 1
 
                     await AuditLogService.log_event(
