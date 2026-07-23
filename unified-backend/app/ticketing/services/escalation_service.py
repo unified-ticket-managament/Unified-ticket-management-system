@@ -43,6 +43,8 @@ from app.ticketing.schemas.ticket_action import TicketActionResponse
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
     GLOBAL_INBOX_ROLE_NAMES,
+    SITE_LEAD_ROLE_NAME,
+    SUPER_ADMIN_ROLE_NAME,
     SUPERVISOR_ROLE_NAMES,
     ensure_agent_can_view_ticket,
     ensure_has_permission,
@@ -955,6 +957,27 @@ class EscalationService:
         users = await self.user_repository.list_by_ids(account_manager_ids)
         return [u for u in users if u.is_active]
 
+    async def is_valid_account_manager_target(
+        self, ticket: Ticket, candidate_id: UUID
+    ) -> bool:
+        """
+        Re-validates a submitted Account Manager id server-side against
+        _resolve_category_account_managers — the exact same source
+        get_acknowledge_candidates already offers the caller — rather
+        than trusting the submitted id alone (same convention
+        AssignmentService.resolve_target already uses), and rather than
+        InteractionService.transfer_agent independently re-deriving a
+        second, differently-scoped definition of "valid Account
+        Manager" (it previously checked the ticket's client's own
+        account_manager_id, which is a different relationship — see
+        _resolve_category_account_managers' own docstring — so an
+        Account Manager offered in the dropdown here could still fail
+        on Confirm). Called from InteractionService.transfer_agent.
+        """
+
+        candidates = await self._resolve_category_account_managers(ticket.ticket_type)
+        return any(u.user_id == candidate_id for u in candidates)
+
     async def get_acknowledge_candidates(
         self, ticket_id: UUID, current_user: User
     ) -> AssignableAgentsResponse:
@@ -965,12 +988,15 @@ class EscalationService:
         MANAGER -> SITE_LEAD, see the class docstring) one level down
         from the caller's own rank:
 
-        - Site Lead/Super Admin: that category's Account Manager(s)
-          (via ReportingManagerTeam — see _resolve_category_account_managers;
+        - Super Admin: every active Site Lead, plus that category's
+          Account Manager(s), Team Lead(s), and Staff.
+        - Site Lead: that category's Account Manager(s) (via
+          ReportingManagerTeam — see _resolve_category_account_managers;
           this is the one real Account-Manager<->category relationship
           in this data model, not Client.account_manager_id, which is a
           single client's owner, not "AMs of this category"), Team
-          Lead(s), and Staff.
+          Lead(s), and Staff. Deliberately no Site Lead group of its
+          own — a Site Lead never hands a ticket to another Site Lead.
         - Account Manager: that category's Team Lead(s) and Staff —
           not narrowed to their own direct reports, since any of that
           category's Team Leads is a valid hand-off target regardless
@@ -996,6 +1022,12 @@ class EscalationService:
         role_name = current_user.role.name
 
         if role_name in GLOBAL_INBOX_ROLE_NAMES:
+            if role_name == SUPER_ADMIN_ROLE_NAME:
+                site_leads = await self.user_repository.list_active_by_role_name(
+                    SITE_LEAD_ROLE_NAME
+                )
+                groups.append(_to_assignable_group(SITE_LEAD_ROLE_NAME, site_leads))
+
             account_managers = await self._resolve_category_account_managers(
                 ticket.ticket_type
             )

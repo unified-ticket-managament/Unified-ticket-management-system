@@ -59,6 +59,10 @@ from app.ticketing.repositories.audit_log_repository import AuditLogRepository
 from app.ticketing.schemas.audit_log import AuditLogResponse
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
+    GLOBAL_INBOX_ROLE_NAMES,
+    SITE_LEAD_ROLE_NAME,
+    SUPER_ADMIN_ROLE_NAME,
+    SUPERVISOR_ROLE_NAMES,
     TEAM_LEAD_TRANSFER_ROLE_NAMES,
     ensure_account_manager_owns_ticket_client,
     ensure_agent_can_act_on_ticket,
@@ -1464,16 +1468,44 @@ class InteractionService:
                 )
             )
 
-        new_agent = await self.user_repository.get_active_staff_by_id(
-            request.new_agent_id
-        )
-        # Set whenever the candidate was resolved via the get_by_id
-        # branches below (Team Lead, or Account Manager during an
-        # active escalation) — that fetch already eager-loads
-        # role+category, so the Staff category guard further down can
-        # reuse it instead of a second round trip.
+        # Set whenever the candidate was resolved via a branch below
+        # that already loaded the full row with role+category eager-
+        # loaded (Team Lead, Site Lead, Account Manager, or self) — the
+        # Staff category guard further down reuses it instead of a
+        # second round trip.
         new_agent_full: User | None = None
-        new_agent_is_teamlead = False
+        # True for every supervisor-tier target (self, Team Lead, Site
+        # Lead, Account Manager) — none of these roles are scoped to a
+        # work-specialization category the way Staff is (see
+        # CATEGORY_SCOPED_ROLE_NAMES), so the Staff-only category check
+        # below never applies to them.
+        skip_category_check = False
+
+        # Self-assignment: a Team Lead/Account Manager/Site Lead/Super
+        # Admin assigning the ticket to *themselves*. Always valid,
+        # unconditionally — they already own/are handling this
+        # escalation/ticket by virtue of being the one making the call
+        # (ensure_can_reassign_ticket above already authorized them to
+        # act at all), so none of the "transfer to some other named
+        # agent" candidate rules below apply. Previously this fell
+        # through to the Staff-only / TEAM_LEAD_TRANSFER_ROLE_NAMES
+        # branches below and was rejected outright — e.g. a Team Lead
+        # selecting "Myself" was checked against "is the *caller* an
+        # Account Manager/Site Lead/Super Admin transferring *to* a
+        # Team Lead", which a Team Lead assigning to themselves can
+        # never satisfy.
+        if (
+            request.new_agent_id == current_user.user_id
+            and current_user.role.name in SUPERVISOR_ROLE_NAMES
+            and current_user.is_active
+        ):
+            new_agent = current_user
+            new_agent_full = current_user
+            skip_category_check = True
+        else:
+            new_agent = await self.user_repository.get_active_staff_by_id(
+                request.new_agent_id
+            )
 
         if new_agent is None:
             candidate = await self.user_repository.get_by_id(request.new_agent_id)
@@ -1495,36 +1527,58 @@ class InteractionService:
                     # escalation acceptance path.
                     new_agent = candidate
                     new_agent_full = candidate
-                    new_agent_is_teamlead = True
+                    skip_category_check = True
+                elif (
+                    candidate.role.name == SITE_LEAD_ROLE_NAME
+                    and current_user.role.name == SUPER_ADMIN_ROLE_NAME
+                ):
+                    # Only Super Admin may hand a ticket directly to a
+                    # Site Lead (see the Acknowledge & Assign role
+                    # table) — Site Lead is otherwise never a transfer
+                    # target, including for itself via this branch
+                    # (self-assignment is covered above).
+                    new_agent = candidate
+                    new_agent_full = candidate
+                    skip_category_check = True
                 elif (
                     active_escalation is not None
                     and candidate.role.name == ACCOUNT_MANAGER_ROLE_NAME
-                    and ticket.client_company_id is not None
-                    and self.client_repository is not None
+                    and current_user.role.name in GLOBAL_INBOX_ROLE_NAMES
+                    and self.escalation_service is not None
                 ):
                     # An actively-escalated ticket's "who owns it going
-                    # forward" (see EscalationService.
-                    # get_acknowledge_candidates, the only caller that
-                    # ever offers this role here) can legitimately be
-                    # the Account Manager who owns the ticket's client
-                    # — re-validated server-side rather than trusting
-                    # the client, same "never trust the submitted id
-                    # alone" convention AssignmentService.resolve_target
-                    # already uses.
-                    client = await self.client_repository.get_by_id(
-                        ticket.client_company_id
-                    )
-                    if client is not None and client.account_manager_id == candidate.user_id:
+                    # forward" can legitimately be an Account Manager,
+                    # but only when a Site Lead/Super Admin is the one
+                    # assigning it (see the Acknowledge & Assign role
+                    # table — Account Manager itself never hands a
+                    # ticket to another Account Manager, and Team Lead
+                    # never reaches this branch at all). Re-validated
+                    # against the exact same candidate set
+                    # EscalationService.get_acknowledge_candidates
+                    # offers the caller — every Account Manager who is
+                    # a Reporting Manager for the ticket's category
+                    # (ReportingManagerTeam) — rather than trusting the
+                    # submitted id alone, and rather than duplicating a
+                    # second, independently-drifting definition of
+                    # "valid Account Manager" here.
+                    if await self.escalation_service.is_valid_account_manager_target(
+                        ticket, candidate.user_id
+                    ):
                         new_agent = candidate
                         new_agent_full = candidate
+                        skip_category_check = True
 
         if new_agent is None:
             raise HTTPException(
                 status_code=http_status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "New agent must be an active Staff member, or an "
+                    "New agent must be an active Staff member, an "
                     "active Team Lead when transferred by an Account "
-                    "Manager, Site Lead, or Super Admin."
+                    "Manager, Site Lead, or Super Admin, an active "
+                    "Account Manager when transferred by a Site Lead "
+                    "or Super Admin during an active escalation, an "
+                    "active Site Lead when transferred by a Super "
+                    "Admin, or the caller themselves."
                 ),
             )
 
@@ -1540,10 +1594,11 @@ class InteractionService:
         # rule, a Team Lead must never be able to hand a ticket to
         # another category's Staff, escalated or not. This used to only
         # be enforced during an active escalation; it's unconditional
-        # now. Doesn't apply to a Team Lead target
-        # (new_agent_is_teamlead above, deliberately unscoped by
-        # category per that same rule).
-        if not new_agent_is_teamlead:
+        # now. Doesn't apply to a supervisor-tier target
+        # (skip_category_check above, deliberately unscoped by category
+        # per that same rule — Team Lead/Site Lead/Account Manager/
+        # self are none of them category-scoped roles).
+        if not skip_category_check:
             if new_agent_full is None:
                 new_agent_full = await self.user_repository.get_by_id(new_agent.user_id)
             new_agent_category = (
