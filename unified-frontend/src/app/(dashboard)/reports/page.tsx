@@ -7,11 +7,12 @@ import {
   FileText,
   Gauge,
   Printer,
+  RefreshCw,
   ShieldCheck,
   Ticket as TicketIcon,
   TrendingUp,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
 import { Breadcrumbs } from "@/components/shared/breadcrumbs";
@@ -61,34 +62,38 @@ export default function ReportsPage() {
   const [replyAddedLogs, setReplyAddedLogs] = useState<TicketAuditLogResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    Promise.all([
+  const loadData = useCallback((signal?: { aborted: boolean }) => {
+    setIsLoading(true);
+    return Promise.all([
       listTickets(),
       listCategories(),
       getAllTicketAuditLogs({ eventType: "REPLY_ADDED" }),
     ])
       .then(([ticketsResult, categoriesResult, replyLogsResult]) => {
-        if (cancelled) return;
+        if (signal?.aborted) return;
         setTickets(ticketsResult);
         setCategories(categoriesResult);
         setReplyAddedLogs(replyLogsResult.items);
       })
       .catch(() => {
-        if (!cancelled) {
+        if (!signal?.aborted) {
           setTickets([]);
           setCategories([]);
           setReplyAddedLogs([]);
         }
       })
       .finally(() => {
-        if (!cancelled) setIsLoading(false);
+        if (!signal?.aborted) setIsLoading(false);
       });
+  }, []);
 
+  useEffect(() => {
+    const signal = { aborted: false };
+    loadData(signal);
     return () => {
-      cancelled = true;
+      signal.aborted = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Super Admin/Site Lead/Account Manager keep Tickets by Category
@@ -158,6 +163,16 @@ export default function ReportsPage() {
         description="Ticket volume, SLA compliance, and team performance across the organization."
         action={
           <div className="flex items-center gap-2 print:hidden">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => loadData()}
+              disabled={isLoading}
+              aria-label="Refresh"
+              title="Refresh"
+            >
+              <RefreshCw className={`h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
+            </Button>
             <Button variant="outline" className="gap-2" onClick={handleExportPdf}>
               <Printer className="h-4 w-4" />
               Export PDF

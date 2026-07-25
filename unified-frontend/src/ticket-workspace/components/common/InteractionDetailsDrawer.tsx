@@ -3,6 +3,8 @@ import { Maximize2, X, Ticket as TicketIcon } from "lucide-react";
 import { Badge } from "@tw/components/common/Badge";
 import { Button } from "@tw/components/common/Button";
 import { AttachmentList } from "@tw/components/common/AttachmentList";
+import { ShowMoreToggle } from "@tw/components/common/ShowMoreToggle";
+import { useCollapsibleMessage } from "@tw/hooks/useCollapsibleMessage";
 import {
   messageBody,
   messageDirectionLabel,
@@ -202,6 +204,55 @@ function resolveFields(
   };
 }
 
+// One item in the threaded Conversation list — its own component (not
+// inlined in the .map() below) so each message can independently track
+// its own expanded/collapsed state via useCollapsibleMessage.
+function ThreadMessageItem({
+  message,
+  isCurrent,
+}: {
+  message: InteractionResponse;
+  isCurrent: boolean;
+}) {
+  const messageMeta = metaFor(message.interaction_type);
+  const sender = messageSender(message);
+  const body = messageBody(message);
+  const { ref, isExpanded, isOverflowing, toggle, clampClassName } = useCollapsibleMessage<HTMLParagraphElement>([
+    body,
+  ]);
+
+  return (
+    <li
+      id={`thread-message-${message.interaction_id}`}
+      className={`rounded-md2 border px-3 py-2.5 text-xs ${
+        isCurrent
+          ? "border-accent/50 bg-accent/5 ring-1 ring-accent/30"
+          : "border-border bg-canvas/60"
+      }`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="flex flex-wrap items-center gap-1.5 font-medium text-slate-800">
+          <span>{messageMeta.icon}</span>
+          {messageMeta.label}
+          <Badge tone={messageMeta.tone}>{messageDirectionLabel(message)}</Badge>
+          {isCurrent && <Badge tone="accent">Viewing</Badge>}
+        </span>
+        <span className="flex-none text-[10px] text-muted">{formatDateTime(message.created_at)}</span>
+      </div>
+      {sender && <p className="mt-1 text-[11px] font-medium text-slate-600">{sender}</p>}
+      {body && (
+        <p ref={ref} className={`mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${clampClassName}`}>
+          {body}
+        </p>
+      )}
+      {isOverflowing && <ShowMoreToggle isExpanded={isExpanded} onToggle={toggle} />}
+      {message.attachments && message.attachments.length > 0 && (
+        <AttachmentList attachments={message.attachments} className="mt-2" />
+      )}
+    </li>
+  );
+}
+
 export function InteractionDetailsDrawer({
   open,
   row,
@@ -233,6 +284,7 @@ export function InteractionDetailsDrawer({
   // full conversation list — same information, no redundant "1
   // message" thread box around it.
   const hasThread = !isLoadingThread && !!thread && thread.ordered_thread.length > 1;
+  const messageContent = useCollapsibleMessage<HTMLParagraphElement>([fields?.message]);
 
   // Scroll the clicked message into view within the thread, keeping
   // every earlier message above it and every later one below —
@@ -338,46 +390,13 @@ export function InteractionDetailsDrawer({
                     Conversation ({thread.ordered_thread.length} messages)
                   </p>
                   <ol className="mt-2 flex flex-col gap-3">
-                    {thread.ordered_thread.map((message) => {
-                      const isCurrent = row.id === message.interaction_id;
-                      const messageMeta = metaFor(message.interaction_type);
-                      const sender = messageSender(message);
-                      const body = messageBody(message);
-                      return (
-                        <li
-                          id={`thread-message-${message.interaction_id}`}
-                          key={message.interaction_id}
-                          className={`rounded-md2 border px-3 py-2.5 text-xs ${
-                            isCurrent
-                              ? "border-accent/50 bg-accent/5 ring-1 ring-accent/30"
-                              : "border-border bg-canvas/60"
-                          }`}
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <span className="flex flex-wrap items-center gap-1.5 font-medium text-slate-800">
-                              <span>{messageMeta.icon}</span>
-                              {messageMeta.label}
-                              <Badge tone={messageMeta.tone}>{messageDirectionLabel(message)}</Badge>
-                              {isCurrent && <Badge tone="accent">Viewing</Badge>}
-                            </span>
-                            <span className="flex-none text-[10px] text-muted">
-                              {formatDateTime(message.created_at)}
-                            </span>
-                          </div>
-                          {sender && (
-                            <p className="mt-1 text-[11px] font-medium text-slate-600">{sender}</p>
-                          )}
-                          {body && (
-                            <p className="mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700">
-                              {body}
-                            </p>
-                          )}
-                          {message.attachments && message.attachments.length > 0 && (
-                            <AttachmentList attachments={message.attachments} className="mt-2" />
-                          )}
-                        </li>
-                      );
-                    })}
+                    {thread.ordered_thread.map((message) => (
+                      <ThreadMessageItem
+                        key={message.interaction_id}
+                        message={message}
+                        isCurrent={row.id === message.interaction_id}
+                      />
+                    ))}
                   </ol>
                 </div>
               )}
@@ -415,9 +434,17 @@ export function InteractionDetailsDrawer({
                   {isLoadingEmail ? (
                     <p className="mt-2 text-[13px] text-muted">Loading…</p>
                   ) : (
-                    <p className="mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700">
-                      {fields.message ?? "—"}
-                    </p>
+                    <>
+                      <p
+                        ref={messageContent.ref}
+                        className={`mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${messageContent.clampClassName}`}
+                      >
+                        {fields.message ?? "—"}
+                      </p>
+                      {messageContent.isOverflowing && (
+                        <ShowMoreToggle isExpanded={messageContent.isExpanded} onToggle={messageContent.toggle} />
+                      )}
+                    </>
                   )}
                 </div>
               )}

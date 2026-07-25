@@ -7,8 +7,10 @@ import {
   ArrowLeft,
   FilePlus,
   Forward as ForwardIcon,
+  Link2,
   Loader2,
   Paperclip,
+  RefreshCw,
   Reply as ReplyIcon,
   ReplyAll,
   X,
@@ -58,6 +60,8 @@ import type {
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { ReplyComposer } from "@tw/components/mail/ReplyComposer";
 import { SlaFirstResponseBadge } from "@tw/components/sla/SlaFirstResponseBadge";
+import { ShowMoreToggle } from "@tw/components/common/ShowMoreToggle";
+import { useCollapsibleMessage } from "@tw/hooks/useCollapsibleMessage";
 
 const PRIORITY_VARIANT: Record<TicketPriority, "success" | "warning" | "destructive"> = {
   LOW: "success",
@@ -160,6 +164,8 @@ function replyBubble(reply: InteractionResponse): BubbleData {
 }
 
 function Bubble({ data }: { data: BubbleData }) {
+  const { ref, isExpanded, isOverflowing, toggle, clampClassName } = useCollapsibleMessage([data.body]);
+
   return (
     <div className="flex gap-3">
       <div
@@ -180,9 +186,14 @@ function Bubble({ data }: { data: BubbleData }) {
         </div>
         {data.toLabel && <p className="mt-0.5 text-[11px] text-muted-foreground">To: {data.toLabel}</p>}
         <div
-          className="mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90 [&_a]:break-all [&_a]:underline"
+          ref={ref}
+          className={cn(
+            "mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90 [&_a]:break-all [&_a]:underline",
+            clampClassName
+          )}
           dangerouslySetInnerHTML={{ __html: linkifyPlainText(data.body) }}
         />
+        {isOverflowing && <ShowMoreToggle isExpanded={isExpanded} onToggle={toggle} />}
         {data.attachments && data.attachments.length > 0 && (
           <div className="mt-3 flex flex-col gap-1.5">
             {data.attachments.map((a) => (
@@ -209,6 +220,10 @@ interface MessageDetailsViewProps {
   folders: MailFolder[];
   onBack: () => void;
   onRefreshList: () => void;
+  // Re-fetches this specific open message (not the whole list) — see
+  // InboxPage.tsx, wired to mail.openThread(interactionId).
+  onRefreshMessage: (interactionId: string) => void;
+  isRefreshingMessage?: boolean;
   onForward: (values: { clientId: string | null; toEmail: string; subject: string; bodyHtml: string }) => void;
   onSaveDraft: (
     interactionId: string,
@@ -232,6 +247,8 @@ export function MessageDetailsView({
   folders,
   onBack,
   onRefreshList,
+  onRefreshMessage,
+  isRefreshingMessage,
   onForward,
   onSaveDraft,
   onSendDraft,
@@ -561,6 +578,16 @@ export function MessageDetailsView({
               <Badge variant={PRIORITY_VARIANT[email.ticket_priority as TicketPriority]}>{email.ticket_priority}</Badge>
             )}
             {email.ticket_category && <Badge variant="secondary">{email.ticket_category}</Badge>}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7"
+              onClick={() => onRefreshMessage(email.interaction_id)}
+              disabled={isRefreshingMessage}
+              aria-label="Refresh"
+            >
+              <RefreshCw className={cn("h-3.5 w-3.5", isRefreshingMessage && "animate-spin")} />
+            </Button>
           </div>
         </div>
         <div className="mt-2">
@@ -696,12 +723,20 @@ export function MessageDetailsView({
             </Link>
           </Button>
         ) : (
-          (canConvertToTicket || canAttachToTicket) && (
-            <Button size="sm" variant="outline" className="gap-1.5" disabled={isCreating} onClick={() => setCreateOpen(true)}>
-              <FilePlus className="h-3.5 w-3.5" />
-              Create Ticket
-            </Button>
-          )
+          <>
+            {canConvertToTicket && (
+              <Button size="sm" variant="outline" className="gap-1.5" disabled={isCreating} onClick={() => setCreateOpen(true)}>
+                <FilePlus className="h-3.5 w-3.5" />
+                Create Ticket
+              </Button>
+            )}
+            {canAttachToTicket && (
+              <Button size="sm" variant="outline" className="gap-1.5" disabled={isAttaching} onClick={openAttachDialog}>
+                <Link2 className="h-3.5 w-3.5" />
+                Link to Existing Ticket
+              </Button>
+            )}
+          </>
         )}
 
         {canArchive && (
@@ -837,15 +872,6 @@ export function MessageDetailsView({
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateOpen(false)}>
               Cancel
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setCreateOpen(false);
-                openAttachDialog();
-              }}
-            >
-              Existing Ticket
             </Button>
             <Button
               onClick={handleCreateTicket}

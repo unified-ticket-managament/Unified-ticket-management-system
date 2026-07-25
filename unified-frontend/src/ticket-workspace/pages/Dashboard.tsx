@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
@@ -18,6 +18,7 @@ import {
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { Card } from "@tw/components/common/Card";
 import { Badge } from "@tw/components/common/Badge";
+import { RefreshButton } from "@tw/components/common/RefreshButton";
 import { SlaBadge } from "@tw/components/sla/SlaBadge";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
@@ -124,45 +125,48 @@ export function Dashboard() {
   // SlaOverviewSection, src/components/dashboard/). Kept separate from
   // `stats` deliberately: this endpoint has its own refresh cadence and
   // its own loading state.
-  const { counts: slaCounts } = useDashboardSlaCounts();
+  const { counts: slaCounts, refresh: refreshSlaCounts } = useDashboardSlaCounts();
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
-
-    async function load() {
-      setIsLoading(true);
-      try {
-        // Both bounded/grouped server-side queries now — this used to
-        // be listTickets() (every visible ticket, unbounded) plus
-        // getInbox() (the entire pending queue, just to read
-        // `.total`). Neither scales with total ticket/mail count
-        // anymore; both cost a fixed, small amount of work regardless.
-        const [dashboardStats, viewCounts] = await Promise.all([
-          getDashboardStats(controller.signal),
-          getViewCounts(),
-        ]);
-        if (cancelled) return;
-        setStats(dashboardStats);
-        setPendingInboxCount(viewCounts.pending);
-      } catch (error) {
-        if (cancelled || (error instanceof Error && error.name === "CanceledError")) return;
-        pushToast(
-          error instanceof Error ? error.message : "Failed to load dashboard.",
-          "error"
-        );
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      // Both bounded/grouped server-side queries now — this used to
+      // be listTickets() (every visible ticket, unbounded) plus
+      // getInbox() (the entire pending queue, just to read
+      // `.total`). Neither scales with total ticket/mail count
+      // anymore; both cost a fixed, small amount of work regardless.
+      const [dashboardStats, viewCounts] = await Promise.all([
+        getDashboardStats(signal),
+        getViewCounts(),
+      ]);
+      if (signal?.aborted) return;
+      setStats(dashboardStats);
+      setPendingInboxCount(viewCounts.pending);
+    } catch (error) {
+      if (signal?.aborted || (error instanceof Error && error.name === "CanceledError")) return;
+      pushToast(
+        error instanceof Error ? error.message : "Failed to load dashboard.",
+        "error"
+      );
     }
-
-    load();
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setIsLoading(true);
+    load(controller.signal).finally(() => {
+      if (!controller.signal.aborted) setIsLoading(false);
+    });
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleRefresh() {
+    setIsRefreshing(true);
+    await Promise.all([load(), refreshSlaCounts()]);
+    setIsRefreshing(false);
+  }
 
   const {
     assigned: assignedCount,
@@ -186,7 +190,11 @@ export function Dashboard() {
   const funnelMax = Math.max(1, ...funnelStages.map((s) => s.count));
 
   return (
-    <AppLayout title="Dashboard" description={`Your workspace overview, ${currentUser?.name}.`}>
+    <AppLayout
+      title="Dashboard"
+      description={`Your workspace overview, ${currentUser?.name}.`}
+      action={<RefreshButton onRefresh={handleRefresh} isRefreshing={isRefreshing} />}
+    >
       <div className="flex flex-col gap-7">
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
           <StatCard
