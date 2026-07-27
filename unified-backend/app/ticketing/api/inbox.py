@@ -235,13 +235,30 @@ async def get_sent(
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
-    """Every reply the current user has sent, pre-ticket or ticket-level alike."""
+    """Every brand-new Compose email the current user has sent — see /replied for replies."""
 
     repository = InteractionRepository(db)
 
     service = InboxService(repository)
 
     return await service.get_sent(current_user)
+
+
+@router.get(
+    "/replied",
+    response_model=SentResponse,
+)
+async def get_replied(
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every reply the current user has sent, pre-ticket or ticket-level alike."""
+
+    repository = InteractionRepository(db)
+
+    service = InboxService(repository)
+
+    return await service.get_replied(current_user)
 
 
 @router.get(

@@ -84,10 +84,17 @@ export async function getViewCounts(
   return data;
 }
 
-// GET /inbox/sent — every reply the current user has sent, pre-
-// ticket or ticket-level alike.
+// GET /inbox/sent — every brand-new Compose email the current user has
+// sent. See getReplied for replies — the two used to be merged here.
 export async function getSent(): Promise<SentResponse> {
   const { data } = await apiClient.get<SentResponse>("/inbox/sent");
+  return data;
+}
+
+// GET /inbox/replied — every reply the current user has sent, pre-
+// ticket or ticket-level alike.
+export async function getReplied(): Promise<SentResponse> {
+  const { data } = await apiClient.get<SentResponse>("/inbox/replied");
   return data;
 }
 

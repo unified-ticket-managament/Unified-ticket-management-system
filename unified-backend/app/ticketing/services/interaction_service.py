@@ -1081,8 +1081,12 @@ class InteractionService:
 
         # The root leaves the Pending triage queue once it's been
         # replied to — "general communication, no ticket needed" is
-        # now handled, not waiting on anyone.
-        if root.status == InteractionStatus.PENDING:
+        # now handled, not waiting on anyone. Also clears IGNORED
+        # (Archived): replying to an archived item is itself an action
+        # taken on it, and there's no separate "unarchive" step — without
+        # this, a replied-to archived item stayed stuck showing under
+        # Archived forever despite now having a reply.
+        if root.status in (InteractionStatus.PENDING, InteractionStatus.IGNORED):
             await self.interaction_repository.update(
                 root, InteractionUpdate(status=InteractionStatus.ASSIGNED)
             )
