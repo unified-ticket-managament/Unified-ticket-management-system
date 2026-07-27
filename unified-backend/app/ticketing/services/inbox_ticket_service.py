@@ -55,8 +55,28 @@ class InboxTicketService:
 
     async def _get_pending_interaction(self, interaction_id):
         """
-        Returns a pending interaction that has not yet been
-        attached to any ticket.
+        Returns a not-yet-ticketed interaction — the single real gate
+        for "can this become/be attached to a ticket" is `ticket_id is
+        None`, matching the frontend's own `isTicketed` check
+        (MessageDetailsView.tsx), which shows the Create Ticket/Attach
+        buttons for any un-ticketed email regardless of its triage
+        `status`.
+
+        Deliberately does NOT also require `status == PENDING` — that
+        used to be checked here too, but `status` is a separate,
+        orthogonal concept (triage/response state: PENDING -> ASSIGNED
+        once replied to, or IGNORED once archived — see
+        InteractionRepository's "pending"/"replied"/"archived" inbox
+        views) from "is this on a ticket yet." A brand-new Compose
+        email and any email an agent has already replied to are both
+        created/moved to ASSIGNED (see InteractionService.compose_email
+        and .add_interaction_reply) while still correctly having
+        ticket_id=None — "already replied, no ticket needed yet" is a
+        real, common, and reversible state, not a terminal one. The
+        old stricter check made every such interaction permanently
+        un-convertible into a ticket, a real reported bug (400 "not
+        pending" on an interaction the UI still showed a working
+        Create Ticket button for).
         """
 
         interaction = await self.interaction_repository.get_by_id(
@@ -73,12 +93,6 @@ class InboxTicketService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Interaction already belongs to a ticket.",
-            )
-
-        if interaction.status != InteractionStatus.PENDING:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Interaction is not pending.",
             )
 
         return interaction

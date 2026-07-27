@@ -52,8 +52,11 @@ class Settings(BaseSettings):
     # calls SLASweepService.run_sweep() — replaces the old external
     # GitHub Actions cron trigger. The same POST /internal/sla/sweep
     # endpoint (and its shared-secret auth above) stays available for
-    # manual/on-demand triggering regardless of this value.
-    sla_sweep_interval_minutes: int = 1
+    # manual/on-demand triggering regardless of this value. Deliberately
+    # seconds-granularity (not minutes) — fast feedback while iterating
+    # on SLA/escalation behavior locally matters more here than the
+    # extra Neon round trips a sub-minute cadence costs.
+    sla_sweep_interval_seconds: int = 10
 
     # Kept as a raw string (not List[str]): pydantic-settings tries to
     # JSON-decode env vars for list-typed fields before any validator runs,

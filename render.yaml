@@ -85,11 +85,15 @@ services:
       - key: SLA_SWEEP_SHARED_SECRET
         sync: false
       # How often app/core/sla_scheduler.py's in-process APScheduler
-      # job calls SLASweepService.run_sweep(). Plain value, not a
-      # secret — override here if a deployed environment ever needs a
-      # different cadence than the app's own default.
-      - key: SLA_SWEEP_INTERVAL_MINUTES
-        value: "1"
+      # job calls SLASweepService.run_sweep(), in seconds. Plain value,
+      # not a secret. Explicitly set to 60 here (vs. the app's own
+      # faster 10-second local-dev default — see Settings.
+      # sla_sweep_interval_seconds's own docstring) since a deployed
+      # environment doesn't need sub-minute feedback the way active
+      # local iteration does, and a slower cadence means fewer Neon
+      # round trips against the real production database.
+      - key: SLA_SWEEP_INTERVAL_SECONDS
+        value: "60"
       # Microsoft Graph mail integration (app/ticketing/services/
       # graph_client.py, graph_auth.py, graph_subscription_service.py).
       # All five optional — get_mail_provider_client() falls back to
@@ -125,7 +129,7 @@ services:
   # (.github/workflows/sla-sweep.yml). Both are gone/disabled now — the
   # sweep runs in-process inside unified-backend itself instead
   # (app/core/sla_scheduler.py, an APScheduler job started from
-  # app/main.py's lifespan, interval set by SLA_SWEEP_INTERVAL_MINUTES
+  # app/main.py's lifespan, interval set by SLA_SWEEP_INTERVAL_SECONDS
   # below), so no separate scheduling service/workflow is needed at
   # all. The GitHub Actions workflow file is kept, `schedule` trigger
   # removed, as a manual/emergency-only fallback.

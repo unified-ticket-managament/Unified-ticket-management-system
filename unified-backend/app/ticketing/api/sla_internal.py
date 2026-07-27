@@ -88,7 +88,7 @@ async def run_sla_sweep(
     notifications idempotently. See SLASweepService for the full
     threshold/recipient logic. The primary trigger is now
     app/core/sla_scheduler.py's in-process APScheduler job (see
-    SLA_SWEEP_INTERVAL_MINUTES); this endpoint stays available for
+    SLA_SWEEP_INTERVAL_SECONDS); this endpoint stays available for
     manual/emergency use, both calling the identical
     build_sla_sweep_service() wiring above.
     """

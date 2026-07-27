@@ -3,7 +3,7 @@ name: SLA Sweep
 # DISABLED as the scheduling mechanism — the SLA sweep now runs
 # in-process inside unified-backend itself (app/core/sla_scheduler.py,
 # an APScheduler job started from app/main.py's lifespan, interval
-# configured via SLA_SWEEP_INTERVAL_MINUTES). This workflow's
+# configured via SLA_SWEEP_INTERVAL_SECONDS). This workflow's
 # `schedule` trigger has been removed on purpose so it can no longer
 # fire on its own; `workflow_dispatch` is kept so it still exists as a
 # manual/emergency fallback (Actions tab -> SLA Sweep -> Run workflow)

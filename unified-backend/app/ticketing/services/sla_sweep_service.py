@@ -1,7 +1,8 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
+from app.core.config import get_settings
 from app.notifications.service import NotificationService
 from app.ticketing.enums import ActorRole, AuditEntityType, AuditEventType
 from app.ticketing.models.first_response_sla import FirstResponseSLA
@@ -49,6 +50,61 @@ from app.ticketing.services.sla_service import compute_elapsed_fraction
 logger = logging.getLogger(__name__)
 
 CLOCK_TYPE_RESOLUTION = "RESOLUTION"
+
+# Fixed regardless of per-priority policy overrides — BREACHED/ESCALATED
+# never vary (see thresholds_reached's own docstring); only the two
+# warning tiers are configurable.
+_FIXED_THRESHOLD_CUTOFFS = {"BREACHED": 1.0, "ESCALATED": 1.5}
+
+
+def _late_thresholds(
+    reached: list[str],
+    *,
+    due_at: datetime,
+    target_minutes: int,
+    now: datetime,
+    half_elapsed_cutoff: float,
+    at_risk_cutoff: float,
+    grace_seconds: float,
+) -> list[tuple[str, float]]:
+    """
+    For each threshold this tick found in `reached`, computes how many
+    seconds after its true crossing instant `now` actually is — using
+    the same due_at-based math as compute_elapsed_fraction (so it's
+    correctly pause/resume-robust, never touching started_at) — and
+    returns only the ones whose lateness exceeds `grace_seconds`.
+
+    A small amount of lateness (up to roughly one sweep interval) is
+    completely normal for a polling sweep and not worth logging.
+    Lateness far beyond that — the only thing this returns — means the
+    scheduler simply didn't tick for a stretch (a process restart,
+    freeze, or a competing/absent scheduler — see root CLAUDE.md's
+    Deployment section), not a defect in threshold classification
+    itself: `thresholds_reached` still correctly detects every crossed
+    threshold the moment it's finally checked, it just checked late.
+    This is purely a diagnostic signal for that operational gap.
+    """
+
+    target_seconds = target_minutes * 60
+    if target_seconds <= 0:
+        return []
+
+    cutoffs = {
+        "HALF_ELAPSED": half_elapsed_cutoff,
+        "AT_RISK": at_risk_cutoff,
+        **_FIXED_THRESHOLD_CUTOFFS,
+    }
+
+    late: list[tuple[str, float]] = []
+    for threshold in reached:
+        cutoff = cutoffs.get(threshold)
+        if cutoff is None:
+            continue
+        ideal_at = due_at - timedelta(seconds=target_seconds * (1 - cutoff))
+        lateness = (now - ideal_at).total_seconds()
+        if lateness > grace_seconds:
+            late.append((threshold, lateness))
+    return late
 
 
 class SLASweepService:
@@ -166,6 +222,15 @@ class SLASweepService:
         # back empty — see _notify_resolution's own comment. Previously
         # completely invisible; now surfaced both in logs and here.
         recipients_empty = 0
+        # A threshold discovered well after its true crossing instant —
+        # see _late_thresholds' own docstring. Purely diagnostic: a
+        # nonzero count here means the scheduler had a real continuity
+        # gap (process restart/freeze/absence), not that classification
+        # or notification logic did anything wrong.
+        late_threshold_detections = 0
+        # Anything under ~5 sweep intervals (floored at 60s) is ordinary
+        # polling jitter, not worth logging — see _late_thresholds.
+        late_grace_seconds = max(60.0, get_settings().sla_sweep_interval_seconds * 5)
 
         global_inbox_ids = await self._global_inbox_user_ids()
 
@@ -187,6 +252,12 @@ class SLASweepService:
         candidates: list[tuple[str, UUID, str, int]] = []
         fr_clock_by_id: dict[UUID, FirstResponseSLA] = {}
         res_clock_by_id: dict[UUID, ResolutionSLA] = {}
+        # Clocks whose ticket crossed ESCALATED this tick and don't yet
+        # have an active escalation — recorded here during classification
+        # but not acted on until after the notify loop below (see that
+        # loop's own comment, and the auto-escalation block right after
+        # it, for why this must not run any earlier).
+        pending_auto_escalations: list[ResolutionSLA] = []
 
         first_response_clocks = await self.first_response_sla_repository.list_active_for_sweep()
         logger.info("SLA sweep: %d active First Response clock(s)", len(first_response_clocks))
@@ -220,14 +291,10 @@ class SLASweepService:
                 due_at=clock.due_at, target_minutes=target_minutes, at=now
             )
             policy = policy_by_priority.get(clock.priority)
-            reached = (
-                thresholds_reached(
-                    fraction,
-                    half_elapsed=policy.warning_1_percentage / 100,
-                    at_risk=policy.warning_2_percentage / 100,
-                )
-                if policy is not None
-                else thresholds_reached(fraction)
+            half_elapsed_cutoff = policy.warning_1_percentage / 100 if policy is not None else 0.5
+            at_risk_cutoff = policy.warning_2_percentage / 100 if policy is not None else 0.8
+            reached = thresholds_reached(
+                fraction, half_elapsed=half_elapsed_cutoff, at_risk=at_risk_cutoff
             )
             if "HALF_ELAPSED" in reached:
                 counts["first_response_half_elapsed"] += 1
@@ -235,6 +302,26 @@ class SLASweepService:
                 counts["first_response_at_risk"] += 1
             if "BREACHED" in reached:
                 counts["first_response_breached"] += 1
+
+            for threshold, lateness in _late_thresholds(
+                reached,
+                due_at=clock.due_at,
+                target_minutes=target_minutes,
+                now=now,
+                half_elapsed_cutoff=half_elapsed_cutoff,
+                at_risk_cutoff=at_risk_cutoff,
+                grace_seconds=late_grace_seconds,
+            ):
+                late_threshold_detections += 1
+                logger.warning(
+                    "SLA sweep: FIRST_RESPONSE clock %s (interaction %s) threshold %s "
+                    "discovered %.0fs after its true crossing instant — scheduler "
+                    "likely had a continuity gap, not a classification bug.",
+                    clock.first_response_sla_id,
+                    clock.interaction_id,
+                    threshold,
+                    lateness,
+                )
 
             if reached:
                 fr_clock_by_id[clock.first_response_sla_id] = clock
@@ -295,14 +382,10 @@ class SLASweepService:
                 due_at=clock.due_at, target_minutes=target_minutes, at=now
             )
             policy = policy_by_priority.get(clock.priority)
-            reached = (
-                thresholds_reached(
-                    fraction,
-                    half_elapsed=policy.warning_1_percentage / 100,
-                    at_risk=policy.warning_2_percentage / 100,
-                )
-                if policy is not None
-                else thresholds_reached(fraction)
+            half_elapsed_cutoff = policy.warning_1_percentage / 100 if policy is not None else 0.5
+            at_risk_cutoff = policy.warning_2_percentage / 100 if policy is not None else 0.8
+            reached = thresholds_reached(
+                fraction, half_elapsed=half_elapsed_cutoff, at_risk=at_risk_cutoff
             )
             if "HALF_ELAPSED" in reached:
                 counts["resolution_half_elapsed"] += 1
@@ -312,6 +395,26 @@ class SLASweepService:
                 counts["resolution_breached"] += 1
             if "ESCALATED" in reached:
                 counts["resolution_escalated"] += 1
+
+            for threshold, lateness in _late_thresholds(
+                reached,
+                due_at=clock.due_at,
+                target_minutes=target_minutes,
+                now=now,
+                half_elapsed_cutoff=half_elapsed_cutoff,
+                at_risk_cutoff=at_risk_cutoff,
+                grace_seconds=late_grace_seconds,
+            ):
+                late_threshold_detections += 1
+                logger.warning(
+                    "SLA sweep: RESOLUTION clock %s (ticket %s) threshold %s "
+                    "discovered %.0fs after its true crossing instant — scheduler "
+                    "likely had a continuity gap, not a classification bug.",
+                    clock.resolution_sla_id,
+                    clock.ticket_id,
+                    threshold,
+                    lateness,
+                )
 
             if reached:
                 res_clock_by_id[clock.resolution_sla_id] = clock
@@ -325,38 +428,35 @@ class SLASweepService:
                     for threshold in reached
                 )
 
-            # Auto-escalation creation is deliberately evaluated here,
-            # independent of the notify-once idempotency ledger below —
-            # NOT nested inside the newly-recorded notification loop
-            # further down, where it used to live. A clock's ESCALATED
-            # crossing only ever notifies once (the ledger's whole
-            # point), but a ticket that crossed that threshold before
-            # ever getting an escalation created — a past transient
-            # failure, or simply because this auto-escalation feature
-            # didn't exist yet when the notification first fired —
-            # would otherwise never be retried on any later sweep tick,
-            # since "newly recorded" would stay false forever for that
-            # (clock, threshold) pair. This runs on every tick a clock
-            # remains ESCALATED instead, relying entirely on
-            # auto_escalate_if_needed's own idempotency (a no-op once
-            # an active escalation already exists) to stay safe to call
-            # repeatedly. Isolated in its own SAVEPOINT, same as every
-            # other per-clock action in this sweep, so one ticket's
-            # failure can't affect another.
+            # Auto-escalation is only *recorded* here, never *executed*
+            # here — see the dedicated pass after the notify loop below
+            # for why, and for the rest of this reasoning (idempotency
+            # via auto_escalate_if_needed's own no-op-if-already-
+            # escalated guard, the cost-control rationale for the
+            # `not in escalations_by_ticket_id` gate, and the fresh-
+            # refetch requirement). This split is itself the fix for a
+            # real, reported routing defect: executing auto-escalation
+            # inline, in this same classification loop, could create the
+            # new escalation BEFORE this tick's own notify loop resolves
+            # recipients for that same clock's other newly-crossed
+            # thresholds (HALF_ELAPSED/AT_RISK/BREACHED) — whenever a
+            # clock is discovered already past 150% (a delayed sweep, or
+            # a short SLA target relative to the sweep interval),
+            # thresholds_reached() returns all of them together in one
+            # tick, and the notify loop's own refresh step (which is not
+            # threshold-scoped) would then feed the *new* escalation's
+            # owner into recipient resolution for thresholds that
+            # logically belonged to the pre-escalation owner. Deferring
+            # execution until after the notify loop has read
+            # `escalations_by_ticket_id` for every one of this tick's
+            # thresholds closes that window entirely — see the matching
+            # regression tests in tests/test_sla_sweep_service.py.
             #
             # Gated on ESCALATED (150%) only, deliberately NOT BREACHED
             # (100%) — a clock crossing BREACHED still notifies the
             # current owner (assigned agent) via RESOLUTION_RULES_
             # CURRENT_OWNER below, same as HALF_ELAPSED/AT_RISK, with no
-            # ownership handoff yet. Creating the escalation any earlier
-            # than ESCALATED would flip resolve_current_owner's
-            # escalation-owner-takes-priority branch on in the very same
-            # tick BREACHED first fires, silently redirecting that
-            # Breached notification away from the current owner to the
-            # escalation's owner before the owner ever had a chance to
-            # receive it — confirmed as a real, reported routing defect,
-            # not a hypothetical one (see the matching regression test
-            # in tests/test_sla_sweep_service.py).
+            # ownership handoff yet.
             #
             # Skipped entirely for a ticket already present in
             # escalations_by_ticket_id (the batch prefetch above) —
@@ -372,61 +472,7 @@ class SLASweepService:
             # prefetched active escalation still pay that round trip,
             # and only once they actually need it.
             if "ESCALATED" in reached and clock.ticket_id not in escalations_by_ticket_id:
-                # Re-fetched fresh here rather than reusing the
-                # tickets_by_id snapshot taken at the top of this tick —
-                # this classification+auto-escalation loop can run for
-                # many seconds (one round trip per ticket, per the
-                # class docstring), during which a claim/transfer could
-                # land on this exact ticket. Using the stale snapshot's
-                # agent_id would feed _resolve_starting_level a
-                # possibly-already-superseded owner, picking the wrong
-                # starting escalation level (e.g. starting at TEAM_LEAD
-                # for a ticket a Team Lead has since claimed themselves,
-                # instead of correctly skipping to MANAGER). Only paid
-                # for tickets actually about to escalate — typically a
-                # small set — same "narrow, targeted re-fetch" trade-off
-                # as the newly_recorded refresh below.
-                #
-                # populate_existing=True is not optional here — this
-                # exact ticket is already loaded in this session's
-                # identity map from the batch snapshot above, and
-                # AsyncSessionLocal is configured with
-                # expire_on_commit=False (app/database/session.py), so
-                # a plain re-query would otherwise silently hand back
-                # the SAME stale, already-loaded object rather than
-                # observing a concurrent commit — see
-                # TicketRepository.get_by_id's own docstring. Note:
-                # EscalationService._set_ticket_priority_to_critical
-                # (the first thing _create_escalation does) also
-                # happens to refresh this same ticket object as a side
-                # effect of its own update()+session.refresh() call —
-                # but ONLY the first time a ticket ever escalates; it
-                # no-ops without refreshing if the ticket is already
-                # CRITICAL from a prior, since-closed escalation. This
-                # explicit re-fetch is what keeps a *re*-escalation of
-                # an already-CRITICAL ticket correct too, rather than
-                # depending on that incidental side effect.
-                fresh_ticket = await self.ticket_repository.get_by_id(
-                    clock.ticket_id, populate_existing=True
-                )
-                if fresh_ticket is not None:
-                    tickets_by_id[fresh_ticket.ticket_id] = fresh_ticket
-                ticket = fresh_ticket if fresh_ticket is not None else tickets_by_id.get(clock.ticket_id)
-                if ticket is not None:
-                    try:
-                        async with db.begin_nested():
-                            created = await self.escalation_service.auto_escalate_if_needed(
-                                ticket=ticket, resolution_clock=clock
-                            )
-                        if created:
-                            escalations_created += 1
-                    except Exception:
-                        logger.warning(
-                            "SLA sweep: failed auto-escalating ticket %s",
-                            ticket.ticket_id,
-                            exc_info=True,
-                        )
-                        errors += 1
+                pending_auto_escalations.append(clock)
 
         # ONE round trip checks every crossed triple across both clock
         # types at once — see try_record_many's own docstring for the
@@ -532,6 +578,69 @@ class SLASweepService:
                 )
                 errors += 1
 
+        # Auto-escalation execution — deliberately run here, strictly
+        # after the notify loop above, never earlier (see
+        # `pending_auto_escalations`'s own comment in the classification
+        # loop for the full reasoning: creating these escalations any
+        # earlier could feed this same tick's own notify loop a
+        # just-created escalation for a threshold that logically
+        # belonged to the pre-escalation owner). By the time this runs,
+        # every one of this tick's HALF_ELAPSED/AT_RISK/BREACHED
+        # notifications has already read `escalations_by_ticket_id`, so
+        # nothing below can affect them.
+        for clock in pending_auto_escalations:
+            # Re-fetched fresh here rather than reusing the tickets_by_id
+            # snapshot taken at the top of this tick — the classification
+            # loop and this whole sweep can run for a while, during which
+            # a claim/transfer could land on this exact ticket. Using the
+            # stale snapshot's agent_id would feed _resolve_starting_level
+            # a possibly-already-superseded owner, picking the wrong
+            # starting escalation level (e.g. starting at TEAM_LEAD for a
+            # ticket a Team Lead has since claimed themselves, instead of
+            # correctly skipping to MANAGER). Only paid for tickets
+            # actually about to escalate — typically a small set — same
+            # "narrow, targeted re-fetch" trade-off as the newly_recorded
+            # refresh above.
+            #
+            # populate_existing=True is not optional here — this exact
+            # ticket is already loaded in this session's identity map from
+            # the batch snapshot above, and AsyncSessionLocal is
+            # configured with expire_on_commit=False (app/database/
+            # session.py), so a plain re-query would otherwise silently
+            # hand back the SAME stale, already-loaded object rather than
+            # observing a concurrent commit — see TicketRepository.
+            # get_by_id's own docstring. Note: EscalationService.
+            # _set_ticket_priority_to_critical (the first thing
+            # _create_escalation does) also happens to refresh this same
+            # ticket object as a side effect of its own update()+session.
+            # refresh() call — but ONLY the first time a ticket ever
+            # escalates; it no-ops without refreshing if the ticket is
+            # already CRITICAL from a prior, since-closed escalation. This
+            # explicit re-fetch is what keeps a *re*-escalation of an
+            # already-CRITICAL ticket correct too, rather than depending
+            # on that incidental side effect.
+            fresh_ticket = await self.ticket_repository.get_by_id(
+                clock.ticket_id, populate_existing=True
+            )
+            if fresh_ticket is not None:
+                tickets_by_id[fresh_ticket.ticket_id] = fresh_ticket
+            ticket = fresh_ticket if fresh_ticket is not None else tickets_by_id.get(clock.ticket_id)
+            if ticket is not None:
+                try:
+                    async with db.begin_nested():
+                        created = await self.escalation_service.auto_escalate_if_needed(
+                            ticket=ticket, resolution_clock=clock
+                        )
+                    if created:
+                        escalations_created += 1
+                except Exception:
+                    logger.warning(
+                        "SLA sweep: failed auto-escalating ticket %s",
+                        ticket.ticket_id,
+                        exc_info=True,
+                    )
+                    errors += 1
+
         # Escalation acknowledgment auto-advance — extends this same
         # sweep run rather than a second scheduler (see
         # EscalationService.evaluate_overdue's own docstring). Runs
@@ -593,16 +702,27 @@ class SLASweepService:
             errors += 1
 
         duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
+        if late_threshold_detections:
+            logger.warning(
+                "SLA sweep: %d threshold(s) discovered late this tick (>%.0fs past "
+                "their true crossing instant) — check whether the scheduler had a "
+                "continuity gap (process restart/freeze, or a competing/absent "
+                "scheduler; see root CLAUDE.md's Deployment section).",
+                late_threshold_detections,
+                late_grace_seconds,
+            )
         logger.info(
             "SLA sweep completed in %.2fs — notifications_sent=%d "
             "escalations_created=%d escalations_advanced=%d "
-            "escalation_handling_sla_breaches=%d errors=%d counts=%s",
+            "escalation_handling_sla_breaches=%d errors=%d "
+            "late_threshold_detections=%d counts=%s",
             duration_seconds,
             notifications_sent,
             escalations_created,
             escalations_advanced,
             escalation_handling_sla_breaches,
             errors,
+            late_threshold_detections,
             counts,
         )
 
@@ -614,6 +734,7 @@ class SLASweepService:
             escalation_handling_sla_breaches=escalation_handling_sla_breaches,
             errors=errors,
             recipients_empty=recipients_empty,
+            late_threshold_detections=late_threshold_detections,
         )
 
     # ---------------------------------------------------------

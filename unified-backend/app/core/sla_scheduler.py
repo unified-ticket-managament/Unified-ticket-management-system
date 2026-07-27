@@ -70,31 +70,34 @@ def start_scheduler() -> None:
     second call is a no-op) so an accidental double-invocation of the
     lifespan startup hook can never produce two competing schedulers.
 
-    Reads its interval from settings.sla_sweep_interval_minutes (see
-    app/core/config.py's own docstring on that field, which already
-    claimed this scheduler reads it — it didn't, until now: this was
-    hardcoded to a flat 10 seconds regardless of that setting, six
-    times more frequent than the documented 1-minute default). Beyond
-    just matching the docs, this matters because a shorter interval
-    directly multiplies how often two independently-running processes
-    (a deployed instance and a local dev instance, both capable of
-    running this same in-process scheduler against the same shared
-    Neon database — see root CLAUDE.md's Deployment section) can land
-    on the same clock/threshold at nearly the same moment and race on
-    SLABreachNotificationRepository.try_record_many's idempotency
-    ledger — only one of them ever gets to actually send that
-    notification, and the loser silently never retries it.
+    Reads its interval from settings.sla_sweep_interval_seconds (see
+    app/core/config.py's own docstring on that field) rather than a
+    bare hardcode, so the two can never drift apart again — this
+    scheduler previously hardcoded seconds=10 with no config read at
+    all, while the config field's own docstring already (incorrectly)
+    claimed this scheduler read it. Deliberately kept at a fast,
+    seconds-granularity default rather than a minute-plus cadence: a
+    shorter interval does multiply how often two independently-running
+    processes (a deployed instance and a local dev instance, both
+    capable of running this same in-process scheduler against the same
+    shared Neon database — see root CLAUDE.md's Deployment section)
+    could land on the same clock/threshold at nearly the same moment
+    and race on SLABreachNotificationRepository.try_record_many's
+    idempotency ledger (only one of them ever gets to actually send
+    that notification — safe, never duplicated, but the loser silently
+    never retries it) — but fast local feedback while iterating on SLA/
+    escalation behavior was judged worth that trade-off.
     """
 
     if scheduler.running:
         return
 
-    interval_minutes = get_settings().sla_sweep_interval_minutes
+    interval_seconds = get_settings().sla_sweep_interval_seconds
 
     scheduler.add_job(
         _run_scheduled_sweep,
         trigger="interval",
-        minutes=interval_minutes,
+        seconds=interval_seconds,
         id=SLA_SWEEP_JOB_ID,
         # APScheduler's own overlap guard — if a sweep is still running
         # when the next tick fires, the new tick is skipped rather than
@@ -113,9 +116,9 @@ def start_scheduler() -> None:
     # processes are actually both ticking against the same database —
     # see this function's own docstring.
     logger.info(
-        "SLA sweep scheduler started [process=%s] — running every %s minute(s).",
+        "SLA sweep scheduler started [process=%s] — running every %s second(s).",
         SLA_SWEEP_PROCESS_ID,
-        interval_minutes,
+        interval_seconds,
     )
 
 
