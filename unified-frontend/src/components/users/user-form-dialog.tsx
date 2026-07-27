@@ -73,6 +73,14 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
         if (currentUserRole === ROLE_NAMES.SUPER_ADMIN && !data.manager_id) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["manager_id"], message: "Select a reporting manager" });
         }
+      } else if (selectedRoleName === ROLE_NAMES.CLIENT) {
+        // The backend requires an owning Account Manager to create the
+        // linked `clients` row (see root CLAUDE.md's Client-role
+        // section) — enforced here too so the error surfaces on this
+        // field instead of as a generic submit failure.
+        if (!data.manager_id) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["manager_id"], message: "Select an Account Manager" });
+        }
       }
     });
 }
@@ -163,7 +171,11 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
   const roleName = roleMap.get(roleId);
   const showStaffHierarchy = roleName === ROLE_NAMES.STAFF;
   const showTeamLeadHierarchy = roleName === ROLE_NAMES.TEAM_LEAD;
-  const showHierarchyFields = showStaffHierarchy || showTeamLeadHierarchy;
+  // Client needs only an owning Account Manager (manager_id) — no
+  // category, no team lead — see the Client-role branch in
+  // buildSchema/the mutation payload below.
+  const showClientHierarchy = roleName === ROLE_NAMES.CLIENT;
+  const showHierarchyFields = showStaffHierarchy || showTeamLeadHierarchy || showClientHierarchy;
 
   const hierarchyUsersQuery = useQuery({
     queryKey: ["users-hierarchy-options"],
@@ -171,10 +183,15 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
     enabled: open && showHierarchyFields,
   });
 
+  // Only Staff/Team Lead need a Work Category — Client has no
+  // category concept at all (see the Client-role branch below), so
+  // this is scoped narrower than showHierarchyFields.
+  const showCategoryField = showStaffHierarchy || showTeamLeadHierarchy;
+
   const categoriesQuery = useQuery({
     queryKey: ["categories-options"],
     queryFn: () => categoryService.list({ page_size: 100 }),
-    enabled: open && showHierarchyFields,
+    enabled: open && showCategoryField,
   });
 
   const categories: Category[] = categoriesQuery.data?.categories ?? [];
@@ -212,7 +229,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
       const hierarchyFields = {
         ...(selectedRoleName === ROLE_NAMES.STAFF
           ? { manager_id: values.manager_id || null, teamlead_id: values.teamlead_id || null }
-          : selectedRoleName === ROLE_NAMES.TEAM_LEAD
+          : selectedRoleName === ROLE_NAMES.TEAM_LEAD || selectedRoleName === ROLE_NAMES.CLIENT
             ? { manager_id: values.manager_id || null }
             : {}),
         ...(needsCategory ? { category_id: values.category_id || null } : {}),
@@ -322,7 +339,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
             {errors.role_id && <p className="text-sm text-destructive">{errors.role_id.message}</p>}
           </div>
 
-          {showHierarchyFields && (
+          {showCategoryField && (
             <div className="space-y-2">
               <Label>Work Category</Label>
               <Select
@@ -472,6 +489,38 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
                   <p className="text-xs text-muted-foreground">Automatically assigned as you.</p>
                 </div>
               )}
+            </div>
+          )}
+
+          {showClientHierarchy && (
+            <div className="space-y-4 rounded-lg border border-dashed border-border p-3">
+              <p className="text-xs font-medium text-muted-foreground">Reporting Structure</p>
+
+              <div className="space-y-2">
+                <Label>Account Manager</Label>
+                <Select
+                  value={managerId || ""}
+                  onValueChange={(value) => setValue("manager_id", value, { shouldValidate: true })}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select an Account Manager" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {managerOptions.map((m) => (
+                      <SelectItem key={m.user_id} value={m.user_id}>
+                        {m.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {errors.manager_id && (
+                  <p className="text-sm text-destructive">{errors.manager_id.message}</p>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  This Client user will also appear as a client company owned by the selected
+                  Account Manager.
+                </p>
+              </div>
             </div>
           )}
 

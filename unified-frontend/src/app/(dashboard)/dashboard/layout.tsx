@@ -48,7 +48,7 @@ export default function DashboardLayoutSegment({
   // deeper than the bare /dashboard root, where they instead get their
   // own role-specific dashboard (rendered by `children`, i.e. page.tsx).
   const showWorkspace =
-    role === ROLE_NAMES.VIEWER
+    role === ROLE_NAMES.CLIENT
       ? false
       : role === ROLE_NAMES.SUPER_ADMIN ||
           role === ROLE_NAMES.SITE_LEAD ||

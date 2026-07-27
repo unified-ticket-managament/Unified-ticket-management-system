@@ -24,7 +24,7 @@ export default function DashboardCatchAllPage() {
     return <SuperAdminDashboard />;
   }
 
-  if (role === ROLE_NAMES.VIEWER) {
+  if (role === ROLE_NAMES.CLIENT) {
     return <ViewerDashboard />;
   }
 

@@ -103,3 +103,34 @@ class ClientRepository:
             )
         )
         return list(result.scalars().all())
+
+    async def update_linked_fields(
+        self,
+        client: Client,
+        *,
+        name: str | None = None,
+        inbox_email: str | None = None,
+        account_manager_id: UUID | None = None,
+        is_active: bool | None = None,
+    ) -> Client:
+        """
+        Patches only the fields actually passed on an existing client
+        row — used by UserService's "Client" role branch (create/edit/
+        activate/deactivate a Client user via the Users page routes
+        straight to this table, see root CLAUDE.md's Client-role
+        section) so a partial edit never clobbers a value the caller
+        didn't mean to change.
+        """
+
+        if name is not None:
+            client.name = name
+        if inbox_email is not None:
+            client.inbox_email = inbox_email.lower()
+        if account_manager_id is not None:
+            client.account_manager_id = account_manager_id
+        if is_active is not None:
+            client.is_active = is_active
+
+        await self.db.flush()
+        await self.db.refresh(client)
+        return client

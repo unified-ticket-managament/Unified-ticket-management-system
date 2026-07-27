@@ -100,7 +100,7 @@ export function ViewerDashboard() {
   const canSeeAuditLogs = role === ROLE_NAMES.SUPER_ADMIN;
   const canSeeCharts = role === ROLE_NAMES.SUPER_ADMIN;
   const isStaff = role === ROLE_NAMES.STAFF;
-  const isViewer = role === ROLE_NAMES.VIEWER;
+  const isViewer = role === ROLE_NAMES.CLIENT;
   const hasAdminQuickActions = hasAnyPermission(QUICK_ACTIONS.map((a) => a.permission));
 
   const usersQuery = useQuery({

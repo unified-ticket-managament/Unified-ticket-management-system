@@ -10,12 +10,25 @@ from app.rbac.repositories import CategoryRepository, RoleRepository, UserReposi
 from app.rbac.schemas.audit_log import AuditLogCreate
 from app.rbac.schemas.user import UserCreate, UserUpdate
 from app.rbac.services.audit_log_service import AuditLogService
+from app.ticketing.models.client import Client
+from app.ticketing.repositories.client_repository import ClientRepository
+from app.ticketing.schemas.client import ClientCreate
+from app.ticketing.services.client_service import ClientService
 
 # Roles required to belong to a work-specialization category — see
 # shared_models.models.Category. Not imported from a shared constant
 # because RBAC's role-name literals live only in the frontend's
 # role-access.ts today; keep this set in sync with it by hand.
 CATEGORY_REQUIRED_ROLE_NAMES = {"Staff", "Team Lead"}
+
+# The client-facing role (renamed from "Viewer" — see root CLAUDE.md's
+# Client-role section). Unlike every other role, a "Client" user is
+# never stored in `users` at all — see the "Client storage" block of
+# methods below. It has no reporting-hierarchy/category concept of its
+# own and no password, so it's handled as a fully separate branch
+# through create/get/list/update/delete/activate/deactivate rather
+# than folded into the internal-user code path.
+CLIENT_ROLE_NAME = "Client"
 
 # Fields whose change should invalidate any already-issued session's
 # cached RBAC state (see User.permission_version's own docstring and
@@ -38,11 +51,15 @@ class UserService:
         role_repository: RoleRepository,
         category_repository: CategoryRepository,
         audit_log_service: AuditLogService,
+        client_repository: ClientRepository,
+        client_service: ClientService,
     ):
         self.user_repository = user_repository
         self.role_repository = role_repository
         self.category_repository = category_repository
         self.audit_log_service = audit_log_service
+        self.client_repository = client_repository
+        self.client_service = client_service
 
     # --------------------------------------------------
     # Create User
@@ -52,14 +69,7 @@ class UserService:
             self,
             user_data: UserCreate,
             actor: User | None = None,
-        ) -> User:
-
-        # Check email already exists
-        if await self.user_repository.exists(user_data.email):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already exists.",
-            )
+        ):
 
         # Check role exists
         role = await self.role_repository.get_by_id(
@@ -70,6 +80,19 @@ class UserService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Role not found.",
+            )
+
+        # A "Client" user is never stored in `users` at all — see
+        # CLIENT_ROLE_NAME's own docstring and root CLAUDE.md's
+        # Client-role section. Fully separate branch, own storage.
+        if role.name == CLIENT_ROLE_NAME:
+            return await self._create_client_user(user_data, role, actor)
+
+        # Check email already exists
+        if await self.user_repository.exists(user_data.email):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already exists.",
             )
 
         # Staff/Team Lead must belong to a work-specialization
@@ -131,6 +154,209 @@ class UserService:
         )
 
         return user
+
+    # --------------------------------------------------
+    # Client storage — a "Client" user lives only in `clients`,
+    # never in `users` (see root CLAUDE.md's Client-role section)
+    # --------------------------------------------------
+
+    async def _resolve_client_role_id(self) -> UUID:
+        role = await self.role_repository.get_by_name(CLIENT_ROLE_NAME)
+
+        if role is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="The Client role is not configured.",
+            )
+
+        return role.role_id
+
+    def _client_to_user_response(self, client: Client, client_role_id: UUID) -> dict:
+        """
+        Shapes a `clients` row into the same dict shape UserResponse
+        expects, so the Users page's list/get/create/update/filter/
+        search all keep working unchanged against a merged view of
+        real internal users and Client "virtual users" — see root
+        CLAUDE.md's Client-role section. `client_id` doubles as
+        `user_id` here; a Client has no category/teamlead/profile
+        fields of its own, so those are always null.
+        """
+
+        return {
+            "user_id": client.client_id,
+            "name": client.name,
+            "email": client.inbox_email,
+            "role_id": client_role_id,
+            "manager_id": client.account_manager_id,
+            "teamlead_id": None,
+            "category_id": None,
+            "is_active": client.is_active,
+            "date_of_birth": None,
+            "alternate_email": None,
+            "phone_number": None,
+            "office_location": None,
+            "department": None,
+            "team": None,
+            "language": None,
+            "date_format": None,
+            "time_format": None,
+            "time_zone": None,
+            "default_dashboard": None,
+            "created_at": client.created_at,
+            "updated_at": client.updated_at,
+        }
+
+    async def _create_client_user(
+        self,
+        user_data: UserCreate,
+        role,
+        actor: User | None,
+    ) -> dict:
+        """
+        Creates a Client user straight in the ticketing domain's
+        `clients` table, via the same ClientService.create the
+        standalone company-onboarding endpoint already uses (its own
+        duplicate-inbox-email and active-Account-Manager checks apply
+        unchanged here) — no `users` row is ever created for this
+        role. `user_data.password` is accepted but intentionally
+        unused: a Client has no login of its own.
+        """
+
+        if user_data.manager_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="An Account Manager must be assigned when creating a Client user.",
+            )
+
+        if await self.user_repository.exists(user_data.email):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Email already exists.",
+            )
+
+        created = await self.client_service.create(
+            ClientCreate(
+                name=user_data.name,
+                inbox_email=user_data.email,
+                account_manager_id=user_data.manager_id,
+            ),
+            current_user=actor,
+        )
+
+        client = await self.client_repository.get_by_id(created.client_id)
+
+        if not user_data.is_active:
+            client = await self.client_repository.update_linked_fields(
+                client, is_active=False
+            )
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="user.create",
+                entity_type="client",
+                entity_id=str(client.client_id),
+                new_value=json.dumps(
+                    {"name": client.name, "email": client.inbox_email, "role": CLIENT_ROLE_NAME}
+                ),
+            )
+        )
+
+        return self._client_to_user_response(client, role.role_id)
+
+    async def _update_client_user(
+        self,
+        client: Client,
+        user_data: UserUpdate,
+        actor: User | None,
+    ) -> dict:
+        """
+        Edits an existing Client "virtual user" (see create_user's
+        Client branch above). A Client has no role/category/teamlead
+        concept — only name, email, its owning Account Manager
+        (manager_id), and is_active are meaningful here.
+        """
+
+        update_data = user_data.model_dump(exclude_unset=True)
+
+        # The edit form always resubmits role_id unchanged alongside
+        # whatever the user actually edited — only reject it if it's a
+        # genuine attempt to change role, not just a no-op resend. It
+        # has no bearing on a Client row either way, so drop it once
+        # validated rather than trying to "apply" it.
+        if "role_id" in update_data:
+            client_role_id = await self._resolve_client_role_id()
+            if str(update_data.pop("role_id")) != str(client_role_id):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot change an existing Client user's role. Create a new user instead.",
+                )
+
+        unsupported_fields = update_data.keys() & {"category_id", "teamlead_id"}
+        if unsupported_fields:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Client users do not support: {', '.join(sorted(unsupported_fields))}.",
+            )
+
+        if "email" in update_data:
+            existing_client = await self.client_repository.get_by_inbox_email(
+                update_data["email"]
+            )
+            if existing_client is not None and existing_client.client_id != client.client_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email already exists.",
+                )
+
+            if await self.user_repository.exists(update_data["email"]):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email already exists.",
+                )
+
+        effective_manager_id = update_data.get("manager_id", client.account_manager_id)
+        if effective_manager_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="An Account Manager must be assigned to a Client user.",
+            )
+
+        if "manager_id" in update_data:
+            await self._validate_manager_and_teamlead(
+                CLIENT_ROLE_NAME, effective_manager_id, None, None,
+            )
+
+        old_values = {
+            "name": client.name,
+            "email": client.inbox_email,
+            "manager_id": str(client.account_manager_id),
+            "is_active": client.is_active,
+        }
+
+        client = await self.client_repository.update_linked_fields(
+            client,
+            name=update_data.get("name"),
+            inbox_email=update_data.get("email"),
+            account_manager_id=update_data.get("manager_id"),
+            is_active=update_data.get("is_active"),
+        )
+
+        if update_data:
+            await self.audit_log_service.create_log(
+                AuditLogCreate(
+                    user_id=actor.user_id if actor else None,
+                    action="user.update",
+                    entity_type="client",
+                    entity_id=str(client.client_id),
+                    old_value=json.dumps(old_values),
+                    new_value=json.dumps(
+                        {k: (str(v) if v is not None else None) for k, v in update_data.items()}
+                    ),
+                )
+            )
+
+        return self._client_to_user_response(client, await self._resolve_client_role_id())
 
     # --------------------------------------------------
     # Reporting-line validation
@@ -218,22 +444,38 @@ class UserService:
     # Get User
     # --------------------------------------------------
 
+    async def _resolve_user_or_client(self, user_id: UUID) -> tuple[User | None, Client | None]:
+        """
+        Looks `user_id` up against both possible storage tables — a
+        real `users` row for every internal role, or a `clients` row
+        for a "Client" user (see root CLAUDE.md's Client-role
+        section). Raises 404 if it matches neither.
+        """
+
+        user = await self.user_repository.get_by_id(user_id)
+        if user is not None:
+            return user, None
+
+        client = await self.client_repository.get_by_id(user_id)
+        if client is not None:
+            return None, client
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found.",
+        )
+
     async def get_user(
         self,
         user_id: UUID,
-    ) -> User:
+    ):
 
-        user = await self.user_repository.get_by_id(
-            user_id
-        )
+        user, client = await self._resolve_user_or_client(user_id)
 
-        if user is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found.",
-            )
+        if user is not None:
+            return user
 
-        return user
+        return self._client_to_user_response(client, await self._resolve_client_role_id())
 
     async def get_user_by_email(
         self,
@@ -260,12 +502,44 @@ class UserService:
         category_id: UUID | None = None,
     ):
 
-        return await self.user_repository.get_all(
+        users, total = await self.user_repository.get_all(
             page,
             page_size,
             search,
             category_id,
         )
+
+        # Clients never belong to a work-specialization category, so
+        # a category_id filter can never match one — nothing to merge.
+        if category_id is not None:
+            return users, total
+
+        client_role_id = await self._resolve_client_role_id()
+        clients = await self.client_repository.list_all()
+
+        if search:
+            pattern = search.lower()
+            clients = [
+                client
+                for client in clients
+                if pattern in client.name.lower() or pattern in client.inbox_email.lower()
+            ]
+
+        client_rows = [
+            self._client_to_user_response(client, client_role_id) for client in clients
+        ]
+
+        # NOTE: `users` above is already paginated (OFFSET/LIMIT applied
+        # in the query itself); `client_rows` is appended unpaginated,
+        # since a client company has no natural place in that same
+        # offset window. The one real caller today (the Users page)
+        # always asks for page_size=100 with no search — a pre-existing
+        # ceiling on this endpoint (see unified-frontend/CLAUDE.md's
+        # "Deliberately not fixed" performance note) — so this is
+        # correct for that caller; genuine small-page pagination across
+        # a large combined set would need real cross-table pagination,
+        # not attempted here.
+        return [*users, *client_rows], total + len(client_rows)
 
     # --------------------------------------------------
     # Update User
@@ -276,9 +550,12 @@ class UserService:
         user_id: UUID,
         user_data: UserUpdate,
         actor: User | None = None,
-    ) -> User:
+    ):
 
-        user = await self.get_user(user_id)
+        user, client = await self._resolve_user_or_client(user_id)
+
+        if client is not None:
+            return await self._update_client_user(client, user_data, actor)
 
         update_data = user_data.model_dump(
             exclude_unset=True
@@ -314,6 +591,25 @@ class UserService:
                     detail="Role not found.",
                 )
 
+            # An internal user's storage table is decided once, at
+            # create time, by which role was picked (see
+            # CLIENT_ROLE_NAME's own docstring) — a Client lives at a
+            # different primary key (client_id) entirely, so "becoming"
+            # one isn't an in-place role change this endpoint supports.
+            if new_role.name == CLIENT_ROLE_NAME:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "Cannot change an existing user's role to Client. "
+                        "Create a new Client user instead."
+                    ),
+                )
+
+        # Used below by the reporting-line validation — the role this
+        # user will hold *after* this update is saved, whether or not
+        # role_id itself changed.
+        final_role_name = new_role.name if new_role is not None else user.role.name
+
         # Reporting-line validation — re-runs whenever any field that
         # affects the check's own inputs is touched (not just when
         # manager_id/teamlead_id themselves change), e.g. changing
@@ -321,13 +617,12 @@ class UserService:
         # teamlead_id. Falls back to the user's current value for
         # anything not present in this particular update.
         if update_data.keys() & {"role_id", "category_id", "manager_id", "teamlead_id"}:
-            effective_role_name = new_role.name if new_role is not None else user.role.name
             effective_manager_id = update_data.get("manager_id", user.manager_id)
             effective_teamlead_id = update_data.get("teamlead_id", user.teamlead_id)
             effective_category_id = update_data.get("category_id", user.category_id)
 
             await self._validate_manager_and_teamlead(
-                effective_role_name,
+                final_role_name,
                 effective_manager_id,
                 effective_teamlead_id,
                 effective_category_id,
@@ -411,7 +706,27 @@ class UserService:
         actor: User | None = None,
     ):
 
-        user = await self.get_user(user_id)
+        user, client = await self._resolve_user_or_client(user_id)
+
+        if client is not None:
+            # Clients have no hard-delete endpoint anywhere in this
+            # codebase (see ClientRepository) and ticket/interaction
+            # history may still reference this client_id — deactivate
+            # rather than risk an FK violation or orphaned history.
+            client = await self.client_repository.update_linked_fields(
+                client, is_active=False
+            )
+
+            await self.audit_log_service.create_log(
+                AuditLogCreate(
+                    user_id=actor.user_id if actor else None,
+                    action="user.delete",
+                    entity_type="client",
+                    entity_id=str(client.client_id),
+                    old_value=json.dumps({"name": client.name, "email": client.inbox_email}),
+                )
+            )
+            return
 
         await self.user_repository.delete(user)
 
@@ -433,9 +748,28 @@ class UserService:
         self,
         user_id: UUID,
         actor: User | None = None,
-    ) -> User:
+    ):
 
-        user = await self.get_user(user_id)
+        user, client = await self._resolve_user_or_client(user_id)
+
+        if client is not None:
+            client = await self.client_repository.update_linked_fields(
+                client, is_active=True
+            )
+
+            await self.audit_log_service.create_log(
+                AuditLogCreate(
+                    user_id=actor.user_id if actor else None,
+                    action="user.activate",
+                    entity_type="client",
+                    entity_id=str(client.client_id),
+                )
+            )
+
+            return self._client_to_user_response(
+                client, await self._resolve_client_role_id()
+            )
+
         user.permission_version += 1
 
         user = await self.user_repository.activate(
@@ -461,9 +795,28 @@ class UserService:
         self,
         user_id: UUID,
         actor: User | None = None,
-    ) -> User:
+    ):
 
-        user = await self.get_user(user_id)
+        user, client = await self._resolve_user_or_client(user_id)
+
+        if client is not None:
+            client = await self.client_repository.update_linked_fields(
+                client, is_active=False
+            )
+
+            await self.audit_log_service.create_log(
+                AuditLogCreate(
+                    user_id=actor.user_id if actor else None,
+                    action="user.deactivate",
+                    entity_type="client",
+                    entity_id=str(client.client_id),
+                )
+            )
+
+            return self._client_to_user_response(
+                client, await self._resolve_client_role_id()
+            )
+
         user.permission_version += 1
 
         user = await self.user_repository.deactivate(

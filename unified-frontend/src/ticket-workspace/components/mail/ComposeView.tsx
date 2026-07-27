@@ -25,7 +25,8 @@ import type { ClientResponse } from "@tw/types";
 const LOCAL_DRAFT_KEY = "utms-mail-compose-draft";
 
 // Who Forward's "To" picker may target — every internal org role
-// except the client-facing Viewer role, in display order. Filtering
+// except the client-facing Client role (renamed from "Viewer"), in
+// display order. Filtering
 // further by department/category/reporting hierarchy was considered
 // but no existing internal-recipient selector in this codebase (the
 // Internal Note To/CC/BCC picker included) actually does that — this
