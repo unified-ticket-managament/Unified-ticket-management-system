@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Minimize2, X } from "lucide-react";
+import { ArrowLeft, Minimize2, RefreshCw, X } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { Badge } from "@tw/components/common/Badge";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { AttachmentList } from "@tw/components/common/AttachmentList";
+import { ShowMoreToggle } from "@tw/components/common/ShowMoreToggle";
+import { useCollapsibleMessage } from "@tw/hooks/useCollapsibleMessage";
 import { getInteractionThread } from "@tw/api/interaction";
 import { openInboxThread } from "@tw/api/inbox";
 import {
@@ -103,6 +105,7 @@ function ConversationItem({ message }: { message: InteractionResponse }) {
   const body = messageBody(message);
   const timestamp = formatDateTime(message.created_at);
   const attachments = message.attachments ?? [];
+  const collapsible = useCollapsibleMessage<HTMLParagraphElement>([body]);
 
   if (align === "system") {
     return (
@@ -134,8 +137,14 @@ function ConversationItem({ message }: { message: InteractionResponse }) {
         </div>
         {sender && <p className="text-[11px] font-medium text-slate-600">{sender}</p>}
         {body && (
-          <p className="whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700">{body}</p>
+          <p
+            ref={collapsible.ref}
+            className={`whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${collapsible.clampClassName}`}
+          >
+            {body}
+          </p>
         )}
+        {collapsible.isOverflowing && <ShowMoreToggle isExpanded={collapsible.isExpanded} onToggle={collapsible.toggle} />}
         {attachments.length > 0 && <AttachmentList attachments={attachments} className="mt-1" />}
         <div>
           <Badge tone="default">{message.status}</Badge>
@@ -188,7 +197,14 @@ function ConversationItem({ message }: { message: InteractionResponse }) {
             isRight ? "border-accent/20 bg-accent/10 text-slate-800" : "border-border bg-surface text-slate-800"
           }`}
         >
-          {body && <p className="whitespace-pre-wrap">{body}</p>}
+          {body && (
+            <p ref={collapsible.ref} className={`whitespace-pre-wrap ${collapsible.clampClassName}`}>
+              {body}
+            </p>
+          )}
+          {collapsible.isOverflowing && (
+            <ShowMoreToggle isExpanded={collapsible.isExpanded} onToggle={collapsible.toggle} />
+          )}
           {attachments.length > 0 && <AttachmentList attachments={attachments} className="mt-2" />}
         </div>
         <Badge tone={meta.tone}>{message.status}</Badge>
@@ -216,54 +232,65 @@ export function FullInteractionPage() {
   const [row, setRow] = useState<HeaderRow | null>(passedState?.row ?? null);
   const [isLoading, setIsLoading] = useState(!passedState?.row);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Guards against a stale response (Strict Mode's double-invoke, or a
+  // manual Refresh firing while the mount-time fetch is still in
+  // flight) applying after a newer call has already resolved.
+  const requestIdRef = useRef(0);
+
+  // Named/callable (not just an inline effect IIFE) so the header's
+  // Refresh button can re-run the exact same fetch — the mount-time
+  // effect below is just this function's first call.
+  const fetchInteraction = useCallback(async () => {
+    if (!interactionId) return;
+    const requestId = ++requestIdRef.current;
+    setIsLoading(true);
+    setLoadError(null);
+    try {
+      const fetchedThread = await getInteractionThread(interactionId);
+      if (requestId !== requestIdRef.current) return;
+      setThread(fetchedThread);
+      const parent = fetchedThread.parent_interaction;
+      setRow({
+        id: parent.interaction_id,
+        createdAt: parent.created_at,
+        type: parent.interaction_type,
+        status: parent.status,
+        ticketId: parent.ticket_id,
+        clientName: (parent.payload?.client_name as string) ?? null,
+        summaryText: summarize(parent),
+      });
+    } catch {
+      try {
+        const fetchedEmail = await openInboxThread(interactionId);
+        if (requestId !== requestIdRef.current) return;
+        setEmail(fetchedEmail);
+        setRow({
+          id: fetchedEmail.interaction_id,
+          createdAt: fetchedEmail.received_at,
+          type: "EMAIL",
+          status: fetchedEmail.status,
+          ticketId: fetchedEmail.ticket_id,
+          clientName: fetchedEmail.client_name,
+          summaryText: fetchedEmail.subject,
+        });
+      } catch (error) {
+        if (requestId === requestIdRef.current) {
+          setLoadError(error instanceof Error ? error.message : "Failed to load this interaction.");
+        }
+      }
+    } finally {
+      if (requestId === requestIdRef.current) setIsLoading(false);
+    }
+  }, [interactionId]);
 
   useEffect(() => {
-    if (passedState?.row || !interactionId) return;
-
-    let cancelled = false;
-    setIsLoading(true);
-    (async () => {
-      try {
-        const fetchedThread = await getInteractionThread(interactionId);
-        if (cancelled) return;
-        setThread(fetchedThread);
-        const parent = fetchedThread.parent_interaction;
-        setRow({
-          id: parent.interaction_id,
-          createdAt: parent.created_at,
-          type: parent.interaction_type,
-          status: parent.status,
-          ticketId: parent.ticket_id,
-          clientName: (parent.payload?.client_name as string) ?? null,
-          summaryText: summarize(parent),
-        });
-      } catch {
-        try {
-          const fetchedEmail = await openInboxThread(interactionId);
-          if (cancelled) return;
-          setEmail(fetchedEmail);
-          setRow({
-            id: fetchedEmail.interaction_id,
-            createdAt: fetchedEmail.received_at,
-            type: "EMAIL",
-            status: fetchedEmail.status,
-            ticketId: fetchedEmail.ticket_id,
-            clientName: fetchedEmail.client_name,
-            summaryText: fetchedEmail.subject,
-          });
-        } catch (error) {
-          if (!cancelled) {
-            setLoadError(error instanceof Error ? error.message : "Failed to load this interaction.");
-          }
-        }
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
+    // A direct load/refresh of this URL with no router state is the
+    // only case the mount-time effect needs to fetch for — router-
+    // state data (from the drawer's Expand click) already has
+    // everything this would fetch. A manual Refresh click always
+    // re-fetches regardless of that, via fetchInteraction() directly.
+    if (passedState?.row) return;
+    fetchInteraction();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interactionId]);
 
@@ -314,6 +341,16 @@ export function FullInteractionPage() {
           </button>
 
           <div className="flex flex-none items-center gap-1">
+            <button
+              type="button"
+              onClick={() => fetchInteraction()}
+              aria-label="Refresh"
+              title="Refresh"
+              disabled={isLoading}
+              className="flex h-7 w-7 items-center justify-center rounded-md2 text-muted transition-colors hover:bg-surfaceHover hover:text-slate-900 disabled:opacity-50"
+            >
+              <RefreshCw size={15} className={isLoading ? "animate-spin" : ""} />
+            </button>
             <button
               type="button"
               onClick={handleMinimize}

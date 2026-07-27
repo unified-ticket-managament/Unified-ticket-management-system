@@ -7,6 +7,7 @@ import { Badge } from "@tw/components/common/Badge";
 import { Button } from "@tw/components/common/Button";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { InteractionDetailsDrawer } from "@tw/components/common/InteractionDetailsDrawer";
+import { RefreshButton } from "@tw/components/common/RefreshButton";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
 import { getInbox, openInboxThread } from "@tw/api/inbox";
 import { getAllTicketInteractions, getInteractionThread, hideInteractionById } from "@tw/api/interaction";
@@ -497,6 +498,11 @@ export function InteractionsPage() {
     }
   }
 
+  function handleRefresh() {
+    loadInteractions(page);
+    loadPendingInbox(page);
+  }
+
   return (
     <AppLayout
       title="Interactions"
@@ -507,6 +513,7 @@ export function InteractionsPage() {
             ? "Emails and activity across every ticket on the team."
             : `Emails and activity across tickets assigned to ${currentUser?.name}.`
       }
+      action={<RefreshButton onRefresh={handleRefresh} isRefreshing={isLoading} />}
     >
       <div className="flex flex-col gap-4">
         {ticketIdParam && (

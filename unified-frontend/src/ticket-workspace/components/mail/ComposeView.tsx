@@ -1,13 +1,22 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Save, Send, Trash2 } from "lucide-react";
+import { ArrowLeft, Save, Send, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
+import { listRbacRoles, listRbacUsers, type RbacUserSummary } from "@tw/api/rbacUsers";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { htmlToPlainText } from "@tw/lib/richText";
@@ -15,11 +24,32 @@ import type { ClientResponse } from "@tw/types";
 
 const LOCAL_DRAFT_KEY = "utms-mail-compose-draft";
 
+// Who Forward's "To" picker may target — every internal org role
+// except the client-facing Viewer role, in display order. Filtering
+// further by department/category/reporting hierarchy was considered
+// but no existing internal-recipient selector in this codebase (the
+// Internal Note To/CC/BCC picker included) actually does that — this
+// mirrors that same established, company-wide-by-role convention
+// rather than inventing new scoping rules.
+const INTERNAL_RECIPIENT_ROLE_ORDER = [
+  "Super Admin",
+  "Site Lead",
+  "Account Manager",
+  "Team Lead",
+  "Staff",
+];
+
 export interface ComposeInitialValues {
   clientId?: string | null;
   toEmail?: string;
   subject?: string;
   bodyHtml?: string;
+  // Set only when this view was opened via Forward (see
+  // InboxPage.tsx's handleForward) — swaps the "To" field from the
+  // client picker (Compose's own recipient concept) to an internal-
+  // org-user picker, since forwarding a message is an internal hand-
+  // off, never a new outbound message to a client.
+  mode?: "forward";
 }
 
 interface LocalDraft {
@@ -60,6 +90,13 @@ interface ComposeViewProps {
     files: File[];
   }) => Promise<unknown>;
   onDiscard: () => void;
+  // Only rendered (as a "← Back" control) when this view is in
+  // Forward mode — Discard already covers "abandon and return to the
+  // inbox" for a brand-new Compose; Back specifically returns to the
+  // exact message that was being forwarded, preserving the mailbox/
+  // selection/scroll state the task's Back-button requirement asks
+  // for, with no new routing (see InboxPage.tsx's handleComposeBack).
+  onBack?: () => void;
 }
 
 function parseEmails(value: string): string[] {
@@ -77,9 +114,10 @@ function parseEmails(value: string): string[] {
 // persistence is real (survives navigating away and back), just not
 // synced across devices, and is disclosed as such rather than
 // silently pretending it's server-backed.
-export function ComposeView({ clients, initialValues, isSending, onSend, onDiscard }: ComposeViewProps) {
+export function ComposeView({ clients, initialValues, isSending, onSend, onDiscard, onBack }: ComposeViewProps) {
   const { currentUser } = useAuthContext();
   const { pushToast } = useToast();
+  const isForward = initialValues?.mode === "forward";
 
   const composableClients = useMemo(() => {
     if (!currentUser) return [];
@@ -100,6 +138,56 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
   const [bodyHtml, setBodyHtml] = useState(initialValues?.bodyHtml ?? localDraft?.bodyHtml ?? "");
   const [files, setFiles] = useState<File[]>([]);
 
+  // Forward's "To" data source — every active internal user, grouped
+  // by role. Fetched only in Forward mode (Compose's own client
+  // picker needs none of this). Grouped once, right at fetch time, so
+  // rendering never has to re-derive a user's role name.
+  const [internalRecipientGroups, setInternalRecipientGroups] = useState<
+    Record<string, RbacUserSummary[]>
+  >({});
+  const [allInternalUsers, setAllInternalUsers] = useState<RbacUserSummary[]>([]);
+  const [toUserId, setToUserId] = useState("");
+
+  useEffect(() => {
+    if (!isForward) return;
+    let cancelled = false;
+    Promise.all([listRbacUsers(), listRbacRoles()])
+      .then(([users, roles]) => {
+        if (cancelled) return;
+        const roleNameById = new Map(roles.map((r) => [r.role_id, r.name]));
+        const eligible = users.filter(
+          (u) =>
+            u.is_active &&
+            u.user_id !== currentUser?.user_id &&
+            INTERNAL_RECIPIENT_ROLE_ORDER.includes(roleNameById.get(u.role_id) ?? "")
+        );
+        const groups: Record<string, RbacUserSummary[]> = {};
+        for (const roleName of INTERNAL_RECIPIENT_ROLE_ORDER) groups[roleName] = [];
+        for (const user of eligible) {
+          const roleName = roleNameById.get(user.role_id);
+          if (roleName) groups[roleName].push(user);
+        }
+        setAllInternalUsers(eligible);
+        setInternalRecipientGroups(groups);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAllInternalUsers([]);
+          setInternalRecipientGroups({});
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isForward]);
+
+  function handleInternalRecipientChange(userId: string) {
+    setToUserId(userId);
+    const user = allInternalUsers.find((u) => u.user_id === userId);
+    setToEmail(user?.email ?? "");
+  }
+
   useEffect(() => {
     if (localDraft) {
       pushToast("Restored your locally saved draft.", "info");
@@ -107,23 +195,25 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Covers Forward (which opens Compose with clientId preset but
-  // toEmail intentionally blank, see InboxPage.tsx's handleForward)
-  // and a restored local draft whose client list wasn't loaded yet at
-  // mount — resolves the recipient from the preset client once the
+  // Covers a restored local draft whose client list wasn't loaded yet
+  // at mount — resolves the recipient from the preset client once the
   // client list is available. The "To" dropdown is the only recipient
   // input now (no separate free-text field to preserve), so this
-  // always wins once clientId is set.
+  // always wins once clientId is set. Forward mode is deliberately
+  // excluded — its "To" is an internal user, never derived from the
+  // client, and clientId there is only carried along to satisfy
+  // POST /inbox/compose's required field (see handleSend below), not
+  // to drive the recipient.
   useEffect(() => {
-    if (!clientId || toEmail.trim()) return;
+    if (isForward || !clientId || toEmail.trim()) return;
     const client = composableClients.find((c) => c.client_id === clientId);
     if (client?.inbox_email) setToEmail(client.inbox_email);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [composableClients]);
+  }, [composableClients, isForward]);
 
   const canCompose = composableClients.length > 0;
   const isEmpty = isRichTextEmpty(bodyHtml);
-  const canSend = Boolean(clientId && subject.trim() && !isEmpty);
+  const canSend = Boolean(clientId && toEmail.trim() && subject.trim() && !isEmpty);
 
   // Every real client now sends/receives through the one shared
   // ticketing@probeps.com mailbox — there's no more per-client "From"
@@ -168,7 +258,21 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card">
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-card px-5 py-4">
-        <h2 className="text-[16px] font-semibold text-foreground">New Message</h2>
+        <div className="flex flex-col gap-1.5">
+          {isForward && onBack && (
+            <button
+              type="button"
+              onClick={onBack}
+              className="flex w-fit items-center gap-1.5 text-xs font-semibold text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              Back
+            </button>
+          )}
+          <h2 className="text-[16px] font-semibold text-foreground">
+            {isForward ? "Forward Message" : "New Message"}
+          </h2>
+        </div>
         <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" onClick={handleDiscard}>
           <Trash2 className="h-3.5 w-3.5" />
           Discard
@@ -193,18 +297,45 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
 
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">To</label>
-              <Select value={clientId} onValueChange={handleClientChange}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose a client to email" />
-                </SelectTrigger>
-                <SelectContent>
-                  {composableClients.map((client) => (
-                    <SelectItem key={client.client_id} value={client.client_id}>
-                      {client.name} · {client.inbox_email}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {isForward ? (
+                <Select value={toUserId} onValueChange={handleInternalRecipientChange}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose an internal recipient" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {INTERNAL_RECIPIENT_ROLE_ORDER.filter(
+                      (roleName) => (internalRecipientGroups[roleName]?.length ?? 0) > 0
+                    ).map((roleName) => (
+                      <SelectGroup key={roleName}>
+                        <SelectLabel>{roleName}</SelectLabel>
+                        {internalRecipientGroups[roleName].map((user) => (
+                          <SelectItem key={user.user_id} value={user.user_id}>
+                            {user.name} · {user.email}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ))}
+                  </SelectContent>
+                </Select>
+              ) : (
+                <Select value={clientId} onValueChange={handleClientChange}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Choose a client to email" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {composableClients.map((client) => (
+                      <SelectItem key={client.client_id} value={client.client_id}>
+                        {client.name} · {client.inbox_email}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              {isForward && (
+                <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                  Forwarding is limited to internal organization users — no external addresses.
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

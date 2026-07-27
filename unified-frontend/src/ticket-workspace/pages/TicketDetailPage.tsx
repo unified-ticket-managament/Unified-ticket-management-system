@@ -110,7 +110,12 @@ export function TicketDetailPage() {
       ) : (
         activeTicket && (
           <div className="flex flex-col gap-5">
-            <TicketHeader ticket={activeTicket} onActionComplete={refreshAll} />
+            <TicketHeader
+              ticket={activeTicket}
+              onActionComplete={refreshAll}
+              onRefresh={refreshAll}
+              isRefreshing={isLoadingTicket}
+            />
             {activeTicket.current_status === "CLOSED" && (
               <div className="flex items-center gap-2.5 rounded-md2 border border-border bg-canvas/60 px-4 py-3 text-sm text-slate-700">
                 <Lock size={15} className="flex-none text-muted" />

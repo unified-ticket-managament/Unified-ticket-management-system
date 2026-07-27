@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getSlaOverviewCounts } from "@tw/api/ticket";
 
 export interface DashboardSlaCounts {
@@ -32,41 +32,48 @@ const REFRESH_INTERVAL_MS = 15_000;
 export function useDashboardSlaCounts() {
   const [counts, setCounts] = useState<DashboardSlaCounts>(EMPTY_COUNTS);
   const [isLoading, setIsLoading] = useState(true);
+  const isUnmountedRef = useRef(false);
+  // A fresh controller per call (aborting whatever the previous call
+  // was still waiting on first) so a manual refresh() and the
+  // periodic poll below can never race each other's response.
+  const controllerRef = useRef<AbortController | null>(null);
+
+  const load = useCallback(async () => {
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    try {
+      const data = await getSlaOverviewCounts(controller.signal);
+      if (isUnmountedRef.current) return;
+      setCounts({
+        running: data.running,
+        paused: data.paused,
+        atRisk: data.at_risk,
+        breached: data.breached,
+        escalated: data.escalated,
+        completed: data.completed,
+      });
+    } catch {
+      // Silent on a transient failure (including a superseded
+      // request's own cancellation) — same convention as the rest of
+      // this app's polling: the tile just keeps showing its last
+      // known values instead of an error toast on top of whatever the
+      // page's own main load() already surfaces.
+    } finally {
+      if (!isUnmountedRef.current) setIsLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
-
-    async function load() {
-      try {
-        const data = await getSlaOverviewCounts(controller.signal);
-        if (cancelled) return;
-        setCounts({
-          running: data.running,
-          paused: data.paused,
-          atRisk: data.at_risk,
-          breached: data.breached,
-          escalated: data.escalated,
-          completed: data.completed,
-        });
-      } catch {
-        // Silent on a transient failure — same convention as the rest
-        // of this app's polling: the tile just keeps showing its last
-        // known values instead of an error toast on top of whatever
-        // the page's own main load() already surfaces.
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
-    }
-
+    isUnmountedRef.current = false;
     load();
     const intervalId = window.setInterval(load, REFRESH_INTERVAL_MS);
     return () => {
-      cancelled = true;
-      controller.abort();
+      isUnmountedRef.current = true;
+      controllerRef.current?.abort();
       window.clearInterval(intervalId);
     };
-  }, []);
+  }, [load]);
 
-  return { counts, isLoading };
+  return { counts, isLoading, refresh: load };
 }

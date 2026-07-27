@@ -18,6 +18,7 @@ import {
   KeyRound,
   Pencil,
   Plus,
+  RefreshCw,
   Search,
   Shield,
   Trash2,
@@ -116,6 +117,13 @@ export default function UsersPage() {
     queryKey: ["categories-options"],
     queryFn: () => categoryService.list({ page_size: 100 }),
   });
+
+  const isRefreshing = usersQuery.isFetching || rolesQuery.isFetching || categoriesQuery.isFetching;
+  function handleRefresh() {
+    usersQuery.refetch();
+    rolesQuery.refetch();
+    categoriesQuery.refetch();
+  }
 
   const dedupedRoles = useMemo(() => dedupeRolesByName<Role>(rolesQuery.data?.roles ?? []), [rolesQuery.data]);
 
@@ -409,6 +417,16 @@ export default function UsersPage() {
         description={`${t("users.description")}${usersQuery.data ? ` — ${hierarchyRows.length} ${t("common.total")}` : ""}.`}
         action={
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              aria-label="Refresh"
+              title="Refresh"
+            >
+              <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
+            </Button>
             <Button variant="outline" className="gap-2" asChild>
               <Link href="/permission-requests">
                 <KeyRound className="h-4 w-4" />

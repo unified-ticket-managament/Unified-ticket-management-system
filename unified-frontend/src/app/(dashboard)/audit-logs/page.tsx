@@ -9,7 +9,7 @@ import {
   SortingState,
   useReactTable,
 } from "@tanstack/react-table";
-import { CheckCircle2, Download, Search, XCircle } from "lucide-react";
+import { CheckCircle2, Download, RefreshCw, Search, XCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
@@ -265,7 +265,14 @@ export default function AuditLogsPage() {
   };
 
   const isLoading = auditQuery.isLoading || usersQuery.isLoading || rolesQuery.isLoading;
+  const isRefreshing = auditQuery.isFetching || usersQuery.isFetching || rolesQuery.isFetching;
   const pageRows = table.getRowModel().rows;
+
+  function handleRefresh() {
+    auditQuery.refetch();
+    usersQuery.refetch();
+    rolesQuery.refetch();
+  }
 
   return (
     <div className="space-y-6">
@@ -275,12 +282,24 @@ export default function AuditLogsPage() {
         title={t("auditLogs.title")}
         description={`${t("auditLogs.description")}${auditQuery.data ? ` — ${auditQuery.data.total} ${t("common.total")}` : ""}.`}
         action={
-          hasPermission("audit:export") ? (
-            <Button variant="outline" className="gap-2" onClick={handleExport}>
-              <Download className="h-4 w-4" />
-              Export
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={handleRefresh}
+              disabled={isRefreshing}
+              aria-label="Refresh"
+              title="Refresh"
+            >
+              <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
             </Button>
-          ) : undefined
+            {hasPermission("audit:export") && (
+              <Button variant="outline" className="gap-2" onClick={handleExport}>
+                <Download className="h-4 w-4" />
+                Export
+              </Button>
+            )}
+          </div>
         }
       />
 

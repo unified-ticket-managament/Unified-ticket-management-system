@@ -6,6 +6,7 @@ import { AppLayout } from "@tw/components/layout/AppLayout";
 import { Badge } from "@tw/components/common/Badge";
 import { Button } from "@tw/components/common/Button";
 import { EmptyState } from "@tw/components/common/EmptyState";
+import { RefreshButton } from "@tw/components/common/RefreshButton";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
 import { SlaBadge } from "@tw/components/sla/SlaBadge";
 import {
@@ -370,6 +371,11 @@ export function TicketsListPage() {
     (ESCALATION_TAB_ROLES.has(currentUser.role) ||
       currentUser.permissions.includes("ticket:view_escalated"));
 
+  function handleRefresh() {
+    loadTickets(page);
+    loadViewCounts();
+  }
+
   return (
     <>
     <AppLayout
@@ -383,6 +389,7 @@ export function TicketsListPage() {
           ? "Tickets with an active internal escalation in your scope — acknowledge to take ownership and start the escalation-handling SLA."
           : "Every ticket across every Account Manager."
       }
+      action={<RefreshButton onRefresh={handleRefresh} isRefreshing={isLoading} />}
     >
       <div className="flex flex-col gap-4">
         <div className="flex items-center gap-1 rounded-md2 border border-border bg-surface p-1.5 shadow-xs">

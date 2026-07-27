@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { ComposeView, type ComposeInitialValues } from "@tw/components/mail/ComposeView";
@@ -41,12 +41,22 @@ export function InboxPage() {
   const [composeInitialValues, setComposeInitialValues] = useState<ComposeInitialValues | undefined>(undefined);
   const [searchParams, setSearchParams] = useSearchParams();
 
+  // Tracks whatever message was open right before Compose/Forward
+  // opened (openCompose always clears `selectedEmail`), so the Back
+  // button on a Forward screen can return to it — a plain ref (not
+  // state) so it never forces a re-render and openCompose's own
+  // useCallback deps below stay untouched.
+  const selectedEmailRef = useRef(selectedEmail);
+  selectedEmailRef.current = selectedEmail;
+  const previousEmailRef = useRef<typeof selectedEmail>(null);
+
   // useCallback below (rather than plain function declarations) is
   // required for MailSidebar's React.memo to actually skip re-renders
   // — an unstable prop identity defeats memo regardless of how the
   // component itself is wrapped.
   const openCompose = useCallback(
     (initial?: ComposeInitialValues) => {
+      previousEmailRef.current = selectedEmailRef.current;
       setSelectedEmail(null);
       setComposeInitialValues(initial);
       setComposeOpen(true);
@@ -59,6 +69,15 @@ export function InboxPage() {
   function closeCompose() {
     setComposeOpen(false);
     setComposeInitialValues(undefined);
+  }
+
+  // Forward-only "← Back": returns to the exact message being
+  // forwarded (mailbox/selection/scroll all already preserved, since
+  // this is a state swap, never a route change) instead of Discard's
+  // "abandon and go to the inbox" behavior.
+  function handleComposeBack() {
+    closeCompose();
+    setSelectedEmail(previousEmailRef.current);
   }
 
   const handleSelectView = useCallback(
@@ -103,6 +122,7 @@ export function InboxPage() {
       toEmail: values.toEmail,
       subject: values.subject,
       bodyHtml: values.bodyHtml,
+      mode: "forward",
     });
   }
 
@@ -155,6 +175,7 @@ export function InboxPage() {
               isSending={mail.isComposing}
               onSend={handleComposeSend}
               onDiscard={closeCompose}
+              onBack={handleComposeBack}
             />
           ) : selectedEmail ? (
             // Checked ahead of the System-folder branch below: opening a
@@ -170,6 +191,8 @@ export function InboxPage() {
               folders={mail.folders}
               onBack={() => setSelectedEmail(null)}
               onRefreshList={mail.refresh}
+              onRefreshMessage={handleOpen}
+              isRefreshingMessage={mail.openingId === selectedEmail.interaction_id}
               onForward={handleForward}
               onSaveDraft={mail.saveDraftMessage}
               onSendDraft={mail.sendDraftMessage}
