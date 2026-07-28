@@ -303,7 +303,6 @@ Future schema changes should use:
 alembic revision --autogenerate -m "migration_message"
 alembic upgrade head
 ```
-
 ---
 
 # Shared Models
