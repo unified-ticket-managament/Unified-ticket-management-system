@@ -1,16 +1,17 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select, tuple_, update
+from sqlalchemy import exists, func, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from shared_models.models import User
 
 from app.core.request_timing import timed_stage
-from app.ticketing.enums import InteractionDirection, InteractionStatus, TicketPriority
+from app.ticketing.enums import EscalationStatus, InteractionDirection, InteractionStatus, TicketPriority
 from app.ticketing.models.client import Client
 from app.ticketing.models.interaction import Interaction
 from app.ticketing.models.ticket import Ticket
+from app.ticketing.models.ticket_escalation import TicketEscalation
 from app.ticketing.schemas.interaction import (
     InteractionCreate,
     InteractionUpdate,
@@ -387,6 +388,25 @@ class InteractionRepository:
 
         return InteractionVisiblePage(items=[], total=total)
 
+    def _escalated_owner_condition(self, viewer_user_id: UUID):
+        """
+        True when the interaction's ticket has a non-CLOSED
+        TicketEscalation row whose *current* owner_ids includes this
+        viewer — mirrors TicketRepository._escalated_owner_condition
+        exactly (same reasoning: a Team Lead/Account Manager only
+        appears in owner_ids once the chain reaches their level; Site
+        Lead/Super Admin once it reaches SITE_LEAD). Lets Mail's "My
+        Claims" recognize a ticket handed to this viewer via
+        escalation immediately, not only once the escalation is
+        formally accepted and Ticket.agent_id is reassigned.
+        """
+
+        return exists().where(
+            TicketEscalation.ticket_id == Ticket.ticket_id,
+            TicketEscalation.status != EscalationStatus.CLOSED,
+            TicketEscalation.owner_ids.contains([str(viewer_user_id)]),
+        )
+
     async def list_inbox(
         self,
         account_manager_id: UUID | None = None,
@@ -493,15 +513,21 @@ class InteractionRepository:
             query = query.where(Ticket.ticket_type == ticket_type)
 
         if assigned_agent_id is not None:
+            # A ticket escalated to this user (Team Lead/Account
+            # Manager/Site Lead — Staff never appears in an escalation's
+            # owner_ids) counts as "assigned to me" here even before the
+            # escalation is formally accepted and Ticket.agent_id is
+            # reassigned — otherwise Mail's "My Claims" wouldn't reflect
+            # ownership until acceptance, unlike the Tickets page's own
+            # Escalated tab. Safe to include unconditionally: it's a
+            # no-op for a Staff caller's own baseline scope.
+            ownership_conditions = [
+                Ticket.agent_id == assigned_agent_id,
+                self._escalated_owner_condition(assigned_agent_id),
+            ]
             if extra_ticket_ids:
-                query = query.where(
-                    or_(
-                        Ticket.agent_id == assigned_agent_id,
-                        Ticket.ticket_id.in_(extra_ticket_ids),
-                    )
-                )
-            else:
-                query = query.where(Ticket.agent_id == assigned_agent_id)
+                ownership_conditions.append(Ticket.ticket_id.in_(extra_ticket_ids))
+            query = query.where(or_(*ownership_conditions))
 
         if category_filter is not None:
             query = query.where(Ticket.ticket_type == category_filter)
@@ -518,15 +544,29 @@ class InteractionRepository:
             Interaction.parent_interaction_id.is_(None),
         )
 
+        # direction == INBOUND excludes the agent's own Compose-created
+        # roots (interaction_type=="EMAIL", parent_interaction_id IS
+        # NULL, direction=OUTBOUND — see InteractionService.compose_email)
+        # from the pre-ticket triage views. Without it a Compose row
+        # (status=ASSIGNED at creation, ticket_id=None) satisfies the
+        # "replied" predicate below and leaks into that view — a
+        # confirmed bug this filter fixes. Deliberately not applied to
+        # "ticketed": a Compose email that's later converted/attached to
+        # a ticket must still show under Ticketed regardless of who
+        # authored the founding message. Also not applied to "all" —
+        # that's the separate, intentionally-comprehensive "All Inboxes"
+        # escape hatch, not one of the named Mail folders.
         if view == "pending":
             query = query.where(
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.PENDING,
+                Interaction.direction == InteractionDirection.INBOUND,
             )
         elif view == "replied":
             query = query.where(
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.ASSIGNED,
+                Interaction.direction == InteractionDirection.INBOUND,
             )
         elif view == "ticketed":
             query = query.where(Interaction.ticket_id.isnot(None))
@@ -534,6 +574,7 @@ class InteractionRepository:
             query = query.where(
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.IGNORED,
+                Interaction.direction == InteractionDirection.INBOUND,
             )
         # view == "all": no further filter — every root email.
 
@@ -641,19 +682,25 @@ class InteractionRepository:
         been visited yet.
         """
 
+        # Direction filters mirror list_inbox's own — see that method's
+        # comment for why "ticketed"/the unfiltered "all" count are
+        # deliberately exempt.
         query = select(
             func.count().filter(
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.PENDING,
+                Interaction.direction == InteractionDirection.INBOUND,
             ),
             func.count().filter(
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.ASSIGNED,
+                Interaction.direction == InteractionDirection.INBOUND,
             ),
             func.count().filter(Interaction.ticket_id.isnot(None)),
             func.count().filter(
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.IGNORED,
+                Interaction.direction == InteractionDirection.INBOUND,
             ),
             func.count(),
         )
@@ -795,32 +842,57 @@ class InteractionRepository:
         performed_by: UUID,
     ) -> list[Interaction]:
         """
-        Every reply the given user has sent — pre-ticket or
-        ticket-level alike, both created via the same REPLY/OUTBOUND
-        shape (see `InteractionService.add_interaction_reply`/
-        `add_reply`) — plus every brand-new Compose email they've
-        authored (InteractionService.compose_email), which is itself
-        a thread ROOT rather than a child. A sent reply's subject/
-        client is resolved by the caller via `list_by_ids` on
-        `parent_interaction_id`; a sent Compose root already carries
-        its own subject/client on its own payload (see
-        InboxService.get_sent's branch on `parent_interaction_id is
-        None`).
+        Every brand-new Compose email the given user has authored
+        (InteractionService.compose_email) — a thread ROOT
+        (parent_interaction_id IS NULL), never a reply. Reply messages
+        live under list_replied instead. This used to also OR in
+        REPLY-type rows, which meant a message sent via Reply showed up
+        under both "Sent" and "Replied" in the Mail UI — the two are
+        now split so each folder means only what its name says.
         """
 
         result = await self.db.execute(
             select(Interaction)
             .where(
-                or_(
-                    Interaction.interaction_type == "REPLY",
-                    and_(
-                        Interaction.interaction_type == "EMAIL",
-                        Interaction.parent_interaction_id.is_(None),
-                    ),
-                ),
+                Interaction.interaction_type == "EMAIL",
+                Interaction.parent_interaction_id.is_(None),
                 Interaction.direction == InteractionDirection.OUTBOUND,
                 Interaction.performed_by == performed_by,
                 Interaction.is_visible.is_(True),
+            )
+            .order_by(Interaction.created_at.desc())
+        )
+
+        return list(result.scalars().all())
+
+    async def list_replied(
+        self,
+        performed_by: UUID,
+    ) -> list[Interaction]:
+        """
+        Every reply the given user has personally sent — pre-ticket or
+        ticket-level alike, both created via the same REPLY/OUTBOUND
+        shape (see `InteractionService.add_interaction_reply`/
+        `add_reply`) — the counterpart to list_sent above, which is
+        Compose-only. A sent reply's subject/client is resolved by the
+        caller via `list_by_ids` on `parent_interaction_id`, same as
+        list_sent's old merged behavior used to.
+
+        `is_draft.is_(False)` is required, not defensive padding: a
+        saved-but-unsent draft is also interaction_type=="REPLY",
+        direction=OUTBOUND, is_visible=True — without this exclusion it
+        would show up here as already "sent" while still sitting in
+        Drafts (a real, separate bug this same split fixes).
+        """
+
+        result = await self.db.execute(
+            select(Interaction)
+            .where(
+                Interaction.interaction_type == "REPLY",
+                Interaction.direction == InteractionDirection.OUTBOUND,
+                Interaction.performed_by == performed_by,
+                Interaction.is_visible.is_(True),
+                Interaction.is_draft.is_(False),
             )
             .order_by(Interaction.created_at.desc())
         )

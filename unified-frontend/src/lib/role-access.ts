@@ -13,7 +13,11 @@ export const ROLE_NAMES = {
 
   TEAM_LEAD: "Team Lead",
   STAFF: "Staff",
-  VIEWER: "Viewer",
+  // Renamed from "Viewer" — same role_id, same permission grants, same
+  // client-facing behavior throughout this file (see root CLAUDE.md's
+  // Client-role section). Kept as its own named key (not just a value
+  // swap) so every call site below reads `ROLE_NAMES.CLIENT`.
+  CLIENT: "Client",
 } as const;
 
 export type NavItemKey =
@@ -134,7 +138,7 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
   [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
   [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
   [ROLE_NAMES.STAFF]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
-  [ROLE_NAMES.VIEWER]: ["Dashboard", "Permission Requests"],
+  [ROLE_NAMES.CLIENT]: ["Dashboard", "Permission Requests"],
 };
 
 const DEFAULT_NAV_ITEMS: NavItemKey[] = ["Dashboard", "Profile", "Settings"];
@@ -199,7 +203,7 @@ const CREATABLE_ROLES_BY_ROLE: Record<string, string[] | undefined> = {
 /**
  * Returns the role names the given role is allowed to assign on the Create
  * User form, or `null` when unrestricted. Roles with no entry here (Team
- * Lead, Staff, Viewer) cannot create users at all — gated separately by the
+ * Lead, Staff, Client) cannot create users at all — gated separately by the
  * `user:create` permission.
  */
 export function getCreatableRoleNames(role: string | undefined): string[] | null {

@@ -21,6 +21,9 @@ from app.rbac.services.access_control import ensure_has_permission
 from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.organization_service import OrganizationService
 from app.rbac.services.user_service import UserService
+from app.ticketing.repositories.client_repository import ClientRepository
+from app.ticketing.repositories.user_repository import UserRepository as TicketingUserRepository
+from app.ticketing.services.client_service import ClientService
 
 router = APIRouter(
     prefix="/users",
@@ -46,12 +49,19 @@ def get_user_service(
     audit_log_service = AuditLogService(
         audit_log_repository=AuditLogRepository(db),
     )
+    client_repository = ClientRepository(db)
+    client_service = ClientService(
+        client_repository=client_repository,
+        user_repository=TicketingUserRepository(db),
+    )
 
     return UserService(
         user_repository=user_repository,
         role_repository=role_repository,
         category_repository=category_repository,
         audit_log_service=audit_log_service,
+        client_repository=client_repository,
+        client_service=client_service,
     )
 
 

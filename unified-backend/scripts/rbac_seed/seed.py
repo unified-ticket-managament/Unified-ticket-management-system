@@ -128,11 +128,12 @@ SITE_LEAD_PERMISSIONS = [
 
 # Role hierarchy: Super Admin (system/technical, "all") > Site Lead (top
 # business/operational role, "all except two") > Account Manager >
-# Team Lead > Staff. Viewer sits outside this hierarchy entirely
-# (client-facing, unchanged). Grants below reflect only what a role
-# gets *by default* ("Full" in the RBAC redesign doc) — everything a
-# role doesn't hold by default is meant to be reachable later via a
-# scoped, expiring permission override, not by widening these lists.
+# Team Lead > Staff. Client (renamed from "Viewer") sits outside this
+# hierarchy entirely (client-facing, unchanged). Grants below reflect
+# only what a role gets *by default* ("Full" in the RBAC redesign doc)
+# — everything a role doesn't hold by default is meant to be reachable
+# later via a scoped, expiring permission override, not by widening
+# these lists.
 DEFAULT_ROLES = {
     "Super Admin": "all",
     "Site Lead": SITE_LEAD_PERMISSIONS,
@@ -189,7 +190,12 @@ DEFAULT_ROLES = {
         "ticket:view_audit_trail", "ticket:view_dashboard_kpis",
         "user:view",
     ],
-    "Viewer": ["user:view", "role:view", "permission:view"],
+    # Renamed from "Viewer" — see root CLAUDE.md's Client-role section.
+    # Same role_id, same permission grants; a data migration
+    # (alembic_rbac's a8c0e2f4b6d9) renames the row in place for any
+    # database seeded before this rename, so this key always resolves
+    # to that same pre-existing role rather than creating a new one.
+    "Client": ["user:view", "role:view", "permission:view"],
 }
 
 DEMO_USERS = [
@@ -401,16 +407,16 @@ DEMO_USERS = [
         "category": "Claims",
     },
     {
-        "name": "Viewer",
+        "name": "Client",
         "email": "viewer@probeps.com",
         "password": "Viewer@123",
-        "role": "Viewer",
+        "role": "Client",
     },
     {
         "name": "Sophia Turner",
         "email": "sophia.turner@probeps.com",
         "password": "Welcome@123",
-        "role": "Viewer",
+        "role": "Client",
     },
 ]
 

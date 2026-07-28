@@ -6,6 +6,7 @@ import {
   discardDraft,
   getDrafts,
   getInbox,
+  getReplied,
   getSent,
   getViewCounts,
   openInboxThread,
@@ -191,7 +192,15 @@ function matchesSearch(item: InboxItem, term: string): boolean {
 }
 
 type BaseTabKey = "pending" | "replied" | "ticketed" | "archived" | "all";
-type LoadKey = BaseTabKey | "sent" | "drafts" | "system" | "mineTicketed";
+// "replied" here is the internal, role-scoped, status-based tab
+// (ticket_id IS NULL AND status==ASSIGNED — "this thread has been
+// responded to by someone in scope, not yet ticketed") — it still
+// feeds "Inbox"/"mine" below. "repliedMine" is a different concept: a
+// personal GET /inbox/replied fetch of reply MESSAGES this user
+// specifically sent, which is what the "Replied" sidebar folder
+// actually displays. The two coexist deliberately; don't collapse
+// them into one key.
+type LoadKey = BaseTabKey | "sent" | "repliedMine" | "drafts" | "system" | "mineTicketed";
 
 // Maps a view the agent is looking at to the underlying fetch(es) it
 // actually needs — "unassigned"/"mine" are client-derived slices of
@@ -203,16 +212,20 @@ type LoadKey = BaseTabKey | "sent" | "drafts" | "system" | "mineTicketed";
 // the separate "Ticketed" folder showing every ticketed thread in
 // scope, not just this user's own). "pending" (the "Inbox" view) now
 // means a conventional inbox — every state merged together (see
-// inboxAll below) — so it needs all four base tabs loaded, not just
-// its own.
+// inboxAll below), excluding archived — so it needs pending/replied/
+// ticketed loaded, not just its own. "replied" (the sidebar folder)
+// loads the personal "repliedMine" fetch, not the internal "replied"
+// tab — see the LoadKey comment above.
 function baseKeysForView(view: MailViewKey): LoadKey[] {
   switch (view) {
     case "pending":
-      return ["pending", "replied", "ticketed", "archived"];
+      return ["pending", "replied", "ticketed"];
     case "unassigned":
       return ["pending"];
     case "mine":
       return ["pending", "replied", "mineTicketed"];
+    case "replied":
+      return ["repliedMine"];
     default:
       return [view];
   }
@@ -253,6 +266,10 @@ export function useMailInbox() {
     all: [],
   });
   const [sentItems, setSentItems] = useState<InboxItem[]>([]);
+  // Reply messages this user has personally sent — the "Replied"
+  // sidebar folder's real data source (see the LoadKey/baseKeysForView
+  // comments above for why this is separate from rowsByTab.replied).
+  const [repliedItems, setRepliedItems] = useState<InboxItem[]>([]);
   // Ticketed threads assigned to the current user — the "My Claims"
   // folder's post-ticket half (see fetchMyTicketedClaims below).
   const [myTicketedClaims, setMyTicketedClaims] = useState<InboxItem[]>([]);
@@ -468,6 +485,11 @@ export function useMailInbox() {
     setSentItems(result.items.map(sentItemToInboxItem));
   }, []);
 
+  const fetchReplied = useCallback(async () => {
+    const result = await getReplied();
+    setRepliedItems(result.items.map(sentItemToInboxItem));
+  }, []);
+
   const fetchDrafts = useCallback(async () => {
     const result = await getDrafts();
     setDraftItems(result.items.map(draftItemToInboxItem));
@@ -491,12 +513,13 @@ export function useMailInbox() {
   const fetchKey = useCallback(
     (key: LoadKey) => {
       if (key === "sent") return fetchSent();
+      if (key === "repliedMine") return fetchReplied();
       if (key === "drafts") return fetchDrafts();
       if (key === "system") return fetchSystemMail();
       if (key === "mineTicketed") return fetchMyTicketedClaims();
       return fetchBaseTab(key);
     },
-    [fetchBaseTab, fetchSent, fetchDrafts, fetchSystemMail, fetchMyTicketedClaims]
+    [fetchBaseTab, fetchSent, fetchReplied, fetchDrafts, fetchSystemMail, fetchMyTicketedClaims]
   );
 
   // Fetches only whichever of `keys` haven't been loaded yet — used
@@ -686,10 +709,12 @@ export function useMailInbox() {
       const fresh = await openInboxThread(interactionId);
       setSelectedEmail(fresh);
     }
-    // A send always clears the draft and adds a sent item, regardless
-    // of which tab is currently active — refresh both explicitly on
-    // top of whatever's on screen.
-    if (result) await refreshAfterMutation(["drafts", "sent"]);
+    // A send always clears the draft and adds a reply item (sendDraft
+    // ultimately calls add_interaction_reply server-side — never a
+    // Compose row, so "sent" was the wrong bucket to refresh here),
+    // regardless of which tab is currently active — refresh both
+    // explicitly on top of whatever's on screen.
+    if (result) await refreshAfterMutation(["drafts", "repliedMine"]);
     return result;
   }
 
@@ -779,30 +804,37 @@ export function useMailInbox() {
     [rowsByTab.pending, rowsByTab.replied, myTicketedClaims, currentUser?.user_id]
   );
 
-  // "Inbox" ("pending") is now a conventional inbox — every state
-  // merged into one list, not just still-untouched pre-ticket mail.
-  // "Unassigned"/"My Claims" above are unaffected: they read
-  // rowsByTab.pending/rowsByTab.replied/myTicketedClaims directly, a
-  // separate internal bucket from whatever gets rendered for "Inbox"
-  // itself. De-duped by interaction_id (same rationale as `mine`
-  // above — pending/replied/ticketed/archived are four independently-
-  // fetched arrays, so an item whose state flips between fetches
-  // could otherwise land in more than one), sorted newest first.
+  // "Inbox" ("pending") is now a conventional inbox — every non-
+  // archived state merged into one list, not just still-untouched
+  // pre-ticket mail. Archived is deliberately excluded: an item
+  // leaving the inbox is the entire point of archiving it, same as
+  // any ordinary mail client. "Unassigned"/"My Claims" above are
+  // unaffected: they read rowsByTab.pending/rowsByTab.replied/
+  // myTicketedClaims directly, a separate internal bucket from
+  // whatever gets rendered for "Inbox" itself. De-duped by
+  // interaction_id (same rationale as `mine` above — pending/replied/
+  // ticketed are three independently-fetched arrays, so an item whose
+  // state flips between fetches could otherwise land in more than
+  // one), sorted newest first.
   const inboxAll = useMemo(
     () =>
       Array.from(
         new Map(
-          [...rowsByTab.pending, ...rowsByTab.replied, ...rowsByTab.ticketed, ...rowsByTab.archived].map(
+          [...rowsByTab.pending, ...rowsByTab.replied, ...rowsByTab.ticketed].map(
             (item) => [item.interaction_id, item]
           )
         ).values()
       ).sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime()),
-    [rowsByTab.pending, rowsByTab.replied, rowsByTab.ticketed, rowsByTab.archived]
+    [rowsByTab.pending, rowsByTab.replied, rowsByTab.ticketed]
   );
 
   const rowsByView: Record<MailViewKey, InboxItem[]> = {
     pending: inboxAll,
-    replied: rowsByTab.replied,
+    // The "Replied" sidebar folder shows reply messages this user
+    // personally sent (repliedItems, from GET /inbox/replied) — not
+    // rowsByTab.replied, the internal role-scoped status tab that
+    // still feeds inboxAll/mine above.
+    replied: repliedItems,
     ticketed: rowsByTab.ticketed,
     archived: rowsByTab.archived,
     all: rowsByTab.all,
@@ -833,15 +865,20 @@ export function useMailInbox() {
       // "still-untouched pre-ticket mail" count) with the real merged
       // total, computed from each tab's own accurate server-reported
       // total (tabTotals), not just currently-loaded row count — correct
-      // even before "Load more" has pulled every row.
-      pending: tabTotals.pending + tabTotals.replied + tabTotals.ticketed + tabTotals.archived,
+      // even before "Load more" has pulled every row. Archived is
+      // deliberately excluded, matching inboxAll's own exclusion above.
+      pending: tabTotals.pending + tabTotals.replied + tabTotals.ticketed,
       unassigned: unassigned.length,
       mine: mine.length,
       sent: sentItems.length,
+      // Overrides baseViewCounts.replied (the internal status-tab
+      // count, no longer what this folder displays) with the personal
+      // repliedItems count.
+      replied: repliedItems.length,
       drafts: draftItems.length,
       system: systemNotifications.filter((n) => !n.is_read).length,
     }),
-    [baseViewCounts, tabTotals, unassigned, mine, sentItems, draftItems, systemNotifications]
+    [baseViewCounts, tabTotals, unassigned, mine, sentItems, repliedItems, draftItems, systemNotifications]
   );
 
   // Only re-runs applyFilters when the active view's underlying data
@@ -859,10 +896,17 @@ export function useMailInbox() {
 
   // Whether the currently active view's underlying base tab(s) have
   // more rows on the server than what's loaded so far — false for
-  // Sent/Drafts/mineTicketed (all kept unbounded; personal, inherently
-  // small lists).
+  // Sent/Replied(personal)/Drafts/mineTicketed (all kept unbounded;
+  // personal, inherently small lists).
   const hasMore = baseKeysForView(activeViewRaw).some((key) => {
-    if (key === "sent" || key === "drafts" || key === "system" || key === "mineTicketed") return false;
+    if (
+      key === "sent" ||
+      key === "repliedMine" ||
+      key === "drafts" ||
+      key === "system" ||
+      key === "mineTicketed"
+    )
+      return false;
     return rowsByTab[key].length < tabTotals[key];
   });
 
@@ -874,6 +918,7 @@ export function useMailInbox() {
     const keys = baseKeysForView(activeViewRaw).filter(
       (key): key is BaseTabKey =>
         key !== "sent" &&
+        key !== "repliedMine" &&
         key !== "drafts" &&
         key !== "system" &&
         key !== "mineTicketed" &&

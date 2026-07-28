@@ -498,17 +498,60 @@ class InboxService:
 
     async def get_sent(self, current_user: User) -> SentResponse:
         """
-        Every reply `current_user` has sent, pre-ticket or
-        ticket-level alike, plus every brand-new Compose email they've
-        authored — a separate shape from `get_inbox` since a sent
-        reply is a thread child, not a root, and carries no subject/
-        client_name of its own (borrowed from its thread root here).
-        A Compose-authored row is itself a root (parent_interaction_id
-        is None) and its own EmailPayload already has subject/
-        client_name/body — no separate root lookup needed for those.
+        Every brand-new Compose email `current_user` has authored
+        (InteractionService.compose_email) — Compose-only, never a
+        reply (see get_replied for that). A Compose-authored row is
+        itself a thread root (parent_interaction_id is None) and its
+        own EmailPayload already has subject/client_name/body, so no
+        separate root lookup is needed here.
         """
 
-        replies = await self.interaction_repository.list_sent(current_user.user_id)
+        emails = await self.interaction_repository.list_sent(current_user.user_id)
+
+        items: list[SentItemResponse] = []
+
+        for email in emails:
+            client_name = "Unknown"
+            subject = "(no subject)"
+            message = ""
+            try:
+                own_payload = EmailPayload.model_validate(email.payload)
+                client_name = own_payload.client_name or "Unknown"
+                subject = own_payload.subject
+                message = own_payload.body
+            except ValidationError:
+                logger.warning(
+                    "Skipping subject/client resolution for sent Compose "
+                    "email %s — its own payload doesn't match EmailPayload.",
+                    email.interaction_id,
+                )
+
+            items.append(
+                SentItemResponse(
+                    interaction_id=email.interaction_id,
+                    root_interaction_id=email.interaction_id,
+                    ticket_id=email.ticket_id,
+                    client_id=email.client_id,
+                    client_name=client_name,
+                    subject=subject,
+                    message=message,
+                    sent_at=email.created_at,
+                )
+            )
+
+        return SentResponse(total=len(items), items=items)
+
+    async def get_replied(self, current_user: User) -> SentResponse:
+        """
+        Every reply `current_user` has personally sent, pre-ticket or
+        ticket-level alike — the counterpart to get_sent above, which
+        is Compose-only. A sent reply is a thread child, not a root,
+        and carries no subject/client_name of its own — both are
+        borrowed from its thread root here, same as get_sent's old
+        merged behavior used to do for this half.
+        """
+
+        replies = await self.interaction_repository.list_replied(current_user.user_id)
 
         root_ids = {
             reply.parent_interaction_id
@@ -521,39 +564,6 @@ class InboxService:
         items: list[SentItemResponse] = []
 
         for reply in replies:
-            if reply.parent_interaction_id is None:
-                # A Compose-authored root — subject/client_name/body
-                # live on this row's own payload, not a separate
-                # thread root (there isn't one; this row IS the root).
-                client_name = "Unknown"
-                subject = "(no subject)"
-                message = ""
-                try:
-                    own_payload = EmailPayload.model_validate(reply.payload)
-                    client_name = own_payload.client_name or "Unknown"
-                    subject = own_payload.subject
-                    message = own_payload.body
-                except ValidationError:
-                    logger.warning(
-                        "Skipping subject/client resolution for sent Compose "
-                        "email %s — its own payload doesn't match EmailPayload.",
-                        reply.interaction_id,
-                    )
-
-                items.append(
-                    SentItemResponse(
-                        interaction_id=reply.interaction_id,
-                        root_interaction_id=reply.interaction_id,
-                        ticket_id=reply.ticket_id,
-                        client_id=reply.client_id,
-                        client_name=client_name,
-                        subject=subject,
-                        message=message,
-                        sent_at=reply.created_at,
-                    )
-                )
-                continue
-
             root = roots_by_id.get(reply.parent_interaction_id)
 
             client_name = "Unknown"

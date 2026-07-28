@@ -56,7 +56,7 @@ const ROLE_ORDER: string[] = [
   ROLE_NAMES.ACCOUNT_MANAGER,
   ROLE_NAMES.SITE_LEAD,
   ROLE_NAMES.SUPER_ADMIN,
-  ROLE_NAMES.VIEWER,
+  ROLE_NAMES.CLIENT,
 ];
 
 // Presentational-only metadata — the Role model has no description/level
@@ -68,7 +68,7 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
   [ROLE_NAMES.ACCOUNT_MANAGER]: "Manages a portfolio of client accounts and their Team Leads and Staff.",
   [ROLE_NAMES.SITE_LEAD]: "Full operational oversight across the organization, second only to Super Admin.",
   [ROLE_NAMES.SUPER_ADMIN]: "Unrestricted access to every module, user, and configuration in the system.",
-  [ROLE_NAMES.VIEWER]: "Client-facing, read-only role scoped to their own account.",
+  [ROLE_NAMES.CLIENT]: "Client-facing, read-only role scoped to their own account.",
 };
 
 const ROLE_LEVELS: Record<string, string> = {
@@ -77,7 +77,7 @@ const ROLE_LEVELS: Record<string, string> = {
   [ROLE_NAMES.ACCOUNT_MANAGER]: "Level 3 — Account Manager",
   [ROLE_NAMES.TEAM_LEAD]: "Level 2 — Team Lead",
   [ROLE_NAMES.STAFF]: "Level 1 — Staff",
-  [ROLE_NAMES.VIEWER]: "Unranked — client-facing",
+  [ROLE_NAMES.CLIENT]: "Unranked — client-facing",
 };
 
 function prettifyAction(permissionName: string): string {
