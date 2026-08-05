@@ -335,6 +335,42 @@ class SLAService:
 
         # RUNNING / COMPLETED: no-op.
 
+    async def reopen_resolution_clock(
+        self,
+        *,
+        ticket_id: UUID,
+        client_id: UUID | None,
+        priority: TicketPriority,
+    ) -> None:
+        """
+        Called from InboxTicketService.attach_to_existing_ticket when
+        attaching an email reopens a previously CLOSED ticket — starts
+        a fresh Resolution SLA measurement at the FINAL priority chosen
+        during reopen. Unlike create_or_resume_resolution_clock (which
+        deliberately leaves a COMPLETED clock alone), this is the one
+        caller that means to revive it, since the ticket's own status
+        is itself being reopened at the same moment.
+        """
+
+        policy = await self._get_policy(priority)
+        if policy is None:
+            return
+
+        clock = await self.resolution_sla_repository.get_by_ticket_id(ticket_id)
+
+        if clock is None:
+            await self.start_resolution_clock(
+                ticket_id=ticket_id, client_id=client_id, priority=priority
+            )
+            return
+
+        await self.resolution_sla_repository.reopen_due_at(
+            clock,
+            new_priority=priority,
+            new_target_minutes=policy.resolution_target_minutes,
+            now=datetime.now(timezone.utc),
+        )
+
     async def pause_resolution_clock(
         self,
         *,

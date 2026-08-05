@@ -1,7 +1,12 @@
 from fastapi import HTTPException, status
 from shared_models.models import User
 
-from app.ticketing.enums import AuditEntityType, AuditEventType, InteractionStatus
+from app.ticketing.enums import (
+    AuditEntityType,
+    AuditEventType,
+    InteractionStatus,
+    TicketStatus,
+)
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
@@ -13,6 +18,11 @@ from app.ticketing.schemas.attach_interaction import (
     AttachInteractionResponse,
 )
 from app.ticketing.schemas.ticket import TicketCreate
+from app.ticketing.schemas.ticket_action import (
+    PriorityChangeRequest,
+    StatusChangeRequest,
+    TransferAgentRequest,
+)
 from app.ticketing.schemas.ticket_from_interaction import (
     TicketFromInteractionCreate,
     TicketFromInteractionResponse,
@@ -24,6 +34,7 @@ from app.ticketing.services.access_control import (
 from app.ticketing.services.assignment_service import AssignmentService
 from app.ticketing.services.audit_log_service import AuditLogService
 from app.ticketing.services.sla_service import SLAService
+from app.notifications.service import NotificationType
 
 
 class InboxTicketService:
@@ -32,7 +43,8 @@ class InboxTicketService:
 
     Supported workflows:
     - Create ticket from inbox interaction
-    - Attach inbox interaction to an existing ticket
+    - Attach inbox interaction to an existing ticket (reopening it
+      first, via interaction_service, if it was CLOSED)
     """
 
     def __init__(
@@ -42,12 +54,18 @@ class InboxTicketService:
         assignment_service: AssignmentService | None = None,
         sla_service: SLAService | None = None,
         client_repository=None,
+        interaction_service=None,
     ):
         self.ticket_repository = ticket_repository
         self.interaction_repository = interaction_repository
         self.assignment_service = assignment_service
         self.sla_service = sla_service
         self.client_repository = client_repository
+        # Only required for attach_to_existing_ticket's closed-ticket
+        # (reopen) branch — reused as-is rather than duplicated, see
+        # that method's own comments. Not needed for
+        # create_ticket_from_interaction.
+        self.interaction_service = interaction_service
 
     # ---------------------------------------------------------
     # Shared Validation
@@ -232,6 +250,56 @@ class InboxTicketService:
             ticket, current_user, self.client_repository
         )
 
+        was_closed = ticket.current_status == TicketStatus.CLOSED
+
+        if was_closed:
+            if self.interaction_service is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Reopening a closed ticket requires interaction_service.",
+                )
+
+            # Same ticket, history, interactions, audit log — reuses
+            # InteractionService.reopen_ticket end-to-end (its own
+            # CLOSED-only guard, ticket:reopen permission check, and
+            # TICKET_REOPENED audit row) instead of duplicating any of
+            # it here. Raises 403 if this caller lacks ticket:reopen —
+            # attaching an email doesn't bypass that permission.
+            await self.interaction_service.reopen_ticket(ticket_id, current_user)
+
+            # reopen_ticket alone only ever restores OPEN (its own
+            # docstring: "restores it to OPEN") — this workflow needs
+            # the ticket to land on an actively-worked state instead,
+            # so it moves one step further via the same, ordinary
+            # change_status transition every other status change already
+            # goes through (OPEN -> IN_PROGRESS is a pre-existing, valid
+            # transition; no new status value, no separate "reopened"
+            # state).
+            await self.interaction_service.change_status(
+                ticket_id,
+                StatusChangeRequest(new_status=TicketStatus.IN_PROGRESS),
+                current_user,
+            )
+
+            # Final priority for reopen: only touched if the caller
+            # actually chose to change it — reuses
+            # InteractionService.change_priority as-is (its own
+            # PRIORITY_CHANGED audit row, stakeholder notification, and
+            # SLA reshift call, the last of which safely no-ops here
+            # since the clock is still COMPLETED at this point — the
+            # real reshift for reopen happens below via
+            # reopen_resolution_clock, using whatever priority ends up
+            # set on the ticket).
+            if (
+                request.new_priority is not None
+                and request.new_priority != ticket.current_priority
+            ):
+                await self.interaction_service.change_priority(
+                    ticket_id,
+                    PriorityChangeRequest(new_priority=request.new_priority),
+                    current_user,
+                )
+
         # Attach the interaction AND every reply already filed
         # under it (if this was already a thread) to the ticket.
         await self.interaction_repository.assign_thread_to_ticket(
@@ -260,26 +328,83 @@ class InboxTicketService:
             },
         )
 
+        if was_closed:
+            if request.new_agent_id is not None:
+                # Reuses InteractionService.transfer_agent as-is — its
+                # own eligibility rules, AGENT_TRANSFERRED audit row,
+                # and new-assignee notification.
+                await self.interaction_service.transfer_agent(
+                    ticket_id,
+                    TransferAgentRequest(
+                        new_agent_id=request.new_agent_id,
+                        reason="Reassigned while reopening via attached email.",
+                    ),
+                    current_user,
+                )
+            else:
+                previous_agent_id = ticket.agent_id
+                await AuditLogService.log_event(
+                    self.ticket_repository.db,
+                    entity_type=AuditEntityType.TICKET,
+                    entity_id=ticket.ticket_id,
+                    event_type=AuditEventType.TICKET_UPDATED,
+                    actor_id=actor_id,
+                    actor_name=actor_name,
+                    actor_role=actor_role,
+                    new_values={
+                        "action": "assignment_strategy",
+                        "strategy": "keep_existing",
+                        "agent_id": previous_agent_id,
+                    },
+                )
+                notification_service = self.interaction_service.notification_service
+                if notification_service is not None and previous_agent_id is not None:
+                    await notification_service.notify(
+                        previous_agent_id,
+                        NotificationType.TICKET_STATUS_CHANGED,
+                        title="A closed ticket you own was reopened",
+                        message=f"{ticket.title}: reopened via a newly attached email.",
+                        link=f"/tickets/{ticket_id}",
+                        related_entity_type="ticket",
+                        related_entity_id=ticket_id,
+                    )
+
         if self.sla_service is not None:
             await self.sla_service.complete_first_response_clock(
                 interaction_id=interaction.interaction_id,
                 completion_reason="ATTACHED_TO_TICKET",
                 resulting_ticket_id=ticket.ticket_id,
             )
-            # Creates a fresh Resolution clock if this ticket somehow
-            # never had one (pre-dates this feature), or resumes it if
-            # paused — see SLAService.create_or_resume_resolution_clock's
-            # own docstring for the full RUNNING/PAUSED/COMPLETED
-            # decision table.
-            await self.sla_service.create_or_resume_resolution_clock(
-                ticket_id=ticket.ticket_id,
-                client_id=ticket.client_company_id,
-                priority=ticket.current_priority,
-            )
+            if was_closed:
+                # FINAL priority (possibly just changed above) drives
+                # the new Resolution SLA — revives the ticket's own
+                # completed clock rather than creating a second row
+                # (ResolutionSLA.ticket_id is unique).
+                await self.sla_service.reopen_resolution_clock(
+                    ticket_id=ticket.ticket_id,
+                    client_id=ticket.client_company_id,
+                    priority=ticket.current_priority,
+                )
+            else:
+                # Creates a fresh Resolution clock if this ticket somehow
+                # never had one (pre-dates this feature), or resumes it if
+                # paused — see SLAService.create_or_resume_resolution_clock's
+                # own docstring for the full RUNNING/PAUSED/COMPLETED
+                # decision table.
+                await self.sla_service.create_or_resume_resolution_clock(
+                    ticket_id=ticket.ticket_id,
+                    client_id=ticket.client_company_id,
+                    priority=ticket.current_priority,
+                )
 
         return AttachInteractionResponse(
-            message="Interaction attached successfully.",
+            message=(
+                "Ticket reopened and interaction attached successfully."
+                if was_closed
+                else "Interaction attached successfully."
+            ),
             ticket_id=ticket.ticket_id,
             interaction_id=interaction.interaction_id,
             status=InteractionStatus.ASSIGNED,
+            ticket_reopened=was_closed,
         )

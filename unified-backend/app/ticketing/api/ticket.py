@@ -166,14 +166,33 @@ async def attach_interaction_to_ticket(
     ticket_repository = TicketRepository(db)
     interaction_repository = InteractionRepository(db)
     client_repository = ClientRepository(db)
+    user_repository = UserRepository(db)
+    edit_access_repository = TicketEditAccessRequestRepository(db)
+    notification_service = NotificationService(NotificationRepository(db))
+
+    # Only exercised if the target ticket turns out to be CLOSED (see
+    # InboxTicketService.attach_to_existing_ticket) — reuses the exact
+    # same InteractionService construction as the dedicated
+    # close/reopen/transfer/priority routes above, so reopen/transfer/
+    # priority-change behave identically whether triggered directly or
+    # via this attach workflow.
+    interaction_service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        edit_access_repository=edit_access_repository,
+        client_repository=client_repository,
+        notification_service=notification_service,
+        sla_service=build_sla_service(db, notification_service=notification_service),
+        escalation_service=build_escalation_service(db),
+    )
 
     service = InboxTicketService(
         ticket_repository=ticket_repository,
         interaction_repository=interaction_repository,
-        sla_service=build_sla_service(
-            db, notification_service=NotificationService(NotificationRepository(db))
-        ),
+        sla_service=build_sla_service(db, notification_service=notification_service),
         client_repository=client_repository,
+        interaction_service=interaction_service,
     )
 
     return await service.attach_to_existing_ticket(

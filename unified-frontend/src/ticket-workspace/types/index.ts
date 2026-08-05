@@ -499,6 +499,11 @@ export interface TicketFromInteractionResponse {
 
 export interface AttachInteractionRequest {
   interaction_id: string;
+  // Only applied when the target ticket is CLOSED (this attach also
+  // reopens it) — see MessageDetailsView.tsx's Attach dialog. Omit
+  // both to keep the existing assignee/priority on reopen.
+  new_agent_id?: string;
+  new_priority?: TicketPriority;
 }
 
 export interface AttachInteractionResponse {
@@ -506,6 +511,7 @@ export interface AttachInteractionResponse {
   ticket_id: string;
   interaction_id: string;
   status: InteractionStatus;
+  ticket_reopened?: boolean;
 }
 
 // ==========================================================

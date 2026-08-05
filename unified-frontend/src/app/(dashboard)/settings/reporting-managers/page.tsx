@@ -38,7 +38,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
-import { formatDate } from "@/lib/utils";
+import { formatDate, getApiErrorMessage } from "@/lib/utils";
 import { categoryService, reportingManagerService, roleService, userService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 import { Category, ReportingManagerAssignment, Role, User } from "@/types";
@@ -137,14 +137,12 @@ export default function ReportingManagersPage() {
     );
   }
 
-  const isLoading =
-    assignmentsQuery.isLoading ||
-    usersQuery.isLoading ||
-    rolesQuery.isLoading ||
-    categoriesQuery.isLoading;
-
-  const loadError =
-    assignmentsQuery.isError || usersQuery.isError || rolesQuery.isError || categoriesQuery.isError;
+  // Scoped per data source rather than one combined flag — a failure in
+  // the AM/Category picker data must never blank the assignments table
+  // below, since that's driven entirely by assignmentsQuery and may well
+  // have loaded successfully on its own.
+  const pickerDataError = usersQuery.isError || rolesQuery.isError;
+  const categoryDataError = categoriesQuery.isError;
 
   const assignments = assignmentsQuery.data ?? [];
 
@@ -170,7 +168,11 @@ export default function ReportingManagersPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <div className="flex-1 space-y-1.5">
               <label className="text-sm font-medium text-muted-foreground">Account Manager</label>
-              <Select value={selectedAccountManagerId} onValueChange={setSelectedAccountManagerId}>
+              <Select
+                value={selectedAccountManagerId}
+                onValueChange={setSelectedAccountManagerId}
+                disabled={pickerDataError}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select an Account Manager" />
                 </SelectTrigger>
@@ -182,11 +184,23 @@ export default function ReportingManagersPage() {
                   ))}
                 </SelectContent>
               </Select>
+              {pickerDataError && (
+                <p className="text-xs text-destructive">
+                  {getApiErrorMessage(
+                    usersQuery.error ?? rolesQuery.error,
+                    "Account Manager list unavailable. Please try again."
+                  )}
+                </p>
+              )}
             </div>
 
             <div className="flex-1 space-y-1.5">
               <label className="text-sm font-medium text-muted-foreground">Category</label>
-              <Select value={selectedCategoryId} onValueChange={setSelectedCategoryId}>
+              <Select
+                value={selectedCategoryId}
+                onValueChange={setSelectedCategoryId}
+                disabled={categoryDataError}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Select a category" />
                 </SelectTrigger>
@@ -198,12 +212,24 @@ export default function ReportingManagersPage() {
                   ))}
                 </SelectContent>
               </Select>
+              {categoryDataError && (
+                <p className="text-xs text-destructive">
+                  {getApiErrorMessage(
+                    categoriesQuery.error,
+                    "Category list unavailable. Please try again."
+                  )}
+                </p>
+              )}
             </div>
 
             <Button
               onClick={() => assignMutation.mutate()}
               disabled={
-                !selectedAccountManagerId || !selectedCategoryId || assignMutation.isPending
+                !selectedAccountManagerId ||
+                !selectedCategoryId ||
+                assignMutation.isPending ||
+                pickerDataError ||
+                categoryDataError
               }
             >
               {assignMutation.isPending ? "Assigning..." : "Assign"}
@@ -212,12 +238,17 @@ export default function ReportingManagersPage() {
         </CardContent>
       </Card>
 
-      {loadError && <ErrorState message="Failed to load Reporting Manager data." />}
-
-      {!loadError && (
+      {assignmentsQuery.isError ? (
+        <ErrorState
+          message={getApiErrorMessage(
+            assignmentsQuery.error,
+            "Failed to load Reporting Manager assignments. Please try again."
+          )}
+        />
+      ) : (
         <Card>
           <CardContent className="p-0">
-            {isLoading ? (
+            {assignmentsQuery.isLoading ? (
               <div className="space-y-3 p-6">
                 <Skeleton className="h-10 w-full" />
                 <Skeleton className="h-10 w-full" />

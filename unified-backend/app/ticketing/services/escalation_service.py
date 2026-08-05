@@ -320,34 +320,42 @@ class EscalationService:
         ensure_agent_can_view_ticket(ticket, current_user)
         ensure_ticket_not_closed(ticket)
 
-        # Ownership (Ticket.agent_id — the existing ticket-ownership
-        # model, not the escalation's own owner_ids) is now the SOLE
-        # authorization criterion for manual escalation — deliberately
-        # no ticket:escalate permission check anymore. That permission
-        # is Full-by-default for Team Lead/Account Manager/Site
-        # Lead/Super Admin but never for Staff, which meant a Staff
-        # member who legitimately re-became a ticket's current owner
-        # after an escalation (e.g. escalated it, a Team Lead
-        # acknowledged, and assigned it straight back to them) lost
-        # the button entirely, even though they were once again the
-        # rightful owner — a real, confirmed bug, not a hypothetical
-        # one. Ownership already implies view access in every real
-        # scenario, so ensure_agent_can_view_ticket above is kept only
-        # as defense in depth, not as a second gate that could itself
-        # block the owner. An unclaimed ticket (agent_id is None) has
-        # no current owner, so nobody can manually escalate it via this
-        # check until someone claims it first — every other rule here
-        # (not-closed, escalation-ladder progression, terminal
-        # SITE_LEAD rejection below) is unchanged.
-        if ticket.agent_id != current_user.user_id:
+        existing = await self.ticket_escalation_repository.get_active_by_ticket_id(
+            ticket_id
+        )
+
+        # "Current owner" is Ticket.agent_id normally — but the instant
+        # an escalation is created, ownership moves to that escalation's
+        # own owner_ids, and agent_id is a stale reference to the
+        # *previous* owner until a supervisor actually completes
+        # Acknowledge & Assign (EscalationService._complete_acceptance).
+        # `existing.handling_stage_due_at` is exactly the signal that
+        # tells the two apart — non-null iff acceptance has completed
+        # for the current level (see _complete_acceptance's own
+        # docstring; the frontend's SlaCard.tsx computes the identical
+        # `isAwaitingEscalationAcceptance` flag off this same field) —
+        # so while it's still null, authorization must key off owner_ids,
+        # not agent_id, or the previous owner would keep the ability to
+        # re-escalate a ticket they no longer own. Once acceptance has
+        # completed, ownership has concretely reverted to whichever real
+        # agent the ticket was assigned to (which may or may not be one
+        # of owner_ids — e.g. handed straight back to the original
+        # owner), so agent_id becomes authoritative again, exactly as
+        # before this check existed. An unclaimed ticket with no active
+        # escalation (agent_id is None) still has no current owner, so
+        # nobody can manually escalate it via this check until someone
+        # claims it first.
+        if existing is not None and existing.handling_stage_due_at is None:
+            if str(current_user.user_id) not in existing.owner_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only the ticket's current escalation owner can manually escalate it.",
+                )
+        elif ticket.agent_id != current_user.user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only the ticket's current owner can manually escalate it.",
             )
-
-        existing = await self.ticket_escalation_repository.get_active_by_ticket_id(
-            ticket_id
-        )
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user

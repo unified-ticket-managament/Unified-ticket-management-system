@@ -58,7 +58,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
-import { formatDate } from "@/lib/utils";
+import { formatDate, getApiErrorMessage } from "@/lib/utils";
 import { canDeleteRecords, dedupeRolesByName, ROLE_NAMES } from "@/lib/role-access";
 import { categoryService, roleService, userService } from "@/services";
 import { PermissionGuard } from "@/components/auth/PermissionGuard";
@@ -405,7 +405,11 @@ export default function UsersPage() {
   }
 
   if (usersQuery.isError) {
-    return <ErrorState message="Failed to load users. Please try again." />;
+    return (
+      <ErrorState
+        message={getApiErrorMessage(usersQuery.error, "Failed to load users. Please try again.")}
+      />
+    );
   }
 
   return (

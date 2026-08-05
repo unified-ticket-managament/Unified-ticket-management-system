@@ -296,6 +296,20 @@ export function MessageDetailsView({
   const [assignedToChoice, setAssignedToChoice] = useState<string>("unassigned");
   const [selectedAssigneeId, setSelectedAssigneeId] = useState("");
 
+  // Attach-to-Ticket's reopen extension: only relevant when the
+  // ticket picked in the Attach dialog is CLOSED — mirrors the
+  // Create Ticket dialog's own group-then-user picker shape, sourced
+  // from GET /tickets/{id}/transfer-candidates (the same eligibility
+  // rules InteractionService.transfer_agent enforces server-side) so
+  // whatever's offered here is always something the backend will
+  // actually accept.
+  const [reopenCandidates, setReopenCandidates] = useState<AssignableAgentsResponse | null>(null);
+  const [reopenAssignChoice, setReopenAssignChoice] = useState<"keep" | "reassign">("keep");
+  const [reopenAssignGroup, setReopenAssignGroup] = useState<string>("");
+  const [reopenAssigneeId, setReopenAssigneeId] = useState("");
+  const [reopenPriorityChoice, setReopenPriorityChoice] = useState<"keep" | "change">("keep");
+  const [reopenPriority, setReopenPriority] = useState<TicketPriority>("MEDIUM");
+
   const isTicketed = Boolean(email.ticket_id);
   const isClosed = email.ticket_status === "CLOSED";
   const hasDraft = Boolean(email.draft_message);
@@ -354,6 +368,36 @@ export function MessageDetailsView({
       : assignedToChoice === "self" || !assignedToGroup
         ? assignableAgents?.me.user_id
         : selectedAssigneeId || undefined;
+
+  const selectedExistingTicket = clientTickets.find((t) => t.ticket_id === existingTicketId) ?? null;
+  const isReopeningClosedTicket = selectedExistingTicket?.current_status === "CLOSED";
+  const reopenAssignGroupData = reopenCandidates?.groups.find((group) => group.role === reopenAssignGroup) ?? null;
+  const resolvedReopenAgentId =
+    reopenAssignGroup === "me"
+      ? reopenCandidates?.me.user_id
+      : reopenAssignGroupData
+        ? reopenAssigneeId || undefined
+        : undefined;
+
+  useEffect(() => {
+    // Category-based hierarchy (same lookup the Create Ticket dialog's
+    // own "Assigned To" picker already uses, see assignableAgents
+    // above) — NOT the flat transfer-candidates list, which mirrors
+    // transfer_agent's broader company-wide-Team-Lead/no-Staff rules
+    // rather than "everyone under this ticket's category." Scoped to
+    // the selected existing ticket's own category (its ticket_type),
+    // so it returns: this category's Account Manager (the caller
+    // themselves, via AssignmentService's own `me` field), every Team
+    // Lead in this category, and every Staff member in this category.
+    if (!isReopeningClosedTicket || !selectedExistingTicket) {
+      setReopenCandidates(null);
+      return;
+    }
+    listAssignableAgents(selectedExistingTicket.ticket_type)
+      .then(setReopenCandidates)
+      .catch(() => setReopenCandidates(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [existingTicketId, isReopeningClosedTicket]);
 
   async function handleSend(payload: {
     message: string;
@@ -514,6 +558,11 @@ export function MessageDetailsView({
   async function openAttachDialog() {
     setExistingTicketId(email.recommended_ticket_id ?? "");
     setAttachOpen(true);
+    setReopenAssignChoice("keep");
+    setReopenAssignGroup("");
+    setReopenAssigneeId("");
+    setReopenPriorityChoice("keep");
+    setReopenPriority("MEDIUM");
     if (!email.client_id) {
       setClientTickets([]);
       return;
@@ -528,7 +577,15 @@ export function MessageDetailsView({
 
   async function handleAttachExisting() {
     if (!existingTicketId) return;
-    const result = await runAttach(existingTicketId, { interaction_id: email.interaction_id });
+    const result = await runAttach(existingTicketId, {
+      interaction_id: email.interaction_id,
+      ...(isReopeningClosedTicket && reopenAssignChoice === "reassign" && resolvedReopenAgentId
+        ? { new_agent_id: resolvedReopenAgentId }
+        : {}),
+      ...(isReopeningClosedTicket && reopenPriorityChoice === "change"
+        ? { new_priority: reopenPriority }
+        : {}),
+    });
     if (result) {
       setAttachOpen(false);
       onRefreshList();
@@ -927,12 +984,132 @@ export function MessageDetailsView({
               onChange={(e) => setExistingTicketId(e.target.value)}
               placeholder="Or paste a ticket ID"
             />
+
+            {isReopeningClosedTicket && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3.5 py-2.5 text-xs">
+                <div className="mb-2 flex items-center gap-2">
+                  <Badge variant="secondary">Closed</Badge>
+                  <p className="text-muted-foreground">
+                    This ticket is currently Closed. Attaching this email will reopen the ticket
+                    and continue the existing conversation.
+                  </p>
+                </div>
+
+                <div className="mb-3">
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Assignment</label>
+                  <Select
+                    value={reopenAssignChoice}
+                    onValueChange={(v) => {
+                      setReopenAssignChoice(v as "keep" | "reassign");
+                      setReopenAssignGroup("");
+                      setReopenAssigneeId("");
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="keep">Keep Existing Assignee</SelectItem>
+                      <SelectItem value="reassign">Reassign</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  {reopenAssignChoice === "reassign" && (
+                    <div className="mt-2 flex flex-col gap-2">
+                      <Select
+                        value={reopenAssignGroup}
+                        onValueChange={(v) => {
+                          setReopenAssignGroup(v);
+                          setReopenAssigneeId("");
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Choose who to assign..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {reopenCandidates && (
+                            <SelectItem value="me">Myself ({reopenCandidates.me.name})</SelectItem>
+                          )}
+                          {reopenCandidates?.groups.map((group) => (
+                            <SelectItem key={group.role} value={group.role}>
+                              {group.role}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+
+                      {reopenAssignGroupData && (
+                        reopenAssignGroupData.users.length === 0 ? (
+                          <p className="text-xs text-muted-foreground">
+                            No {reopenAssignGroupData.role} found for this ticket.
+                          </p>
+                        ) : (
+                          <Select value={reopenAssigneeId} onValueChange={setReopenAssigneeId}>
+                            <SelectTrigger>
+                              <SelectValue placeholder={`Choose a ${reopenAssignGroupData.role}...`} />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {reopenAssignGroupData.users.map((user) => (
+                                <SelectItem key={user.user_id} value={user.user_id}>
+                                  {user.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">Priority</label>
+                  <Select
+                    value={reopenPriorityChoice}
+                    onValueChange={(v) => setReopenPriorityChoice(v as "keep" | "change")}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="keep">Keep Existing Priority</SelectItem>
+                      <SelectItem value="change">Change Priority</SelectItem>
+                    </SelectContent>
+                  </Select>
+
+                  {reopenPriorityChoice === "change" && (
+                    <Select
+                      value={reopenPriority}
+                      onValueChange={(v) => setReopenPriority(v as TicketPriority)}
+                    >
+                      <SelectTrigger className="mt-2">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="LOW">Low</SelectItem>
+                        <SelectItem value="MEDIUM">Medium</SelectItem>
+                        <SelectItem value="HIGH">High</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAttachOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleAttachExisting} disabled={isAttaching || !existingTicketId}>
+            <Button
+              onClick={handleAttachExisting}
+              disabled={
+                isAttaching ||
+                !existingTicketId ||
+                (isReopeningClosedTicket &&
+                  reopenAssignChoice === "reassign" &&
+                  !resolvedReopenAgentId)
+              }
+            >
               {isAttaching && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
               Attach
             </Button>

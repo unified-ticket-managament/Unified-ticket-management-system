@@ -292,6 +292,41 @@ class ResolutionSLARepository:
         await self.db.refresh(clock)
         return clock
 
+    async def reopen_due_at(
+        self,
+        clock: ResolutionSLA,
+        *,
+        new_priority: TicketPriority,
+        new_target_minutes: int,
+        now: datetime,
+    ) -> ResolutionSLA:
+        """
+        Revives a COMPLETED clock when its ticket is reopened — the one
+        legitimate case where a completed Resolution SLA clock is
+        *meant* to restart, unlike every other method on this class
+        (resume/reshift_due_at_for_priority_change/
+        restart_due_at_for_escalation), which all treat COMPLETED as
+        terminal by design. Reuses this same row rather than creating a
+        second one, since ResolutionSLA.ticket_id is unique — a ticket
+        can only ever have one. Same full-fresh-window math as
+        restart_due_at_for_escalation (the reopened ticket deserves the
+        whole target window from this moment, not a reshift against
+        however long it ran before it was closed).
+        """
+
+        clock.status = SLAClockStatus.RUNNING
+        clock.priority = new_priority
+        clock.active_target_minutes = new_target_minutes
+        clock.started_at = now
+        clock.due_at = compute_restarted_due_at(new_target_minutes=new_target_minutes, now=now)
+        clock.completed_at = None
+        clock.paused_at = None
+        clock.escalation_cycle += 1
+
+        await self.db.flush()
+        await self.db.refresh(clock)
+        return clock
+
     async def list_active_for_sweep(self) -> list[ResolutionSLA]:
         """
         Every still-RUNNING clock — the sweep's candidate set for

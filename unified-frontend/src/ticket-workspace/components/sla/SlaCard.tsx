@@ -63,25 +63,42 @@ export function SlaCard({
       !!currentUser.permissions.includes("ticket:change_sla")
     : false;
 
-  // Ownership (currentAgentId) is the SOLE authorization criterion now
-  // — deliberately no ticket:escalate permission check anymore.
-  // Mirrors the backend's own EscalationService.manual_escalate
-  // exactly (this is a UX convenience that hides a button that would
-  // otherwise 403, not the real enforcement). Previously this also
-  // required the ticket:escalate permission, which Staff never holds
-  // by role default — so a Staff member who legitimately became the
-  // ticket's owner again after an escalation (escalated it, a Team
-  // Lead acknowledged and assigned it straight back to them) lost the
-  // button entirely, for every role this could happen to. The
-  // remaining two conditions are unrelated to authorization and stay:
-  // no active escalation already at the terminal SITE_LEAD level (mirrors
+  // True from the moment an escalation is created until the accepting
+  // supervisor's Acknowledge & Assign completes (EscalationService.
+  // _complete_acceptance) — mirrors the backend's own "is a handling
+  // stage currently running" signal (handling_stage_due_at non-null).
+  // Computed here (rather than only below, where it's also still used
+  // for the countdown-suppression display) because canEscalate needs
+  // it too: while this is true, currentAgentId is a stale reference to
+  // the *previous* owner, not the ticket's real current owner.
+  const isAwaitingEscalationAcceptance =
+    !!escalation && escalation.status !== "CLOSED" && !escalation.handling_stage_due_at;
+
+  // "Current owner" — the sole authorization criterion, mirroring the
+  // backend's own EscalationService.manual_escalate exactly (this is a
+  // UX convenience that hides a button that would otherwise 403, not
+  // the real enforcement) — is Ticket.agent_id (currentAgentId) normally,
+  // but while isAwaitingEscalationAcceptance is true, ownership has
+  // already moved to the escalation's own owner_ids and agent_id still
+  // names the *previous* owner. Keying this off agent_id unconditionally
+  // (as this used to) let that previous owner keep seeing — and using —
+  // the button for as long as the ticket sat in "Waiting for
+  // Acknowledgement," even though they no longer own it. Once
+  // acceptance completes, ownership has concretely reverted to whoever
+  // the ticket was actually assigned to (which may or may not be an
+  // escalation owner — e.g. handed straight back to the original
+  // owner), so agent_id becomes authoritative again. The remaining two
+  // conditions are unrelated to authorization and stay: no active
+  // escalation already at the terminal SITE_LEAD level (mirrors
   // manual_escalate exactly: no active escalation -> starts one at the
   // usual starting level; an active one below SITE_LEAD -> advances it
   // one level further; already at SITE_LEAD -> nothing left to
   // escalate to), and the Resolution SLA not already COMPLETED.
   const canEscalate =
     !!currentUser &&
-    currentUser.user_id === currentAgentId &&
+    (isAwaitingEscalationAcceptance
+      ? !!escalation?.owner_ids.includes(currentUser.user_id)
+      : currentUser.user_id === currentAgentId) &&
     (!escalation || escalation.level !== "SITE_LEAD") &&
     resolution?.status !== "COMPLETED";
 
@@ -155,21 +172,17 @@ export function SlaCard({
 
   const badgeTier = resolution.status === "RUNNING" ? tier : null;
 
-  // True from the moment an escalation is created until the accepting
-  // supervisor's Acknowledge & Assign completes (EscalationService.
-  // _complete_acceptance) — mirrors the backend's own "is a handling
-  // stage currently running" signal (handling_stage_due_at non-null),
-  // see that method's docstring. During this window nobody is actually
-  // on the hook for the Resolution SLA clock (the previous owner is
-  // frozen, the new owner hasn't accepted yet), so the clock's own
-  // due_at is stale/pre-escalation and showing it as a live countdown
-  // would misrepresent whose responsibility it currently is. Once
-  // acceptance completes, restart_resolution_clock_for_escalation has
-  // already reshifted due_at to the new stage's fresh target, so the
-  // normal RUNNING display below becomes accurate again for whoever
-  // the new owner is — no per-viewer logic needed.
-  const isAwaitingEscalationAcceptance =
-    !!escalation && escalation.status !== "CLOSED" && !escalation.handling_stage_due_at;
+  // isAwaitingEscalationAcceptance (computed above, alongside
+  // canEscalate) also drives the countdown-suppression display below:
+  // during this window nobody is actually on the hook for the
+  // Resolution SLA clock (the previous owner is frozen, the new owner
+  // hasn't accepted yet), so the clock's own due_at is stale/pre-
+  // escalation and showing it as a live countdown would misrepresent
+  // whose responsibility it currently is. Once acceptance completes,
+  // restart_resolution_clock_for_escalation has already reshifted
+  // due_at to the new stage's fresh target, so the normal RUNNING
+  // display below becomes accurate again for whoever the new owner is
+  // — no per-viewer logic needed.
 
   return (
     <>
