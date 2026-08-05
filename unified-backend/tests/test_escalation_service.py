@@ -223,6 +223,34 @@ async def _get_site_lead(session) -> User:
     pytest.skip("No active seeded Site Lead found.")
 
 
+async def _get_staff_owner(session, team_lead: User) -> User:
+    """
+    An active Staff member whose own teamlead_id points at `team_lead`
+    — used as the ticket's agent_id (and the actual manual_escalate
+    caller) in every test below that wants the resulting escalation to
+    land at TEAM_LEAD level with `team_lead` as its owner, now that
+    manual_escalate requires the caller to be the ticket's current
+    owner (see EscalationService.manual_escalate's new ownership
+    check). Deliberately resolved dynamically off whichever team_lead
+    _get_team_lead actually returned (more than one Team Lead can
+    exist for the same category in seeded data) rather than assuming
+    a specific staff row, so this stays correct regardless of which
+    one that helper happens to pick.
+    """
+
+    result = await session.execute(
+        select(User)
+        .options(joinedload(User.role), joinedload(User.category))
+        .join(Role, Role.role_id == User.role_id)
+        .where(Role.name == "Staff", User.is_active.is_(True))
+    )
+    staff = result.unique().scalars().all()
+    for user in staff:
+        if user.teamlead_id == team_lead.user_id:
+            return user
+    pytest.skip(f"No active seeded Staff member reporting to Team Lead {team_lead.user_id}.")
+
+
 async def _get_staff_in_category(session, category_name: str) -> list[User]:
     result = await session.execute(
         select(User)
@@ -299,10 +327,13 @@ async def test_manual_escalate_bumps_priority_but_leaves_sla_untouched(db_sessio
     original_status = resolution_sla.status
     assert ticket.current_priority == TicketPriority.MEDIUM
 
-    team_lead.permissions = ["ticket:escalate"]  # transient JWT-claim attribute, see access_control.has_permission
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]  # transient JWT-claim attribute, see access_control.has_permission
 
     service = _build_service(db_session)
-    result = await service.manual_escalate(ticket.ticket_id, team_lead)
+    result = await service.manual_escalate(ticket.ticket_id, staff_owner)
     assert result.ticket_id == ticket.ticket_id
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
@@ -343,10 +374,13 @@ async def test_acknowledge_alone_does_not_reshift_sla(db_session):
     original_started_at = resolution_sla.started_at
     original_due_at = resolution_sla.due_at
     original_status = resolution_sla.status
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     # Priority is already CRITICAL from escalating alone (see the test
     # above) — the clock itself is still on its original target until
@@ -380,10 +414,13 @@ async def test_confirm_assignment_reshifts_sla_to_stage_1_on_first_acceptance(db
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
     original_due_at = resolution_sla.due_at
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
     await service.acknowledge(ticket.ticket_id, team_lead)
 
     still_untouched = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
@@ -427,10 +464,13 @@ async def test_confirm_assignment_advances_to_stage_2_after_stage_1_elapses(db_s
     """
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
     await service.acknowledge(ticket.ticket_id, team_lead)
     await service.confirm_assignment(ticket.ticket_id, team_lead)
 
@@ -481,10 +521,13 @@ async def test_confirm_assignment_requires_no_active_escalation_to_400(db_sessio
 
 async def test_confirm_assignment_by_non_owner_is_forbidden(db_session):
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     stranger = User(
         user_id=uuid.uuid4(),
@@ -511,11 +554,14 @@ async def test_acknowledge_by_site_lead_before_their_level_is_forbidden(db_sessi
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
     site_lead = await _get_site_lead(db_session)
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     from fastapi import HTTPException
 
@@ -540,10 +586,13 @@ async def test_acknowledge_via_assignment_reshifts_sla_to_stage_1_on_first_accep
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
     original_due_at = resolution_sla.due_at
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     await service.acknowledge_via_assignment(ticket.ticket_id, team_lead)
 
@@ -582,10 +631,13 @@ async def test_escalation_owner_ids_are_not_refreshed_by_a_plain_acceptance(db_s
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     escalation_before = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -621,10 +673,13 @@ async def test_resolution_sla_escalation_cycle_increments_on_each_handling_stage
     """
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     baseline = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     assert baseline.escalation_cycle == 0
@@ -665,10 +720,13 @@ async def test_advance_is_guarded_against_a_concurrent_racing_sweep(db_session):
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -718,10 +776,13 @@ async def test_acknowledge_via_assignment_is_idempotent_while_stage_still_runnin
     """
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     await service.acknowledge_via_assignment(ticket.ticket_id, team_lead)
 
@@ -764,10 +825,13 @@ async def test_acknowledge_via_assignment_still_completes_after_prior_explicit_a
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
     original_due_at = resolution_sla.due_at
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
     await service.acknowledge(ticket.ticket_id, team_lead)
 
     still_untouched = await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
@@ -804,10 +868,13 @@ async def test_manual_escalate_advances_existing_escalation_one_level_not_a_seco
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     first = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -816,8 +883,10 @@ async def test_manual_escalate_advances_existing_escalation_one_level_not_a_seco
     first_escalation_id = first.escalation_id
 
     # Second click — must succeed (not 400), and must move the SAME
-    # escalation forward one level.
-    result = await service.manual_escalate(ticket.ticket_id, team_lead)
+    # escalation forward one level. Same acting user as the first
+    # click — they're still the ticket's owner (ownership doesn't
+    # change just because the escalation ladder advanced).
+    result = await service.manual_escalate(ticket.ticket_id, staff_owner)
     assert result.ticket_id == ticket.ticket_id
 
     second = await service.ticket_escalation_repository.get_active_by_ticket_id(
@@ -851,25 +920,28 @@ async def test_manual_escalate_full_chain_then_terminal_level_is_rejected(db_ses
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
 
-    await service.manual_escalate(ticket.ticket_id, team_lead)  # -> TEAM_LEAD
+    await service.manual_escalate(ticket.ticket_id, staff_owner)  # -> TEAM_LEAD
     first = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
     )
     escalation_id = first.escalation_id
     assert first.level == EscalationLevel.TEAM_LEAD
 
-    await service.manual_escalate(ticket.ticket_id, team_lead)  # -> MANAGER
+    await service.manual_escalate(ticket.ticket_id, staff_owner)  # -> MANAGER
     second = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
     )
     assert second.level == EscalationLevel.MANAGER
     assert second.escalation_id == escalation_id
 
-    await service.manual_escalate(ticket.ticket_id, team_lead)  # -> SITE_LEAD
+    await service.manual_escalate(ticket.ticket_id, staff_owner)  # -> SITE_LEAD
     third = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
     )
@@ -881,7 +953,7 @@ async def test_manual_escalate_full_chain_then_terminal_level_is_rejected(db_ses
     from fastapi import HTTPException
 
     with pytest.raises(HTTPException) as exc_info:
-        await service.manual_escalate(ticket.ticket_id, team_lead)
+        await service.manual_escalate(ticket.ticket_id, staff_owner)
     assert exc_info.value.status_code == 400
 
     unchanged = await service.ticket_escalation_repository.get_active_by_ticket_id(
@@ -903,11 +975,14 @@ async def test_manual_escalate_advance_writes_escalation_advanced_audit_and_noti
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session, with_notifications=True)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -937,8 +1012,8 @@ async def test_manual_escalate_advance_writes_escalation_advanced_audit_and_noti
     assert advanced_row.old_values["level"] == EscalationLevel.TEAM_LEAD.value
     assert advanced_row.new_values["level"] == EscalationLevel.MANAGER.value
     assert advanced_row.new_values["triggered_by"] == TRIGGERED_BY_MANUAL
-    assert advanced_row.actor_id == team_lead.user_id
-    assert advanced_row.actor_name == team_lead.name
+    assert advanced_row.actor_id == staff_owner.user_id
+    assert advanced_row.actor_name == staff_owner.name
 
     notification_result = await db_session.execute(
         select(Notification).where(
@@ -973,10 +1048,13 @@ async def test_manual_escalate_after_acceptance_advances_and_resets_handling_sta
     """
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     # Team Lead accepts by claiming/being assigned the ticket —
     # acknowledge_via_assignment is the same path claim_ticket/
@@ -991,6 +1069,16 @@ async def test_manual_escalate_after_acceptance_advances_and_resets_handling_sta
     reshifted_due_at = (
         await _reload_resolution_sla(db_session, resolution_sla.resolution_sla_id)
     ).due_at
+
+    # acknowledge_via_assignment above exercises the SLA-reshift side
+    # effect in isolation and deliberately doesn't touch agent_id
+    # itself (unlike the real claim_ticket/transfer_agent it stands in
+    # for) — reflect the acceptance as a real ownership change here so
+    # Team Lead is genuinely the ticket's current owner, same as
+    # manual_escalate's new ownership check now requires.
+    ticket.agent_id = team_lead.user_id
+    await db_session.flush()
+    team_lead.permissions = ["ticket:escalate"]
 
     # Team Lead now manually escalates further, per Example 2.
     await service.manual_escalate(ticket.ticket_id, team_lead)
@@ -1018,26 +1106,30 @@ async def test_manual_escalate_after_acceptance_advances_and_resets_handling_sta
     assert still_reshifted.due_at == reshifted_due_at
 
 
-async def test_manual_escalate_advance_requires_ticket_escalate_permission(db_session):
+async def test_manual_escalate_advance_by_non_owner_is_forbidden(db_session):
     """
-    The permission gate applies to a re-escalation of an already-active
-    chain exactly as it does to the first escalation — a caller without
-    ticket:escalate can't advance someone else's active escalation
-    either.
+    The ownership gate applies to a re-escalation of an already-active
+    chain exactly as it does to the first escalation — a caller who
+    isn't the ticket's current owner can't advance someone else's
+    active escalation either, regardless of what permissions they
+    hold (manual_escalate no longer checks ticket:escalate at all —
+    see the ownership-only rule in its own docstring).
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     stranger = User(
         user_id=uuid.uuid4(),
         role=(await _get_team_lead(db_session)).role,
-        name="No Permission User",
+        name="Not The Owner",
     )
-    stranger.permissions = []  # no ticket:escalate
 
     from fastapi import HTTPException
 
@@ -1063,10 +1155,13 @@ async def test_evaluate_overdue_ack_timeout_advance_still_works_after_refactor(d
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -1105,10 +1200,13 @@ async def test_evaluate_overdue_ack_timeout_advance_still_works_after_refactor(d
 
 async def test_acknowledge_by_owner_stops_auto_advance(db_session):
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     result = await service.acknowledge(ticket.ticket_id, team_lead)
     assert result.ticket_id == ticket.ticket_id
@@ -1127,10 +1225,13 @@ async def test_acknowledge_by_owner_stops_auto_advance(db_session):
 
 async def test_acknowledge_by_non_owner_is_forbidden(db_session):
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     stranger = User(
         user_id=uuid.uuid4(),
@@ -1147,10 +1248,13 @@ async def test_acknowledge_by_non_owner_is_forbidden(db_session):
 
 async def test_overdue_active_escalation_advances_without_touching_sla(db_session):
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     # Never acknowledged in this test, so the SLA-reshift exception
     # never fires (priority already bumped to CRITICAL from escalating
@@ -1204,10 +1308,13 @@ async def test_ack_timeout_ladder_advance_then_first_accept_starts_at_stage_1_no
     """
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -1278,10 +1385,13 @@ async def test_advance_for_handling_sla_breach_clears_due_at_without_bumping_sta
     """
 
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
     await service.acknowledge(ticket.ticket_id, team_lead)
     await service.confirm_assignment(ticket.ticket_id, team_lead)
 
@@ -1315,10 +1425,13 @@ async def test_advance_for_handling_sla_breach_clears_due_at_without_bumping_sta
 
 async def test_close_for_ticket_resolution_closes_escalation_only(db_session):
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     # Never acknowledged in this test, so the SLA-reshift exception
     # never fires (priority already bumped to CRITICAL from escalating
@@ -1349,10 +1462,13 @@ async def test_close_for_ticket_resolution_closes_escalation_only(db_session):
 
 async def test_auto_escalate_is_noop_if_already_actively_escalated(db_session):
     team_lead, _client, ticket, resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     created = await service.auto_escalate_if_needed(
         ticket=ticket, resolution_clock=resolution_sla
@@ -1393,7 +1509,10 @@ async def test_create_escalation_ack_window_uses_original_priority_not_critical(
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     medium_policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
     critical_policy = await SLAPolicyRepository(db_session).get_by_priority(
@@ -1405,7 +1524,7 @@ async def test_create_escalation_ack_window_uses_original_priority_not_critical(
     assert medium_policy.escalation_ack_target_minutes != critical_policy.escalation_ack_target_minutes
 
     service = _build_service(db_session)
-    result = await service.manual_escalate(ticket.ticket_id, team_lead)
+    result = await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -1430,12 +1549,15 @@ async def test_evaluate_overdue_advance_uses_original_priority_for_new_ack_windo
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     medium_policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -1470,12 +1592,15 @@ async def test_advance_for_handling_sla_breach_uses_original_priority_for_new_ac
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     medium_policy = await SLAPolicyRepository(db_session).get_by_priority(TicketPriority.MEDIUM)
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
     await service.acknowledge(ticket.ticket_id, team_lead)
     await service.confirm_assignment(ticket.ticket_id, team_lead)
 
@@ -1732,12 +1857,15 @@ async def test_manual_escalate_works_before_sla_breach(db_session):
     """
 
     team_lead, _client, ticket, resolution_sla = await _make_unbreached_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     assert resolution_sla.due_at > datetime.now(timezone.utc) + timedelta(days=1)
 
     service = _build_service(db_session)
-    result = await service.manual_escalate(ticket.ticket_id, team_lead)
+    result = await service.manual_escalate(ticket.ticket_id, staff_owner)
     assert result.ticket_id == ticket.ticket_id
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
@@ -1765,10 +1893,13 @@ async def test_manual_escalate_writes_audit_log_and_notifies_new_owner(db_sessio
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session, with_notifications=True)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -1788,7 +1919,7 @@ async def test_manual_escalate_writes_audit_log_and_notifies_new_owner(db_sessio
     assert audit_row is not None
     assert audit_row.new_values["triggered_by"] == TRIGGERED_BY_MANUAL
     assert audit_row.new_values["level"] == escalation.level.value
-    assert audit_row.actor_id == team_lead.user_id
+    assert audit_row.actor_id == staff_owner.user_id
 
     notification_result = await db_session.execute(
         select(Notification).where(
@@ -1801,13 +1932,13 @@ async def test_manual_escalate_writes_audit_log_and_notifies_new_owner(db_sessio
     assert ticket.title in notification_row.message or ticket.title in notification_row.title
 
 
-async def test_manual_escalate_requires_ticket_escalate_permission(db_session):
+async def test_manual_escalate_on_unclaimed_ticket_is_forbidden(db_session):
     """
-    manual_escalate's own permission gate (ensure_has_permission(...,
-    "ticket:escalate")) must reject a caller who doesn't hold it —
-    the same RBAC permission the frontend's canEscalate check (and the
-    Manual Escalate button's visibility) already reuses, no new
-    permission introduced.
+    manual_escalate no longer checks ticket:escalate at all — ownership
+    (Ticket.agent_id) is the sole authorization criterion (see that
+    method's own docstring, and the frontend's canEscalate check, which
+    mirrors this exactly). An unclaimed ticket has no current owner, so
+    nobody can escalate it via this check, regardless of role.
     """
 
     _team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
@@ -1815,9 +1946,8 @@ async def test_manual_escalate_requires_ticket_escalate_permission(db_session):
     stranger = User(
         user_id=uuid.uuid4(),
         role=(await _get_team_lead(db_session)).role,
-        name="No Permission User",
+        name="Not The Owner",
     )
-    stranger.permissions = []  # no ticket:escalate
 
     service = _build_service(db_session)
 
@@ -1867,11 +1997,18 @@ async def test_manual_escalate_does_not_start_handling_sla_timer(db_session):
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    # Captured after settling ownership (now required for manual_escalate
+    # itself — see EscalationService.manual_escalate's ownership check),
+    # so this is the true pre-escalation baseline: proves escalating
+    # alone never moves agent_id any further on its own.
     original_agent_id = ticket.agent_id
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
 
     escalation = await service.ticket_escalation_repository.get_active_by_ticket_id(
         ticket.ticket_id
@@ -1895,10 +2032,13 @@ async def test_manual_escalate_then_accept_starts_handling_sla_at_full_duration(
     """
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
-    team_lead.permissions = ["ticket:escalate"]
+    staff_owner = await _get_staff_owner(db_session, team_lead)
+    ticket.agent_id = staff_owner.user_id
+    await db_session.flush()
+    staff_owner.permissions = ["ticket:escalate"]
 
     service = _build_service(db_session)
-    await service.manual_escalate(ticket.ticket_id, team_lead)
+    await service.manual_escalate(ticket.ticket_id, staff_owner)
     await service.acknowledge(ticket.ticket_id, team_lead)
 
     still_pending = await service.ticket_escalation_repository.get_active_by_ticket_id(

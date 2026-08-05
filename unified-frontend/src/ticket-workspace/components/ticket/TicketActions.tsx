@@ -23,11 +23,28 @@ import {
   changeTicketStatus,
   uploadAttachment,
 } from "@tw/api/interaction";
-import { listAgents } from "@tw/api/agent";
-import { claimTicket, closeTicket, reopenTicket, transferTicketAgent } from "@tw/api/ticket";
+import {
+  claimTicket,
+  closeTicket,
+  getTransferCandidates,
+  reopenTicket,
+  transferTicketAgent,
+} from "@tw/api/ticket";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
-import type { AgentSummary, TicketPriority, TicketStatus } from "@tw/types";
+import type {
+  AssignableGroup,
+  AssignableUserSummary,
+  TicketPriority,
+  TicketStatus,
+} from "@tw/types";
+
+// Mirrors the backend's SUPERVISOR_ROLE_NAMES (access_control.py)
+// exactly — only these roles can ever self-assign via transfer_agent,
+// so "Myself" is only worth offering in the dropdown for them, even
+// though the backend's `me` field in the response is unconditional
+// (same convention as EscalationService.get_acknowledge_candidates).
+const SELF_ASSIGN_ROLES = new Set(["Team Lead", "Account Manager", "Site Lead", "Super Admin"]);
 
 // CLOSED is deliberately absent — closing a ticket only happens via
 // the dedicated Close Ticket action (More menu), never through this
@@ -76,7 +93,8 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
 
   const [newStatus, setNewStatus] = useState<TicketStatus>("IN_PROGRESS");
   const [newPriority, setNewPriority] = useState<TicketPriority>("HIGH");
-  const [agents, setAgents] = useState<AgentSummary[]>([]);
+  const [transferGroups, setTransferGroups] = useState<AssignableGroup[]>([]);
+  const [transferMe, setTransferMe] = useState<AssignableUserSummary | null>(null);
   const [newAgentId, setNewAgentId] = useState("");
   const [transferReason, setTransferReason] = useState("");
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
@@ -108,13 +126,21 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
 
   useEffect(() => {
     if (!activeTicket) return;
-    // Scoped to the ticket's own work-specialization category — a
-    // Team Lead assigning/transferring should only see their own
-    // team's Staff, not every Staff member company-wide.
-    listAgents(activeTicket.ticket_type)
-      .then(setAgents)
-      .catch(() => setAgents([]));
-  }, [activeTicket?.ticket_id, activeTicket?.ticket_type]);
+    // Role- and hierarchy-scoped for THIS ticket specifically (see
+    // InteractionService.get_transfer_candidates) — who appears here
+    // now differs by the caller's own role, e.g. a Site Lead sees
+    // Team Leads + a category Account Manager (while an escalation is
+    // active) + category Staff, a Team Lead sees only category Staff.
+    getTransferCandidates(activeTicket.ticket_id)
+      .then((res) => {
+        setTransferGroups(res.groups);
+        setTransferMe(res.me);
+      })
+      .catch(() => {
+        setTransferGroups([]);
+        setTransferMe(null);
+      });
+  }, [activeTicket?.ticket_id]);
 
   useEffect(() => {
     if (!isMoreOpen) return;
@@ -150,14 +176,20 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
     ? true
     : (currentUser?.permissions ?? []).includes("ticket:reopen");
   const isUnclaimed = activeTicket.agent_id == null;
-  // Excludes the caller themselves — self-assignment goes through the
-  // dedicated Claim tile (POST /tickets/{id}/claim) so it's recorded as
-  // a CLAIM interaction/TICKET_CLAIMED audit event, not an
-  // AGENT_TRANSFER — picking yourself here would otherwise call
+  // "Myself" is only offered here when the ticket is already claimed
+  // and the caller's role can actually self-assign via transfer_agent
+  // (SELF_ASSIGN_ROLES) — an unclaimed ticket has its own dedicated
+  // Claim tile (POST /tickets/{id}/claim) instead, recorded as a CLAIM
+  // interaction/TICKET_CLAIMED audit event, not an AGENT_TRANSFER;
+  // picking yourself here for an unclaimed ticket would otherwise call
   // transferTicketAgent and misrecord a claim as a transfer.
-  const transferCandidates = agents.filter(
-    (a) => a.user_id !== activeTicket.agent_id && a.user_id !== currentUser?.user_id
-  );
+  const canSelfAssignViaTransfer =
+    !isUnclaimed &&
+    !!currentUser &&
+    !!transferMe &&
+    SELF_ASSIGN_ROLES.has(currentUser.role);
+  const hasTransferCandidates =
+    canSelfAssignViaTransfer || transferGroups.some((g) => g.users.length > 0);
   // Closed is now terminal for every action, including Change Status —
   // Reopen Ticket (its own dedicated, permission-gated action) is the
   // only way off CLOSED.
@@ -215,7 +247,10 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   }
 
   function openTransferModal() {
-    setNewAgentId(transferCandidates[0]?.user_id ?? "");
+    const firstGroupUser = transferGroups.flatMap((g) => g.users)[0];
+    setNewAgentId(
+      firstGroupUser?.user_id ?? (canSelfAssignViaTransfer ? transferMe!.user_id : "")
+    );
     setTransferReason("");
     openMoreItem("transfer");
   }
@@ -462,10 +497,10 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
           </Button>
         }
       >
-        {transferCandidates.length === 0 ? (
+        {!hasTransferCandidates ? (
           <p className="text-sm text-muted">
-            No active Staff in the "{activeTicket.ticket_type}" category to
-            {isUnclaimed ? " assign this to" : " transfer to"}.
+            No one is currently eligible for you to
+            {isUnclaimed ? " assign this ticket to" : " transfer this ticket to"}.
           </p>
         ) : (
           <div className="flex flex-col gap-3">
@@ -478,15 +513,25 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
               </p>
             </div>
             <SelectInput
-              label={isUnclaimed ? "Assign to" : "New Staff"}
+              label={isUnclaimed ? "Assign to" : "New owner"}
               value={newAgentId}
               onChange={(e) => setNewAgentId(e.target.value)}
             >
-              {transferCandidates.map((agent) => (
-                <option key={agent.user_id} value={agent.user_id}>
-                  {agent.name}
-                </option>
-              ))}
+              {canSelfAssignViaTransfer && transferMe && (
+                <option value={transferMe.user_id}>{`Myself (${transferMe.name})`}</option>
+              )}
+              {transferGroups.map(
+                (group) =>
+                  group.users.length > 0 && (
+                    <optgroup key={group.role} label={group.role}>
+                      {group.users.map((user) => (
+                        <option key={user.user_id} value={user.user_id}>
+                          {user.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )
+              )}
             </SelectInput>
             <TextArea
               label="Reason"
@@ -497,7 +542,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
             />
             <p className="text-[11px] text-muted">
               {isUnclaimed
-                ? `Only Staff in the "${activeTicket.ticket_type}" category are listed.`
+                ? "Every person you're allowed to assign this ticket to is listed above."
                 : `${activeTicket.agent_name ?? "The current agent"} will lose all access to this ticket the moment it's transferred — ownership moves fully to the new agent.`}
             </p>
           </div>

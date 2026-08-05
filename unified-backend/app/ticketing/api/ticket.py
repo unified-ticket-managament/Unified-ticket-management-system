@@ -64,6 +64,7 @@ from app.ticketing.schemas.interaction import (
     InteractionResponse,
     TicketInteractionResponse,
 )
+from app.ticketing.schemas.assignment import AssignableAgentsResponse
 from app.ticketing.schemas.note import (
     InternalNoteCreate,
     InternalNoteResponse,
@@ -555,6 +556,35 @@ async def hide_ticket_interaction(
 # =========================================================
 # Transfer Agent
 # =========================================================
+
+@router.get(
+    "/{ticket_id}/transfer-candidates",
+    response_model=AssignableAgentsResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def get_ticket_transfer_candidates(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Who the caller may transfer this specific ticket to — role- and
+    hierarchy-scoped (self, company-wide Team Leads/Site Leads,
+    category-matched Account Manager during an active escalation,
+    category-matched Staff), built to mirror transfer_agent's own
+    acceptance rules exactly. See
+    InteractionService.get_transfer_candidates's own docstring.
+    """
+
+    service = InteractionService(
+        interaction_repository=InteractionRepository(db),
+        ticket_repository=TicketRepository(db),
+        user_repository=UserRepository(db),
+        client_repository=ClientRepository(db),
+        escalation_service=build_escalation_service(db),
+    )
+    return await service.get_transfer_candidates(ticket_id, current_user)
+
 
 @router.post(
     "/{ticket_id}/transfer",

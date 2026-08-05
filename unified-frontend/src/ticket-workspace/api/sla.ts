@@ -40,27 +40,18 @@ export async function escalateTicket(ticketId: string): Promise<TicketActionResp
 
 // POST /tickets/{ticket_id}/escalation/acknowledge — only the current
 // escalation level's own owner(s), or Site Lead/Super Admin, may call
-// this (backend 403s otherwise).
+// this (backend 403s otherwise). assigneeId is now required: the
+// backend acknowledges the escalation and assigns the ticket to
+// assigneeId as a single atomic operation — there is no longer a way
+// to acknowledge without also settling assignment (see
+// InteractionService.acknowledge_and_assign_escalation).
 export async function acknowledgeTicketEscalation(
-  ticketId: string
+  ticketId: string,
+  assigneeId: string
 ): Promise<TicketActionResponse> {
   const { data } = await apiClient.post<TicketActionResponse>(
-    `/tickets/${ticketId}/escalation/acknowledge`
-  );
-  return data;
-}
-
-// POST /tickets/{ticket_id}/escalation/confirm-assignment — the one
-// confirmAssignment() branch in useAcknowledgeAndAssign.ts that keeps
-// the ticket with its already-current assignee (no claim/transfer
-// call happens). This is what actually starts the Resolution SLA/
-// handling SLA in that branch — without it, "confirm without
-// reassigning" would silently never start either clock.
-export async function confirmEscalationAssignment(
-  ticketId: string
-): Promise<TicketActionResponse> {
-  const { data } = await apiClient.post<TicketActionResponse>(
-    `/tickets/${ticketId}/escalation/confirm-assignment`
+    `/tickets/${ticketId}/escalation/acknowledge`,
+    { assignee_id: assigneeId }
   );
   return data;
 }

@@ -47,7 +47,6 @@ from app.ticketing.services.access_control import (
     SUPER_ADMIN_ROLE_NAME,
     SUPERVISOR_ROLE_NAMES,
     ensure_agent_can_view_ticket,
-    ensure_has_permission,
     ensure_ticket_not_closed,
     has_permission,
 )
@@ -319,8 +318,32 @@ class EscalationService:
             )
 
         ensure_agent_can_view_ticket(ticket, current_user)
-        ensure_has_permission(current_user, "ticket:escalate")
         ensure_ticket_not_closed(ticket)
+
+        # Ownership (Ticket.agent_id — the existing ticket-ownership
+        # model, not the escalation's own owner_ids) is now the SOLE
+        # authorization criterion for manual escalation — deliberately
+        # no ticket:escalate permission check anymore. That permission
+        # is Full-by-default for Team Lead/Account Manager/Site
+        # Lead/Super Admin but never for Staff, which meant a Staff
+        # member who legitimately re-became a ticket's current owner
+        # after an escalation (e.g. escalated it, a Team Lead
+        # acknowledged, and assigned it straight back to them) lost
+        # the button entirely, even though they were once again the
+        # rightful owner — a real, confirmed bug, not a hypothetical
+        # one. Ownership already implies view access in every real
+        # scenario, so ensure_agent_can_view_ticket above is kept only
+        # as defense in depth, not as a second gate that could itself
+        # block the owner. An unclaimed ticket (agent_id is None) has
+        # no current owner, so nobody can manually escalate it via this
+        # check until someone claims it first — every other rule here
+        # (not-closed, escalation-ladder progression, terminal
+        # SITE_LEAD rejection below) is unchanged.
+        if ticket.agent_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the ticket's current owner can manually escalate it.",
+            )
 
         existing = await self.ticket_escalation_repository.get_active_by_ticket_id(
             ticket_id

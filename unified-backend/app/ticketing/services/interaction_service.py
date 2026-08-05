@@ -42,6 +42,11 @@ from app.ticketing.schemas.interaction import (
     TagsUpdateRequest,
     ThreadResponse,
 )
+from app.ticketing.schemas.assignment import (
+    AssignableAgentsResponse,
+    AssignableGroup,
+    AssignableUserSummary,
+)
 from app.ticketing.schemas.note import (
     InternalNoteCreate,
     InternalNoteResponse,
@@ -82,9 +87,10 @@ from app.ticketing.services.audit_to_interaction import (
     SYNTHESIZABLE_EVENT_TYPES,
     synthesize_interaction_from_audit,
 )
+from app.ticketing.services.assignment_service import STAFF_ROLE_NAME
 from app.ticketing.services.email_envelope import build_compose_envelope, build_reply_envelope
 from app.ticketing.services.email_service import resolve_shared_mailbox_address
-from app.ticketing.services.escalation_service import EscalationService
+from app.ticketing.services.escalation_service import EscalationService, _to_assignable_group
 from app.ticketing.services.interaction_summary import trim_payload_for_list
 from app.ticketing.services.outbound_dispatcher import OutboundDispatchError, OutboundDispatcher
 from app.ticketing.services.sla_escalation_rules import TEAM_LEAD_ROLE_NAME
@@ -99,6 +105,7 @@ from app.ticketing.services.sla_escalation_rules import (
 from app.ticketing.enums import (
     AuditEntityType,
     AuditEventType,
+    EscalationStatus,
     InteractionDirection,
     InteractionStatus,
     TicketStatus,
@@ -1735,6 +1742,127 @@ class InteractionService:
         )
 
     # ---------------------------------------------------------
+    # Transfer candidates — who the caller may transfer THIS ticket to.
+    # Built to mirror transfer_agent's own acceptance rules exactly
+    # (below), rather than the flat, role-blind "category Staff" list
+    # the Transfer Ticket dropdown used before this — a candidate
+    # offered here must always be one transfer_agent will actually
+    # accept, and vice versa. Deliberately a different, wider method
+    # from EscalationService.get_acknowledge_candidates: that one is
+    # scoped specifically to escalation acceptance and has its own,
+    # narrower per-role table (no self-assignment option, no Site Lead
+    # group, Account Manager only reachable one way) — this one
+    # reflects the ordinary Transfer Ticket action's full authorization
+    # surface instead.
+    # ---------------------------------------------------------
+
+    async def get_transfer_candidates(
+        self, ticket_id: UUID, current_user: User
+    ) -> AssignableAgentsResponse:
+        """
+        Per current_user's own role, mirroring transfer_agent line for
+        line:
+
+        - Self ("me") is always returned — transfer_agent's self-assign
+          branch is available to any SUPERVISOR_ROLE_NAMES member, so
+          the frontend decides whether to render it based on the
+          caller's own role, same convention
+          EscalationService.get_acknowledge_candidates already
+          established for its own `me` field.
+        - Team Lead group: every active Team Lead company-wide (not
+          category-scoped) when current_user's role is in
+          TEAM_LEAD_TRANSFER_ROLE_NAMES (Account Manager, Site Lead,
+          Super Admin) — matches the widened, unscoped
+          Organization-Structure ticket-assignment relationship
+          transfer_agent already authorizes.
+        - Site Lead group: every active Site Lead, Super Admin only.
+        - Account Manager group: category-matched Account Manager(s)
+          (via ReportingManagerTeam — the same resolver
+          EscalationService already uses), for Site Lead/Super Admin
+          (GLOBAL_INBOX_ROLE_NAMES) — but ONLY while the ticket has an
+          active (non-CLOSED) escalation, since that's the one and only
+          condition under which transfer_agent accepts an Account
+          Manager as a transfer target at all.
+        - Staff group: active Staff in the ticket's own category,
+          always attempted regardless of current_user's specific role
+          (transfer_agent's Staff-target branch doesn't itself branch
+          on the caller's role beyond the ensure_can_reassign_ticket
+          gate already applied above) — this is the one group every
+          caller who can reassign at all is offered.
+
+        The ticket's own currently-assigned agent is excluded from
+        every group (and from `me`, implicitly, since a caller can
+        never already be the current agent and see themselves offered
+        as a "new" target) — transfer_agent itself 400s on "already
+        assigned to this agent," so offering it here would just be a
+        guaranteed-to-fail option.
+        """
+
+        ticket = await self._get_ticket_or_404(ticket_id)
+        ensure_agent_can_view_ticket(ticket, current_user)
+        ensure_can_reassign_ticket(current_user)
+
+        role_name = current_user.role.name
+        current_agent_id = ticket.agent_id
+        groups: list[AssignableGroup] = []
+
+        if role_name in TEAM_LEAD_TRANSFER_ROLE_NAMES:
+            team_leads = await self.user_repository.list_active_by_role_name(
+                TEAM_LEAD_ROLE_NAME
+            )
+            groups.append(
+                _to_assignable_group(
+                    TEAM_LEAD_ROLE_NAME,
+                    [u for u in team_leads if u.user_id != current_agent_id],
+                )
+            )
+
+        if role_name == SUPER_ADMIN_ROLE_NAME:
+            site_leads = await self.user_repository.list_active_by_role_name(
+                SITE_LEAD_ROLE_NAME
+            )
+            groups.append(
+                _to_assignable_group(
+                    SITE_LEAD_ROLE_NAME,
+                    [u for u in site_leads if u.user_id != current_agent_id],
+                )
+            )
+
+        if role_name in GLOBAL_INBOX_ROLE_NAMES and self.escalation_service is not None:
+            active_escalation = (
+                await self.escalation_service.ticket_escalation_repository.get_active_by_ticket_id(
+                    ticket_id
+                )
+            )
+            if active_escalation is not None:
+                account_managers = (
+                    await self.escalation_service._resolve_category_account_managers(
+                        ticket.ticket_type
+                    )
+                )
+                groups.append(
+                    _to_assignable_group(
+                        ACCOUNT_MANAGER_ROLE_NAME,
+                        [u for u in account_managers if u.user_id != current_agent_id],
+                    )
+                )
+
+        staff = await self.user_repository.list_active_by_role_and_category(
+            STAFF_ROLE_NAME, ticket.ticket_type
+        )
+        groups.append(
+            _to_assignable_group(
+                STAFF_ROLE_NAME,
+                [u for u in staff if u.user_id != current_agent_id],
+            )
+        )
+
+        return AssignableAgentsResponse(
+            me=AssignableUserSummary(user_id=current_user.user_id, name=current_user.name),
+            groups=[g for g in groups if g.users],
+        )
+
+    # ---------------------------------------------------------
     # Transfer Agent
     # ---------------------------------------------------------
 
@@ -2098,6 +2226,129 @@ class InteractionService:
             ticket_id=ticket_id,
             message=f"Ticket claimed by {current_user.name}.",
             created_at=datetime.now(timezone.utc),
+        )
+
+    # ---------------------------------------------------------
+    # Acknowledge & Assign — atomic. Acknowledging an escalation and
+    # deciding who owns the ticket going forward used to be two
+    # separate requests (EscalationService.acknowledge, then one of
+    # claim_ticket/transfer_agent/confirm_assignment) — a caller could
+    # acknowledge and then simply never assign anyone, leaving the
+    # Resolution SLA/handling SLA parked indefinitely with no real
+    # owner. This method requires both to happen together, in the same
+    # database transaction: the ownership check and the assignment are
+    # both performed here before anything is written, and every write
+    # (the escalation's own acknowledge, plus whatever transfer_agent/
+    # confirm_assignment does) shares this same session. Nothing here
+    # commits — get_db()'s own dependency wrapper commits once, only if
+    # this whole request returns without raising, and rolls back
+    # everything otherwise (see app/database/session.py). So if
+    # assignment fails partway through (e.g. an invalid candidate), the
+    # acknowledgment already performed by the assignment call itself is
+    # rolled back too — either both take effect or neither does.
+    # ---------------------------------------------------------
+
+    async def acknowledge_and_assign_escalation(
+        self,
+        ticket_id: UUID,
+        assignee_id: UUID,
+        current_user: User,
+    ) -> TicketActionResponse:
+        """
+        The one entry point for accepting an escalation now — replaces
+        the old "acknowledge alone, assignment optional" flow. Requires
+        `assignee_id` (enforced first by AcknowledgeAndAssignRequest
+        being a required field, and again defensively here in case a
+        caller ever constructs this differently).
+
+        Ownership is checked up front, before any write happens,
+        exactly the same way EscalationService.acknowledge/
+        confirm_assignment already do it: only the escalation's own
+        current owner(s) may accept it — no Site Lead/Super Admin
+        "global overseer" bypass, same reasoning as those methods'
+        own docstrings.
+
+        `assignee_id == ticket.agent_id` (including both being the
+        same already-assigned agent) is treated as "keep the current
+        owner" and routed to EscalationService.confirm_assignment —
+        the one branch that never calls transfer_agent, since transfer_agent
+        itself 400s on "already assigned to this agent". Any other
+        assignee_id is routed through this class's own transfer_agent,
+        which re-validates the candidate against the full
+        role/category rules EscalationService.get_acknowledge_candidates
+        already offers the caller (self, Team Lead, Site Lead, or
+        Account Manager during an active escalation, or an ordinary
+        same-category Staff member) and performs the actual
+        reassignment, audit log, and notifications — then itself calls
+        acknowledge_via_assignment, which is what actually marks the
+        escalation accepted and starts the Resolution/handling SLA
+        clocks (see EscalationService._complete_acceptance). Nothing
+        about transfer_agent's own business rules changes here.
+        """
+
+        if self.escalation_service is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Escalation service is not configured.",
+            )
+
+        ticket = await self._get_ticket_or_404(ticket_id)
+        ensure_agent_can_view_ticket(ticket, current_user)
+        ensure_ticket_not_closed(ticket)
+
+        escalation = (
+            await self.escalation_service.ticket_escalation_repository.get_active_by_ticket_id(
+                ticket_id
+            )
+        )
+        if escalation is None or escalation.status != EscalationStatus.ACTIVE:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="There is no active escalation awaiting acknowledgment on this ticket.",
+            )
+
+        # Strictly owner_ids membership — see EscalationService.
+        # acknowledge's own comment for why there is deliberately no
+        # Site Lead/Super Admin bypass here either. Checked before any
+        # assignment is attempted, so a non-owner can never trigger a
+        # reassignment side effect just by calling this endpoint.
+        if str(current_user.user_id) not in escalation.owner_ids:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="Only the current escalation owner can acknowledge it.",
+            )
+
+        if assignee_id is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="An assignee is required to acknowledge this escalation.",
+            )
+
+        if ticket.agent_id is not None and ticket.agent_id == assignee_id:
+            result = await self.escalation_service.confirm_assignment(
+                ticket_id, current_user
+            )
+            return TicketActionResponse(
+                interaction_id=None,
+                ticket_id=ticket_id,
+                message="Escalation acknowledged — ticket remains assigned to its current owner.",
+                created_at=result.created_at,
+            )
+
+        transfer_result = await self.transfer_agent(
+            ticket_id,
+            TransferAgentRequest(
+                new_agent_id=assignee_id,
+                reason="Assigned while acknowledging escalation.",
+            ),
+            current_user,
+        )
+
+        return TicketActionResponse(
+            interaction_id=None,
+            ticket_id=ticket_id,
+            message="Escalation acknowledged and ticket assigned.",
+            created_at=transfer_result.created_at,
         )
 
     # ---------------------------------------------------------

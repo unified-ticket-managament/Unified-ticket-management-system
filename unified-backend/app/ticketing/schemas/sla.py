@@ -190,6 +190,25 @@ class SLAPauseRequest(BaseModel):
     reason: str = Field(..., min_length=1, max_length=500)
 
 
+class AcknowledgeAndAssignRequest(BaseModel):
+    """
+    Body for POST /tickets/{ticket_id}/escalation/acknowledge.
+
+    `assignee_id` is required, not optional — acknowledging an
+    escalation and deciding who owns the ticket going forward now
+    happen as a single atomic step (InteractionService.
+    acknowledge_and_assign_escalation), so there is no longer a way to
+    acknowledge without also settling assignment in the same call. A
+    missing/malformed assignee_id fails fast here as a 422 from
+    pydantic, before any database work starts. `assignee_id` may equal
+    the ticket's current agent_id (keep the current owner) or a
+    different, valid candidate (reassign) — the service resolves which
+    case applies.
+    """
+
+    assignee_id: UUID
+
+
 class SLASweepResponse(BaseModel):
     """
     Returned by POST /internal/sla/sweep — surfaced in the Render Cron

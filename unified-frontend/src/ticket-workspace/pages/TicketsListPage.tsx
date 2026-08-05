@@ -278,29 +278,17 @@ export function TicketsListPage() {
     });
   }
 
-  async function handleAcknowledgeStep() {
-    const acknowledged = await acknowledgeAndAssign.confirmAcknowledge();
-    if (acknowledged && ackTargetId) {
-      // Patch immediately — the ticket is genuinely acknowledged now,
-      // even before the assignment step (still open in the same
-      // modal) completes.
-      setTickets((prev) =>
-        prev.map((t) =>
-          t.ticket_id === ackTargetId ? { ...t, escalation_status: "ACKNOWLEDGED" } : t
-        )
-      );
-      loadViewCounts();
-    }
-  }
-
-  async function handleAssignStep() {
-    const result = await acknowledgeAndAssign.confirmAssignment();
+  async function handleAcknowledgeAndAssign() {
+    const result = await acknowledgeAndAssign.confirmAssign();
     if (result.success && ackTargetId) {
+      // Acknowledging and assigning land in the same atomic call now —
+      // patch both the escalation status and the new assignee at once.
       setTickets((prev) =>
         prev.map((t) =>
           t.ticket_id === ackTargetId
             ? {
                 ...t,
+                escalation_status: "ACKNOWLEDGED",
                 agent_id: result.agentId ?? t.agent_id,
                 agent_name: result.agentName ?? t.agent_name,
               }
@@ -783,14 +771,11 @@ export function TicketsListPage() {
     <AcknowledgeAssignModal
       open={acknowledgeAndAssign.isOpen}
       onClose={acknowledgeAndAssign.close}
-      step={acknowledgeAndAssign.step}
       me={acknowledgeAndAssign.me}
       groups={acknowledgeAndAssign.groups}
       selectedAgentId={acknowledgeAndAssign.selectedAgentId}
       onSelectAgent={acknowledgeAndAssign.setSelectedAgentId}
-      onAcknowledge={handleAcknowledgeStep}
-      onConfirmAssignment={handleAssignStep}
-      isAcknowledging={acknowledgeAndAssign.isAcknowledging}
+      onConfirm={handleAcknowledgeAndAssign}
       isSubmitting={acknowledgeAndAssign.isSubmitting}
     />
     </>

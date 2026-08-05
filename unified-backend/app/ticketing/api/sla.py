@@ -9,9 +9,12 @@ from app.dependencies.auth import get_current_agent, get_current_user
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.ticketing.repositories.client_repository import ClientRepository
+from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
+from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.assignment import AssignableAgentsResponse
 from app.ticketing.schemas.sla import (
+    AcknowledgeAndAssignRequest,
     SLAPauseRequest,
     SLAPolicyResponse,
     SLAPolicyUpdate,
@@ -23,6 +26,7 @@ from app.ticketing.services.access_control import (
     ensure_agent_can_view_ticket,
 )
 from app.ticketing.services.escalation_service import build_escalation_service
+from app.ticketing.services.interaction_service import InteractionService
 from app.ticketing.services.sla_service import build_sla_service
 
 #sla.py
@@ -147,21 +151,38 @@ async def escalate_ticket(
 )
 async def acknowledge_ticket_escalation(
     ticket_id: UUID,
+    request: AcknowledgeAndAssignRequest,
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Acknowledges the ticket's current active escalation level — only
-    the current level's own owner(s), or Site Lead/Super Admin as
-    company-wide overseers, may call this. Stops the ack-deadline
+    Acknowledges the ticket's current active escalation level AND
+    assigns it to `assignee_id` in one atomic step — only the current
+    level's own owner(s), or Site Lead/Super Admin as company-wide
+    overseers, may call this. Assignment is no longer optional: a
+    request with no assignee_id fails validation before reaching this
+    handler at all, and if the assignment itself fails (invalid
+    candidate, permission, category mismatch, etc.) the acknowledgment
+    is rolled back along with it — see
+    InteractionService.acknowledge_and_assign_escalation's own
+    docstring for the exact atomicity guarantee. Stops the ack-deadline
     auto-advance for this escalation (it stays parked at its current
     level until the ticket is resolved).
     """
 
-    escalation_service = build_escalation_service(
-        db, notification_service=NotificationService(NotificationRepository(db))
+    service = InteractionService(
+        interaction_repository=InteractionRepository(db),
+        ticket_repository=TicketRepository(db),
+        user_repository=UserRepository(db),
+        client_repository=ClientRepository(db),
+        notification_service=NotificationService(NotificationRepository(db)),
+        escalation_service=build_escalation_service(
+            db, notification_service=NotificationService(NotificationRepository(db))
+        ),
     )
-    return await escalation_service.acknowledge(ticket_id, current_user)
+    return await service.acknowledge_and_assign_escalation(
+        ticket_id, request.assignee_id, current_user
+    )
 
 
 @ticket_sla_router.post(

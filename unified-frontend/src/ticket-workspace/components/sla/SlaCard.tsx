@@ -63,14 +63,25 @@ export function SlaCard({
       !!currentUser.permissions.includes("ticket:change_sla")
     : false;
 
-  // Available whenever another escalation level exists above the
-  // current one — not just when there's no escalation yet. Mirrors
-  // EscalationService.manual_escalate exactly: no active escalation ->
-  // starts one at the usual starting level; an active one below the
-  // terminal SITE_LEAD level -> advances it one level further; already
-  // at SITE_LEAD -> nothing left to escalate to, so the button hides.
+  // Ownership (currentAgentId) is the SOLE authorization criterion now
+  // — deliberately no ticket:escalate permission check anymore.
+  // Mirrors the backend's own EscalationService.manual_escalate
+  // exactly (this is a UX convenience that hides a button that would
+  // otherwise 403, not the real enforcement). Previously this also
+  // required the ticket:escalate permission, which Staff never holds
+  // by role default — so a Staff member who legitimately became the
+  // ticket's owner again after an escalation (escalated it, a Team
+  // Lead acknowledged and assigned it straight back to them) lost the
+  // button entirely, for every role this could happen to. The
+  // remaining two conditions are unrelated to authorization and stay:
+  // no active escalation already at the terminal SITE_LEAD level (mirrors
+  // manual_escalate exactly: no active escalation -> starts one at the
+  // usual starting level; an active one below SITE_LEAD -> advances it
+  // one level further; already at SITE_LEAD -> nothing left to
+  // escalate to), and the Resolution SLA not already COMPLETED.
   const canEscalate =
-    !!currentUser?.permissions.includes("ticket:escalate") &&
+    !!currentUser &&
+    currentUser.user_id === currentAgentId &&
     (!escalation || escalation.level !== "SITE_LEAD") &&
     resolution?.status !== "COMPLETED";
 
@@ -100,23 +111,12 @@ export function SlaCard({
     escalation?.status === "ACTIVE" &&
     escalation.owner_ids.includes(currentUser.user_id);
 
-  async function handleAcknowledgeStep() {
-    const acknowledged = await acknowledgeAndAssign.confirmAcknowledge();
-    if (acknowledged) {
-      // Acknowledging alone already changed escalation.status and
-      // started the escalation-handling SLA — pull fresh state
-      // immediately rather than waiting for the assignment step too.
-      await refetch();
-      onActionComplete();
-    }
-  }
-
-  async function handleAssignStep() {
-    const result = await acknowledgeAndAssign.confirmAssignment();
+  async function handleAcknowledgeAndAssign() {
+    const result = await acknowledgeAndAssign.confirmAssign();
     if (result.success) {
-      // Transfer/claim changed something this hook's own SLA state
-      // doesn't already reflect — pull it fresh, then let the parent
-      // re-fetch the ticket itself (agent_id/agent_name).
+      // Acknowledging and assigning both landed in the same atomic
+      // call — pull fresh SLA state, then let the parent re-fetch the
+      // ticket itself (agent_id/agent_name).
       await refetch();
       onActionComplete();
     }
@@ -494,14 +494,11 @@ export function SlaCard({
     <AcknowledgeAssignModal
       open={acknowledgeAndAssign.isOpen}
       onClose={acknowledgeAndAssign.close}
-      step={acknowledgeAndAssign.step}
       me={acknowledgeAndAssign.me}
       groups={acknowledgeAndAssign.groups}
       selectedAgentId={acknowledgeAndAssign.selectedAgentId}
       onSelectAgent={acknowledgeAndAssign.setSelectedAgentId}
-      onAcknowledge={handleAcknowledgeStep}
-      onConfirmAssignment={handleAssignStep}
-      isAcknowledging={acknowledgeAndAssign.isAcknowledging}
+      onConfirm={handleAcknowledgeAndAssign}
       isSubmitting={acknowledgeAndAssign.isSubmitting}
     />
     </>

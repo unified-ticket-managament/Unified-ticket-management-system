@@ -1,5 +1,6 @@
 import { apiClient } from "./client";
 import type {
+  AssignableAgentsResponse,
   AttachInteractionRequest,
   AttachInteractionResponse,
   EditAccessApproveRequest,
@@ -203,6 +204,21 @@ export async function updateTicket(
   const { data } = await apiClient.patch<TicketResponse>(
     `/tickets/${ticketId}`,
     payload
+  );
+  return data;
+}
+
+// GET /tickets/{ticket_id}/transfer-candidates — role- and
+// hierarchy-scoped for THIS ticket (self, company-wide Team
+// Leads/Site Leads, category-matched Account Manager during an active
+// escalation, category-matched Staff) — mirrors transfer_agent's own
+// acceptance rules exactly, unlike the old flat GET /agents Staff-only
+// list this replaces here.
+export async function getTransferCandidates(
+  ticketId: string
+): Promise<AssignableAgentsResponse> {
+  const { data } = await apiClient.get<AssignableAgentsResponse>(
+    `/tickets/${ticketId}/transfer-candidates`
   );
   return data;
 }
