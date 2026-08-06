@@ -16,7 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Skeleton } from "@/components/ui/skeleton";
+import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { cn } from "@/lib/utils";
 import { organizationService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
@@ -110,15 +110,7 @@ export function OrganizationModal({
           <DialogTitle>Organization Chart</DialogTitle>
         </DialogHeader>
 
-        {chartQuery.isLoading && (
-          <div className="flex flex-col items-center gap-4 py-10">
-            <Skeleton className="h-24 w-56 rounded-xl" />
-            <div className="flex gap-4">
-              <Skeleton className="h-24 w-56 rounded-xl" />
-              <Skeleton className="h-24 w-56 rounded-xl" />
-            </div>
-          </div>
-        )}
+        {chartQuery.isLoading && <WorkflowLoader loading size={56} className="min-h-[320px]" />}
 
         {chartQuery.isError && (
           <ErrorState message="Failed to load the organization chart." />

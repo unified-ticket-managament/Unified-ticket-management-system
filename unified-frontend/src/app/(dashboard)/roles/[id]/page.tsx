@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { formatDate } from "@/lib/utils";
 import { permissionService, roleService, userService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
@@ -128,11 +129,7 @@ export default function RoleDetailsPage() {
             </CardHeader>
             <CardContent>
               {permissionsQuery.isLoading ? (
-                <div className="space-y-2">
-                  {Array.from({ length: 4 }).map((_, i) => (
-                    <Skeleton key={i} className="h-6 w-full" />
-                  ))}
-                </div>
+                <WorkflowLoader loading size={40} />
               ) : permissions.length === 0 ? (
                 <EmptyState title="No permissions granted" description="This role has no permissions assigned yet." />
               ) : (
@@ -155,7 +152,7 @@ export default function RoleDetailsPage() {
             </CardHeader>
             <CardContent className="space-y-1">
               {usersQuery.isLoading ? (
-                Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)
+                <WorkflowLoader loading size={40} />
               ) : assignedUsers.length === 0 ? (
                 <EmptyState title="No users assigned" description="Users with this role will appear here." />
               ) : (

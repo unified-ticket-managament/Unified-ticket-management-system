@@ -16,6 +16,7 @@ import {
   groupPermissionsByModule,
 } from "@/components/roles/role-permissions-dialog";
 import { EmptyState, ErrorState } from "@/components/shared/stats";
+import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -37,7 +38,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { cn, formatDate } from "@/lib/utils";
@@ -219,15 +219,7 @@ export default function RolesPage() {
       />
 
       {rolesQuery.isLoading ? (
-        <div className="grid gap-6 lg:grid-cols-[240px_1fr_1fr]">
-          <div className="space-y-2">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-16 w-full rounded-xl" />
-            ))}
-          </div>
-          <Skeleton className="h-96 w-full rounded-xl" />
-          <Skeleton className="h-96 w-full rounded-xl" />
-        </div>
+        <WorkflowLoader loading size={56} className="min-h-[500px]" />
       ) : orderedRoles.length === 0 ? (
         <EmptyState
           title="No roles yet"
@@ -374,11 +366,7 @@ export default function RolesPage() {
                 </CardHeader>
                 <CardContent>
                   {permissionsQuery.isLoading ? (
-                    <div className="space-y-2">
-                      {Array.from({ length: 3 }).map((_, i) => (
-                        <Skeleton key={i} className="h-6 w-full" />
-                      ))}
-                    </div>
+                    <WorkflowLoader loading size={40} />
                   ) : permissionGroups.length === 0 ? (
                     <EmptyState
                       title="No permissions granted"
@@ -427,7 +415,7 @@ export default function RolesPage() {
             </CardHeader>
             <CardContent className="max-h-[420px] space-y-1 overflow-y-auto">
               {usersQuery.isLoading ? (
-                Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)
+                <WorkflowLoader loading size={40} />
               ) : assignedUsers.length === 0 ? (
                 <EmptyState title="No users assigned" description="Users with this role will appear here." />
               ) : (

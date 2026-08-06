@@ -14,6 +14,7 @@ import { PageHeader } from "@/components/layout/dashboard-shell";
 import { ModernBarListCard } from "@/components/dashboard/ModernBarListCard";
 import { ModernStatCard } from "@/components/dashboard/ModernStatCard";
 import { SlaOverviewSection } from "@/components/dashboard/SlaOverviewSection";
+import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -113,106 +114,112 @@ export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
         description={description ?? "Ticket operations overview across the organization."}
       />
 
-      {/* Top KPI row — deliberately only 4 tiles (Open/Resolved Today/
-          In Progress/Closed), all sourced from the real GET
-          /tickets/dashboard-stats endpoint. SLA Breaches and Escalated
-          Tickets are intentionally absent from this row — both are
-          still fully live just below, as the real "Breached"/
-          "Escalated" tiles in SlaOverviewSection. */}
-      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-        <ModernStatCard title="Open Tickets" value={isLoading ? "…" : stats?.open ?? 0} subtitle="Awaiting first response" icon={Ticket} />
-        <ModernStatCard
-          title="Resolved Today"
-          value={isLoading ? "…" : stats?.resolved_today ?? 0}
-          subtitle="Resolved so far today"
-          icon={CheckCircle2}
-          tone="success"
-        />
-        <ModernStatCard title="In Progress" value={isLoading ? "…" : stats?.in_progress ?? 0} subtitle="Actively being worked" icon={Clock} tone="warning" />
-        <ModernStatCard title="Closed" value={isLoading ? "…" : stats?.closed ?? 0} subtitle="All-time closed" icon={Archive} />
-      </div>
+      {isLoading ? (
+        <WorkflowLoader loading size={56} className="min-h-[420px]" />
+      ) : (
+        <>
+          {/* Top KPI row — deliberately only 4 tiles (Open/Resolved Today/
+              In Progress/Closed), all sourced from the real GET
+              /tickets/dashboard-stats endpoint. SLA Breaches and Escalated
+              Tickets are intentionally absent from this row — both are
+              still fully live just below, as the real "Breached"/
+              "Escalated" tiles in SlaOverviewSection. */}
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+            <ModernStatCard title="Open Tickets" value={stats?.open ?? 0} subtitle="Awaiting first response" icon={Ticket} />
+            <ModernStatCard
+              title="Resolved Today"
+              value={stats?.resolved_today ?? 0}
+              subtitle="Resolved so far today"
+              icon={CheckCircle2}
+              tone="success"
+            />
+            <ModernStatCard title="In Progress" value={stats?.in_progress ?? 0} subtitle="Actively being worked" icon={Clock} tone="warning" />
+            <ModernStatCard title="Closed" value={stats?.closed ?? 0} subtitle="All-time closed" icon={Archive} />
+          </div>
 
-      <SlaOverviewSection />
+          <SlaOverviewSection />
 
-      {/* "Tickets by Status" was removed per spec — Tickets by Priority
-          now takes the full width instead of sharing a 2-col grid with
-          a chart that no longer exists. */}
-      <ModernBarListCard
-        title="Tickets by Priority"
-        description="Current workload by priority level"
-        data={priorityBreakdown}
-        legend={priorityBreakdown.map((d) => ({ label: d.label, dotClassName: d.color ?? "bg-blue-500" }))}
-      />
+          {/* "Tickets by Status" was removed per spec — Tickets by Priority
+              now takes the full width instead of sharing a 2-col grid with
+              a chart that no longer exists. */}
+          <ModernBarListCard
+            title="Tickets by Priority"
+            description="Current workload by priority level"
+            data={priorityBreakdown}
+            legend={priorityBreakdown.map((d) => ({ label: d.label, dotClassName: d.color ?? "bg-blue-500" }))}
+          />
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Card className="rounded-md border-border shadow-sm">
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <div>
-              <CardTitle className="text-base">Recent Activity</CardTitle>
-              <CardDescription>Latest ticket actions across the team</CardDescription>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-1">
-            {recentActivity.length === 0 && !isLoading && (
-              <p className="px-2.5 py-3 text-sm text-muted-foreground">No recent activity.</p>
-            )}
-            {recentActivity.map((log) => {
-              const meta = auditMetaFor(log.event_type);
-              return (
-                <div key={log.audit_id} className="flex items-start gap-3 rounded-md px-2.5 py-3 transition-colors hover:bg-muted/50">
-                  <div className={cn("mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm", AUDIT_TONE_CLASSES[meta.tone])}>
-                    <span aria-hidden="true">{meta.icon}</span>
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm">
-                      <span className="font-medium">{log.actor_name}</span>{" "}
-                      <span className="text-muted-foreground">{meta.label}</span>{" "}
-                      <span className="font-medium">— {log.ticket_title}</span>
-                    </p>
-                    <p className="text-xs text-muted-foreground">{formatRelativeTime(log.created_at)}</p>
-                  </div>
+          <div className="grid gap-5 lg:grid-cols-2">
+            <Card className="rounded-md border-border shadow-sm">
+              <CardHeader className="flex-row items-center justify-between space-y-0">
+                <div>
+                  <CardTitle className="text-base">Recent Activity</CardTitle>
+                  <CardDescription>Latest ticket actions across the team</CardDescription>
                 </div>
-              );
-            })}
-          </CardContent>
-        </Card>
+              </CardHeader>
+              <CardContent className="space-y-1">
+                {recentActivity.length === 0 && (
+                  <p className="px-2.5 py-3 text-sm text-muted-foreground">No recent activity.</p>
+                )}
+                {recentActivity.map((log) => {
+                  const meta = auditMetaFor(log.event_type);
+                  return (
+                    <div key={log.audit_id} className="flex items-start gap-3 rounded-md px-2.5 py-3 transition-colors hover:bg-muted/50">
+                      <div className={cn("mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm", AUDIT_TONE_CLASSES[meta.tone])}>
+                        <span aria-hidden="true">{meta.icon}</span>
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm">
+                          <span className="font-medium">{log.actor_name}</span>{" "}
+                          <span className="text-muted-foreground">{meta.label}</span>{" "}
+                          <span className="font-medium">— {log.ticket_title}</span>
+                        </p>
+                        <p className="text-xs text-muted-foreground">{formatRelativeTime(log.created_at)}</p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
 
-        <Card className="rounded-md border-border shadow-sm">
-          <CardHeader className="flex-row items-center justify-between space-y-0">
-            <div>
-              <CardTitle className="text-base">Recent Assigned Tickets</CardTitle>
-              <CardDescription>Most recently updated assignments</CardDescription>
-            </div>
-            <Link href="/all-tickets" className="flex items-center gap-1 text-xs font-medium text-primary hover:underline">
-              View all
-              <ArrowUpRight className="h-3.5 w-3.5" />
-            </Link>
-          </CardHeader>
-          <CardContent className="space-y-1">
-            {recentAssigned.length === 0 && !isLoading && (
-              <p className="px-2.5 py-3 text-sm text-muted-foreground">No assigned tickets yet.</p>
-            )}
-            {recentAssigned.map((ticket) => (
-              <Link
-                key={ticket.ticket_id}
-                href="/all-tickets"
-                className="flex items-center gap-3 rounded-md px-2.5 py-3 transition-colors hover:bg-muted/50"
-              >
-                <Avatar className="h-9 w-9">
-                  <AvatarFallback>{(ticket.agent_name ?? "?").charAt(0)}</AvatarFallback>
-                </Avatar>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{ticket.title}</p>
-                  <p className="truncate text-xs text-muted-foreground">Assigned to {ticket.agent_name}</p>
+            <Card className="rounded-md border-border shadow-sm">
+              <CardHeader className="flex-row items-center justify-between space-y-0">
+                <div>
+                  <CardTitle className="text-base">Recent Assigned Tickets</CardTitle>
+                  <CardDescription>Most recently updated assignments</CardDescription>
                 </div>
-                <Badge variant={STATUS_BADGE[ticket.current_status].variant} className="shrink-0">
-                  {STATUS_BADGE[ticket.current_status].label}
-                </Badge>
-              </Link>
-            ))}
-          </CardContent>
-        </Card>
-      </div>
+                <Link href="/all-tickets" className="flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+                  View all
+                  <ArrowUpRight className="h-3.5 w-3.5" />
+                </Link>
+              </CardHeader>
+              <CardContent className="space-y-1">
+                {recentAssigned.length === 0 && (
+                  <p className="px-2.5 py-3 text-sm text-muted-foreground">No assigned tickets yet.</p>
+                )}
+                {recentAssigned.map((ticket) => (
+                  <Link
+                    key={ticket.ticket_id}
+                    href="/all-tickets"
+                    className="flex items-center gap-3 rounded-md px-2.5 py-3 transition-colors hover:bg-muted/50"
+                  >
+                    <Avatar className="h-9 w-9">
+                      <AvatarFallback>{(ticket.agent_name ?? "?").charAt(0)}</AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{ticket.title}</p>
+                      <p className="truncate text-xs text-muted-foreground">Assigned to {ticket.agent_name}</p>
+                    </div>
+                    <Badge variant={STATUS_BADGE[ticket.current_status].variant} className="shrink-0">
+                      {STATUS_BADGE[ticket.current_status].label}
+                    </Badge>
+                  </Link>
+                ))}
+              </CardContent>
+            </Card>
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -19,6 +19,7 @@ import { Breadcrumbs } from "@/components/shared/breadcrumbs";
 import { AreaTrendChart } from "@/components/shared/charts";
 import { ModernBarListCard } from "@/components/dashboard/ModernBarListCard";
 import { ModernStatCard } from "@/components/dashboard/ModernStatCard";
+import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
@@ -189,56 +190,62 @@ export default function ReportsPage() {
         }
       />
 
-      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
-        <ModernStatCard title="Total Tickets" value={isLoading ? "…" : metrics.total} icon={TicketIcon} />
-        <ModernStatCard title="Resolved Tickets" value={isLoading ? "…" : metrics.resolved} icon={ShieldCheck} tone="success" />
-        <ModernStatCard title="Pending Tickets" value={isLoading ? "…" : metrics.pending} icon={Clock3} tone="warning" />
-        <ModernStatCard title="Closed Tickets" value={isLoading ? "…" : metrics.closed} icon={FileText} />
-        <ModernStatCard title="Avg. Resolution Time" value={isLoading ? "…" : `${metrics.avgResolutionHours}h`} icon={TrendingUp} />
-        <ModernStatCard title="Avg. Response Time" value={isLoading ? "…" : `${avgResponseMinutes}m`} icon={Clock3} />
-        <ModernStatCard
-          title="SLA Compliance"
-          value={isLoading ? "…" : `${metrics.slaCompliance}%`}
-          icon={Gauge}
-          tone={metrics.slaCompliance >= 90 ? "success" : "warning"}
-        />
-      </div>
-
-      <Card className="rounded-md border-border shadow-sm">
-        <CardHeader className="space-y-0">
-          <CardTitle className="text-base">Monthly Ticket Trend</CardTitle>
-          <CardDescription>Ticket volume over the last 6 months</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <AreaTrendChart data={monthlyTrend} valueFormatter={(v) => `${v} tickets`} />
-        </CardContent>
-      </Card>
-
-      {/* "Tickets by Status" was removed per spec. Tickets by Category
-          is role-gated (hidden for Team Lead/Staff); when it's hidden,
-          Tickets by Priority expands to the full row instead of sharing
-          a half-empty grid. */}
-      {showCategoryChart ? (
-        <div className="grid gap-5 lg:grid-cols-2">
-          <ModernBarListCard title="Tickets by Priority" data={byPriority} />
-          <ModernBarListCard title="Tickets by Category" data={byCategory} />
-        </div>
+      {isLoading ? (
+        <WorkflowLoader loading size={56} className="min-h-[500px]" />
       ) : (
-        <ModernBarListCard title="Tickets by Priority" data={byPriority} />
-      )}
+        <>
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+            <ModernStatCard title="Total Tickets" value={metrics.total} icon={TicketIcon} />
+            <ModernStatCard title="Resolved Tickets" value={metrics.resolved} icon={ShieldCheck} tone="success" />
+            <ModernStatCard title="Pending Tickets" value={metrics.pending} icon={Clock3} tone="warning" />
+            <ModernStatCard title="Closed Tickets" value={metrics.closed} icon={FileText} />
+            <ModernStatCard title="Avg. Resolution Time" value={`${metrics.avgResolutionHours}h`} icon={TrendingUp} />
+            <ModernStatCard title="Avg. Response Time" value={`${avgResponseMinutes}m`} icon={Clock3} />
+            <ModernStatCard
+              title="SLA Compliance"
+              value={`${metrics.slaCompliance}%`}
+              icon={Gauge}
+              tone={metrics.slaCompliance >= 90 ? "success" : "warning"}
+            />
+          </div>
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <ModernBarListCard
-          title="Staff Performance"
-          description="Tickets resolved or closed per agent"
-          data={staffPerformance}
-        />
-        <ModernBarListCard
-          title="Team Performance"
-          description="Tickets resolved or closed per category"
-          data={teamPerformance}
-        />
-      </div>
+          <Card className="rounded-md border-border shadow-sm">
+            <CardHeader className="space-y-0">
+              <CardTitle className="text-base">Monthly Ticket Trend</CardTitle>
+              <CardDescription>Ticket volume over the last 6 months</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <AreaTrendChart data={monthlyTrend} valueFormatter={(v) => `${v} tickets`} />
+            </CardContent>
+          </Card>
+
+          {/* "Tickets by Status" was removed per spec. Tickets by Category
+              is role-gated (hidden for Team Lead/Staff); when it's hidden,
+              Tickets by Priority expands to the full row instead of sharing
+              a half-empty grid. */}
+          {showCategoryChart ? (
+            <div className="grid gap-5 lg:grid-cols-2">
+              <ModernBarListCard title="Tickets by Priority" data={byPriority} />
+              <ModernBarListCard title="Tickets by Category" data={byCategory} />
+            </div>
+          ) : (
+            <ModernBarListCard title="Tickets by Priority" data={byPriority} />
+          )}
+
+          <div className="grid gap-5 lg:grid-cols-2">
+            <ModernBarListCard
+              title="Staff Performance"
+              description="Tickets resolved or closed per agent"
+              data={staffPerformance}
+            />
+            <ModernBarListCard
+              title="Team Performance"
+              description="Tickets resolved or closed per category"
+              data={teamPerformance}
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -17,13 +17,13 @@ import { actionBadgeVariant, ActionIcon } from "@/components/shared/audit";
 import { Breadcrumbs } from "@/components/shared/breadcrumbs";
 import { DataTablePagination } from "@/components/shared/data-table";
 import { AccessDenied, EmptyState, ErrorState } from "@/components/shared/stats";
+import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { formatDate } from "@/lib/utils";
@@ -343,11 +343,7 @@ export default function AuditLogsPage() {
       <Card>
         <CardContent className="p-5">
           {isLoading ? (
-            <div className="space-y-6">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <Skeleton key={i} className="h-14 w-full" />
-              ))}
-            </div>
+            <WorkflowLoader loading size={56} className="min-h-[400px]" />
           ) : pageRows.length === 0 ? (
             <EmptyState title="No audit logs found" description="Try adjusting your search or date range." />
           ) : (

@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Skeleton } from "@/components/ui/skeleton";
+import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { cn } from "@/lib/utils";
 import { TIME_FILTERS, type TimeFilterKey } from "@tw/hooks/useMailInbox";
 import { formatRelativeTime } from "@/lib/utils";
@@ -415,11 +415,7 @@ export function MessageList({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading && paged.length === 0 ? (
-          <div className="flex flex-col gap-2 p-4">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="h-16 w-full rounded-lg" />
-            ))}
-          </div>
+          <WorkflowLoader loading size={56} className="h-full" />
         ) : filtered.length === 0 ? (
           <div className="p-4">
             <MailEmptyState onCompose={onCompose} />

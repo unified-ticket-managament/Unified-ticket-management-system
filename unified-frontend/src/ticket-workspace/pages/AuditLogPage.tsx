@@ -6,7 +6,7 @@ import { AuditLogDetailsDrawer } from "@tw/components/common/AuditLogDetailsDraw
 import { Badge } from "@tw/components/common/Badge";
 import { Button } from "@tw/components/common/Button";
 import { EmptyState } from "@tw/components/common/EmptyState";
-import { SkeletonRows } from "@tw/components/common/Skeleton";
+import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { getAllTicketAuditLogs } from "@tw/api/auditLog";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
@@ -389,9 +389,7 @@ export function AuditLogPage() {
 
         <div className="rounded-md2 border border-border bg-surface shadow-xs">
           {isLoading && rows.length === 0 ? (
-            <div className="p-5">
-              <SkeletonRows rows={6} />
-            </div>
+            <WorkflowLoader loading size={56} className="min-h-[400px]" />
           ) : rows.length === 0 ? (
             <EmptyState
               icon="🔒"

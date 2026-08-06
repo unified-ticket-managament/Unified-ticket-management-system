@@ -21,7 +21,7 @@ import { Badge } from "@tw/components/common/Badge";
 import { RefreshButton } from "@tw/components/common/RefreshButton";
 import { SlaBadge } from "@tw/components/sla/SlaBadge";
 import { EmptyState } from "@tw/components/common/EmptyState";
-import { SkeletonRows } from "@tw/components/common/Skeleton";
+import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { getViewCounts } from "@tw/api/inbox";
 import { getDashboardStats, type DashboardStats } from "@tw/api/ticket";
 import { useDashboardSlaCounts } from "@tw/hooks/useDashboardSlaCounts";
@@ -195,6 +195,9 @@ export function Dashboard() {
       description={`Your workspace overview, ${currentUser?.name}.`}
       action={<RefreshButton onRefresh={handleRefresh} isRefreshing={isRefreshing} />}
     >
+      {isLoading ? (
+        <WorkflowLoader loading size={56} className="min-h-[500px]" />
+      ) : (
       <div className="flex flex-col gap-7">
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
           <StatCard
@@ -321,9 +324,7 @@ export function Dashboard() {
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1.3fr_0.7fr]">
           <Card title="Recent Activity" eyebrow="Latest updates">
-            {isLoading ? (
-              <SkeletonRows rows={5} />
-            ) : recentTickets.length === 0 ? (
+            {recentTickets.length === 0 ? (
               <EmptyState
                 icon="🗂️"
                 title="No tickets yet"
@@ -417,6 +418,7 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+      )}
     </AppLayout>
   );
 }

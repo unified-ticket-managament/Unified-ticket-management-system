@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { Lock } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { EmptyState } from "@tw/components/common/EmptyState";
+import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { TicketHeader } from "@tw/components/ticket/TicketHeader";
 import { TicketPropertiesCard } from "@tw/components/ticket/TicketPropertiesCard";
 import { TicketActivityPanel, type ActivityTab } from "@tw/components/ticket/TicketActivityPanel";
@@ -91,20 +92,23 @@ export function TicketDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketId]);
 
-  const showEmptyState = !isLoadingTicket && (!activeTicket || activeTicket.ticket_id !== ticketId);
+  // Distinct from a manual refresh of an already-loaded ticket (which also
+  // flips isLoadingTicket true via TicketHeader's own isRefreshing prop) —
+  // this is specifically "no ticket for this id is on screen yet."
+  const hasCurrentTicket = !!activeTicket && activeTicket.ticket_id === ticketId;
+  const initialLoading = isLoadingTicket && !hasCurrentTicket;
+  const notFound = !isLoadingTicket && !hasCurrentTicket;
 
   return (
     <AppLayout>
-      {showEmptyState ? (
+      {initialLoading ? (
+        <WorkflowLoader loading size={56} className="min-h-[400px]" />
+      ) : notFound ? (
         <div className="rounded-md2 border border-border bg-surface shadow-xs">
           <EmptyState
             icon="🎫"
-            title={isLoadingTicket ? "Loading ticket…" : "Ticket not found or not yours"}
-            description={
-              isLoadingTicket
-                ? undefined
-                : "It may be assigned to a different agent, or the ID is wrong."
-            }
+            title="Ticket not found or not yours"
+            description="It may be assigned to a different agent, or the ID is wrong."
           />
         </div>
       ) : (

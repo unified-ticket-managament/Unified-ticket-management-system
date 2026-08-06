@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 
 import { EmptyState } from "@/components/shared/stats";
+import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -88,13 +89,11 @@ export function DataTable<TData>({
 
         <TableBody>
           {isLoading ? (
-            Array.from({ length: 6 }).map((_, i) => (
-              <TableRow key={i}>
-                <TableCell colSpan={columnCount}>
-                  <div className="h-6 w-full animate-pulse rounded bg-muted" />
-                </TableCell>
-              </TableRow>
-            ))
+            <TableRow>
+              <TableCell colSpan={columnCount} className="h-56 p-0">
+                <WorkflowLoader loading size={56} />
+              </TableCell>
+            </TableRow>
           ) : rows.length === 0 ? (
             <TableRow>
               <TableCell colSpan={columnCount} className="h-56 text-center">
