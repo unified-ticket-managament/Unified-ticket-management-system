@@ -24,7 +24,9 @@ class EmailSender:
     directly and never need to change if the transport does.
     """
 
-    async def send(self, *, to_email: str, subject: str, body: str) -> bool:
+    async def send(
+        self, *, to_email: str, subject: str, body: str, html_body: str | None = None
+    ) -> bool:
         raise NotImplementedError
 
 
@@ -37,12 +39,15 @@ class LoggingEmailSender(EmailSender):
     real SMTP credentials are supplied in .env.
     """
 
-    async def send(self, *, to_email: str, subject: str, body: str) -> bool:
+    async def send(
+        self, *, to_email: str, subject: str, body: str, html_body: str | None = None
+    ) -> bool:
         logger.info(
             "EMAIL (no SMTP transport configured — see smtp_host in Settings) "
-            "to=%s subject=%r",
+            "to=%s subject=%r html=%s",
             to_email,
             subject,
+            html_body is not None,
         )
         return False
 
@@ -71,9 +76,11 @@ class SMTPEmailSender(EmailSender):
         self._from_email = from_email
         self._use_tls = use_tls
 
-    async def send(self, *, to_email: str, subject: str, body: str) -> bool:
+    async def send(
+        self, *, to_email: str, subject: str, body: str, html_body: str | None = None
+    ) -> bool:
         try:
-            await asyncio.to_thread(self._send_sync, to_email, subject, body)
+            await asyncio.to_thread(self._send_sync, to_email, subject, body, html_body)
             return True
         except Exception:
             # Never let a notification-email failure propagate into the
@@ -87,12 +94,20 @@ class SMTPEmailSender(EmailSender):
             )
             return False
 
-    def _send_sync(self, to_email: str, subject: str, body: str) -> None:
-        message = MIMEMultipart()
+    def _send_sync(
+        self, to_email: str, subject: str, body: str, html_body: str | None
+    ) -> None:
+        # multipart/alternative (not the bare MIMEMultipart() this used
+        # to construct) so a client that renders HTML shows html_body
+        # and one that doesn't falls back to the plain-text body — both
+        # parts describe the same content, never two different messages.
+        message = MIMEMultipart("alternative")
         message["From"] = self._from_email
         message["To"] = to_email
         message["Subject"] = subject
         message.attach(MIMEText(body, "plain"))
+        if html_body is not None:
+            message.attach(MIMEText(html_body, "html"))
 
         with smtplib.SMTP(self._host, self._port, timeout=10) as server:
             if self._use_tls:

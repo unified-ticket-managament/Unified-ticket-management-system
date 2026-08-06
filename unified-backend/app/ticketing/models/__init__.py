@@ -1,6 +1,8 @@
 from shared_models.database import Base
 
 from .client import Client
+from .client_assignment import ClientAssignment
+from .client_contact import ClientContact
 from .ticket import Ticket
 from .interaction import Interaction
 from .attachment import Attachment
@@ -20,6 +22,8 @@ from .escalation_handling_sla import EscalationHandlingSLA
 __all__ = [
     "Base",
     "Client",
+    "ClientAssignment",
+    "ClientContact",
     "Ticket",
     "Interaction",
     "Attachment",

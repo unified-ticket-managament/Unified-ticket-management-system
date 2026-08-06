@@ -89,9 +89,13 @@ class EmailService:
     Resolve Client — by the message's `from` address for mail arriving
     at the one configured Graph shared mailbox (GRAPH_MAILBOX_ADDRESS,
     where every real client sends today; see is_configured_graph_mailbox()),
-    since every client shares the same `to` address there; by the
+    matched against that client's inbox_email OR any of its known
+    ClientContact addresses (see ClientRepository.get_active_by_any_email)
+    — since every client shares the same `to` address there; by the
     message's `to` address for any other, legacy dedicated-inbox-per-
-    client address. Either way, no matching Client is never rejected
+    client address (inbox_email only — a dedicated arrival address
+    identifies a mailbox, not a sender, so it isn't widened the same
+    way). Either way, no matching Client is never rejected
     outright when it happened at the Graph shared mailbox — that
     routes to Site Lead instead of "Unknown inbox address."
             │
@@ -174,8 +178,14 @@ class EmailService:
         arrived_at_shared_mailbox = is_configured_graph_mailbox(email.to_email, settings)
 
         if arrived_at_shared_mailbox:
+            # Widened match: the sender's address is checked against
+            # both Client.inbox_email and every known ClientContact
+            # address for that client — a company's mail may
+            # legitimately arrive from any of its known contacts, not
+            # only the one address stored as inbox_email. See
+            # ClientRepository.get_active_by_any_email.
             client = (
-                await self.client_repository.get_active_by_inbox_email(email.from_email)
+                await self.client_repository.get_active_by_any_email(email.from_email)
                 if email.from_email
                 else None
             )

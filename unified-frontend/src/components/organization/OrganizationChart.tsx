@@ -1,12 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { useRef, useState } from "react";
 
-import { cn } from "@/lib/utils";
-
-import { HierarchyNode } from "./hierarchy-builder";
-import { OrganizationNodeCard } from "./OrganizationNode";
+import { findMeNode, HierarchyNode } from "./hierarchy-builder";
+import { OrgChartCanvas, OrgChartCanvasHandle } from "./org-chart/OrgChartCanvas";
+import { OrgChartToolbar } from "./org-chart/OrgChartToolbar";
 
 interface OrganizationChartProps {
   node: HierarchyNode;
@@ -14,78 +12,47 @@ interface OrganizationChartProps {
   onSelectNode: (node: HierarchyNode) => void;
 }
 
+/**
+ * Scalable SVG-based org chart: a d3-hierarchy tree layout rendered as
+ * SVG (crisp at any zoom level/DPI), with d3-zoom driving mouse-wheel
+ * zoom, pinch zoom, and click-and-drag pan directly, plus a floating
+ * toolbar for the same actions as explicit buttons. Replaces the
+ * previous plain nested-<div> recursive renderer — same external
+ * props contract (`node`/`selectedNodeId`/`onSelectNode`), so
+ * OrganizationModal's data-fetching, "ME" auto-focus, and Details side
+ * panel are unchanged.
+ */
 export function OrganizationChart({
   node,
   selectedNodeId,
   onSelectNode,
 }: OrganizationChartProps) {
-  const [expanded, setExpanded] = useState(true);
-  const hasChildren = node.children.length > 0;
+  const canvasRef = useRef<OrgChartCanvasHandle>(null);
+  const [zoomPercent, setZoomPercent] = useState(100);
+
+  const meNode = findMeNode(node);
 
   return (
-    <div className="flex flex-col items-center">
-      <OrganizationNodeCard
-        node={node}
-        isSelected={selectedNodeId === node.user_id}
-        hasChildren={hasChildren}
-        isExpanded={expanded}
-        onToggleExpand={() => setExpanded((prev) => !prev)}
-        onSelect={() => onSelectNode(node)}
+    <div className="relative h-full w-full overflow-hidden">
+      <OrgChartCanvas
+        ref={canvasRef}
+        root={node}
+        selectedNodeId={selectedNodeId}
+        onSelectNode={onSelectNode}
+        focusNodeId={meNode?.user_id ?? node.user_id}
+        onZoomPercentChange={setZoomPercent}
       />
 
-      <AnimatePresence initial={false}>
-        {hasChildren && expanded && (
-          <motion.div
-            key="children"
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: "auto" }}
-            exit={{ opacity: 0, height: 0 }}
-            transition={{ duration: 0.25, ease: "easeInOut" }}
-            className="overflow-hidden"
-          >
-            {/* Stem connecting the parent card down to the sibling row */}
-            <div className="mx-auto h-6 w-px bg-border" />
-
-            <ul className="flex">
-              {node.children.map((child) => (
-                <li
-                  key={child.user_id}
-                  className={cn(
-                    "relative flex flex-col items-center px-6",
-                    "before:absolute before:right-1/2 before:top-0 before:h-px before:w-1/2 before:bg-border",
-                    "after:absolute after:left-1/2 after:top-0 after:h-px after:w-1/2 after:bg-border",
-                    "first:before:bg-transparent last:after:bg-transparent"
-                  )}
-                >
-                  {/* Stem connecting the sibling row down to this child —
-                      dashed for a Reporting Manager branch (a dynamic,
-                      database-driven HR-responsibility link), dotted for a
-                      plain ticket-assignment connection (no reporting line
-                      or HR responsibility at all) — neither is the real
-                      manager_id/teamlead_id reporting line, so neither
-                      renders as the default solid stem. */}
-                  <div
-                    className={cn(
-                      "h-6 w-px",
-                      child.relationship_to_parent === "reporting_manager"
-                        ? "border-l-2 border-dashed border-muted-foreground/50 bg-transparent"
-                        : child.relationship_to_parent === "assignable"
-                          ? "border-l-2 border-dotted border-muted-foreground/30 bg-transparent"
-                          : "bg-border"
-                    )}
-                  />
-
-                  <OrganizationChart
-                    node={child}
-                    selectedNodeId={selectedNodeId}
-                    onSelectNode={onSelectNode}
-                  />
-                </li>
-              ))}
-            </ul>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <OrgChartToolbar
+        zoomPercent={zoomPercent}
+        onZoomIn={() => canvasRef.current?.zoomIn()}
+        onZoomOut={() => canvasRef.current?.zoomOut()}
+        onReset={() => canvasRef.current?.resetZoom()}
+        onFitToScreen={() => canvasRef.current?.fitToScreen()}
+        onCenterOnRoot={() => canvasRef.current?.centerOnRoot()}
+        onExpandAll={() => canvasRef.current?.expandAll()}
+        onCollapseAll={() => canvasRef.current?.collapseAll()}
+      />
     </div>
   );
 }

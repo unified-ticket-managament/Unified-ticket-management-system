@@ -102,6 +102,29 @@ class NotificationService:
 
         created = await self.notification_repository.create_many(rows)
         await self._publish_to_streams(created)
+        self._dispatch_emails(created)
+
+    def _dispatch_emails(self, created: list) -> None:
+        """
+        Business-critical notification types (see app/notifications/
+        email_policy.py) also get a real outbound email on top of the
+        in-app delivery every type already gets above — additive, and
+        deliberately best-effort: queue_notification_emails schedules
+        its own background task and returns immediately, so a problem
+        here can never fail the write path that already durably
+        created these rows, matching _publish_to_streams' own
+        never-raise convention.
+        """
+
+        try:
+            # Deferred import: email_policy (imported by email_notifier)
+            # itself imports NotificationType from this module — a
+            # module-level import here would be circular.
+            from app.notifications.email_notifier import queue_notification_emails
+
+            queue_notification_emails(created)
+        except Exception:
+            logger.warning("EMAIL_DISPATCH_QUEUE_FAILED", exc_info=True)
 
     async def _publish_to_streams(self, created: list) -> None:
         """

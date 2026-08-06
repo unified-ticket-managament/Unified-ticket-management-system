@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { motion } from "framer-motion";
-import { Maximize2, Minimize2, Minus, Plus, RotateCcw, X } from "lucide-react";
+import { Maximize2, Minimize2, X } from "lucide-react";
 
 import { EmptyState, ErrorState } from "@/components/shared/stats";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -24,10 +23,6 @@ import { useAuthStore } from "@/store/auth-store";
 import { OrganizationChart } from "./OrganizationChart";
 import { buildHierarchy, HierarchyNode } from "./hierarchy-builder";
 
-const MIN_ZOOM = 0.5;
-const MAX_ZOOM = 2;
-const ZOOM_STEP = 0.1;
-
 interface OrganizationModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -39,9 +34,7 @@ export function OrganizationModal({
 }: OrganizationModalProps) {
   const currentUserId = useAuthStore((s) => s.user?.user_id);
   const [selectedNode, setSelectedNode] = useState<HierarchyNode | null>(null);
-  const [zoom, setZoom] = useState(1);
   const [isMaximized, setIsMaximized] = useState(false);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const chartQuery = useQuery({
     queryKey: ["organization-chart"],
@@ -49,34 +42,18 @@ export function OrganizationModal({
     enabled: open,
   });
 
-  useEffect(() => {
-    if (!open) {
+  // Reset on close is driven by the Dialog's own open-change event,
+  // not a useEffect watching `open` — calling setState synchronously
+  // inside an effect body just to react to a prop that already fires
+  // its own event is the exact anti-pattern React's
+  // react-hooks/set-state-in-effect rule flags.
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
       setSelectedNode(null);
-      setZoom(1);
       setIsMaximized(false);
     }
-  }, [open]);
-
-  // Auto-center on the viewer's own ("ME") node once the chart has
-  // rendered — the tree can now be as wide as the whole company (e.g.
-  // Super Admin/Site Lead), so without this the viewer's own position
-  // could load off-screen. A short delay lets the expand/collapse
-  // enter animation (see OrganizationChart's AnimatePresence) finish
-  // laying out first, so scrollIntoView measures the settled position.
-  useEffect(() => {
-    if (!open || !chartQuery.isSuccess) return;
-
-    const timer = setTimeout(() => {
-      const meNode = scrollContainerRef.current?.querySelector('[data-org-me="true"]');
-      meNode?.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [open, chartQuery.isSuccess]);
-
-  const zoomIn = () => setZoom((z) => Math.min(MAX_ZOOM, +(z + ZOOM_STEP).toFixed(2)));
-  const zoomOut = () => setZoom((z) => Math.max(MIN_ZOOM, +(z - ZOOM_STEP).toFixed(2)));
-  const resetZoom = () => setZoom(1);
+    onOpenChange(nextOpen);
+  };
 
   const hierarchy =
     chartQuery.data && currentUserId
@@ -84,7 +61,7 @@ export function OrganizationModal({
       : null;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className={cn(
           "flex flex-col overflow-hidden",
@@ -125,67 +102,19 @@ export function OrganizationModal({
 
         {hierarchy && (
           <div className="flex flex-1 flex-col gap-4 overflow-hidden md:flex-row">
-            {/* Outer wrapper never scrolls — it's purely the positioning
-                context for the zoom controls, so they stay fixed in place
-                no matter how the chart underneath is panned, scrolled, or
-                zoomed. Only the inner div scrolls. */}
+            {/* OrganizationChart owns its own zoom/pan (mouse wheel,
+                pinch, drag-to-pan) and floating toolbar now — this is
+                purely its sizing/border context. */}
             <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-muted/20">
-              <div ref={scrollContainerRef} className="h-full w-full overflow-auto p-8">
-                <motion.div
-                  animate={{ scale: zoom }}
-                  transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                  style={{ transformOrigin: "top center" }}
-                >
-                  <OrganizationChart
-                    node={hierarchy}
-                    selectedNodeId={selectedNode?.user_id ?? null}
-                    onSelectNode={(node) =>
-                      setSelectedNode((prev) =>
-                        prev?.user_id === node.user_id ? null : node
-                      )
-                    }
-                  />
-                </motion.div>
-              </div>
-
-              <div className="absolute bottom-4 left-4 flex items-center gap-1 rounded-lg border border-border bg-card/95 p-1 shadow-md backdrop-blur">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  onClick={zoomOut}
-                  disabled={zoom <= MIN_ZOOM}
-                  aria-label="Zoom out"
-                >
-                  <Minus className="h-4 w-4" />
-                </Button>
-                <span className="w-12 text-center text-xs font-medium tabular-nums text-muted-foreground">
-                  {Math.round(zoom * 100)}%
-                </span>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  onClick={zoomIn}
-                  disabled={zoom >= MAX_ZOOM}
-                  aria-label="Zoom in"
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
-                <div className="mx-1 h-5 w-px bg-border" />
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  onClick={resetZoom}
-                  aria-label="Reset zoom"
-                >
-                  <RotateCcw className="h-4 w-4" />
-                </Button>
-              </div>
+              <OrganizationChart
+                node={hierarchy}
+                selectedNodeId={selectedNode?.user_id ?? null}
+                onSelectNode={(node) =>
+                  setSelectedNode((prev) =>
+                    prev?.user_id === node.user_id ? null : node
+                  )
+                }
+              />
             </div>
 
             {selectedNode && (

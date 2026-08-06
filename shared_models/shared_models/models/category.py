@@ -22,15 +22,24 @@ class CategoryName(str, Enum):
     service's add-postgres-enum-value skill — this is a deliberate
     tradeoff of the fixed list not needing a lookup at Postgres's
     read layer, at the cost of every new category needing a migration.
+
+    Replaced outright (not extended) by
+    alembic_rbac's d3f5a7b9c1e3_replace_category_names_for_real_org_data
+    — the original 7 values (Eligibility, Patient Calling, AR, Payment
+    Posting, PA, Charge Entry, Claims) didn't match the real
+    organization's actual "Process" values except AR and Payment
+    Posting, so the whole set was swapped for the real 8 processes
+    rather than layered on top of the dummy ones.
     """
 
-    ELIGIBILITY = "Eligibility"
-    PATIENT_CALLING = "Patient Calling"
     AR = "AR"
+    REFERRAL = "Referral"
+    AUTHORIZATION = "Authorization"
+    IV = "IV"
+    CREDENTIALING = "Credentialing"
+    CODING = "Coding"
     PAYMENT_POSTING = "Payment Posting"
-    PA = "PA"
-    CHARGE_ENTRY = "Charge Entry"
-    CLAIMS = "Claims"
+    QUALITY = "Quality"
 
 
 class Category(Base):

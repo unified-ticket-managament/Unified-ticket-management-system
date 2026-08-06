@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ticketing.models.client import Client
+from app.ticketing.models.client_contact import ClientContact
 from app.ticketing.schemas.client import ClientCreate
 
 
@@ -38,6 +39,43 @@ class ClientRepository:
             )
         )
         return result.scalar_one_or_none()
+
+    async def get_active_by_any_email(self, email: str) -> Client | None:
+        """
+        Same intent as get_active_by_inbox_email, widened to also match
+        any of a client's known contact addresses (ClientContact.email)
+        — not just the single Client.inbox_email column. A client
+        company routinely emails in from more than one person/address
+        (e.g. APM has ~17 known contacts, only one of which is its
+        inbox_email); every one of them should still resolve to the
+        same Client, and therefore the same Account Manager. The
+        inbox_email match is tried first, unchanged, so existing
+        behavior for that address is exactly preserved; only a miss
+        there falls through to the contacts table.
+
+        If the same address were ever associated with more than one
+        Client (a data-quality issue, not something this app
+        prevents), this deterministically prefers a contact marked
+        is_primary, then the oldest client, rather than resolving
+        ambiguously.
+        """
+
+        client = await self.get_active_by_inbox_email(email)
+        if client is not None:
+            return client
+
+        normalized = email.strip().lower()
+        result = await self.db.execute(
+            select(Client)
+            .join(ClientContact, ClientContact.client_id == Client.client_id)
+            .where(
+                Client.is_active.is_(True),
+                func.lower(ClientContact.email) == normalized,
+            )
+            .order_by(ClientContact.is_primary.desc(), Client.created_at.asc())
+            .limit(1)
+        )
+        return result.scalars().first()
 
     async def get_by_inbox_email(self, inbox_email: str) -> Client | None:
         """

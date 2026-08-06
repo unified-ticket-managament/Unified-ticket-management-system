@@ -44,6 +44,8 @@ target_metadata = Base.metadata
 
 OWNED_TABLES = {
     "clients",
+    "client_assignments",
+    "client_contacts",
     "tickets",
     "interactions",
     "attachments",

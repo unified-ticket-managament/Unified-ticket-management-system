@@ -109,6 +109,26 @@ class UserRepository:
         )
         return dict(result.all())
 
+    async def get_active_emails_by_ids(self, user_ids: list[UUID]) -> dict[UUID, str]:
+        """
+        Same shape as get_emails_by_ids, but excludes deactivated users
+        — used by the notification-email feature, which (unlike SLA
+        breach escalation's own recipient resolution, already scoped
+        to active users via its role-based queries) can be handed a
+        recipient set sourced from an arbitrary notify() call and must
+        not email someone who's been deactivated.
+        """
+
+        if not user_ids:
+            return {}
+
+        result = await self.db.execute(
+            select(User.user_id, User.email).where(
+                User.user_id.in_(user_ids), User.is_active.is_(True)
+            )
+        )
+        return dict(result.all())
+
     async def get_active_account_manager_ids(self, user_ids: list[UUID]) -> set[UUID]:
         """
         Batch-checks which of the given user_ids are CURRENTLY active
