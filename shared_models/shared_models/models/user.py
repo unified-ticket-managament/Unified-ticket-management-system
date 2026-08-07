@@ -120,6 +120,13 @@ class User(TimestampMixin, Base):
 
     team: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
+    # Real-world job title (e.g. "Sr. AR Associate", "Team Lead - AR"),
+    # distinct from `role_id`'s fixed RBAC ladder and from `category_id`'s
+    # ticket-routing category — display only, never read by any
+    # permission/routing check. See
+    # e8566a9089a3_add_designation_to_users.py.
+    designation: Mapped[str | None] = mapped_column(String(150), nullable=True)
+
     # Preference fields — nullable with a server-side default matching
     # what the frontend's client-only store used to default these to,
     # so an existing user's effective preference doesn't change the

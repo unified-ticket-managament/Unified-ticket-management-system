@@ -8,7 +8,6 @@ import {
   Flame,
   Inbox as InboxIcon,
   Lock,
-  MailPlus,
   PauseCircle,
   ShieldAlert,
   Ticket as TicketIcon,
@@ -299,15 +298,7 @@ export function Dashboard() {
           </div>
         </div>
 
-        <div className={`grid grid-cols-1 gap-3 ${currentUser?.role === "Site Lead" ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
-          {currentUser?.role === "Site Lead" && (
-            <QuickAction
-              to="/create-mail"
-              icon={<MailPlus size={17} />}
-              label="Create Dummy Mail"
-              description="Simulate an incoming client email"
-            />
-          )}
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <QuickAction
             to="/inbox"
             icon={<InboxIcon size={17} />}

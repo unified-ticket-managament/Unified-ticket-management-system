@@ -147,6 +147,7 @@ async def main() -> None:
                     email=emp.email,
                     password_hash=get_password_hash(password),
                     role_id=roles[emp.role].role_id,
+                    designation=emp.designation,
                     is_active=True,
                 )
                 session.add(existing)

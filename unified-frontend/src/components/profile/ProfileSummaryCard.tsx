@@ -17,12 +17,15 @@ interface ProfileSummaryCardProps {
   joinedDate: string | null;
 }
 
-// Header card, deliberately narrow: avatar, name, email, phone, office
-// location, joined date only. Role/Department/Team/Reports To used to
-// render here too — removed per the Profile-page simplification pass
-// (see root CLAUDE.md) since they're redundant with the Personal
-// Details section of ProfileInformationCard just below, which still
-// shows all four.
+// Header card, deliberately narrow: avatar, name, designation, email,
+// phone, office location, joined date only. Role/Department/Team/
+// Reports To render in the Personal Details section of
+// ProfileInformationCard just below instead, which still shows all
+// four — the subtitle directly under the name shows the user's real-
+// world Designation (e.g. "Sr. AR Associate"), not their RBAC Role,
+// since Role is already visible there. `designation` has no edit
+// surface of its own (same as `team`) — it's sourced from the org
+// import, display only.
 export function ProfileSummaryCard({
   user,
   record,
@@ -33,6 +36,7 @@ export function ProfileSummaryCard({
 }: ProfileSummaryCardProps) {
   const { t } = useTranslation();
   const isActive = record?.is_active ?? true;
+  const designation = record?.designation ?? user?.designation;
 
   return (
     <Card className="rounded-md border-border shadow-sm">
@@ -56,6 +60,7 @@ export function ProfileSummaryCard({
 
         <div className="min-w-0 space-y-1.5">
           <p className="text-xl font-semibold leading-tight">{user?.name ?? "—"}</p>
+          <p className="text-sm text-muted-foreground">{designation || t("profile.notSet")}</p>
 
           <div className="flex flex-col gap-1 text-sm text-muted-foreground sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-1">
             <span className="flex items-center gap-1.5">

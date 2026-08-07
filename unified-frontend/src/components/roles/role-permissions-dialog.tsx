@@ -30,7 +30,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { ROLE_NAMES } from "@/lib/role-access";
+import { ROLE_NAMES, canManageRolePermissionsFor } from "@/lib/role-access";
 import { permissionService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 import { Permission, Role } from "@/types";
@@ -90,18 +90,23 @@ export function RolePermissionsDialog({ role, open, onOpenChange }: RolePermissi
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
 
-  // Super Admin can assign any permission. An Account Manager can only
-  // assign permissions they personally hold — they can never grant
-  // something they don't have themselves. Site Lead — despite holding
-  // nearly every backend permission (see canDeleteRecords/canManageRoles
-  // in role-access.ts for the broader Site Lead policy) — is
-  // deliberately read-only here per product decision: permission
-  // editing counts as "modifying role structure", which Site Lead can
-  // view but not change. Team Lead / Staff / Viewer cannot manage
-  // permissions at all either (read-only).
+  // Super Admin can assign any permission for any role. An Account
+  // Manager can only assign permissions they personally hold — they
+  // can never grant something they don't have themselves (ownership
+  // scoping, unrelated to the target-role check below). Site Lead can
+  // manage Account Manager/Team Lead/Staff's permissions, but never
+  // Super Admin's or its own role's — per business rule, not the
+  // "Site Lead is read-only here" product decision this used to
+  // encode (that decision was superseded; see
+  // canManageRolePermissionsFor in lib/role-access.ts, mirrored
+  // server-side by access_control.py's
+  // MANAGEABLE_PERMISSION_TARGET_ROLES). Team Lead / Staff / Client
+  // hold no permission:update grant at all, so hasUpdatePermission
+  // alone already excludes them.
   const isManagerActor = currentUser?.role === ROLE_NAMES.ACCOUNT_MANAGER;
-  const isUnrestrictedActor = currentUser?.role === ROLE_NAMES.SUPER_ADMIN;
-  const canManagePermissions = isUnrestrictedActor || isManagerActor;
+  const hasUpdatePermission = currentUser?.permissions.includes("permission:update") ?? false;
+  const canManageTargetRole = canManageRolePermissionsFor(currentUser?.role, role?.name);
+  const canManagePermissions = hasUpdatePermission && canManageTargetRole;
 
   const isPermissionAssignable = (permissionName: string) => {
     if (!isManagerActor) return true;
@@ -166,12 +171,18 @@ export function RolePermissionsDialog({ role, open, onOpenChange }: RolePermissi
 
   const updateMutation = useMutation({
     mutationFn: () => {
-      // Defensive backstop: a Manager's save can never include a permission
-      // they don't personally hold, even if it was somehow present in
-      // selectedPermissionIds. The UI already prevents this via disabled
-      // checkboxes; this just guarantees it at the request boundary.
+      // Defensive backstop: a Manager's save can never include a NEWLY
+      // ADDED permission they don't personally hold, even if it was
+      // somehow present in selectedPermissionIds. Scoped to additions
+      // only — a permission the role already had stays in the payload
+      // regardless of ownership, mirroring the backend's own
+      // ensure_can_grant_role_permissions (which never restricts
+      // removals). The UI already prevents adding an unowned
+      // permission via disabled checkboxes; this just guarantees it at
+      // the request boundary.
       const payload = isManagerActor
         ? Array.from(selectedPermissionIds).filter((id) => {
+            if (initialPermissionIds.has(id)) return true;
             const permission = allPermissions.find((p) => p.permission_id === id);
             return !permission || isPermissionAssignable(permission.permission_name);
           })
@@ -209,6 +220,13 @@ export function RolePermissionsDialog({ role, open, onOpenChange }: RolePermissi
           <div className="rounded-lg border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground">
             You can only assign permissions that you personally hold. Permissions you don&apos;t
             have are shown disabled below.
+          </div>
+        )}
+
+        {hasUpdatePermission && !canManageTargetRole && (
+          <div className="rounded-lg border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground">
+            You can view the {role?.name ?? "role"} role&apos;s permissions, but you don&apos;t
+            have authority to change them.
           </div>
         )}
 

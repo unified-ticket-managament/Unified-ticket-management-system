@@ -247,6 +247,22 @@ class AuthService:
         self,
         user: User,
     ) -> CurrentUser:
+        # `user` may be a transient object reconstructed straight from
+        # JWT claims on an RBAC-cache hit (see
+        # app/dependencies/auth.py's _build_transient_user) rather than
+        # one loaded through this request's own session. That
+        # reconstruction deliberately only populates the fields
+        # ticketing's access-control logic reads (permissions/role/
+        # category/name) — profile display fields like designation/
+        # department/team/phone_number/etc. are never JWT claims, so
+        # they'd silently come back None on every cache-hit request
+        # regardless of their real DB value (same class of bug already
+        # found and fixed in update_profile below). Always re-resolve
+        # the real, session-attached row so this endpoint's profile
+        # fields are correct on every call, cache hit or not.
+        persistent_user = await self.user_repository.get_by_id(user.user_id)
+        if persistent_user is not None:
+            user = persistent_user
 
         permissions, override_permissions, scoped_permissions = (
             await self.permission_resolver.get_effective_permissions(user)
@@ -268,6 +284,7 @@ class AuthService:
             office_location=user.office_location,
             department=user.department,
             team=user.team,
+            designation=user.designation,
             language=user.language,
             date_format=user.date_format,
             time_format=user.time_format,

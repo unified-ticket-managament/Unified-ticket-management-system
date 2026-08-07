@@ -28,7 +28,6 @@ export type NavItemKey =
   | "Roles"
   | "Audit Logs"
   | "Reports"
-  | "Create Dummy Mail"
   | "Inbox"
   | "Interactions"
   | "Tickets"
@@ -47,7 +46,6 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   Roles: "nav.roles",
   "Audit Logs": "nav.auditLogs",
   Reports: "nav.reports",
-  "Create Dummy Mail": "nav.createDummyMail",
   Inbox: "nav.inbox",
   Interactions: "nav.interactions",
   Tickets: "nav.tickets",
@@ -128,7 +126,6 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Dashboard",
     "Users",
     "Reports",
-    "Create Dummy Mail",
     "Inbox",
     "Interactions",
     "Tickets",
@@ -209,6 +206,41 @@ const CREATABLE_ROLES_BY_ROLE: Record<string, string[] | undefined> = {
 export function getCreatableRoleNames(role: string | undefined): string[] | null {
   if (!role || !(role in CREATABLE_ROLES_BY_ROLE)) return [];
   return CREATABLE_ROLES_BY_ROLE[role] ?? null;
+}
+
+// Which target roles a given logged-in role may grant/revoke
+// permissions for, in the Roles page's "Manage Permissions" dialog.
+// Mirrors unified-backend/app/rbac/services/access_control.py's
+// MANAGEABLE_PERMISSION_TARGET_ROLES exactly — keep both in sync if
+// this ever changes. `undefined` = unrestricted (any role, including
+// the actor's own); no entry = that role can never manage any role's
+// permissions.
+const MANAGEABLE_PERMISSION_TARGET_ROLES_BY_ROLE: Record<string, string[] | undefined> = {
+  [ROLE_NAMES.SUPER_ADMIN]: undefined,
+  [ROLE_NAMES.SITE_LEAD]: [ROLE_NAMES.ACCOUNT_MANAGER, ROLE_NAMES.TEAM_LEAD, ROLE_NAMES.STAFF],
+  [ROLE_NAMES.ACCOUNT_MANAGER]: [ROLE_NAMES.TEAM_LEAD, ROLE_NAMES.STAFF],
+};
+
+/**
+ * Returns the role names `role` is allowed to manage permissions for, or
+ * `null` when unrestricted. A role with no entry here (Team Lead, Staff,
+ * Client) can never manage any role's permissions — gated separately by the
+ * `permission:update` check that already controls whether this dialog's
+ * Manage-Permissions entry point is even reachable.
+ */
+export function getManageablePermissionTargetRoleNames(role: string | undefined): string[] | null {
+  if (!role || !(role in MANAGEABLE_PERMISSION_TARGET_ROLES_BY_ROLE)) return [];
+  return MANAGEABLE_PERMISSION_TARGET_ROLES_BY_ROLE[role] ?? null;
+}
+
+/** Whether `actorRole` may grant/revoke permissions for `targetRoleName`. */
+export function canManageRolePermissionsFor(
+  actorRole: string | undefined,
+  targetRoleName: string | undefined
+): boolean {
+  if (!targetRoleName) return false;
+  const allowed = getManageablePermissionTargetRoleNames(actorRole);
+  return allowed === null || allowed.includes(targetRoleName);
 }
 
 /**

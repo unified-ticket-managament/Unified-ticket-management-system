@@ -13,7 +13,6 @@ import {
   KeyRound,
   LayoutDashboard,
   LogOut,
-  MailPlus,
   MessageSquare,
   Network,
   Shield,
@@ -75,11 +74,6 @@ const menuItems: {
     title: "Reports",
     href: "/reports",
     icon: BarChart3,
-  },
-  {
-    title: "Create Dummy Mail",
-    href: "/dashboard/create-mail",
-    icon: MailPlus,
   },
   {
     title: "Inbox",

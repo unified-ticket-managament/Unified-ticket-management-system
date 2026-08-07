@@ -36,6 +36,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { useApiAction } from "@tw/hooks/useApiAction";
+// Cross-alias imports, deliberately mirroring the same exception
+// @tw/context/AuthContext.tsx already makes for auth specifically —
+// there is no @tw/-side equivalent for a live /auth/me refetch, and
+// this app's own useAuthStore/authService are the actual source of
+// truth useAuthContext() itself just re-exposes read-only. See
+// handleReplyClick below for why a live refetch (not the frozen
+// currentUser above) is needed here.
+import { authService } from "@/services";
+import { useAuthStore } from "@/store/auth-store";
 import { archiveInteraction, replyToInteraction } from "@tw/api/inbox";
 import { listAssignableAgents } from "@tw/api/agent";
 import { listClientContacts } from "@tw/api/clients";
@@ -275,6 +284,44 @@ export function MessageDetailsView({
     "communication:reply_external"
   );
   const [replyMode, setReplyMode] = useState<"reply" | "replyAll" | null>(null);
+
+  // canReplyExternal above is a render-time snapshot of whatever
+  // useAuthStore held at login/last refresh — it never re-checks a
+  // permission revoked mid-session. This alone still correctly hides
+  // the buttons for someone who never had the permission at page
+  // load, so it's kept as-is (belt) and the check below is additive
+  // (suspenders): re-verify against a fresh GET /auth/me at the
+  // moment Reply/Reply All is actually clicked, so a revocation that
+  // happened seconds ago is caught before the editor ever opens
+  // (rather than only at Send, which stays the unchanged final
+  // backend check in interaction_service.py). Reuses this file's own
+  // useApiAction convention (loading state + toast-on-error) rather
+  // than a hand-rolled boolean.
+  const setUser = useAuthStore((s) => s.setUser);
+  const replyAccessCheck = useApiAction(async (mode: "reply" | "replyAll") => {
+    try {
+      const freshUser = await authService.me();
+      setUser(freshUser); // keeps every other permission-derived UI in this session in sync too
+      const hasFlat = freshUser.permissions.includes("communication:reply_external");
+      const hasScoped =
+        freshUser.scoped_permissions?.["communication:reply_external"]?.includes(
+          email.ticket_id ?? ""
+        ) ?? false;
+      if (!hasFlat && !hasScoped) throw new Error();
+    } catch {
+      // Denied, or the /auth/me call itself failed (network error, or
+      // a 401 from permission_version drift) — fail closed either
+      // way, same message. A genuine 401 is already handled underneath
+      // this call by the existing axios refresh/redirect interceptor.
+      throw new Error("You no longer have permission to reply to this client.");
+    }
+    return mode;
+  });
+
+  async function handleReplyClick(mode: "reply" | "replyAll") {
+    const result = await replyAccessCheck.run(mode);
+    if (result) setReplyMode(result);
+  }
   const [newTag, setNewTag] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
@@ -755,12 +802,31 @@ export function MessageDetailsView({
       <div className="flex flex-wrap items-center gap-1.5 border-t border-border bg-muted/20 px-5 py-2.5">
         {canReplyExternal && (
           <>
-            <Button size="sm" className="gap-1.5" disabled={isClosed} onClick={() => setReplyMode("reply")}>
-              <ReplyIcon className="h-3.5 w-3.5" />
+            <Button
+              size="sm"
+              className="gap-1.5"
+              disabled={isClosed || replyAccessCheck.isLoading}
+              onClick={() => handleReplyClick("reply")}
+            >
+              {replyAccessCheck.isLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <ReplyIcon className="h-3.5 w-3.5" />
+              )}
               Reply
             </Button>
-            <Button size="sm" variant="outline" className="gap-1.5" disabled={isClosed} onClick={() => setReplyMode("replyAll")}>
-              <ReplyAll className="h-3.5 w-3.5" />
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              disabled={isClosed || replyAccessCheck.isLoading}
+              onClick={() => handleReplyClick("replyAll")}
+            >
+              {replyAccessCheck.isLoading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <ReplyAll className="h-3.5 w-3.5" />
+              )}
               Reply All
             </Button>
           </>

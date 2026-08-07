@@ -38,6 +38,7 @@ class CurrentUser(BaseModel):
     office_location: str | None = None
     department: str | None = None
     team: str | None = None
+    designation: str | None = None
     language: str | None = None
     date_format: str | None = None
     time_format: str | None = None

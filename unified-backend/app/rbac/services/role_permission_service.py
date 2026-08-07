@@ -12,6 +12,10 @@ from app.rbac.repositories import (
     UserRepository,
 )
 from app.rbac.schemas.audit_log import AuditLogCreate
+from app.rbac.services.access_control import (
+    ensure_can_grant_role_permissions,
+    ensure_can_manage_role_permissions,
+)
 from app.rbac.services.audit_log_service import AuditLogService
 
 
@@ -53,6 +57,9 @@ class RolePermissionService:
                 detail="Role not found.",
             )
 
+        if actor is not None:
+            ensure_can_manage_role_permissions(actor, role)
+
         permission = await self.permission_repository.get_by_id(
             permission_id
         )
@@ -62,6 +69,9 @@ class RolePermissionService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Permission not found.",
             )
+
+        if actor is not None:
+            ensure_can_grant_role_permissions(actor, [permission.permission_name])
 
         permissions = (
             await self.role_permission_repository.get_permissions_by_role(
@@ -144,6 +154,9 @@ class RolePermissionService:
                 detail="Role not found.",
             )
 
+        if actor is not None:
+            ensure_can_manage_role_permissions(actor, role)
+
         permission = await self.permission_repository.get_by_id(
             permission_id
         )
@@ -153,6 +166,10 @@ class RolePermissionService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Permission not found.",
             )
+
+        # Removal is deliberately never ownership-scoped (see
+        # ensure_can_grant_role_permissions's own docstring) — no
+        # matching check here, unlike assign_permission above.
 
         await self.role_permission_repository.remove_permission(
             role_id,
@@ -190,6 +207,9 @@ class RolePermissionService:
                 detail="Role not found.",
             )
 
+        if actor is not None:
+            ensure_can_manage_role_permissions(actor, role)
+
         previous_permissions = (
             await self.role_permission_repository.get_permissions_by_role(
                 role_id
@@ -197,6 +217,31 @@ class RolePermissionService:
         )
         previous_ids = {p.permission_id for p in previous_permissions}
         new_ids = set(permission_ids)
+
+        # Resolved and ownership-checked *before* remove_all_permissions
+        # runs below, so a rejected request leaves the DB untouched —
+        # only the newly-added ids are ownership-scoped (see
+        # ensure_can_grant_role_permissions), never ones the role
+        # already had.
+        newly_added_ids = new_ids - previous_ids
+
+        if actor is not None and newly_added_ids:
+            newly_added_permissions = []
+
+            for permission_id in newly_added_ids:
+                permission = await self.permission_repository.get_by_id(permission_id)
+
+                if permission is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Permission {permission_id} not found.",
+                    )
+
+                newly_added_permissions.append(permission)
+
+            ensure_can_grant_role_permissions(
+                actor, [p.permission_name for p in newly_added_permissions]
+            )
 
         await self.role_permission_repository.remove_all_permissions(
             role_id

@@ -390,7 +390,7 @@ export function TopNavbar() {
                 </p>
 
                 <p className="mt-1 text-xs text-muted-foreground">
-                  {user?.role ?? "Manager"}
+                  {user?.designation ?? user?.role ?? "Manager"}
                 </p>
               </div>
             </Button>

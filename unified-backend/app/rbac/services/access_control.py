@@ -13,7 +13,7 @@
 # is still worth preserving even inside one process.
 
 from fastapi import HTTPException, status
-from shared_models.models import User
+from shared_models.models import Role, User
 
 
 def has_permission(current_user: User, permission_name: str) -> bool:
@@ -37,4 +37,82 @@ def ensure_has_permission(current_user: User, permission_name: str) -> None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Missing required permission: {permission_name}",
+        )
+
+
+# --------------------------------------------------------------------
+# Role-permissions editor: which target roles an actor may grant/revoke
+# permissions for. `permission:update` alone (checked above, at the
+# route level) only proves the actor can edit *some* role's
+# permissions — it says nothing about *which* role, since
+# role_permissions has no notion of a target at all. A static
+# allow-list, mirroring this codebase's existing role-vs-role rules
+# (SUPERVISOR_ROLE_NAMES, CREATABLE_ROLES_BY_ROLE on the frontend), is
+# the deliberate choice here over a new `roles.rank`/`role_level`
+# column: the real rule is a curated allow-list (e.g. an Account
+# Manager can't touch its own role) rather than a clean numeric
+# ordering, and three entries don't justify a schema migration.
+# Mirrored on the frontend by
+# MANAGEABLE_PERMISSION_TARGET_ROLES_BY_ROLE in lib/role-access.ts —
+# keep both in sync if this ever changes.
+#
+# No entry for a role name = that role can never manage any role's
+# permissions (matches it never holding `permission:update` by
+# default). `None` = unrestricted (any target role, including itself).
+MANAGEABLE_PERMISSION_TARGET_ROLES: dict[str, set[str] | None] = {
+    "Super Admin": None,
+    "Site Lead": {"Account Manager", "Team Lead", "Staff"},
+    "Account Manager": {"Team Lead", "Staff"},
+}
+
+# Only this role's grants (never revokes — see
+# ensure_can_grant_role_permissions) are further restricted to
+# permissions the actor personally holds.
+PERMISSION_OWNERSHIP_SCOPED_ROLE = "Account Manager"
+
+
+def get_manageable_permission_target_role_names(actor: User) -> set[str] | None:
+    """None means unrestricted (any role, including the actor's own)."""
+
+    return MANAGEABLE_PERMISSION_TARGET_ROLES.get(actor.role.name)
+
+
+def ensure_can_manage_role_permissions(actor: User, target_role: Role) -> None:
+    """
+    403s unless `actor` is allowed to edit `target_role`'s permission
+    set at all — independent of, and enforced in addition to, the
+    caller's own `permission:update` check.
+    """
+
+    allowed = get_manageable_permission_target_role_names(actor)
+
+    if allowed is not None and target_role.name not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"You are not permitted to manage the {target_role.name} role's permissions.",
+        )
+
+
+def ensure_can_grant_role_permissions(actor: User, newly_granted_names: list[str]) -> None:
+    """
+    For PERMISSION_OWNERSHIP_SCOPED_ROLE only: 403s if any of the
+    *newly added* permission names aren't ones the actor personally
+    holds. Deliberately scoped to additions only, never removals — an
+    Account Manager can still revoke a permission the role already has
+    even if they don't personally hold it themselves; they just can't
+    grant one they don't hold. Not applied to Super Admin/Site Lead at
+    all (see MANAGEABLE_PERMISSION_TARGET_ROLES — this only ever runs
+    for a caller whose role matches PERMISSION_OWNERSHIP_SCOPED_ROLE).
+    """
+
+    if actor.role.name != PERMISSION_OWNERSHIP_SCOPED_ROLE:
+        return
+
+    actor_permissions = set(getattr(actor, "permissions", None) or [])
+    unowned = [name for name in newly_granted_names if name not in actor_permissions]
+
+    if unowned:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"You can only grant permissions you personally hold. Missing: {', '.join(unowned)}",
         )

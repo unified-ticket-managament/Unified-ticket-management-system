@@ -20,6 +20,7 @@ export interface AuthUser {
   office_location?: string | null;
   department?: string | null;
   team?: string | null;
+  designation?: string | null;
   language?: string | null;
   date_format?: string | null;
   time_format?: string | null;
@@ -44,6 +45,7 @@ export interface User {
   office_location: string | null;
   department: string | null;
   team: string | null;
+  designation: string | null;
   language: string | null;
   date_format: string | null;
   time_format: string | null;
