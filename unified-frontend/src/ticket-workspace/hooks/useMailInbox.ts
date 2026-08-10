@@ -25,6 +25,7 @@ import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import { showUndoSendToast } from "@tw/lib/undoSend";
 import type {
   DraftItem,
   InboxItem,
@@ -336,6 +337,23 @@ export function useMailInbox() {
   // consumer — see that context's own comment).
   const chromeLoadedRef = useRef(false);
   const [isLoading, setIsLoading] = useState(true);
+  // A plain boolean here would go wrong the moment two loads overlap
+  // (e.g. a filter-driven refresh() still in flight when the agent
+  // switches to a not-yet-loaded view) — whichever one finished first
+  // would flip isLoading back to false while the other was still
+  // fetching, exposing the exact "loading flag says done, data isn't
+  // here yet" gap this whole fix exists to close. A ref-counted
+  // begin/end pair keeps isLoading true as long as at least one
+  // relevant fetch is outstanding, regardless of finish order.
+  const loadingCounterRef = useRef(0);
+  const beginLoading = useCallback(() => {
+    loadingCounterRef.current += 1;
+    setIsLoading(true);
+  }, []);
+  const endLoading = useCallback(() => {
+    loadingCounterRef.current = Math.max(0, loadingCounterRef.current - 1);
+    if (loadingCounterRef.current === 0) setIsLoading(false);
+  }, []);
   const [openingId, setOpeningId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [activeViewRaw, setActiveViewRaw] = useState<MailViewKey>("pending");
@@ -350,6 +368,14 @@ export function useMailInbox() {
   const [messageCategoryFilter, setMessageCategoryFilter] = useState<string>("ALL");
   const [timeFilter, setTimeFilter] = useState<TimeFilterKey>("ALL");
   const [openedIds, setOpenedIds] = useState<Set<string>>(new Set());
+  // Set only on a genuine (non-cancel) fetch failure for the base
+  // tabs/System — cleared optimistically the moment a new load starts
+  // (see setActiveView/ensureLoaded/refresh) so a stale failure from a
+  // previous view never bleeds into a different, successfully-loaded
+  // one. Lets the empty-state branch distinguish "genuinely zero
+  // results" from "the request failed" — an API failure must never
+  // render as a plausible-looking empty inbox.
+  const [hasError, setHasError] = useState(false);
 
   // Custom mail folders — used to populate MessageDetailsView's
   // per-email "assign to folder" control, and now browsable from the
@@ -363,6 +389,10 @@ export function useMailInbox() {
   const [folderRows, setFolderRows] = useState<InboxItem[]>([]);
   const [folderRowsTotal, setFolderRowsTotal] = useState(0);
   const [isFolderLoading, setIsFolderLoading] = useState(false);
+  // Same reasoning as hasError above, scoped to custom-folder fetches
+  // specifically (mirrors isFolderLoading's own separate-from-isLoading
+  // split).
+  const [hasFolderError, setHasFolderError] = useState(false);
   const folderAbortRef = useRef<AbortController | null>(null);
 
   // Category "folders" (Eligibility, Claims, AR, ...) are a fixed,
@@ -390,14 +420,11 @@ export function useMailInbox() {
   const { run: runDiscardDraft } = useApiAction(discardDraft);
   const { run: runUploadDraftAttachment } = useApiAction(uploadDraftAttachmentRequest);
   const { run: runDeleteAttachment } = useApiAction(deleteAttachment);
-  const { run: runCompose, isLoading: isComposing } = useApiAction(composeEmailRequest, {
-    successMessage: "Email sent.",
-  });
-
-  const setActiveView = useCallback((view: MailViewKey) => {
-    setActiveViewRaw(view);
-    setSelectedSystemNotification(null);
-  }, []);
+  // No successMessage here — composeEmail() below shows an
+  // Undo-capable toast instead of a plain one (Issue 8), since the
+  // send is now genuinely still cancelable for a few seconds rather
+  // than already delivered the instant this call resolves.
+  const { run: runCompose, isLoading: isComposing } = useApiAction(composeEmailRequest);
 
   // Fetches one base tab's actual row data — the thing that used to
   // happen eagerly for every tab on every load/refresh, regardless of
@@ -520,20 +547,33 @@ export function useMailInbox() {
         );
         setFolderRows((prev) => (offset === 0 ? result.items : [...prev, ...result.items]));
         setFolderRowsTotal(result.total);
+        setHasFolderError(false);
       } catch (error) {
         if (axios.isCancel(error)) return;
-        throw error;
+        setHasFolderError(true);
+        pushToast(error instanceof Error ? error.message : "Failed to load folder.", "error");
       } finally {
         setIsFolderLoading(false);
       }
     },
-    [clientFilter, isSupervisor, priorityFilter, messageCategoryFilter]
+    [clientFilter, isSupervisor, priorityFilter, messageCategoryFilter, pushToast]
   );
 
+  // Refetches the active folder when a filter (client/priority/
+  // category) changes — deliberately NOT keyed on activeFolderId
+  // itself: the switch-to-a-new-folder case is handled directly and
+  // synchronously by selectFolder below instead, so isFolderLoading
+  // flips true in the exact same render as activeFolderId itself
+  // changes rather than one effect-tick later (the same one-frame gap
+  // that used to let "No Messages" flash before real data — see
+  // ensureLoaded's own comment for the identical fix applied to the
+  // regular view tabs). Keeping both this effect AND a direct call in
+  // selectFolder would double-fetch on every folder switch.
   useEffect(() => {
     if (!activeFolderId) return;
     fetchFolderRows(activeFolderId, 0);
-  }, [activeFolderId, fetchFolderRows]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchFolderRows]);
 
   const loadMoreFolderRows = useCallback(async () => {
     if (!activeFolderId) return;
@@ -547,11 +587,20 @@ export function useMailInbox() {
   const selectFolder = useCallback((folderId: string | null) => {
     setActiveFolderId(folderId);
     setSelectedSystemNotification(null);
+    setHasFolderError(false);
+    if (folderId !== null) {
+      // Triggered directly and synchronously here (not left to the
+      // effect above) so isFolderLoading flips true in the same
+      // render as activeFolderId itself changes — the effect above
+      // only re-fires when a filter changes while already on a
+      // folder, never on the folder switch itself.
+      fetchFolderRows(folderId, 0);
+    }
     if (folderId === null) {
       setFolderRows([]);
       setFolderRowsTotal(0);
     }
-  }, []);
+  }, [fetchFolderRows]);
 
   const fetchSent = useCallback(async () => {
     const result = await getSent();
@@ -600,18 +649,66 @@ export function useMailInbox() {
   // loaded, a tab's data stays cached in rowsByTab/sentItems/draftItems
   // (re-switching back to it is instant, no re-fetch) until the next
   // refresh() call actually re-pulls it.
+  //
+  // beginLoading()/endLoading() bracket the actual fetch here — this
+  // used to touch nothing at all, which meant switching to a
+  // not-yet-loaded view (Sent/Drafts/Archived/All/Replied/a custom
+  // folder's first visit) rendered with isLoading stuck at whatever it
+  // last was (usually false) for the *entire* fetch, not just one
+  // frame: the view's backing array was still [] and nothing said
+  // "loading," so the empty state showed until data finally landed.
+  // Called directly and synchronously from setActiveView below (not
+  // from a deferred useEffect keyed on activeViewRaw) so this
+  // synchronous prefix — computing `missing` and calling
+  // beginLoading() — commits in the exact same render as the view
+  // switch itself, never one paint later.
   const ensureLoaded = useCallback(
     async (keys: LoadKey[]) => {
       const missing = keys.filter((key) => !loadedKeysRef.current.has(key));
       if (missing.length === 0) return;
       missing.forEach((key) => loadedKeysRef.current.add(key));
-      await Promise.all(missing.map((key) => fetchKey(key)));
+      beginLoading();
+      try {
+        await Promise.all(missing.map((key) => fetchKey(key)));
+        setHasError(false);
+      } catch (error) {
+        // Previously uncaught here — with this now called directly
+        // from setActiveView (a fire-and-forget call, not awaited or
+        // wrapped by a caller-side try/catch), a genuine failure would
+        // otherwise surface only as an unhandled promise rejection,
+        // with the view left showing a stale/empty list and no
+        // indication anything went wrong.
+        setHasError(true);
+        pushToast(error instanceof Error ? error.message : "Failed to load inbox.", "error");
+      } finally {
+        endLoading();
+      }
     },
-    [fetchKey]
+    [fetchKey, beginLoading, endLoading, pushToast]
+  );
+
+  // Switches which view is on screen and, if that view's data has
+  // never been loaded this session, kicks off the fetch for it right
+  // here — synchronously, in the same handler that changes
+  // activeViewRaw, rather than via a separate useEffect keyed on it.
+  // This is what actually closes the race: setActiveViewRaw(view) and
+  // ensureLoaded's own beginLoading()/setHasError(false) (both
+  // synchronous up to their first await) now land in the same React
+  // batch, so the first paint after switching views already has
+  // isLoading=true if the view isn't cached yet — never a frame with
+  // the new (empty) view committed and isLoading still false.
+  const setActiveView = useCallback(
+    (view: MailViewKey) => {
+      setActiveViewRaw(view);
+      setSelectedSystemNotification(null);
+      setHasError(false);
+      ensureLoaded(baseKeysForView(view));
+    },
+    [ensureLoaded]
   );
 
   const refresh = useCallback(async () => {
-    setIsLoading(true);
+    beginLoading();
     try {
       const clientId = clientFilter === "ALL" ? undefined : clientFilter;
 
@@ -666,15 +763,26 @@ export function useMailInbox() {
       }
       setBaseViewCounts(viewCounts);
       setFolderCounts(folderCountsResult);
+      setHasError(false);
     } catch (error) {
+      setHasError(true);
       pushToast(
         error instanceof Error ? error.message : "Failed to load inbox.",
         "error"
       );
     } finally {
-      setIsLoading(false);
+      endLoading();
     }
-  }, [pushToast, clientFilter, activeViewRaw, fetchKey, priorityFilter, messageCategoryFilter]);
+  }, [
+    pushToast,
+    clientFilter,
+    activeViewRaw,
+    fetchKey,
+    priorityFilter,
+    messageCategoryFilter,
+    beginLoading,
+    endLoading,
+  ]);
 
   // A lighter alternative to refresh() for after a single mutation
   // (tag/folder/draft-send/discard/compose) — re-pulls the cheap view
@@ -710,11 +818,17 @@ export function useMailInbox() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientFilter, priorityFilter, messageCategoryFilter]);
 
-  // Lazy-load a view/tab's data the first time the agent actually
-  // switches to it.
-  useEffect(() => {
-    ensureLoaded(baseKeysForView(activeViewRaw));
-  }, [activeViewRaw, ensureLoaded]);
+  // The initial mount load for whatever view is active by default
+  // ("pending") is handled by the refresh() effect above — it always
+  // includes baseKeysForView(activeViewRaw) in its fetch set (see
+  // refresh's own comment) and runs on mount since clientFilter/
+  // priorityFilter/messageCategoryFilter all have their initial values
+  // at that point. Every later view switch is handled directly by
+  // setActiveView itself (see its own comment) — there is deliberately
+  // no separate effect here watching activeViewRaw anymore; keeping
+  // one alongside setActiveView's direct call would either double-fetch
+  // or (if left to fire after the direct call already marked the keys
+  // loaded) become a redundant no-op — neither is needed.
 
   async function openThread(interactionId: string) {
     const requestId = ++openThreadRequestIdRef.current;
@@ -784,12 +898,18 @@ export function useMailInbox() {
       const fresh = await openInboxThread(interactionId);
       setSelectedEmail(fresh);
     }
-    // A send always clears the draft and adds a reply item (sendDraft
-    // ultimately calls add_interaction_reply server-side — never a
-    // Compose row, so "sent" was the wrong bucket to refresh here),
-    // regardless of which tab is currently active — refresh both
-    // explicitly on top of whatever's on screen.
-    if (result) await refreshAfterMutation(["drafts", "repliedMine"]);
+    if (result) {
+      // result.interaction_id is the NEW reply's own id (the draft
+      // row itself is deleted server-side once sent) — that's the one
+      // cancel-send needs, not the original draft's id.
+      showUndoSendToast(pushToast, result.interaction_id, "Reply sent.");
+      // A send always clears the draft and adds a reply item (sendDraft
+      // ultimately calls add_interaction_reply server-side — never a
+      // Compose row, so "sent" was the wrong bucket to refresh here),
+      // regardless of which tab is currently active — refresh both
+      // explicitly on top of whatever's on screen.
+      await refreshAfterMutation(["drafts", "repliedMine"]);
+    }
     return result;
   }
 
@@ -835,6 +955,7 @@ export function useMailInbox() {
   async function composeEmail(payload: ComposeEmailPayload) {
     const result = await runCompose(payload);
     if (result) {
+      showUndoSendToast(pushToast, result.interaction_id, "Message sent.");
       await refreshAfterMutation(["sent"]);
     }
     return result;
@@ -1028,6 +1149,7 @@ export function useMailInbox() {
   return {
     isSupervisor,
     isLoading,
+    hasError,
     openingId,
     openedIds,
     clients,
@@ -1058,6 +1180,7 @@ export function useMailInbox() {
     folderRows,
     folderRowsTotal,
     isFolderLoading,
+    hasFolderError,
     folderRowsHasMore: folderRows.length < folderRowsTotal,
     loadMoreFolderRows,
     categories,

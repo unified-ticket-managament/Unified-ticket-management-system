@@ -7,7 +7,7 @@ import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { updateTicket } from "@tw/api/ticket";
-import { shortId } from "@tw/lib/format";
+import { formatTicketNumber } from "@tw/lib/format";
 import type { TicketResponse } from "@tw/types";
 
 interface TicketHeaderProps {
@@ -98,7 +98,7 @@ export function TicketHeader({ ticket, onActionComplete, onRefresh, isRefreshing
           Back
         </button>
         <p className="font-mono text-[11px] font-semibold tracking-wide text-accent">
-          TKT-{shortId(ticket.ticket_id, 8)}
+          {formatTicketNumber(ticket.ticket_number)}
         </p>
         {isEditingTitle ? (
           <div className="mt-1 flex items-center gap-1.5">

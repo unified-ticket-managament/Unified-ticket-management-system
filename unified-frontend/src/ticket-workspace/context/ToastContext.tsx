@@ -16,15 +16,35 @@ import {
 
 export type ToastVariant = "success" | "error" | "info";
 
+// Optional action button — used by the Undo-Send toast (Issue 8) so a
+// just-sent Compose/Reply can be canceled within its real, backend-
+// enforced window. Every other existing pushToast call in the app
+// simply never sets this, so nothing about their rendering changes.
+export interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 interface Toast {
   id: number;
   message: string;
   variant: ToastVariant;
+  action?: ToastAction;
+}
+
+interface PushToastOptions {
+  action?: ToastAction;
+  // Defaults to 4000ms, same as every existing toast — the Undo-Send
+  // toast passes durationMs matching the backend's own real
+  // cancellation window (see undo_send.UNDO_SEND_WINDOW_SECONDS on
+  // the backend) so the toast never disappears while Undo would still
+  // actually work server-side.
+  durationMs?: number;
 }
 
 interface ToastContextValue {
   toasts: Toast[];
-  pushToast: (message: string, variant?: ToastVariant) => void;
+  pushToast: (message: string, variant?: ToastVariant, options?: PushToastOptions) => void;
   dismissToast: (id: number) => void;
 }
 
@@ -40,10 +60,10 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const pushToast = useCallback(
-    (message: string, variant: ToastVariant = "info") => {
+    (message: string, variant: ToastVariant = "info", options?: PushToastOptions) => {
       const id = ++toastCounter;
-      setToasts((prev) => [...prev, { id, message, variant }]);
-      window.setTimeout(() => dismissToast(id), 4000);
+      setToasts((prev) => [...prev, { id, message, variant, action: options?.action }]);
+      window.setTimeout(() => dismissToast(id), options?.durationMs ?? 4000);
     },
     [dismissToast]
   );

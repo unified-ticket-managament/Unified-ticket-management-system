@@ -28,7 +28,7 @@ import type { MailFolder } from "@tw/types";
 const VIEW_ITEMS: Array<{ key: MailViewKey; label: string; icon: LucideIcon }> = [
   { key: "pending", label: "Inbox", icon: InboxIcon },
   { key: "unassigned", label: "Unassigned", icon: UserX },
-  { key: "mine", label: "My Claims", icon: UserCheck },
+  { key: "mine", label: "My Tickets", icon: UserCheck },
   { key: "sent", label: "Sent", icon: Send },
   { key: "drafts", label: "Drafts", icon: FileEdit },
   { key: "replied", label: "Replied", icon: Reply },

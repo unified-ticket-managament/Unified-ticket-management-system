@@ -16,7 +16,7 @@ import { useAuthContext } from "@tw/context/AuthContext";
 const VIEW_LABELS: Record<MailViewKey, string> = {
   pending: "Inbox",
   unassigned: "Unassigned",
-  mine: "My Claims",
+  mine: "My Tickets",
   sent: "Sent",
   drafts: "Drafts",
   replied: "Replied",
@@ -221,6 +221,7 @@ export function InboxPage() {
               folderLabel={`${mail.folders.find((f) => f.folder_id === mail.activeFolderId)?.name.trim() ?? "Folder"} (${mail.folderRowsTotal})`}
               items={mail.folderRows}
               isLoading={mail.isFolderLoading}
+              isError={mail.hasFolderError}
               openingId={mail.openingId}
               openedIds={mail.openedIds}
               search={mail.search}
@@ -252,6 +253,7 @@ export function InboxPage() {
               <SystemMailList
                 items={mail.systemNotifications}
                 isLoading={mail.isSystemLoading}
+                isError={mail.hasError}
                 onOpen={mail.selectSystemNotification}
                 onRefresh={mail.refresh}
               />
@@ -261,6 +263,7 @@ export function InboxPage() {
               folderLabel={folderLabel}
               items={mail.filteredItems}
               isLoading={mail.isLoading}
+              isError={mail.hasError}
               openingId={mail.openingId}
               openedIds={mail.openedIds}
               search={mail.search}

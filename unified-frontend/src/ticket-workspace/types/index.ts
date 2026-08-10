@@ -106,6 +106,18 @@ export interface AttachmentMeta {
   preview_url?: string | null;
 }
 
+// One row of a ticket's complete attachment history (GET
+// /tickets/{id}/attachments) — every attachment across every
+// interaction type on the ticket, not just whichever message is
+// currently open. See TicketAttachmentsTab.tsx.
+export interface TicketAttachmentItem extends AttachmentMeta {
+  interaction_id: string;
+  interaction_type: string;
+  performed_by: string | null;
+  performed_by_name: string | null;
+  created_at: string;
+}
+
 // ==========================================================
 // Agents
 // ==========================================================
@@ -355,6 +367,9 @@ export interface RelatedTicketSummary {
 
 export interface TicketResponse {
   ticket_id: string;
+  // Permanent, human-readable reference — display as `TKT-${ticket_number}`.
+  // ticket_id above remains the real identifier for every API call/route.
+  ticket_number: number;
   client_id: string | null;
   client_company_id: string | null;
   agent_id: string | null;
@@ -604,6 +619,17 @@ export interface PriorityChangeRequest {
 export interface TicketActionResponse {
   interaction_id: string | null;
   ticket_id: string;
+  message: string;
+  created_at: string;
+}
+
+// Response for POST /interactions/{id}/cancel-send (Undo Send, Issue
+// 8) — ticket_id is genuinely nullable here (reachable for a still-
+// pending pre-ticket Compose/reply too), unlike TicketActionResponse's
+// own required ticket_id.
+export interface CancelSendResponse {
+  interaction_id: string;
+  ticket_id: string | null;
   message: string;
   created_at: string;
 }

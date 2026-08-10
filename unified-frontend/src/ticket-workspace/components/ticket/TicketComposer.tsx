@@ -12,7 +12,9 @@ import { listClientContacts } from "@tw/api/clients";
 import { addInternalNote, replyToClient, uploadAttachment } from "@tw/api/interaction";
 import { listRbacRoles, listRbacUsers, type RbacUserSummary } from "@tw/api/rbacUsers";
 import { useAuthContext } from "@tw/context/AuthContext";
+import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import { showUndoSendToast } from "@tw/lib/undoSend";
 import type { ClientContact } from "@tw/types";
 
 export type ComposerMode = "reply" | "note";
@@ -52,6 +54,7 @@ export function TicketComposer({
 }: TicketComposerProps) {
   const { activeTicket, timeline } = useWorkflowContext();
   const { currentUser } = useAuthContext();
+  const { pushToast } = useToast();
   const [activeMode, setActiveMode] = useState<ComposerMode>(mode);
   const [message, setMessage] = useState("");
   const [noteSubject, setNoteSubject] = useState("");
@@ -87,9 +90,9 @@ export function TicketComposer({
   const [showAttach, setShowAttach] = useState(false);
   const [attachFiles, setAttachFiles] = useState<File[]>([]);
 
-  const { run: runReply, isLoading: isReplyLoading } = useApiAction(replyToClient, {
-    successMessage: "Reply sent to client.",
-  });
+  // No successMessage here — handleSend below shows an Undo-capable
+  // toast instead of a plain one (Issue 8).
+  const { run: runReply, isLoading: isReplyLoading } = useApiAction(replyToClient);
   const { run: runNote, isLoading: isNoteLoading } = useApiAction(addInternalNote, {
     successMessage: "Internal note added.",
   });
@@ -175,8 +178,20 @@ export function TicketComposer({
   const isLoading = isReply ? isReplyLoading : isNoteLoading;
   const isTicketClosed = activeTicket.current_status === "CLOSED";
 
+  // Mirrors the backend's own gate exactly: `add_reply`/`add_internal_note`
+  // (interaction_service.py) both require `ticket:reply` plus their own
+  // direction-specific communication permission. Checked here so the
+  // composer never even opens for a user who'd just get a 403 on Send —
+  // the backend call remains the real security boundary regardless.
+  const permissions = currentUser?.permissions ?? [];
+  const canReply =
+    permissions.includes("ticket:reply") && permissions.includes("communication:reply_external");
+  const canAddNote =
+    permissions.includes("ticket:reply") && permissions.includes("communication:reply_internal");
+  const hasComposePermission = isReply ? canReply : canAddNote;
+
   async function handleSend() {
-    if (!activeTicket || !message.trim()) return;
+    if (!activeTicket || !message.trim() || !hasComposePermission) return;
     if (!isReply && !noteSubject.trim()) return;
 
     // Reply attachments are uploaded *before* the reply itself (not
@@ -204,6 +219,15 @@ export function TicketComposer({
       : await runNote(activeTicket.ticket_id, { note: message, subject: noteSubject });
 
     if (result) {
+      if (isReply) {
+        // Only the Reply path is a real outbound send — Internal
+        // Note is never dispatched, so it gets a plain success toast,
+        // never a misleading Undo button (see undo_send's own
+        // PENDING_SEND gate — a note's interaction never reaches it).
+        showUndoSendToast(pushToast, (result as { interaction_id: string | null }).interaction_id, "Reply sent to client.");
+      } else {
+        pushToast("Internal note added.", "success");
+      }
       setMessage("");
       setNoteSubject("");
       setReplyCc("");
@@ -270,6 +294,15 @@ export function TicketComposer({
           </div>
         )}
 
+        {!hasComposePermission ? (
+          <p className="flex items-center gap-2 text-sm text-muted" role="alert">
+            <Lock size={14} className="flex-none" />
+            {isReply
+              ? "You don't have permission to reply to this ticket."
+              : "You don't have permission to add an internal note to this ticket."}
+          </p>
+        ) : (
+        <>
         {isReply ? (
           <>
             {toOptions.length > 1 && (
@@ -393,12 +426,14 @@ export function TicketComposer({
             variant="primary"
             size="sm"
             isLoading={isLoading}
-            disabled={!message.trim() || (!isReply && !noteSubject.trim())}
+            disabled={!hasComposePermission || !message.trim() || (!isReply && !noteSubject.trim())}
             onClick={handleSend}
           >
             {isReply ? "Send Reply" : "Add Note"}
           </Button>
         </div>
+        </>
+        )}
       </div>
       )}
     </Card>

@@ -518,6 +518,26 @@ REVOKED_GRANTS = [
     ("Staff", "ticket:system_config"),
     ("Staff", "communication:create"),
     ("Team Lead", "communication:create"),
+    # Found live during the ticket-assignment-status/attachment-
+    # authorization bugfix pass: Staff held ticket:editother_ticket in
+    # the connected database despite Staff's own DEFAULT_ROLES entry
+    # above never having included it (the whole point of the
+    # editown_ticket/editother_ticket split — see root CLAUDE.md's
+    # "Backend merge, and ticket-scoped permission overrides" section
+    # — is that editother_ticket is "Full for every role except
+    # Staff", who must go through a scoped Permission Request instead).
+    # With this grant present, access_control.ensure_agent_can_act_on_
+    # ticket's `elif has_permission_for_ticket(..., "ticket:editother_
+    # ticket", ...)` branch let ANY Staff member reply/change status/
+    # upload attachments on ANY other Staff member's ticket, not just
+    # their own — confirmed live via two real accounts (Vikram Shah
+    # successfully uploaded to a ticket assigned to Ananya Rao, neither
+    # holding a scoped override or edit-access grant). Same leftover-
+    # drift shape as the three-entry block above this one; revoking it
+    # here restores the "own ticket only, unless editother_ticket/an
+    # edit-access grant says otherwise" boundary the seed's own
+    # DEFAULT_ROLES already intended.
+    ("Staff", "ticket:editother_ticket"),
 ]
 
 

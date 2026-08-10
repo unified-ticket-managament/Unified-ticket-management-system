@@ -1,4 +1,5 @@
 # ticket_repository.py
+import re
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -14,6 +15,26 @@ from app.ticketing.models.sla_policy import SLAPolicy
 from app.ticketing.models.ticket import Ticket
 from app.ticketing.models.ticket_escalation import TicketEscalation
 from app.ticketing.schemas.ticket import TicketCreate, TicketUpdate
+
+# Matches "TKT-27"/"tkt27"/"Tkt 27" etc. — the human-readable ticket
+# reference (see Ticket.ticket_number's own docstring). Case-insensitive,
+# an optional separator between the prefix and the digits, so a user
+# never has to type the exact display format to find a ticket by it.
+_TICKET_NUMBER_SEARCH_PATTERN = re.compile(r"^\s*tkt[\s\-_]?(\d+)\s*$", re.IGNORECASE)
+
+
+def parse_ticket_number_query(search: str) -> int | None:
+    """
+    Returns the integer ticket_number a search string refers to (e.g.
+    "TKT-27" -> 27), or None if it doesn't look like a TKT reference —
+    in which case the caller falls back to its normal title search.
+    This is purely additive: it never replaces title search, and it
+    has no effect on UUID-based lookup (GET /tickets/{id} is untouched).
+    """
+
+    match = _TICKET_NUMBER_SEARCH_PATTERN.match(search)
+    return int(match.group(1)) if match else None
+
 
 CLOSED_STATUSES = (TicketStatus.RESOLVED, TicketStatus.CLOSED)
 # Every open (not yet resolved/closed) status — mirrors the frontend
@@ -327,7 +348,11 @@ class TicketRepository:
         if priority_filter is not None:
             conditions.append(Ticket.current_priority == priority_filter)
         if search:
-            conditions.append(Ticket.title.ilike(f"%{search}%"))
+            ticket_number_query = parse_ticket_number_query(search)
+            if ticket_number_query is not None:
+                conditions.append(Ticket.ticket_number == ticket_number_query)
+            else:
+                conditions.append(Ticket.title.ilike(f"%{search}%"))
         if date_from is not None:
             conditions.append(Ticket.created_at >= date_from)
         if date_to is not None:
@@ -680,7 +705,11 @@ class TicketRepository:
         if priority_filter is not None:
             conditions.append(Ticket.current_priority == priority_filter)
         if search:
-            conditions.append(Ticket.title.ilike(f"%{search}%"))
+            ticket_number_query = parse_ticket_number_query(search)
+            if ticket_number_query is not None:
+                conditions.append(Ticket.ticket_number == ticket_number_query)
+            else:
+                conditions.append(Ticket.title.ilike(f"%{search}%"))
         if date_from is not None:
             conditions.append(Ticket.created_at >= date_from)
         if date_to is not None:

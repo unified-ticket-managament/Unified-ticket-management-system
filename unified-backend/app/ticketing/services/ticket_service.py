@@ -620,6 +620,7 @@ class TicketService:
             rows = [
                 TicketListItemResponse(
                     ticket_id=ticket.ticket_id,
+                    ticket_number=ticket.ticket_number,
                     client_id=ticket.client_id,
                     client_company_id=ticket.client_company_id,
                     agent_id=ticket.agent_id,
@@ -793,6 +794,7 @@ class TicketService:
             ) = row
             return TicketListItemResponse(
                 ticket_id=ticket.ticket_id,
+                ticket_number=ticket.ticket_number,
                 client_id=ticket.client_id,
                 client_company_id=ticket.client_company_id,
                 agent_id=ticket.agent_id,
@@ -1354,6 +1356,26 @@ class TicketService:
         # and is deliberately excluded from the audit trail.
         changed_fields = request.model_dump(exclude_unset=True)
         changed_fields.pop("custom_fields", None)
+
+        # This route's own docstring already says agent reassignment
+        # should go through the dedicated /transfer endpoint instead —
+        # previously only a recommendation, not enforced. TicketUpdate
+        # still declares agent_id (the dedicated /status /priority
+        # endpoints all reuse this same schema), so nothing stopped a
+        # caller from actually setting it here, bypassing
+        # ensure_can_reassign_ticket's role/permission gate, the
+        # category-match validation, and the assignment status
+        # transition (resolve_status_after_assignment) transfer_agent
+        # applies — a ticket could end up reassigned with none of that.
+        # Not currently reachable from the frontend (only TicketHeader's
+        # title edit calls this route), but closed here defensively
+        # rather than left as a latent gap.
+        if "agent_id" in changed_fields:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Use the dedicated transfer/claim endpoints to reassign a ticket's agent.",
+            )
+
         old_values = {field: getattr(ticket, field) for field in changed_fields}
 
         ticket = await self.ticket_repository.update(

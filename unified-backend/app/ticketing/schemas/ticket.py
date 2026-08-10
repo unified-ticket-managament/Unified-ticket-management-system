@@ -93,6 +93,10 @@ class UnrelateTicketResponse(BaseModel):
 
 class TicketResponse(ORMBase):
     ticket_id: UUID
+    # Permanent, human-readable reference — displayed as "TKT-<n>".
+    # Additive only: ticket_id above remains the canonical identifier
+    # everywhere internally (auth scoping, FKs, API path params).
+    ticket_number: int
     client_id: UUID | None
     client_company_id: UUID | None = None
     agent_id: UUID | None
@@ -187,6 +191,7 @@ class TicketListItemResponse(ORMBase):
     """
 
     ticket_id: UUID
+    ticket_number: int
     client_id: UUID | None
     client_company_id: UUID | None = None
     agent_id: UUID | None

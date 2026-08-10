@@ -8,7 +8,7 @@ import { useApiAction } from "@tw/hooks/useApiAction";
 import { getTicket } from "@tw/api/ticket";
 import { getTicketTimeline } from "@tw/api/interaction";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
-import { shortId } from "@tw/lib/format";
+import { formatTicketNumber } from "@tw/lib/format";
 
 // "Ticket Interaction" — the complete conversation history (incoming
 // emails, outgoing replies, internal notes, attachment uploads) for
@@ -57,7 +57,7 @@ export function TicketInteractionPage() {
           {!showEmptyState && activeTicket && (
             <>
               <p className="font-mono text-[11px] font-semibold tracking-wide text-accent">
-                TKT-{shortId(activeTicket.ticket_id, 8)}
+                {formatTicketNumber(activeTicket.ticket_number)}
               </p>
               <h2 className="mt-1 text-2xl font-bold leading-tight text-slate-900">
                 {activeTicket.title}

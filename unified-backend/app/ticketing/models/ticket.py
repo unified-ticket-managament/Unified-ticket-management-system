@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -27,6 +27,28 @@ class Ticket(Base):
         UUID(as_uuid=True),
         primary_key=True,
         default=uuid.uuid4,
+    )
+
+    # Human-readable, permanent, sequential reference (displayed as
+    # "TKT-<ticket_number>") — additional to, never a replacement for,
+    # ticket_id above. Deliberately no Python-side `default`: this must
+    # be assigned exactly once, atomically, by the database's own
+    # `ticket_number_seq` sequence. `server_default` here is what tells
+    # SQLAlchemy the column is populated by the DB itself and must be
+    # omitted from the INSERT's column list (without it, the ORM sends
+    # an explicit NULL for any column with no Python-side default,
+    # violating this column's NOT NULL constraint) — the real
+    # `DEFAULT nextval(...)` lives on the Postgres column itself (set
+    # in the add_ticket_number migration), this just mirrors it so the
+    # model matches reality. Never re-derived from sort order, so it
+    # stays stable for the life of the ticket regardless of how many
+    # other tickets are created later — see that migration for the
+    # backfill of pre-existing rows.
+    ticket_number: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+        unique=True,
+        server_default=text("nextval('ticket_number_seq')"),
     )
 
     # Legacy FK to an individual `users` row — kept nullable only so

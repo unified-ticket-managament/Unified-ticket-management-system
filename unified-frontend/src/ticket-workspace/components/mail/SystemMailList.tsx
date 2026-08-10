@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Bell, RefreshCw, Search } from "lucide-react";
+import { AlertCircle, Bell, RefreshCw, Search } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +21,10 @@ import type { NotificationItem } from "@tw/types";
 interface SystemMailListProps {
   items: NotificationItem[];
   isLoading: boolean;
+  // Same reasoning as MessageList's own isError prop — distinguishes
+  // "the fetch failed" from "there are genuinely zero notices" so a
+  // failure never renders as a plausible-looking empty state.
+  isError?: boolean;
   onOpen: (notification: NotificationItem) => void;
   onRefresh: () => void;
 }
@@ -31,7 +35,13 @@ function typeLabel(notificationType: string): string {
   return "System";
 }
 
-export function SystemMailList({ items, isLoading, onOpen, onRefresh }: SystemMailListProps) {
+export function SystemMailList({
+  items,
+  isLoading,
+  isError = false,
+  onOpen,
+  onRefresh,
+}: SystemMailListProps) {
   const [search, setSearch] = useState("");
   const [unreadOnly, setUnreadOnly] = useState(false);
 
@@ -81,6 +91,24 @@ export function SystemMailList({ items, isLoading, onOpen, onRefresh }: SystemMa
             {Array.from({ length: 6 }).map((_, i) => (
               <Skeleton key={i} className="h-16 w-full rounded-lg" />
             ))}
+          </div>
+        ) : isError && filtered.length === 0 ? (
+          // Distinct from the genuinely-empty branch below — same
+          // rationale as MessageList's own isError branch.
+          <div className="flex h-full min-h-[24rem] flex-col items-center justify-center gap-4 p-8 text-center">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-muted">
+              <AlertCircle className="h-8 w-8 text-muted-foreground" />
+            </div>
+            <div>
+              <p className="text-base font-semibold text-foreground">Couldn't load notices</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Something went wrong loading this view. Try refreshing.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={onRefresh} className="gap-2">
+              <RefreshCw className="h-4 w-4" />
+              Refresh
+            </Button>
           </div>
         ) : filtered.length === 0 ? (
           <div className="flex h-full min-h-[24rem] flex-col items-center justify-center gap-4 p-8 text-center">

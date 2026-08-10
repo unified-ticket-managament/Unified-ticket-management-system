@@ -53,6 +53,7 @@ from app.ticketing.schemas.note import (
 )
 from app.ticketing.schemas.ticket import TicketUpdate
 from app.ticketing.schemas.ticket_action import (
+    CancelSendResponse,
     InteractionReplyRequest,
     InteractionReplyResponse,
     PriorityChangeRequest,
@@ -81,6 +82,7 @@ from app.ticketing.services.access_control import (
     ensure_has_permission,
     ensure_ticket_not_closed,
     ensure_ticket_not_frozen_by_escalation,
+    resolve_status_after_assignment,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
 from app.ticketing.services.audit_to_interaction import (
@@ -114,7 +116,7 @@ from app.ticketing.enums import (
 from typing import Any
 from app.ticketing.models.interaction import Interaction
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
-from app.ticketing.schemas.attachment import AttachmentMetadata
+from app.ticketing.schemas.attachment import AttachmentMetadata, TicketAttachmentItem
 from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
 from app.ticketing.schemas.payloads import EmailPayload, EnvelopeAttachment, OutboundEnvelope
 from app.ticketing.services.attachment_service import (
@@ -122,6 +124,7 @@ from app.ticketing.services.attachment_service import (
     attachments_to_metadata,
     load_envelope_attachments,
 )
+from app.ticketing.services.undo_send import compute_send_after, schedule_delayed_send
 from app.ticketing.storage.base import StorageService
 
 
@@ -419,6 +422,119 @@ class InteractionService:
         return rows
 
     # ---------------------------------------------------------
+    # Ticket Attachments — complete history across every interaction
+    # ---------------------------------------------------------
+
+    async def get_ticket_attachments(
+        self,
+        ticket_id: UUID,
+        current_user: User,
+    ) -> list[TicketAttachmentItem]:
+        """
+        Every real attachment ever uploaded to this ticket, across
+        every interaction type — inbound/outbound email, internal
+        note, reply, and direct ticket upload all create an
+        Interaction + linked Attachment row the same way, and
+        Attachment.interaction_id has no type restriction, so no
+        interaction_type filtering is needed here (or anywhere else in
+        this method).
+
+        Deliberately a dedicated endpoint rather than folding this
+        into get_ticket_interactions above: that method was
+        intentionally optimized to skip per-attachment signed-URL
+        generation for the Timeline tab's own performance (see its own
+        comment) — always returning `attachments: []` regardless of
+        what's actually stored. The frontend's Attachments tab used to
+        assume that list already carried real attachment data (it
+        doesn't), which is why attachments silently never showed up
+        there. This method reuses the exact same batch-fetch shape
+        get_thread already uses for one conversation's attachments —
+        just scoped to every interaction on the ticket instead of one
+        thread — rather than inventing a second attachment system.
+
+        Gated identically to get_ticket_interactions (category
+        visibility for Team Lead/Staff, client ownership for Account
+        Manager) — this is the same "complete history" data, just
+        attachment-shaped instead of interaction-shaped, so it must
+        never be reachable by someone who couldn't see the ticket's
+        timeline at all. Interactions are not filtered by is_visible
+        (a hidden/soft-deleted interaction's attachments still count
+        toward the ticket's real attachment history), matching
+        get_ticket_interactions' own unfiltered behavior.
+        """
+
+        ticket = await self._get_ticket_or_404(ticket_id)
+
+        ensure_agent_can_view_ticket(ticket, current_user)
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+
+        if self.attachment_repository is None or self.storage_service is None:
+            return []
+
+        interactions = await self.interaction_repository.list_by_ticket_id(ticket_id)
+        interactions_by_id = {
+            interaction.interaction_id: interaction for interaction in interactions
+        }
+
+        attachments_map = await self.attachment_repository.list_by_interaction_ids(
+            list(interactions_by_id.keys())
+        )
+        if not attachments_map:
+            return []
+
+        interaction_ids_with_files = list(attachments_map.keys())
+        metadata_lists = await asyncio.gather(
+            *(
+                attachments_to_metadata(attachments_map[iid], self.storage_service)
+                for iid in interaction_ids_with_files
+            )
+        )
+
+        performer_ids = [
+            interaction.performed_by
+            for interaction in interactions
+            if interaction.performed_by is not None
+        ]
+        names_by_id = await self.user_repository.get_names_by_ids(performer_ids)
+
+        rows: list[TicketAttachmentItem] = []
+        for interaction_id, metadata_list in zip(interaction_ids_with_files, metadata_lists):
+            interaction = interactions_by_id.get(interaction_id)
+            # Guards against an attachment whose owning interaction
+            # isn't in this ticket's own list — never actually happens
+            # given list_by_interaction_ids is itself scoped to the ids
+            # from list_by_ticket_id(ticket_id) above, but keeps this
+            # method from ever attributing a row to the wrong ticket if
+            # that invariant is ever broken elsewhere.
+            if interaction is None:
+                continue
+            for metadata in metadata_list:
+                rows.append(
+                    TicketAttachmentItem(
+                        id=metadata.id,
+                        filename=metadata.filename,
+                        mime_type=metadata.mime_type,
+                        size=metadata.size,
+                        download_url=metadata.download_url,
+                        preview_url=metadata.preview_url,
+                        interaction_id=interaction_id,
+                        interaction_type=interaction.interaction_type,
+                        performed_by=interaction.performed_by,
+                        performed_by_name=(
+                            names_by_id.get(interaction.performed_by)
+                            if interaction.performed_by is not None
+                            else None
+                        ),
+                        created_at=interaction.created_at,
+                    )
+                )
+
+        rows.sort(key=lambda item: item.created_at, reverse=True)
+        return rows
+
+    # ---------------------------------------------------------
     # Ticket Audit Trail
     # ---------------------------------------------------------
 
@@ -529,6 +645,107 @@ class InteractionService:
         }
         await self.interaction_repository.update(
             interaction, InteractionUpdate(payload=sent_payload)
+        )
+
+    async def _schedule_delayed_send(
+        self, interaction: Interaction, envelope: OutboundEnvelope
+    ) -> None:
+        """
+        The real Undo-Send window: replaces every synchronous
+        `await self._dispatch_and_record(interaction, envelope)` call
+        site (Compose, ticket-level Reply, pre-ticket Reply — see this
+        method's callers) with a delayed dispatch, so the interaction
+        is genuinely still un-sent, cancelable, for
+        undo_send.UNDO_SEND_WINDOW_SECONDS after the request returns —
+        never a frontend-only timer pretending to undo something
+        already delivered.
+
+        `dispatch_status` was already set to "PENDING_SEND" at
+        interaction-creation time (mirroring the old "QUEUED" — see
+        that assignment's own comment); this only adds `send_after`
+        and commits, then schedules the real send. Committing here
+        (not waiting for the caller's own request-scoped commit) is
+        required: the background task opens its own session and must
+        see this row as already PENDING_SEND with a real send_after
+        the moment it wakes up, or a cancellation racing against a
+        not-yet-committed row could be missed entirely.
+        """
+
+        send_after = compute_send_after()
+        pending_payload = {
+            **interaction.payload,
+            "send_after": send_after.isoformat(),
+        }
+        await self.interaction_repository.update(
+            interaction, InteractionUpdate(payload=pending_payload)
+        )
+        await self.interaction_repository.db.commit()
+
+        schedule_delayed_send(interaction.interaction_id, envelope)
+
+    async def cancel_pending_send(
+        self,
+        interaction_id: UUID,
+        current_user: User,
+    ) -> CancelSendResponse:
+        """
+        Cancels a still-pending outbound send within its Undo window —
+        the one write path for Issue 8's "Undo" action, covering
+        Compose and both Reply flows identically (all three create an
+        interaction the same PENDING_SEND way, see
+        _schedule_delayed_send above).
+
+        Authorization is deliberately narrow: only the interaction's
+        own sender (`performed_by`) may cancel it — not a supervisor,
+        not anyone else — since this is "undo my own action," not a
+        ticket-visibility or ownership question. Idempotent: a second
+        cancel (or one that arrives after the window already expired,
+        or after the real send already completed) always lands on the
+        same "no longer pending" rejection rather than a different
+        error the second time, and never partially applies.
+        """
+
+        interaction = await self.interaction_repository.get_by_id(interaction_id)
+
+        if interaction is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        if interaction.performed_by != current_user.user_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="You can only cancel a message you sent yourself.",
+            )
+
+        if interaction.payload.get("dispatch_status") != "PENDING_SEND":
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="This message is no longer pending — it has already been sent, "
+                "failed, or was already canceled.",
+            )
+
+        send_after_raw = interaction.payload.get("send_after")
+        send_after = datetime.fromisoformat(send_after_raw) if send_after_raw else None
+
+        if send_after is None or datetime.now(timezone.utc) >= send_after:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="The undo window has expired — this message is already being sent.",
+            )
+
+        canceled_payload = {**interaction.payload, "dispatch_status": "CANCELED"}
+        await self.interaction_repository.update(
+            interaction, InteractionUpdate(payload=canceled_payload)
+        )
+        await self.interaction_repository.db.commit()
+
+        return CancelSendResponse(
+            interaction_id=interaction.interaction_id,
+            ticket_id=interaction.ticket_id,
+            message="Send canceled.",
+            created_at=datetime.now(timezone.utc),
         )
 
     async def _attach_outbound_files(
@@ -884,7 +1101,7 @@ class InteractionService:
         payload: dict[str, Any] = {"message": request.message}
         if envelope is not None:
             payload["envelope"] = envelope.model_dump()
-            payload["dispatch_status"] = "QUEUED"
+            payload["dispatch_status"] = "PENDING_SEND"
         else:
             payload["dispatch_status"] = "NO_RECIPIENT"
 
@@ -933,12 +1150,12 @@ class InteractionService:
             )
 
         if envelope is not None:
-            await self._dispatch_and_record(interaction, envelope)
+            await self._schedule_delayed_send(interaction, envelope)
 
         return TicketActionResponse(
             interaction_id=interaction.interaction_id,
             ticket_id=ticket_id,
-            message="Reply sent successfully.",
+            message="Reply queued to send.",
             created_at=interaction.created_at,
         )
 
@@ -1045,7 +1262,7 @@ class InteractionService:
         payload: dict[str, Any] = {"message": request.message}
         if envelope is not None:
             payload["envelope"] = envelope.model_dump()
-            payload["dispatch_status"] = "QUEUED"
+            payload["dispatch_status"] = "PENDING_SEND"
         else:
             payload["dispatch_status"] = "NO_RECIPIENT"
 
@@ -1084,7 +1301,7 @@ class InteractionService:
             )
 
         if envelope is not None:
-            await self._dispatch_and_record(interaction, envelope)
+            await self._schedule_delayed_send(interaction, envelope)
 
         # The root leaves the Pending triage queue once it's been
         # replied to — "general communication, no ticket needed" is
@@ -1205,7 +1422,7 @@ class InteractionService:
                 payload={
                     **email_payload.model_dump(mode="json"),
                     "envelope": envelope.model_dump(),
-                    "dispatch_status": "QUEUED",
+                    "dispatch_status": "PENDING_SEND",
                 },
                 is_visible=True,
                 message_id=envelope.message_id,
@@ -1236,7 +1453,7 @@ class InteractionService:
 
         envelope = await self._attach_outbound_files(interaction, envelope, files)
 
-        await self._dispatch_and_record(interaction, envelope)
+        await self._schedule_delayed_send(interaction, envelope)
 
         return ComposeEmailResponse(
             interaction_id=interaction.interaction_id,
@@ -2060,9 +2277,24 @@ class InteractionService:
             old_agent = await self.user_repository.get_by_id(old_agent_id)
             old_agent_name = old_agent.name if old_agent else None
 
+        # Taking ownership of an OPEN ticket — whether via Claim (see
+        # TicketRepository.claim's own atomic OPEN->IN_PROGRESS guard)
+        # or via being handed it here — means someone is now actually
+        # working it, so it should never sit at OPEN afterward. Scoped
+        # to exactly OPEN (never WAITING_FOR_CLIENT/RESOLVED/PENDING)
+        # so this never fights an in-flight Resolution SLA pause or
+        # silently reopens a ticket that's further along its
+        # lifecycle than "nobody's looked at it yet".
+        old_status = ticket.current_status
+        new_status = resolve_status_after_assignment(old_status)
+        status_will_change = new_status is not None
+        update_fields: dict[str, Any] = {"agent_id": new_agent.user_id}
+        if status_will_change:
+            update_fields["current_status"] = new_status
+
         await self.ticket_repository.update(
             ticket,
-            TicketUpdate(agent_id=new_agent.user_id),
+            TicketUpdate(**update_fields),
         )
 
         # No longer written as an Interaction row — AGENT_TRANSFER is
@@ -2072,6 +2304,22 @@ class InteractionService:
         # endpoints synthesize a display row back from it. Agent
         # names are logged here (not just ids) precisely so that
         # synthesis is a pure JSON remap, with no extra name lookup.
+        # The status transition (when it happens) is folded into this
+        # same event rather than a second STATUS_CHANGED row — one
+        # user action, one audit entry.
+        old_values: dict[str, Any] = {
+            "agent_id": old_agent_id,
+            "agent_name": old_agent_name,
+        }
+        new_values: dict[str, Any] = {
+            "agent_id": new_agent.user_id,
+            "agent_name": new_agent.name,
+            "reason": request.reason,
+        }
+        if status_will_change:
+            old_values["current_status"] = old_status
+            new_values["current_status"] = new_status
+
         await AuditLogService.log_event(
             self.ticket_repository.db,
             entity_type=AuditEntityType.TICKET,
@@ -2080,15 +2328,8 @@ class InteractionService:
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            old_values={
-                "agent_id": old_agent_id,
-                "agent_name": old_agent_name,
-            },
-            new_values={
-                "agent_id": new_agent.user_id,
-                "agent_name": new_agent.name,
-                "reason": request.reason,
-            },
+            old_values=old_values,
+            new_values=new_values,
         )
 
         if self.notification_service is not None:

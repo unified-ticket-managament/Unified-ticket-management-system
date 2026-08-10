@@ -10,6 +10,7 @@ from app.rbac.repositories import CategoryRepository, RoleRepository, UserReposi
 from app.rbac.schemas.audit_log import AuditLogCreate
 from app.rbac.schemas.user import UserCreate, UserUpdate
 from app.rbac.services.audit_log_service import AuditLogService
+from app.rbac.services.organization_service import OrganizationService
 from app.ticketing.models.client import Client
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.schemas.client import ClientCreate
@@ -53,6 +54,7 @@ class UserService:
         audit_log_service: AuditLogService,
         client_repository: ClientRepository,
         client_service: ClientService,
+        organization_service: OrganizationService,
     ):
         self.user_repository = user_repository
         self.role_repository = role_repository
@@ -60,6 +62,7 @@ class UserService:
         self.audit_log_service = audit_log_service
         self.client_repository = client_repository
         self.client_service = client_service
+        self.organization_service = organization_service
 
     # --------------------------------------------------
     # Create User
@@ -500,46 +503,64 @@ class UserService:
         page_size: int = 10,
         search: str | None = None,
         category_id: UUID | None = None,
+        current_user: User | None = None,
     ):
+        """
+        Returns the Users-management listing — real application users
+        only. `Client` company records (app.ticketing.Client, e.g.
+        "APM") are deliberately never included here: they aren't
+        users, have no reporting-hierarchy/category concept, and
+        showing them in this list conflated two entities that only
+        happen to share a "Client" role label. This used to merge in
+        a synthesized pseudo-User row per Client company (see
+        _client_to_user_response's own docstring) — removed, since
+        that's exactly the reported bug this method now fixes. The
+        per-id Client-as-pseudo-user machinery elsewhere in this class
+        (_resolve_user_or_client, used by get/update/deactivate-by-id)
+        is untouched — only this listing no longer surfaces them.
+
+        Also enforces the caller's own reporting-hierarchy visibility
+        scope server-side (previously only done, insecurely, via
+        client-side filtering in the Users page) — reusing
+        OrganizationService.get_subordinate_user_ids, the same
+        real manager_id/teamlead_id traversal already trusted to scope
+        permission-override grant authority, rather than inventing a
+        second hierarchy model:
+          - Super Admin / Site Lead: unrestricted (every real user).
+          - Account Manager / Team Lead: their own reporting subtree
+            only (recursive — an Account Manager's scope includes
+            their Team Leads' own Staff, not just direct reports).
+          - Staff (or any other role): themselves only.
+        `current_user=None` (no authenticated caller resolved) is
+        treated as the safest default — see-nothing — rather than
+        unrestricted; every real caller of this method always has one.
+        """
+
+        visible_user_ids: set[UUID] | None = None
+
+        if current_user is None:
+            visible_user_ids = set()
+        else:
+            role_name = current_user.role.name if current_user.role is not None else None
+
+            if role_name in ("Super Admin", "Site Lead"):
+                visible_user_ids = None
+            elif role_name in ("Account Manager", "Team Lead"):
+                visible_user_ids = await self.organization_service.get_subordinate_user_ids(
+                    current_user
+                )
+            else:
+                visible_user_ids = {current_user.user_id}
 
         users, total = await self.user_repository.get_all(
             page,
             page_size,
             search,
             category_id,
+            visible_user_ids,
         )
 
-        # Clients never belong to a work-specialization category, so
-        # a category_id filter can never match one — nothing to merge.
-        if category_id is not None:
-            return users, total
-
-        client_role_id = await self._resolve_client_role_id()
-        clients = await self.client_repository.list_all()
-
-        if search:
-            pattern = search.lower()
-            clients = [
-                client
-                for client in clients
-                if pattern in client.name.lower() or pattern in client.inbox_email.lower()
-            ]
-
-        client_rows = [
-            self._client_to_user_response(client, client_role_id) for client in clients
-        ]
-
-        # NOTE: `users` above is already paginated (OFFSET/LIMIT applied
-        # in the query itself); `client_rows` is appended unpaginated,
-        # since a client company has no natural place in that same
-        # offset window. The one real caller today (the Users page)
-        # always asks for page_size=100 with no search — a pre-existing
-        # ceiling on this endpoint (see unified-frontend/CLAUDE.md's
-        # "Deliberately not fixed" performance note) — so this is
-        # correct for that caller; genuine small-page pagination across
-        # a large combined set would need real cross-table pagination,
-        # not attempted here.
-        return [*users, *client_rows], total + len(client_rows)
+        return users, total
 
     # --------------------------------------------------
     # Update User

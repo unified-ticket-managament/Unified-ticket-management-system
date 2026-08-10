@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  AlertCircle,
   ChevronLeft,
   ChevronRight,
   Paperclip,
@@ -90,6 +91,13 @@ interface MessageListProps {
   folderLabel: string;
   items: InboxItem[];
   isLoading: boolean;
+  // True only after a genuine (non-cancel) fetch failure for whatever
+  // is currently backing `items` — lets the empty-state branch below
+  // distinguish "the request failed" from "it genuinely returned zero
+  // rows," so an API error never renders as a plausible-looking empty
+  // inbox. Optional/defaulted false so this stays additive for any
+  // caller not yet passing it.
+  isError?: boolean;
   openingId: string | null;
   openedIds: Set<string>;
   search: string;
@@ -128,6 +136,7 @@ export function MessageList({
   folderLabel,
   items,
   isLoading,
+  isError = false,
   openingId,
   openedIds,
   search,
@@ -416,6 +425,21 @@ export function MessageList({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading && paged.length === 0 ? (
           <WorkflowLoader loading size={56} className="h-full" />
+        ) : isError && filtered.length === 0 ? (
+          // Distinct from the "genuinely empty" branch below — a
+          // failed request must never look like a plausible empty
+          // inbox. Reuses MailEmptyState's own layout (no new
+          // empty-state design), just different copy/icon and a
+          // Refresh action instead of Compose.
+          <div className="p-4">
+            <MailEmptyState
+              onCompose={onCompose}
+              icon={AlertCircle}
+              title="Couldn't load messages"
+              description="Something went wrong loading this view. Try refreshing."
+              action={{ label: "Refresh", icon: RefreshCw, onClick: onRefresh }}
+            />
+          </div>
         ) : filtered.length === 0 ? (
           <div className="p-4">
             <MailEmptyState onCompose={onCompose} />

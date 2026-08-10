@@ -1,13 +1,15 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Download, Loader2, Trash2 } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { EmptyState } from "@tw/components/common/EmptyState";
-import { deleteAttachment } from "@tw/api/interaction";
+import { SkeletonRows } from "@tw/components/common/Skeleton";
+import { deleteAttachment, getTicketAttachments } from "@tw/api/interaction";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { formatBytes, iconForFilename } from "@tw/lib/attachmentMeta";
 import { formatDateTime, shortId } from "@tw/lib/format";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import type { TicketAttachmentItem } from "@tw/types";
 
 interface FlatAttachment {
   id: string;
@@ -18,11 +20,24 @@ interface FlatAttachment {
   uploadedAt: string;
 }
 
+function toFlatAttachment(item: TicketAttachmentItem): FlatAttachment {
+  return {
+    id: item.id,
+    filename: item.filename,
+    size: item.size,
+    download_url: item.download_url,
+    uploadedBy: item.performed_by_name ?? (item.performed_by ? shortId(item.performed_by) : "System"),
+    uploadedAt: item.created_at,
+  };
+}
+
 interface TicketAttachmentsTabProps {
-  // Refetches the ticket timeline after a delete so the removed file
-  // (and the interaction row it belonged to, if now attachment-less)
-  // disappears immediately — same refresh TicketTimeline already
-  // triggers after hiding an interaction.
+  // Refetches the ticket timeline after a delete so the removed
+  // interaction row (if now attachment-less) disappears immediately —
+  // same refresh TicketTimeline already triggers after hiding an
+  // interaction. This tab also refetches its own attachment list
+  // independently (see refreshToken below), since the timeline itself
+  // never carries real attachment data (see getTicketAttachments).
   onChanged: () => void;
   // Rendered inside TicketActivityPanel's tabbed box, which already
   // provides the outer border/shadow — see Card's `flat` prop (same
@@ -31,19 +46,60 @@ interface TicketAttachmentsTabProps {
 }
 
 // Every file ever uploaded to this ticket, across every interaction
-// (replies, notes, and the dedicated "Upload Attachment" action all
-// create one) — derived entirely from the ticket's own timeline
-// (already loaded by TicketDetailPage), so this reuses the exact same
-// data and upload/delete endpoints instead of standing up a second
-// attachment system.
+// type — inbound/outbound email, internal note, reply, and direct
+// ticket upload all create one. Fetched from a dedicated endpoint
+// (GET /tickets/{id}/attachments) rather than derived from the
+// already-loaded ticket timeline: that endpoint's own InteractionResponse
+// rows are deliberately built with `attachments: []` always (a
+// performance optimization for the Timeline tab, see
+// InteractionService.get_ticket_interactions), so deriving from it here
+// silently produced an empty Attachments tab regardless of how many
+// files actually existed. This still reuses the existing upload/delete
+// endpoints and the existing repository/service architecture — only
+// the *read* path for this tab changed.
 export function TicketAttachmentsTab({ onChanged, flat = false }: TicketAttachmentsTabProps) {
-  const { activeTicket, timeline } = useWorkflowContext();
+  const { activeTicket } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [items, setItems] = useState<TicketAttachmentItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [refreshToken, setRefreshToken] = useState(0);
+  const requestIdRef = useRef(0);
 
   const { run: runDelete, isLoading: isDeleting } = useApiAction(deleteAttachment, {
     successMessage: "Attachment deleted.",
   });
+
+  const ticketId = activeTicket?.ticket_id;
+
+  useEffect(() => {
+    if (!ticketId) return;
+
+    let cancelled = false;
+    const thisRequestId = ++requestIdRef.current;
+    setIsLoading(true);
+
+    getTicketAttachments(ticketId)
+      .then((data) => {
+        if (!cancelled && thisRequestId === requestIdRef.current) {
+          setItems(data);
+        }
+      })
+      .catch(() => {
+        if (!cancelled && thisRequestId === requestIdRef.current) {
+          setItems([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled && thisRequestId === requestIdRef.current) {
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ticketId, refreshToken]);
 
   if (!activeTicket) return null;
 
@@ -67,31 +123,25 @@ export function TicketAttachmentsTab({ onChanged, flat = false }: TicketAttachme
   // with no edit-access-grant bypass.
   const canDelete = !isTicketClosed && canArchiveAttachment;
 
-  const attachments: FlatAttachment[] = timeline
-    .flatMap((interaction) =>
-      (interaction.attachments ?? []).map((attachment) => ({
-        id: attachment.id,
-        filename: attachment.filename,
-        size: attachment.size,
-        download_url: attachment.download_url,
-        uploadedBy:
-          interaction.performed_by_name ??
-          (interaction.performed_by ? shortId(interaction.performed_by) : "System"),
-        uploadedAt: interaction.created_at,
-      }))
-    )
+  const attachments: FlatAttachment[] = items
+    .map(toFlatAttachment)
     .sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
 
   async function handleDelete(attachmentId: string) {
     setDeletingId(attachmentId);
     const result = await runDelete(attachmentId);
     setDeletingId(null);
-    if (result !== null) onChanged();
+    if (result !== null) {
+      setRefreshToken((prev) => prev + 1);
+      onChanged();
+    }
   }
 
   return (
     <Card flat={flat} title="Attachments" eyebrow={`${attachments.length} file${attachments.length === 1 ? "" : "s"}`}>
-      {attachments.length === 0 ? (
+      {isLoading ? (
+        <SkeletonRows rows={3} />
+      ) : attachments.length === 0 ? (
         <EmptyState
           icon="📎"
           title="No attachments yet"

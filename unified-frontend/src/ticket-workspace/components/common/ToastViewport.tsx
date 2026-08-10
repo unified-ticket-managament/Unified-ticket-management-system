@@ -29,6 +29,23 @@ export function ToastViewport() {
         >
           {variantIcon[toast.variant] ?? variantIcon.info}
           <span className="flex-1">{toast.message}</span>
+          {toast.action && (
+            <button
+              type="button"
+              onClick={(e) => {
+                // Stop this click reaching the toast's own onClick
+                // (which would dismiss it before onClick below runs)
+                // — the action itself is responsible for dismissing
+                // via its own dismissToast call.
+                e.stopPropagation();
+                toast.action?.onClick();
+                dismissToast(toast.id);
+              }}
+              className="flex-none rounded-md2 px-2 py-1 text-[12px] font-semibold text-accent underline-offset-2 hover:underline"
+            >
+              {toast.action.label}
+            </button>
+          )}
           <X size={14} className="mt-0.5 flex-none text-muted" />
         </div>
       ))}

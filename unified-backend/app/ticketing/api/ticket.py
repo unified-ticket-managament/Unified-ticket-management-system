@@ -50,6 +50,7 @@ from app.ticketing.schemas.attach_interaction import (
 )
 from app.ticketing.schemas.attachment import (
     AttachmentUploadResponse,
+    TicketAttachmentItem,
 )
 from app.ticketing.schemas.audit_log import AuditLogResponse, TicketAuditLogResponse
 from app.ticketing.schemas.edit_access import (
@@ -235,6 +236,34 @@ async def get_ticket_interactions(
     )
 
     return await service.get_ticket_interactions(ticket_id, current_user=current_user)
+
+
+@router.get(
+    "/{ticket_id}/attachments",
+    response_model=list[TicketAttachmentItem],
+    status_code=status.HTTP_200_OK,
+)
+async def get_ticket_attachments(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    attachment_repository = AttachmentRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        attachment_repository=attachment_repository,
+        storage_service=get_storage_service(),
+        client_repository=client_repository,
+    )
+
+    return await service.get_ticket_attachments(ticket_id, current_user=current_user)
 
 
 # =========================================================
@@ -519,6 +548,7 @@ async def upload_ticket_attachment(
         client_repository=client_repository,
         escalation_repository=TicketEscalationRepository(db),
         escalation_handling_sla_repository=EscalationHandlingSlaRepository(db),
+        edit_access_repository=TicketEditAccessRequestRepository(db),
     )
 
     return await service.upload_attachment(

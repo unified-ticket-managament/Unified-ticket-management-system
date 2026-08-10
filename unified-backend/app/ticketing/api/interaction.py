@@ -20,6 +20,7 @@ from app.ticketing.schemas.interaction import (
     HideInteractionResponse,
     ThreadResponse,
 )
+from app.ticketing.schemas.ticket_action import CancelSendResponse
 from app.ticketing.services.interaction_service import InteractionService
 from app.ticketing.storage import get_storage_service
 
@@ -122,5 +123,46 @@ async def hide_interaction(
         ticket_id=interaction.ticket_id,
         interaction_id=interaction_id,
         request=request,
+        current_user=current_user,
+    )
+
+
+# =========================================================
+# Cancel a pending send — Undo Send (Issue 8)
+# =========================================================
+
+@router.post(
+    "/{interaction_id}/cancel-send",
+    response_model=CancelSendResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def cancel_send(
+    interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Cancels a still-pending outbound Compose/Reply within its 10-second
+    Undo window (InteractionService.cancel_pending_send) — one route
+    for every outbound send path (Compose, ticket-level Reply,
+    pre-ticket Reply), since all three now create the interaction the
+    same PENDING_SEND way and schedule the same delayed dispatch. See
+    that method's own docstring for the authorization/idempotency
+    rules — the backend, not this request's own elapsed time, is what
+    decides whether the window is still open.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+    )
+
+    return await service.cancel_pending_send(
+        interaction_id=interaction_id,
         current_user=current_user,
     )

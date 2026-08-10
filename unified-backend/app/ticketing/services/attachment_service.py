@@ -200,6 +200,7 @@ class AttachmentService:
         client_repository=None,
         escalation_repository=None,
         escalation_handling_sla_repository=None,
+        edit_access_repository=None,
     ):
         self.attachment_repository = attachment_repository
         self.interaction_repository = interaction_repository
@@ -216,6 +217,20 @@ class AttachmentService:
         # hypothetical one.
         self.escalation_repository = escalation_repository
         self.escalation_handling_sla_repository = escalation_handling_sla_repository
+        # Same gap as above, for the edit-access-grant bypass:
+        # InteractionService threads self.edit_access_repository into
+        # every one of its own ensure_agent_can_act_on_ticket calls
+        # (reply/internal-note/status-change), but upload_attachment
+        # never accepted or passed one at all — a user holding an
+        # active per-ticket edit-access grant (see
+        # TicketEditAccessRequestRepository.has_active_grant) could
+        # already reply/add notes/change status on a ticket they don't
+        # own, but would still 403 on this action alone with the same
+        # "Only the agent this ticket is assigned to" message. Optional,
+        # same convention as the two params above — a caller that
+        # doesn't pass one simply skips that bypass check, same as
+        # before this fix.
+        self.edit_access_repository = edit_access_repository
 
     # ---------------------------------------------------------
     # Shared validation + storage choke point
@@ -311,6 +326,7 @@ class AttachmentService:
             current_user,
             escalation_repository=self.escalation_repository,
             escalation_handling_sla_repository=self.escalation_handling_sla_repository,
+            edit_access_repository=self.edit_access_repository,
         )
         await ensure_account_manager_owns_ticket_client(
             ticket, current_user, self.client_repository

@@ -1,6 +1,7 @@
 import { apiClient } from "./client";
 import type {
   AttachmentUploadResponse,
+  CancelSendResponse,
   HideInteractionRequest,
   HideInteractionResponse,
   InteractionDirection,
@@ -13,6 +14,7 @@ import type {
   StatusChangeRequest,
   ThreadResponse,
   TicketActionResponse,
+  TicketAttachmentItem,
   TicketInteractionResponse,
 } from "@tw/types";
 
@@ -40,6 +42,22 @@ export async function getTicketTimeline(
 ): Promise<InteractionResponse[]> {
   const { data } = await apiClient.get<InteractionResponse[]>(
     `/tickets/${ticketId}/interactions`
+  );
+  return data;
+}
+
+// GET /tickets/{ticket_id}/attachments — the ticket's complete
+// attachment history across every interaction type. A dedicated
+// endpoint, not derived from getTicketTimeline's own response: that
+// endpoint is deliberately optimized to always return `attachments: []`
+// per interaction (skipping signed-URL generation for the Timeline
+// tab's own performance), so it was never a real source of attachment
+// data despite TicketAttachmentsTab.tsx previously assuming it was.
+export async function getTicketAttachments(
+  ticketId: string
+): Promise<TicketAttachmentItem[]> {
+  const { data } = await apiClient.get<TicketAttachmentItem[]>(
+    `/tickets/${ticketId}/attachments`
   );
   return data;
 }
@@ -185,6 +203,19 @@ export async function hideInteractionById(
   const { data } = await apiClient.post<HideInteractionResponse>(
     `/interactions/${interactionId}/hide`,
     payload
+  );
+  return data;
+}
+
+// POST /interactions/{interaction_id}/cancel-send — Undo Send (Issue
+// 8). One route for every outbound path (Compose, ticket Reply,
+// pre-ticket Reply/Draft-send) since they all now create the
+// interaction the same PENDING_SEND way. The backend, not this
+// request's own timing, is the sole authority on whether the window
+// is still open — see InteractionService.cancel_pending_send.
+export async function cancelSend(interactionId: string): Promise<CancelSendResponse> {
+  const { data } = await apiClient.post<CancelSendResponse>(
+    `/interactions/${interactionId}/cancel-send`
   );
   return data;
 }

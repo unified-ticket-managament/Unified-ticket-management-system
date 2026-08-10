@@ -51,9 +51,11 @@ import { listClientContacts } from "@tw/api/clients";
 import { replyToClient, uploadAttachment } from "@tw/api/interaction";
 import { attachInteractionToTicket, createTicketFromInteraction, listTickets } from "@tw/api/ticket";
 import { useAuthContext } from "@tw/context/AuthContext";
+import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
-import { formatDateTime } from "@tw/lib/format";
+import { formatDateTime, formatTicketNumber } from "@tw/lib/format";
 import { buildForwardHtml, linkifyPlainText } from "@tw/lib/richText";
+import { showUndoSendToast } from "@tw/lib/undoSend";
 import type {
   AssignableAgentsResponse,
   AttachmentMeta,
@@ -273,6 +275,7 @@ export function MessageDetailsView({
   // instead (see that context's own comment).
   const { setSelectedEmail, categories } = useWorkflowContext();
   const { currentUser } = useAuthContext();
+  const { pushToast } = useToast();
   const canConvertToTicket = !!currentUser?.permissions.includes(
     "communication:convert_to_ticket"
   );
@@ -474,6 +477,7 @@ export function MessageDetailsView({
         attachment_source_interaction_id: attachmentSourceInteractionId,
       });
       if (result) {
+        showUndoSendToast(pushToast, result.interaction_id, "Reply sent.");
         setReplyMode(null);
         onRefreshList();
         setSelectedEmail({
@@ -1037,7 +1041,7 @@ export function MessageDetailsView({
                 <SelectContent>
                   {clientTickets.map((t) => (
                     <SelectItem key={t.ticket_id} value={t.ticket_id}>
-                      {t.title} · {t.current_status}
+                      {formatTicketNumber(t.ticket_number)} · {t.title} · {t.current_status}
                     </SelectItem>
                   ))}
                 </SelectContent>

@@ -17,7 +17,7 @@ from app.ticketing.schemas.attach_interaction import (
     AttachInteractionRequest,
     AttachInteractionResponse,
 )
-from app.ticketing.schemas.ticket import TicketCreate
+from app.ticketing.schemas.ticket import TicketCreate, TicketUpdate
 from app.ticketing.schemas.ticket_action import (
     PriorityChangeRequest,
     StatusChangeRequest,
@@ -30,6 +30,7 @@ from app.ticketing.schemas.ticket_from_interaction import (
 from app.ticketing.services.access_control import (
     ensure_account_manager_owns_ticket_client,
     ensure_has_permission,
+    resolve_status_after_assignment,
 )
 from app.ticketing.services.assignment_service import AssignmentService
 from app.ticketing.services.audit_log_service import AuditLogService
@@ -173,6 +174,29 @@ class InboxTicketService:
 
         )
 
+        # A ticket can be born already assigned (the "Assigned To"
+        # picker above) — the same rule that moves a ticket off OPEN
+        # when transfer_agent/claim hands it to someone must also
+        # apply here, or a pre-assigned ticket would otherwise sit at
+        # OPEN (the model's default) with a real agent_id already set,
+        # an inconsistent state the assigned agent's own UI would show
+        # as "assigned, but still Open." Uses the exact same shared,
+        # non-role-specific helper as every other assignment path so
+        # this can never silently diverge from theirs. A no-op (and no
+        # extra write) when the ticket was created unassigned, since
+        # resolve_status_after_assignment is only consulted at all
+        # when resolved_agent_id is not None.
+        new_status = (
+            resolve_status_after_assignment(ticket.current_status)
+            if resolved_agent_id is not None
+            else None
+        )
+        if new_status is not None:
+            ticket = await self.ticket_repository.update(
+                ticket,
+                TicketUpdate(current_status=new_status),
+            )
+
         # Moves the interaction AND every reply already filed under
         # it (if this was already a thread) onto the new ticket.
         await self.interaction_repository.assign_thread_to_ticket(
@@ -192,7 +216,9 @@ class InboxTicketService:
                 "title": ticket.title,
                 "ticket_type": ticket.ticket_type,
                 "current_priority": ticket.current_priority,
+                "current_status": ticket.current_status,
                 "client_company_id": ticket.client_company_id,
+                "agent_id": ticket.agent_id,
                 "interaction_id": interaction.interaction_id,
             },
         )

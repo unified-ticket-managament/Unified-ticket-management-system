@@ -60,11 +60,21 @@ class UserRepository(BaseRepository):
         page_size: int = 10,
         search: str | None = None,
         category_id: UUID | None = None,
+        visible_user_ids: set[UUID] | None = None,
     ) -> tuple[list[User], int]:
         """
         Returns:
             users,
             total_count
+
+        `visible_user_ids`, when provided, restricts the result to
+        exactly that set of user ids — the caller's own
+        reporting-hierarchy scope (see UserService.list_users, which
+        resolves this via OrganizationService.get_subordinate_user_ids
+        for Account Manager/Team Lead, or a self-only set for Staff).
+        `None` means unrestricted (Super Admin/Site Lead). An empty
+        set correctly yields zero rows via `User.user_id.in_(())`
+        rather than being mistaken for "no filter."
         """
 
         query = (
@@ -88,6 +98,10 @@ class UserRepository(BaseRepository):
         if category_id is not None:
             query = query.where(User.category_id == category_id)
             count_query = count_query.where(User.category_id == category_id)
+
+        if visible_user_ids is not None:
+            query = query.where(User.user_id.in_(visible_user_ids))
+            count_query = count_query.where(User.user_id.in_(visible_user_ids))
 
         total = (
             await self.db.execute(count_query)

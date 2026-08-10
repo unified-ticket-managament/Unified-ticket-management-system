@@ -54,6 +54,11 @@ def get_user_service(
         client_repository=client_repository,
         user_repository=TicketingUserRepository(db),
     )
+    organization_service = OrganizationService(
+        user_repository=user_repository,
+        role_repository=role_repository,
+        reporting_manager_repository=ReportingManagerRepository(db),
+    )
 
     return UserService(
         user_repository=user_repository,
@@ -62,6 +67,7 @@ def get_user_service(
         audit_log_service=audit_log_service,
         client_repository=client_repository,
         client_service=client_service,
+        organization_service=organization_service,
     )
 
 
@@ -146,6 +152,7 @@ async def list_users(
         page_size=page_size,
         search=search,
         category_id=category_id,
+        current_user=current_user,
     )
 
     return UserListResponse(

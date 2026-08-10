@@ -108,6 +108,36 @@ def ensure_ticket_not_closed(ticket: Ticket) -> None:
         )
 
 
+def resolve_status_after_assignment(
+    current_status: TicketStatus,
+) -> TicketStatus | None:
+    """
+    The single, shared rule for "does an assignment change the
+    ticket's status": if `current_status` is OPEN, the ticket moves to
+    IN_PROGRESS — otherwise (already IN_PROGRESS, WAITING_FOR_CLIENT,
+    PENDING, RESOLVED, or CLOSED) nothing changes. Returns the new
+    status, or None when no change should happen, so every caller can
+    write the same `if new_status is not None: ...` pattern instead of
+    re-deriving the OPEN check itself.
+
+    Deliberately keyed on `current_status` alone — never on who the
+    new assignee is or what role they hold. Assigning a ticket to
+    Staff, a Team Lead, an Account Manager, a Site Lead, Super Admin,
+    or an agent claiming it for themselves are all the same event as
+    far as this rule is concerned: someone is now actually working the
+    ticket, so it should never sit at OPEN afterward. This is what
+    every assignment path (InteractionService.transfer_agent,
+    TicketRepository.claim, InboxTicketService.create_ticket_from_interaction's
+    pre-assignment) must call instead of re-implementing its own
+    OPEN-check, so the rule can never silently diverge between paths.
+    """
+
+    if current_status == TicketStatus.OPEN:
+        return TicketStatus.IN_PROGRESS
+
+    return None
+
+
 def ensure_agent_can_view_ticket(
     ticket: Ticket,
     current_user: User,

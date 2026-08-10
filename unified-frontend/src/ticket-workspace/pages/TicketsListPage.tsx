@@ -22,7 +22,7 @@ import { AcknowledgeAssignModal } from "@tw/components/sla/AcknowledgeAssignModa
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { useToast } from "@tw/context/ToastContext";
-import { shortId, formatDateTime } from "@tw/lib/format";
+import { shortId, formatDateTime, formatTicketNumber } from "@tw/lib/format";
 import { isValidDateRange } from "@tw/lib/validation";
 import { priorityTone, statusTone } from "@tw/lib/ticketTone";
 import type { TicketPriority, TicketResponse, TicketStatus } from "@tw/types";
@@ -563,7 +563,7 @@ export function TicketsListPage() {
               <table className="w-full min-w-[900px] text-sm">
                 <thead>
                   <tr className="sticky top-0 z-10 border-b border-border bg-canvas text-left text-[10px] font-semibold uppercase tracking-wider text-muted">
-                    <th className="px-5 py-3.5">Ticket ID</th>
+                    <th className="px-5 py-3.5">Ticket #</th>
                     <th className="px-5 py-3.5">
                       <SortHeader label="Subject" sortField="title" />
                     </th>
@@ -595,7 +595,7 @@ export function TicketsListPage() {
                       className="cursor-pointer transition-colors hover:bg-surfaceHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
                     >
                       <td className="px-5 py-3.5 font-mono text-xs text-muted">
-                        {shortId(ticket.ticket_id)}
+                        {formatTicketNumber(ticket.ticket_number)}
                       </td>
                       <td className="max-w-[240px] truncate px-5 py-3.5 font-medium text-slate-900">
                         {ticket.title}

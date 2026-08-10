@@ -123,3 +123,20 @@ class TicketActionResponse(ORMBase):
     ticket_id: UUID
     message: str
     created_at: datetime
+
+
+class CancelSendResponse(ORMBase):
+    """
+    Response for POST /interactions/{id}/cancel-send (Issue 8's Undo
+    action) — a near-twin of TicketActionResponse, but with `ticket_id`
+    genuinely optional: unlike every other ticket-mutating action, this
+    one is reachable for a still-pending pre-ticket Compose/reply too
+    (interaction.ticket_id is None until/unless that thread is later
+    turned into a ticket), so this can't reuse TicketActionResponse's
+    own required `ticket_id`.
+    """
+
+    interaction_id: UUID
+    ticket_id: UUID | None
+    message: str
+    created_at: datetime

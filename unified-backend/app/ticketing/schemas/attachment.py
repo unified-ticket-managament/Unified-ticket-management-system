@@ -45,6 +45,30 @@ class AttachmentMetadata(BaseModel):
     preview_url: str | None = None
 
 
+class TicketAttachmentItem(BaseModel):
+    """
+    One row in a ticket's complete attachment history (GET
+    /tickets/{id}/attachments) — the same AttachmentMetadata shape
+    (id/filename/mime_type/size/download_url/preview_url) plus enough
+    about the *owning* interaction (id/type/performer/timestamp) for
+    the frontend to render "uploaded by X on Y" without a second
+    lookup, mirroring the performed_by/performed_by_name/created_at
+    fields InteractionResponse already carries for the same purpose.
+    """
+
+    id: UUID
+    filename: str
+    mime_type: str | None
+    size: int | None
+    download_url: str
+    preview_url: str | None = None
+    interaction_id: UUID
+    interaction_type: str
+    performed_by: UUID | None
+    performed_by_name: str | None
+    created_at: datetime
+
+
 class AttachmentUploadResponse(BaseModel):
     """
     Response returned after files have been
