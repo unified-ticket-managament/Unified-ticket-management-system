@@ -34,6 +34,7 @@ from app.ticketing.services.attachment_service import AttachmentService
 from app.ticketing.services.email_service import EmailService
 from app.ticketing.services.mail_mapping_service import map_external_email_to_interaction
 from app.ticketing.services.mail_provider import get_mail_provider_client
+from app.ticketing.services.rule_engine_service import build_rule_engine_service
 from app.ticketing.services.sla_service import build_sla_service
 from app.ticketing.storage import get_storage_service
 
@@ -89,6 +90,7 @@ def _build_email_service(db) -> EmailService:
         ticket_repository=TicketRepository(db),
         notification_service=notification_service,
         sla_service=build_sla_service(db, notification_service=notification_service),
+        rule_engine_service=build_rule_engine_service(db),
     )
 
 

@@ -5,6 +5,7 @@ import {
   Archive,
   Bell,
   FileEdit,
+  Folder,
   Inbox as InboxIcon,
   Pencil,
   Reply,
@@ -18,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { MailViewKey } from "@tw/hooks/useMailInbox";
+import type { MailFolder } from "@tw/types";
 
 // Exact order required by the Mail spec: Compose, Inbox, Unassigned,
 // My Claims, Sent, Drafts, Replied, Ticketed, Archived.
@@ -51,6 +53,14 @@ interface MailSidebarProps {
   // with a Mail tab keeps it (nothing else in this sidebar is
   // role-gated per-item today).
   hideMyClaims: boolean;
+  // Custom mail folders (e.g. ones a Mail Rule filed an email into) —
+  // rendered as their own section under "All Inboxes", mutually
+  // exclusive with the normal view tabs above (selecting a folder
+  // doesn't change activeView; selecting a view clears the folder).
+  folders: MailFolder[];
+  folderCounts: Record<string, number>;
+  activeFolderId: string | null;
+  onSelectFolder: (folderId: string) => void;
 }
 
 function CountBadge({ count }: { count: number }): ReactNode {
@@ -77,6 +87,10 @@ export const MailSidebar = memo(function MailSidebar({
   counts,
   isSupervisor,
   hideMyClaims,
+  folders,
+  folderCounts,
+  activeFolderId,
+  onSelectFolder,
 }: MailSidebarProps) {
   const viewItems = hideMyClaims ? VIEW_ITEMS.filter((item) => item.key !== "mine") : VIEW_ITEMS;
   return (
@@ -132,6 +146,35 @@ export const MailSidebar = memo(function MailSidebar({
           <span className="truncate">All Inboxes</span>
           <CountBadge count={counts.all ?? 0} />
         </button>
+      )}
+
+      {folders.length > 0 && (
+        <div className="flex flex-col gap-0.5 border-t border-border pt-3">
+          <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Folders
+          </p>
+          {folders.map((folder) => {
+            const isActive = !isComposing && activeFolderId === folder.folder_id;
+            return (
+              <button
+                key={folder.folder_id}
+                type="button"
+                data-active={isActive}
+                onClick={() => onSelectFolder(folder.folder_id)}
+                className={cn(
+                  "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] font-medium transition-all duration-150",
+                  isActive
+                    ? "bg-primary/10 text-primary"
+                    : "text-foreground/80 hover:translate-x-0.5 hover:bg-muted hover:text-foreground"
+                )}
+              >
+                <Folder className={cn("h-4 w-4 flex-none", isActive ? "text-primary" : "text-muted-foreground")} />
+                <span className="truncate">{folder.name.trim()}</span>
+                <CountBadge count={folderCounts[folder.folder_id] ?? 0} />
+              </button>
+            );
+          })}
+        </div>
       )}
     </aside>
   );

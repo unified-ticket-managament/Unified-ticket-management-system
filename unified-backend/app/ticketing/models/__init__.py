@@ -18,6 +18,7 @@ from .sla_breach_notification import SLABreachNotification
 from .message_read_receipt import MessageReadReceipt
 from .ticket_escalation import TicketEscalation
 from .escalation_handling_sla import EscalationHandlingSLA
+from .rule import Rule
 
 __all__ = [
     "Base",
@@ -39,4 +40,5 @@ __all__ = [
     "MessageReadReceipt",
     "TicketEscalation",
     "EscalationHandlingSLA",
+    "Rule",
 ]

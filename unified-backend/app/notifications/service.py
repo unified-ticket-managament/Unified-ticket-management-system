@@ -45,6 +45,15 @@ class NotificationType:
     TICKET_PRIORITY_CHANGED = "TICKET_PRIORITY_CHANGED"
     TICKET_RESOLVED = "TICKET_RESOLVED"
     INTERNAL_NOTE_ADDED = "INTERNAL_NOTE_ADDED"
+    # An OTP Rule's "Forward To" action matched — fired alongside the
+    # real outbound email (see RuleEngineService), not instead of it,
+    # so the recipient sees it both in their real inbox and as a
+    # mail-shaped item in this app's own Mail > System folder (see
+    # unified-frontend's SYSTEM_NOTIFICATION_TYPES). Deliberately not
+    # added to EMAIL_ELIGIBLE_NOTIFICATION_TYPES (email_policy.py) —
+    # that would send a second, notification-shaped email on top of
+    # the real forwarded one.
+    OTP_FORWARDED = "OTP_FORWARDED"
 
 
 class NotificationService:

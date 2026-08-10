@@ -5,6 +5,7 @@ import {
   composeEmail as composeEmailRequest,
   discardDraft,
   getDrafts,
+  getFolderCounts,
   getInbox,
   getReplied,
   getSent,
@@ -35,11 +36,11 @@ import type {
 
 // Every notification_type the "System" folder shows — internal,
 // system-generated notices (SLA breach ladder + the escalation
-// ownership workflow), deliberately excluding MAIL_RECEIVED/
-// CLIENT_REPLY (those are real client mail, already shown in the
-// regular Inbox) and the unrelated PERMISSION_*/EDIT_ACCESS_*/
-// TICKET_ASSIGNED types (a different notification concern, still only
-// surfaced via the topbar bell for now).
+// ownership workflow + an OTP Rule's "Forward To" firing), deliberately
+// excluding MAIL_RECEIVED/CLIENT_REPLY (those are real client mail,
+// already shown in the regular Inbox) and the unrelated PERMISSION_*/
+// EDIT_ACCESS_*/TICKET_ASSIGNED types (a different notification
+// concern, still only surfaced via the topbar bell for now).
 export const SYSTEM_NOTIFICATION_TYPES = [
   "SLA_HALF_ELAPSED",
   "SLA_AT_RISK",
@@ -49,6 +50,7 @@ export const SYSTEM_NOTIFICATION_TYPES = [
   "ESCALATION_ACKNOWLEDGED",
   "ESCALATION_ADVANCED",
   "ESCALATION_CLOSED",
+  "OTP_FORWARDED",
 ];
 
 const SUPERVISOR_ROLES = ["Site Lead", "Super Admin"];
@@ -349,12 +351,19 @@ export function useMailInbox() {
   const [timeFilter, setTimeFilter] = useState<TimeFilterKey>("ALL");
   const [openedIds, setOpenedIds] = useState<Set<string>>(new Set());
 
-  // Custom mail folders — no longer browsable/manageable from the Mail
-  // sidebar (that section was removed), but the list itself is still
-  // needed to populate MessageDetailsView's per-email "assign to
-  // folder" control, and any email already filed into one keeps that
-  // filing.
+  // Custom mail folders — used to populate MessageDetailsView's
+  // per-email "assign to folder" control, and now browsable from the
+  // sidebar again too (a "Folders" section under "All Inboxes") —
+  // selecting one shows every mail item filed into it, regardless of
+  // pending/replied/ticketed/archived status, via activeFolderId
+  // below rather than the pending/replied/etc. MailViewKey machinery.
   const [folders, setFolders] = useState<MailFolder[]>([]);
+  const [folderCounts, setFolderCounts] = useState<Record<string, number>>({});
+  const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
+  const [folderRows, setFolderRows] = useState<InboxItem[]>([]);
+  const [folderRowsTotal, setFolderRowsTotal] = useState(0);
+  const [isFolderLoading, setIsFolderLoading] = useState(false);
+  const folderAbortRef = useRef<AbortController | null>(null);
 
   // Category "folders" (Eligibility, Claims, AR, ...) are a fixed,
   // backend-known set — not a custom mail_folders row, and (as of
@@ -480,6 +489,70 @@ export function useMailInbox() {
     [clientFilter, rowsByTab, priorityFilter, messageCategoryFilter]
   );
 
+  // Folder browsing — a custom folder shows every item filed into it
+  // regardless of status (view="all"), scoped by the same
+  // clientFilter/priority/category filters the normal tabs already
+  // use, and by the same owned-clients/category visibility every
+  // other view respects (scope="all" only for Site Lead/Super Admin,
+  // matching fetchBaseTab's own "all" tab — a folder isn't itself a
+  // supervisor-only concept, only bypassing normal ownership scoping
+  // is).
+  const fetchFolderRows = useCallback(
+    async (folderId: string, offset: number) => {
+      folderAbortRef.current?.abort();
+      const controller = new AbortController();
+      folderAbortRef.current = controller;
+      const clientId = clientFilter === "ALL" ? undefined : clientFilter;
+      setIsFolderLoading(true);
+      try {
+        const result = await getInbox(
+          "all",
+          {
+            clientId,
+            scope: isSupervisor ? "all" : undefined,
+            folderId,
+            limit: MAIL_TAB_FETCH_SIZE,
+            offset,
+            priority: priorityFilter === "ALL" ? undefined : priorityFilter,
+            category: messageCategoryFilter === "ALL" ? undefined : messageCategoryFilter,
+          },
+          controller.signal
+        );
+        setFolderRows((prev) => (offset === 0 ? result.items : [...prev, ...result.items]));
+        setFolderRowsTotal(result.total);
+      } catch (error) {
+        if (axios.isCancel(error)) return;
+        throw error;
+      } finally {
+        setIsFolderLoading(false);
+      }
+    },
+    [clientFilter, isSupervisor, priorityFilter, messageCategoryFilter]
+  );
+
+  useEffect(() => {
+    if (!activeFolderId) return;
+    fetchFolderRows(activeFolderId, 0);
+  }, [activeFolderId, fetchFolderRows]);
+
+  const loadMoreFolderRows = useCallback(async () => {
+    if (!activeFolderId) return;
+    await fetchFolderRows(activeFolderId, folderRows.length);
+  }, [activeFolderId, fetchFolderRows, folderRows.length]);
+
+  // Selecting a folder and selecting a normal view (Inbox/Sent/...)
+  // are mutually exclusive — activeView itself is left untouched so
+  // switching back to "no folder" resumes exactly where the normal
+  // tabs were, matching how System mail's own selection works.
+  const selectFolder = useCallback((folderId: string | null) => {
+    setActiveFolderId(folderId);
+    setSelectedSystemNotification(null);
+    if (folderId === null) {
+      setFolderRows([]);
+      setFolderRowsTotal(0);
+    }
+  }, []);
+
   const fetchSent = useCallback(async () => {
     const result = await getSent();
     setSentItems(result.items.map(sentItemToInboxItem));
@@ -577,11 +650,12 @@ export function useMailInbox() {
       // chrome round finished, an avoidable serial round-trip on
       // every load.
       const shouldLoadChrome = !chromeLoadedRef.current;
-      const [[folderList, viewCounts]] =
+      const [[folderList, viewCounts, folderCountsResult]] =
         await Promise.all([
           Promise.all([
             shouldLoadChrome ? listMailFolders() : Promise.resolve(null),
             getViewCounts(clientId),
+            getFolderCounts(clientId),
           ]),
           Promise.all(Array.from(keysToRefresh).map((key) => fetchKey(key))),
         ]);
@@ -591,6 +665,7 @@ export function useMailInbox() {
         chromeLoadedRef.current = true;
       }
       setBaseViewCounts(viewCounts);
+      setFolderCounts(folderCountsResult);
     } catch (error) {
       pushToast(
         error instanceof Error ? error.message : "Failed to load inbox.",
@@ -977,6 +1052,14 @@ export function useMailInbox() {
     openThread,
     selectedEmail,
     folders,
+    folderCounts,
+    activeFolderId,
+    selectFolder,
+    folderRows,
+    folderRowsTotal,
+    isFolderLoading,
+    folderRowsHasMore: folderRows.length < folderRowsTotal,
+    loadMoreFolderRows,
     categories,
     updateTags,
     assignFolder,

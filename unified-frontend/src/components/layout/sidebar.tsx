@@ -20,6 +20,7 @@ import {
   Timer,
   UserCircle,
   Users,
+  Workflow,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -104,6 +105,11 @@ const menuItems: {
     title: "Reporting Managers",
     href: "/settings/reporting-managers",
     icon: Network,
+  },
+  {
+    title: "Rules",
+    href: "/settings/rules",
+    icon: Workflow,
   },
   {
     title: "Permission Requests",

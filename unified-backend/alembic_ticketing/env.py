@@ -64,6 +64,7 @@ OWNED_TABLES = {
     # warns about).
     "ticket_escalations",
     "escalation_handling_slas",
+    "rules",
 }
 
 

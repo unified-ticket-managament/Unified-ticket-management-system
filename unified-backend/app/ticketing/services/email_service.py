@@ -34,6 +34,8 @@ from app.ticketing.services.attachment_service import (
     attachments_to_metadata,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.rule_conditions import RuleEmailContext
+from app.ticketing.services.rule_engine_service import RuleEngineService
 from app.ticketing.services.sla_service import SLAService
 from app.ticketing.services.sla_escalation_rules import RecipientContext, resolve_team_lead
 from app.notifications.service import NotificationService, NotificationType
@@ -130,6 +132,7 @@ class EmailService:
         ticket_repository: TicketRepository | None = None,
         notification_service: NotificationService | None = None,
         sla_service: SLAService | None = None,
+        rule_engine_service: RuleEngineService | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.client_repository = client_repository
@@ -138,6 +141,7 @@ class EmailService:
         self.ticket_repository = ticket_repository
         self.notification_service = notification_service
         self.sla_service = sla_service
+        self.rule_engine_service = rule_engine_service
 
     async def receive_email(
         self,
@@ -519,6 +523,29 @@ class EmailService:
             )
             attachment_metas = await attachments_to_metadata(
                 attachments, self.attachment_service.storage_service
+            )
+
+        # ---------------------------------------
+        # Mail/OTP Rules
+        #
+        # Fixed trigger ("Email Received") — evaluated inline, in this
+        # same transaction, since every action a Mail/OTP Rule can
+        # take today (ensure-folder-exists, file-into-folder, queue a
+        # fire-and-forget forward email) is a cheap, idempotent side
+        # effect, not a multi-step mutation that would need deferring
+        # the way notification emails are.
+        # ---------------------------------------
+
+        if self.rule_engine_service is not None:
+            rule_context = RuleEmailContext(
+                from_email=email.from_email,
+                subject=email.subject,
+                body=email.body,
+                client_id=client.client_id if client is not None else None,
+            )
+            await self.rule_engine_service.evaluate_and_execute_for_email(
+                interaction=created,
+                context=rule_context,
             )
 
         # ---------------------------------------

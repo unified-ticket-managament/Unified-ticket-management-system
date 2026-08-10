@@ -104,6 +104,14 @@ DEFAULT_PERMISSIONS = [
     # default — this is an org-design/admin action, not a day-to-day
     # Account Manager capability.
     ("org:manage_reporting_managers", "Assign or revoke an Account Manager's Reporting Manager responsibility for a category"),
+    # Mail/OTP Rules engine — creating, editing, enabling/disabling,
+    # reordering, or deleting an automation rule. Granted to Super
+    # Admin/Site Lead only by default (see SITE_LEAD_PERMISSIONS below)
+    # — mirrors sla:manage_policies/org:manage_reporting_managers'own
+    # "company-wide config, not day-to-day agent capability" reasoning.
+    # Reading the rule list (GET /rules) needs no permission at all,
+    # same "read is open, write is gated" bias as SLA policies.
+    ("rule:manage", "Create, edit, enable/disable, reorder, or delete a Mail/OTP Rule"),
 ]
 
 # `ticket:bulk_reassign` and `ticket:configure_routing` (previously part

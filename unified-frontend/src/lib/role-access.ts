@@ -36,7 +36,8 @@ export type NavItemKey =
   | "Profile"
   | "Settings"
   | "SLA Timing Matrix"
-  | "Reporting Managers";
+  | "Reporting Managers"
+  | "Rules";
 
 export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   Dashboard: "nav.dashboard",
@@ -55,6 +56,7 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   Settings: "nav.settings",
   "SLA Timing Matrix": "nav.slaTimingMatrix",
   "Reporting Managers": "nav.reportingManagers",
+  Rules: "nav.rules",
 };
 
 
@@ -121,6 +123,7 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Ticket Audit Log",
     "SLA Timing Matrix",
     "Reporting Managers",
+    "Rules",
   ],
   [ROLE_NAMES.SITE_LEAD]: [
     "Dashboard",
@@ -131,6 +134,7 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Tickets",
     "Ticket Audit Log",
     "Reporting Managers",
+    "Rules",
   ],
   [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
   [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],

@@ -84,9 +84,19 @@ export function InboxPage() {
     (view: MailViewKey) => {
       setComposeOpen(false);
       setSelectedEmail(null);
+      mail.selectFolder(null);
       mail.setActiveView(view);
     },
-    [setSelectedEmail, mail.setActiveView]
+    [setSelectedEmail, mail.setActiveView, mail.selectFolder]
+  );
+
+  const handleSelectFolder = useCallback(
+    (folderId: string) => {
+      setComposeOpen(false);
+      setSelectedEmail(null);
+      mail.selectFolder(folderId);
+    },
+    [setSelectedEmail, mail.selectFolder]
   );
 
   async function handleOpen(interactionId: string) {
@@ -165,6 +175,10 @@ export function InboxPage() {
           counts={mail.viewCounts}
           isSupervisor={mail.isSupervisor}
           hideMyClaims={currentUser?.role === "Staff"}
+          folders={mail.folders}
+          folderCounts={mail.folderCounts}
+          activeFolderId={mail.activeFolderId}
+          onSelectFolder={handleSelectFolder}
         />
 
         <div className="min-h-[560px] min-w-0 flex-1">
@@ -201,6 +215,31 @@ export function InboxPage() {
               onRemoveDraftAttachment={mail.removeDraftAttachment}
               onUpdateTags={mail.updateTags}
               onAssignFolder={mail.assignFolder}
+            />
+          ) : mail.activeFolderId ? (
+            <MessageList
+              folderLabel={`${mail.folders.find((f) => f.folder_id === mail.activeFolderId)?.name.trim() ?? "Folder"} (${mail.folderRowsTotal})`}
+              items={mail.folderRows}
+              isLoading={mail.isFolderLoading}
+              openingId={mail.openingId}
+              openedIds={mail.openedIds}
+              search={mail.search}
+              onSearchChange={mail.setSearch}
+              timeFilter={mail.timeFilter}
+              onTimeFilterChange={mail.setTimeFilter}
+              clientFilter={mail.clientFilter}
+              onClientFilterChange={mail.setClientFilter}
+              priorityFilter={mail.priorityFilter}
+              onPriorityFilterChange={mail.setPriorityFilter}
+              categoryFilter={mail.messageCategoryFilter}
+              onCategoryFilterChange={mail.setMessageCategoryFilter}
+              availableCategories={mail.categories}
+              clients={mail.clients}
+              onOpen={handleOpen}
+              onCompose={handleComposeClick}
+              onRefresh={mail.refresh}
+              hasMore={mail.folderRowsHasMore}
+              onLoadMore={mail.loadMoreFolderRows}
             />
           ) : mail.activeView === "system" ? (
             mail.selectedSystemNotification ? (
