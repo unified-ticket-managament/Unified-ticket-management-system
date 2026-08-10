@@ -74,7 +74,7 @@ export default function ProfilePage() {
 
         <ProfileInformationCard
           fullName={record?.name ?? user?.name}
-          employeeId={record?.user_id ?? user?.user_id}
+          employeeId={record?.employee_number ?? user?.employee_number ?? record?.user_id ?? user?.user_id}
           dateOfBirth={record?.date_of_birth}
           role={user?.role}
           department={record?.department}

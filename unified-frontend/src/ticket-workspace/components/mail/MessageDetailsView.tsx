@@ -53,7 +53,7 @@ import { attachInteractionToTicket, createTicketFromInteraction, listTickets } f
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
-import { formatDateTime, formatTicketNumber } from "@tw/lib/format";
+import { formatAssigneeLabel, formatDateTime, formatTicketNumber } from "@tw/lib/format";
 import { buildForwardHtml, linkifyPlainText } from "@tw/lib/richText";
 import { showUndoSendToast } from "@tw/lib/undoSend";
 import type {
@@ -958,7 +958,7 @@ export function MessageDetailsView({
                   <SelectContent>
                     <SelectItem value="unassigned">Unassigned (Team)</SelectItem>
                     {assignableAgents && (
-                      <SelectItem value="self">Myself ({assignableAgents.me.name})</SelectItem>
+                      <SelectItem value="self">Myself ({formatAssigneeLabel(assignableAgents.me)})</SelectItem>
                     )}
                     {assignableAgents?.groups.map((group) => (
                       <SelectItem key={group.role} value={group.role}>
@@ -985,7 +985,7 @@ export function MessageDetailsView({
                         <SelectContent>
                           {assignedToGroup.users.map((user) => (
                             <SelectItem key={user.user_id} value={user.user_id}>
-                              {user.name}
+                              {formatAssigneeLabel(user)}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -1098,7 +1098,7 @@ export function MessageDetailsView({
                         </SelectTrigger>
                         <SelectContent>
                           {reopenCandidates && (
-                            <SelectItem value="me">Myself ({reopenCandidates.me.name})</SelectItem>
+                            <SelectItem value="me">Myself ({formatAssigneeLabel(reopenCandidates.me)})</SelectItem>
                           )}
                           {reopenCandidates?.groups.map((group) => (
                             <SelectItem key={group.role} value={group.role}>
@@ -1121,7 +1121,7 @@ export function MessageDetailsView({
                             <SelectContent>
                               {reopenAssignGroupData.users.map((user) => (
                                 <SelectItem key={user.user_id} value={user.user_id}>
-                                  {user.name}
+                                  {formatAssigneeLabel(user)}
                                 </SelectItem>
                               ))}
                             </SelectContent>

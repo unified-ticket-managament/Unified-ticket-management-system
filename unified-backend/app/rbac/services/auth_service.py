@@ -278,6 +278,7 @@ class AuthService:
             permissions=permissions,
             override_permissions=override_permissions,
             scoped_permissions=scoped_permissions,
+            employee_number=user.employee_number,
             date_of_birth=user.date_of_birth,
             alternate_email=user.alternate_email,
             phone_number=user.phone_number,

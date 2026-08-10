@@ -91,6 +91,7 @@ async def list_agents(
             user_id=agent.user_id,
             name=agent.name,
             email=agent.email,
+            employee_number=agent.employee_number,
         )
         for agent in agents
     ]

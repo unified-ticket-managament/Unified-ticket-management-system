@@ -206,6 +206,20 @@ DEFAULT_ROLES = {
     "Client": ["user:view", "role:view", "permission:view"],
 }
 
+# Trimmed to the one genuinely required technical/system account
+# (Super Admin — no real employee in the official org data maps to
+# this role at all; see root CLAUDE.md's "Organization Structure" /
+# "RBAC permission compliance audit" context). Every other entry this
+# list used to contain (a generic Site Lead/Account Manager/Team
+# Lead/Staff placeholder login, a "category coverage" block of
+# fictional Team Leads/Staff, and two Client-role demo accounts) was a
+# synthetic fixture with no real-employee counterpart — removed
+# outright, along with the already-created database rows they seeded,
+# during the employee/user data cleanup pass once
+# scripts/org_seed/import_org_data.py's real 99-employee import made
+# them redundant. Do not re-add fictional demo employee/user accounts
+# here; scripts/org_seed/source_data.py is the real employee source of
+# truth going forward.
 DEMO_USERS = [
     {
         "name": "Super Admin",
@@ -213,230 +227,17 @@ DEMO_USERS = [
         "password": "Admin@123456",
         "role": "Super Admin",
     },
-    {
-        "name": "Site Lead",
-        "email": "sitelead@probeps.com",
-        "password": "SiteLead@123",
-        "role": "Site Lead",
-    },
-    {
-        "name": "Account Manager",
-        "email": "manager@probeps.com",
-        "password": "Manager@123",
-        "role": "Account Manager",
-    },
-    {
-        "name": "Team Lead",
-        "email": "teamlead@probeps.com",
-        "password": "TeamLead@123",
-        "role": "Team Lead",
-        "manager_email": "manager@probeps.com",
-        "category": "Eligibility",
-    },
-    {
-        "name": "Priya Nair",
-        "email": "priya.nair@probeps.com",
-        "password": "Welcome@123",
-        "role": "Team Lead",
-        "manager_email": "manager@probeps.com",
-        "category": "Patient Calling",
-    },
-    {
-        "name": "Staff",
-        "email": "staff@probeps.com",
-        "password": "Staff@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "teamlead@probeps.com",
-        "category": "Eligibility",
-    },
-    {
-        "name": "John Carter",
-        "email": "john.carter@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "teamlead@probeps.com",
-        "category": "Eligibility",
-    },
-    {
-        "name": "Emma Watts",
-        "email": "emma.watts@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "priya.nair@probeps.com",
-        "category": "Patient Calling",
-    },
-    {
-        "name": "Liam Brooks",
-        "email": "liam.brooks@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "priya.nair@probeps.com",
-        "category": "Patient Calling",
-    },
-    # --------------------------------------------------
-    # Category coverage demo data: one Team Lead + two Staff per
-    # remaining category (AR, Payment Posting, PA, Charge Entry,
-    # Claims), all reporting to the same demo Account Manager, so
-    # every category in the categories table has real people to
-    # filter/assign tickets by.
-    # --------------------------------------------------
-    {
-        "name": "Rahul Mehta",
-        "email": "rahul.mehta@probeps.com",
-        "password": "Welcome@123",
-        "role": "Team Lead",
-        "manager_email": "manager@probeps.com",
-        "category": "AR",
-    },
-    {
-        "name": "Ananya Rao",
-        "email": "ananya.rao@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "rahul.mehta@probeps.com",
-        "category": "AR",
-    },
-    {
-        "name": "Vikram Shah",
-        "email": "vikram.shah@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "rahul.mehta@probeps.com",
-        "category": "AR",
-    },
-    {
-        "name": "Neha Kapoor",
-        "email": "neha.kapoor@probeps.com",
-        "password": "Welcome@123",
-        "role": "Team Lead",
-        "manager_email": "manager@probeps.com",
-        "category": "Payment Posting",
-    },
-    {
-        "name": "Rohan Gupta",
-        "email": "rohan.gupta@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "neha.kapoor@probeps.com",
-        "category": "Payment Posting",
-    },
-    {
-        "name": "Isha Malhotra",
-        "email": "isha.malhotra@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "neha.kapoor@probeps.com",
-        "category": "Payment Posting",
-    },
-    {
-        "name": "Arjun Verma",
-        "email": "arjun.verma@probeps.com",
-        "password": "Welcome@123",
-        "role": "Team Lead",
-        "manager_email": "manager@probeps.com",
-        "category": "PA",
-    },
-    {
-        "name": "Kavya Iyer",
-        "email": "kavya.iyer@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "arjun.verma@probeps.com",
-        "category": "PA",
-    },
-    {
-        "name": "Aditya Kumar",
-        "email": "aditya.kumar@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "arjun.verma@probeps.com",
-        "category": "PA",
-    },
-    {
-        "name": "Simran Kaur",
-        "email": "simran.kaur@probeps.com",
-        "password": "Welcome@123",
-        "role": "Team Lead",
-        "manager_email": "manager@probeps.com",
-        "category": "Charge Entry",
-    },
-    {
-        "name": "Karan Singh",
-        "email": "karan.singh@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "simran.kaur@probeps.com",
-        "category": "Charge Entry",
-    },
-    {
-        "name": "Divya Pillai",
-        "email": "divya.pillai@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "simran.kaur@probeps.com",
-        "category": "Charge Entry",
-    },
-    {
-        "name": "Farhan Ali",
-        "email": "farhan.ali@probeps.com",
-        "password": "Welcome@123",
-        "role": "Team Lead",
-        "manager_email": "manager@probeps.com",
-        "category": "Claims",
-    },
-    {
-        "name": "Meera Joshi",
-        "email": "meera.joshi@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "farhan.ali@probeps.com",
-        "category": "Claims",
-    },
-    {
-        "name": "Sanjay Reddy",
-        "email": "sanjay.reddy@probeps.com",
-        "password": "Welcome@123",
-        "role": "Staff",
-        "manager_email": "manager@probeps.com",
-        "teamlead_email": "farhan.ali@probeps.com",
-        "category": "Claims",
-    },
-    {
-        "name": "Client",
-        "email": "viewer@probeps.com",
-        "password": "Viewer@123",
-        "role": "Client",
-    },
-    {
-        "name": "Sophia Turner",
-        "email": "sophia.turner@probeps.com",
-        "password": "Welcome@123",
-        "role": "Client",
-    },
 ]
 
 # Demo "Reporting Manager" assignments — the Organization Structure's
 # HR/people-management responsibility layered onto an existing Account
-# Manager, keyed by (account_manager_email, category name). Purely for
-# out-of-the-box demo data illustrating the feature; real assignments
-# are made through the admin-only /reporting-managers endpoints, not
-# by editing this list.
-DEMO_REPORTING_MANAGERS = [
-    ("manager@probeps.com", "Eligibility"),
-]
+# Manager, keyed by (account_manager_email, category name). Real
+# assignments are made through the admin-only /reporting-managers
+# endpoints, not by editing this list. Left empty: its one entry
+# referenced the now-removed manager@probeps.com demo fixture (see
+# DEMO_USERS' own comment) — real reporting-manager assignments should
+# be made against real employees via those endpoints instead.
+DEMO_REPORTING_MANAGERS = []
 
 # Emails used by an earlier seed run that email-validator rejects
 # (reserved/special-use TLDs). Renamed in place if found.
@@ -446,10 +247,12 @@ LEGACY_EMAIL_FIXES = {
 
 # Display names left over from before the "Manager" -> "Account Manager"
 # role rename. Fixed in place the same way LEGACY_EMAIL_FIXES is, keyed
-# by email since that's the stable identifier across reseeds.
-LEGACY_NAME_FIXES = {
-    "manager@probeps.com": "Account Manager",
-}
+# by email since that's the stable identifier across reseeds. Empty
+# now that the demo manager@probeps.com fixture this once corrected has
+# been removed (see DEMO_USERS' own comment) — kept as a dict (not
+# deleted outright) since the mechanism itself is still valid for any
+# future rename needing this exact fix-in-place pattern.
+LEGACY_NAME_FIXES = {}
 
 # Permissions removed entirely as concepts during the RBAC redesign
 # (not moved to override-only — deleted). Role -> Permission grants

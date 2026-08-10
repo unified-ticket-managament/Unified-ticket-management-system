@@ -127,6 +127,25 @@ class User(TimestampMixin, Base):
     # e8566a9089a3_add_designation_to_users.py.
     designation: Mapped[str | None] = mapped_column(String(150), nullable=True)
 
+    # The official, human-readable Employee ID from the company's HR/
+    # payroll master data (e.g. "266", "2") — deliberately NOT the
+    # primary/foreign key anywhere; `user_id` (UUID) remains the sole
+    # canonical identifier for every relationship (assignment,
+    # ownership, audit, reporting hierarchy, authentication). This is
+    # an additional, purely display/search identifier layered on top,
+    # stored as the exact string the official source gives (never
+    # zero-padded or otherwise reformatted, never derived from the
+    # UUID, never invented for an account with no official record —
+    # see scripts/org_seed/backfill_employee_number.py, the one-time,
+    # non-destructive script that populates it for already-imported
+    # real employees by matching source_data.py's EMPLOYEES against
+    # this table's existing rows). Nullable and unique: most demo/
+    # system accounts (Super Admin, local dev fixtures, ...) have no
+    # official employee record and therefore no value here.
+    employee_number: Mapped[str | None] = mapped_column(
+        String(20), unique=True, nullable=True
+    )
+
     # Preference fields — nullable with a server-side default matching
     # what the frontend's client-only store used to default these to,
     # so an existing user's effective preference doesn't change the

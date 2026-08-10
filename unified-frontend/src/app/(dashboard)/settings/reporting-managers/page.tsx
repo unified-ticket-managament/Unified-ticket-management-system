@@ -179,7 +179,8 @@ export default function ReportingManagersPage() {
                 <SelectContent>
                   {accountManagers.map((user) => (
                     <SelectItem key={user.user_id} value={user.user_id}>
-                      {user.name} — {user.email}
+                      {user.employee_number ? `${user.name} (${user.employee_number})` : user.name} —{" "}
+                      {user.email}
                     </SelectItem>
                   ))}
                 </SelectContent>

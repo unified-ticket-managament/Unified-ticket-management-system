@@ -73,7 +73,8 @@ def _to_assignable_group(role_name: str, users: list[User]) -> AssignableGroup:
     return AssignableGroup(
         role=role_name,
         users=[
-            AssignableUserSummary(user_id=u.user_id, name=u.name) for u in users
+            AssignableUserSummary(user_id=u.user_id, name=u.name, employee_number=u.employee_number)
+            for u in users
         ],
     )
 
@@ -1159,7 +1160,11 @@ class EscalationService:
             groups.append(_to_assignable_group(STAFF_ROLE_NAME, staff))
 
         return AssignableAgentsResponse(
-            me=AssignableUserSummary(user_id=current_user.user_id, name=current_user.name),
+            me=AssignableUserSummary(
+                user_id=current_user.user_id,
+                name=current_user.name,
+                employee_number=current_user.employee_number,
+            ),
             groups=[g for g in groups if g.users],
         )
 

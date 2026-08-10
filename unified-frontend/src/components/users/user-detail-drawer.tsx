@@ -123,6 +123,12 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
             </div>
 
             <dl className="mt-6 grid grid-cols-2 gap-4 rounded-xl border border-border p-4">
+              {user.employee_number && (
+                <div>
+                  <dt className="text-xs text-muted-foreground">Employee ID</dt>
+                  <dd className="mt-1 text-sm font-medium">{user.employee_number}</dd>
+                </div>
+              )}
               <div>
                 <dt className="text-xs text-muted-foreground">Role</dt>
                 <dd className="mt-1">

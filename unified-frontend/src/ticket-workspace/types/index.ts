@@ -126,6 +126,7 @@ export interface AgentSummary {
   user_id: string;
   name: string;
   email: string;
+  employee_number?: string | null;
 }
 
 // Who the current user may assign a brand-new ticket to on the
@@ -134,6 +135,9 @@ export interface AgentSummary {
 export interface AssignableUserSummary {
   user_id: string;
   name: string;
+  // Official, human-readable Employee ID (e.g. "266") — display only,
+  // the picker's own selected value is always user_id.
+  employee_number?: string | null;
 }
 
 export interface AssignableGroup {
@@ -160,6 +164,7 @@ export interface CurrentUser {
   is_active: boolean;
   permissions: string[];
   scoped_permissions?: Record<string, string[]>;
+  employee_number?: string | null;
 }
 
 // ==========================================================

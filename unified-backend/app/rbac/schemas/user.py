@@ -20,6 +20,11 @@ class UserBase(BaseModel):
     category_id: UUID | None = None
     is_active: bool = True
 
+    # The official, human-readable Employee ID (e.g. "266") — see
+    # shared_models.models.User's own docstring. Purely additional to
+    # user_id (UUID), never a relational key.
+    employee_number: str | None = None
+
     # -----------------------------
     # Profile fields — see shared_models.models.User's own docstring
     # for why department/team are deliberately independent of
@@ -59,6 +64,7 @@ class UserUpdate(BaseModel):
     teamlead_id: UUID | None = None
     category_id: UUID | None = None
     is_active: bool | None = None
+    employee_number: str | None = None
 
     date_of_birth: date | None = None
     alternate_email: str | None = None

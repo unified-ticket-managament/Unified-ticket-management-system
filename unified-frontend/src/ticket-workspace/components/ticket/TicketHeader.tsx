@@ -97,7 +97,7 @@ export function TicketHeader({ ticket, onActionComplete, onRefresh, isRefreshing
           <ArrowLeft size={14} />
           Back
         </button>
-        <p className="font-mono text-[11px] font-semibold tracking-wide text-accent">
+        <p className="font-mono text-xs font-semibold tracking-wide text-accent">
           {formatTicketNumber(ticket.ticket_number)}
         </p>
         {isEditingTitle ? (

@@ -180,7 +180,9 @@ export default function UsersPage() {
       if (search.trim()) {
         const query = search.toLowerCase();
         return (
-          user.name.toLowerCase().includes(query) || user.email.toLowerCase().includes(query)
+          user.name.toLowerCase().includes(query) ||
+          user.email.toLowerCase().includes(query) ||
+          (user.employee_number?.toLowerCase().includes(query) ?? false)
         );
       }
 
@@ -273,6 +275,13 @@ export default function UsersPage() {
           </div>
         ),
         enableSorting: false,
+      },
+      {
+        accessorKey: "employee_number",
+        header: "Employee ID",
+        cell: ({ row }) => (
+          <span className="text-muted-foreground">{row.original.employee_number ?? "—"}</span>
+        ),
       },
       {
         accessorKey: "name",

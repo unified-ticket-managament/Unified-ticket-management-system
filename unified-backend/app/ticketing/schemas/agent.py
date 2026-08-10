@@ -13,3 +13,4 @@ class AgentSummaryResponse(BaseModel):
     user_id: UUID
     name: str
     email: str
+    employee_number: str | None = None

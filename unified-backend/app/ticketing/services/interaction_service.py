@@ -2075,7 +2075,11 @@ class InteractionService:
         )
 
         return AssignableAgentsResponse(
-            me=AssignableUserSummary(user_id=current_user.user_id, name=current_user.name),
+            me=AssignableUserSummary(
+                user_id=current_user.user_id,
+                name=current_user.name,
+                employee_number=current_user.employee_number,
+            ),
             groups=[g for g in groups if g.users],
         )
 

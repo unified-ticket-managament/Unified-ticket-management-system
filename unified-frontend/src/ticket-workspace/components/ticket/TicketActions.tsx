@@ -17,6 +17,7 @@ import { SelectInput, TextArea } from "@tw/components/common/FormField";
 import { FileDropzone } from "@tw/components/common/FileDropzone";
 import { EditAccessPanel } from "@tw/components/ticket/EditAccessPanel";
 import { validateFiles } from "@tw/lib/attachmentMeta";
+import { formatAssigneeLabel } from "@tw/lib/format";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import {
   changeTicketPriority,
@@ -518,7 +519,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
               onChange={(e) => setNewAgentId(e.target.value)}
             >
               {canSelfAssignViaTransfer && transferMe && (
-                <option value={transferMe.user_id}>{`Myself (${transferMe.name})`}</option>
+                <option value={transferMe.user_id}>{`Myself (${formatAssigneeLabel(transferMe)})`}</option>
               )}
               {transferGroups.map(
                 (group) =>
@@ -526,7 +527,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
                     <optgroup key={group.role} label={group.role}>
                       {group.users.map((user) => (
                         <option key={user.user_id} value={user.user_id}>
-                          {user.name}
+                          {formatAssigneeLabel(user)}
                         </option>
                       ))}
                     </optgroup>

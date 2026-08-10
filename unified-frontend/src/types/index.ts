@@ -14,6 +14,10 @@ export interface AuthUser {
   permissions: string[];
   override_permissions?: string[];
   scoped_permissions?: Record<string, string[]>;
+  // Official, human-readable Employee ID from HR master data (e.g.
+  // "266") — display/search only, never a relational key. null/absent
+  // for accounts with no official employee record.
+  employee_number?: string | null;
   date_of_birth?: string | null;
   alternate_email?: string | null;
   phone_number?: string | null;
@@ -39,6 +43,7 @@ export interface User {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  employee_number?: string | null;
   date_of_birth: string | null;
   alternate_email: string | null;
   phone_number: string | null;

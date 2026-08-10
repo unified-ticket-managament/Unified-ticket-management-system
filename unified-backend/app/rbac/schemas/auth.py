@@ -30,6 +30,11 @@ class CurrentUser(BaseModel):
     override_permissions: list[str] = []
     scoped_permissions: dict[str, list[str]] = {}
 
+    # Official, human-readable Employee ID — see shared_models.models.
+    # User's own docstring. Additive/optional so a client built before
+    # this field existed keeps working unchanged.
+    employee_number: str | None = None
+
     # Profile fields — see shared_models.models.User's own docstring.
     # All optional so this response shape stays backward compatible.
     date_of_birth: date | None = None

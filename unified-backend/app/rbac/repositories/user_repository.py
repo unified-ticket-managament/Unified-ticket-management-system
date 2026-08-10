@@ -90,6 +90,7 @@ class UserRepository(BaseRepository):
             search_filter = or_(
                 User.name.ilike(pattern),
                 User.email.ilike(pattern),
+                User.employee_number.ilike(pattern),
             )
 
             query = query.where(search_filter)

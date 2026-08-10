@@ -5,6 +5,7 @@ import { Button } from "@tw/components/common/Button";
 import { Modal } from "@tw/components/common/Modal";
 import { SelectInput } from "@tw/components/common/FormField";
 import type { AssignableGroup, AssignableUserSummary } from "@tw/types";
+import { formatAssigneeLabel } from "@tw/lib/format";
 
 interface AcknowledgeAssignModalProps {
   open: boolean;
@@ -69,12 +70,12 @@ export function AcknowledgeAssignModal({
         <option value="" disabled>
           Select an assignee…
         </option>
-        {me && <option value={me.user_id}>{`Myself (${me.name})`}</option>}
+        {me && <option value={me.user_id}>{`Myself (${formatAssigneeLabel(me)})`}</option>}
         {groups.map((group) => (
           <optgroup key={group.role} label={group.role}>
             {group.users.map((user) => (
               <option key={user.user_id} value={user.user_id}>
-                {user.name}
+                {formatAssigneeLabel(user)}
               </option>
             ))}
           </optgroup>

@@ -8,6 +8,11 @@ class AssignableUserSummary(BaseModel):
 
     user_id: UUID
     name: str
+    # Official, human-readable Employee ID (e.g. "266") — display only,
+    # never sent back to the server; the picker's selected *value*
+    # remains user_id. None for accounts with no official employee
+    # record (demo/system accounts).
+    employee_number: str | None = None
 
 
 class AssignableGroup(BaseModel):
