@@ -580,6 +580,11 @@ export interface TicketInteractionResponse extends InteractionResponse {
 export interface InternalNoteRequest {
   subject: string;
   note: string;
+  // Any active platform user, regardless of role/hierarchy — see
+  // TicketComposer.tsx's UserMultiSelect "To" field. Optional: an
+  // empty/omitted list falls back to the backend's pre-existing
+  // stakeholder-notification behavior.
+  recipient_user_ids?: string[];
 }
 
 export interface InternalNoteResponse {
@@ -587,6 +592,21 @@ export interface InternalNoteResponse {
   ticket_id: string;
   message: string;
   created_at: string;
+  recipient_user_ids?: string[];
+  recipient_names?: string[];
+}
+
+// One eligible Internal Note "To" option — every active platform
+// user, company-wide, regardless of role/reporting-hierarchy. Backed
+// by GET /tickets/internal-notes/recipients, deliberately not RBAC's
+// own GET /api/v1/users (hierarchy-scoped for Staff/Team Lead/Account
+// Manager) or GET /api/v1/roles (role:view-gated, which Staff doesn't
+// hold by default) — see that route's own docstring.
+export interface InternalNoteRecipientCandidate {
+  user_id: string;
+  name: string;
+  email: string;
+  role_name: string;
 }
 
 export interface ReplyRequest {

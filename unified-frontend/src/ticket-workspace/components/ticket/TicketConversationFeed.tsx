@@ -4,7 +4,12 @@ import { EmptyState } from "@tw/components/common/EmptyState";
 import { AttachmentList } from "@tw/components/common/AttachmentList";
 import { ShowMoreToggle } from "@tw/components/common/ShowMoreToggle";
 import { useCollapsibleMessage } from "@tw/hooks/useCollapsibleMessage";
-import { RETIRED_INTERACTION_TYPES, metaFor, summarize } from "@tw/lib/interactionMeta";
+import {
+  RETIRED_INTERACTION_TYPES,
+  internalNoteRecipientNames,
+  metaFor,
+  summarize,
+} from "@tw/lib/interactionMeta";
 import { shortId } from "@tw/lib/format";
 import type { InteractionResponse } from "@tw/types";
 
@@ -51,6 +56,7 @@ interface FeedItemProps {
 function FeedItem({ item, isLast, onHide, isHiding, onItemClick }: FeedItemProps) {
   const meta = metaFor(item.interaction_type);
   const summary = summarize(item);
+  const recipientNames = internalNoteRecipientNames(item);
   const { ref, isExpanded, isOverflowing, toggle, clampClassName } = useCollapsibleMessage<HTMLParagraphElement>([
     summary,
   ]);
@@ -105,6 +111,9 @@ function FeedItem({ item, isLast, onHide, isHiding, onItemClick }: FeedItemProps
           <p className="text-[11px] text-muted">
             {item.performed_by
               ? `Performed by ${item.performed_by_name ?? shortId(item.performed_by)}`
+              : ""}
+            {recipientNames.length > 0
+              ? `${item.performed_by ? " · " : ""}To: ${recipientNames.join(", ")}`
               : ""}
           </p>
           {onHide && item.is_visible && !RETIRED_INTERACTION_TYPES.has(item.interaction_type) && (

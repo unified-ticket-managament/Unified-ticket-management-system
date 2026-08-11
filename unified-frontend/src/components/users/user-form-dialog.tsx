@@ -39,6 +39,10 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
       is_active: z.boolean(),
       manager_id: z.string().optional(),
       teamlead_id: z.string().optional(),
+      // Organization-Chart-only field, independent of manager_id/
+      // teamlead_id above and their role-specific required-ness rules
+      // below — unrestricted by role, always optional.
+      reporting_manager_id: z.string().optional(),
       category_id: z.string().optional(),
       password:
         mode === "create"
@@ -142,6 +146,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
       is_active: true,
       manager_id: "",
       teamlead_id: "",
+      reporting_manager_id: "",
       category_id: "",
     },
   });
@@ -156,6 +161,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
         is_active: user?.is_active ?? true,
         manager_id: user?.manager_id ?? "",
         teamlead_id: user?.teamlead_id ?? "",
+        reporting_manager_id: user?.reporting_manager_id ?? "",
         category_id: user?.category_id ?? "",
       });
       setShowPassword(false);
@@ -166,6 +172,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
   const isActive = watch("is_active");
   const managerId = watch("manager_id");
   const teamleadId = watch("teamlead_id");
+  const reportingManagerId = watch("reporting_manager_id");
   const categoryId = watch("category_id");
 
   const roleName = roleMap.get(roleId);
@@ -177,10 +184,15 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
   const showClientHierarchy = roleName === ROLE_NAMES.CLIENT;
   const showHierarchyFields = showStaffHierarchy || showTeamLeadHierarchy || showClientHierarchy;
 
+  // Enabled whenever the dialog is open (not gated on
+  // showHierarchyFields) — the Reporting Manager picker below is
+  // unrestricted by role and needs this list regardless of which role
+  // is selected, unlike the Account Manager/Team Lead pickers it's
+  // fetched alongside.
   const hierarchyUsersQuery = useQuery({
     queryKey: ["users-hierarchy-options"],
     queryFn: () => userService.list({ page_size: 100 }),
-    enabled: open && showHierarchyFields,
+    enabled: open,
   });
 
   // Only Staff/Team Lead need a Work Category — Client has no
@@ -203,6 +215,9 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
     currentUser?.role === ROLE_NAMES.ACCOUNT_MANAGER
       ? teamLeadOptionsRaw.filter((u) => u.manager_id === currentUser.user_id)
       : teamLeadOptionsRaw;
+  // Unrestricted by role — any active user (other than the one being
+  // edited) may be picked as the Organization Chart reporting manager.
+  const reportingManagerOptions = allUsers.filter((u) => u.user_id !== user?.user_id);
 
   useEffect(() => {
     if (!showHierarchyFields) {
@@ -235,6 +250,10 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
         ...(needsCategory ? { category_id: values.category_id || null } : {}),
       };
 
+      // Unconditional, unrestricted by role — independent of
+      // hierarchyFields' role-specific manager_id/teamlead_id rules.
+      const reportingManagerField = { reporting_manager_id: values.reporting_manager_id || null };
+
       if (mode === "edit" && user) {
         return userService.update(user.user_id, {
           name: values.name,
@@ -242,6 +261,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
           role_id: values.role_id,
           is_active: values.is_active,
           ...hierarchyFields,
+          ...reportingManagerField,
         });
       }
 
@@ -252,6 +272,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
         role_id: values.role_id,
         is_active: values.is_active,
         ...hierarchyFields,
+        ...reportingManagerField,
       });
     },
     onSuccess: () => {
@@ -523,6 +544,30 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
               </div>
             </div>
           )}
+
+          <div className="space-y-2 rounded-lg border border-dashed border-border p-3">
+            <Label>Reporting Manager (Organization Chart)</Label>
+            <Select
+              value={reportingManagerId || ""}
+              onValueChange={(value) => setValue("reporting_manager_id", value, { shouldValidate: true })}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select a reporting manager (optional)" />
+              </SelectTrigger>
+              <SelectContent>
+                {reportingManagerOptions.map((u) => (
+                  <SelectItem key={u.user_id} value={u.user_id}>
+                    {u.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Determines this person&apos;s position in the Organization Chart. Independent of the
+              Account Manager/Team Lead assignment above — any active user, of any role, may be
+              picked. Leave unset if they have no reporting manager (e.g. the top of the company).
+            </p>
+          </div>
 
           <div className="flex items-center justify-between rounded-lg border border-border p-3">
             <div>

@@ -153,6 +153,32 @@ class UserRepository:
         )
         return set(result.scalars().all())
 
+    async def list_all_active(self) -> list[User]:
+        """
+        Every active user, any role, company-wide — unlike every other
+        listing method on this class (and RBAC's own `UserService.
+        list_users`, which scopes Staff to themselves and Account
+        Manager/Team Lead to their reporting subtree), this one is
+        deliberately unscoped. Backs the Internal Note "To" recipient
+        picker (see InteractionService.list_internal_note_recipients),
+        which by explicit product requirement must let any eligible
+        active platform user address any other — reusing RBAC's own
+        `GET /api/v1/users` there would have inherited its
+        hierarchy-scoping (wrong for this feature) and its `role:view`-
+        gated `GET /api/v1/roles` call for role labels (which most
+        roles, Staff included, don't hold by default) — neither of
+        which this feature is allowed to change, since doing so would
+        alter RBAC's own general-purpose user-management behavior.
+        """
+
+        result = await self.db.execute(
+            select(User)
+            .options(joinedload(User.role))
+            .where(User.is_active.is_(True))
+            .order_by(User.name)
+        )
+        return list(result.unique().scalars().all())
+
     async def list_active_by_role_name(self, role_name: str) -> list[User]:
         result = await self.db.execute(
             select(User)

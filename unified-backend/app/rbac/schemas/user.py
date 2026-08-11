@@ -14,6 +14,11 @@ class UserBase(BaseModel):
     role_id: UUID
     manager_id: UUID | None = None
     teamlead_id: UUID | None = None
+    # Organization-Chart-only reporting relationship — separate from
+    # manager_id/teamlead_id above, which keep their existing meaning
+    # and every existing consumer unchanged. Unrestricted by role; see
+    # OrganizationService's own docstring.
+    reporting_manager_id: UUID | None = None
     # Work-specialization category — required for Staff/Team Lead,
     # enforced in UserService.create_user (not here, since the
     # requirement depends on which role_id was chosen).
@@ -62,6 +67,7 @@ class UserUpdate(BaseModel):
     role_id: UUID | None = None
     manager_id: UUID | None = None
     teamlead_id: UUID | None = None
+    reporting_manager_id: UUID | None = None
     category_id: UUID | None = None
     is_active: bool | None = None
     employee_number: str | None = None

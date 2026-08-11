@@ -47,6 +47,21 @@
     --color-warning: 245 158 11;
     --color-danger: 239 68 68;
     --color-info: 59 130 246;
+
+    /* Org-chart department chip colors (see org-chart/department-colors.ts) —
+       9 distinct hues disjoint from the semantic tokens above (blue=primary,
+       red=danger, green=success, amber=warning, reserved for the search-match
+       ring), plus a 10th warm-gray fallback for an unrecognized department string. */
+    --dept-ar: 99 102 241;              /* indigo */
+    --dept-referral: 244 63 94;         /* rose */
+    --dept-authorization: 249 115 22;   /* orange */
+    --dept-iv: 6 182 212;               /* cyan */
+    --dept-credentialing: 139 92 246;   /* violet */
+    --dept-coding: 217 70 239;          /* fuchsia */
+    --dept-payment-posting: 20 184 166; /* teal */
+    --dept-quality: 132 204 22;         /* lime */
+    --dept-leadership: 100 116 139;     /* slate */
+    --dept-other: 120 113 108;          /* stone (fallback) */
   }
 
   .dark {
@@ -83,6 +98,17 @@
     --color-warning: 245 158 11;
     --color-danger: 239 68 68;
     --color-info: 59 130 246;
+
+    --dept-ar: 99 102 241;
+    --dept-referral: 244 63 94;
+    --dept-authorization: 249 115 22;
+    --dept-iv: 6 182 212;
+    --dept-credentialing: 139 92 246;
+    --dept-coding: 217 70 239;
+    --dept-payment-posting: 20 184 166;
+    --dept-quality: 132 204 22;
+    --dept-leadership: 100 116 139;
+    --dept-other: 120 113 108;
   }
 
   * {

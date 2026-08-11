@@ -239,6 +239,34 @@ class UserRepository(BaseRepository):
 
         return list(result.scalars().all())
 
+    async def get_direct_reports(
+        self,
+        user_id: UUID,
+    ) -> list[User]:
+        """
+        Every active user whose `reporting_manager_id` points at
+        `user_id` — the Organization Chart's sole source of truth (see
+        OrganizationService.get_chart_for_user). Deliberately NOT
+        `manager_id`/`teamlead_id` (those still drive
+        get_by_manager_and_role/get_by_teamlead's role-shaped queries
+        used elsewhere, e.g. get_subordinate_user_ids's permission-
+        override-scoping traversal, which must stay on the old fields
+        unchanged) — `reporting_manager_id` is a separate, unrestricted-
+        by-role column introduced specifically for this chart.
+        """
+
+        result = await self.db.execute(
+            select(User)
+            .options(selectinload(User.role), selectinload(User.category))
+            .where(
+                User.reporting_manager_id == user_id,
+                User.is_active.is_(True),
+            )
+            .order_by(User.name)
+        )
+
+        return list(result.scalars().all())
+
     async def get_by_category(
         self,
         category_id: UUID,

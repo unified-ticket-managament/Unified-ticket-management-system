@@ -1,14 +1,16 @@
 "use client";
 
 import { HierarchyNode } from "../hierarchy-builder";
+import { getDepartmentInfo } from "./department-colors";
 import { NODE_HEIGHT, NODE_WIDTH } from "./layout";
-import { layoutPillRow, layoutPill, truncateToWidth } from "./svg-text";
+import { approxTextWidth, layoutPillRow, layoutPill, truncateToWidth } from "./svg-text";
 
 interface OrgChartNodeCardProps {
   node: HierarchyNode;
   x: number;
   y: number;
   isSelected: boolean;
+  isMatched: boolean;
   hasChildren: boolean;
   isCollapsed: boolean;
   isDimmed: boolean;
@@ -46,6 +48,7 @@ export function OrgChartNodeCard({
   x,
   y,
   isSelected,
+  isMatched,
   hasChildren,
   isCollapsed,
   isDimmed,
@@ -58,7 +61,14 @@ export function OrgChartNodeCard({
   const initial = node.name.charAt(0).toUpperCase();
   const name = truncateToWidth(node.name, 13, NODE_WIDTH - 20);
   const email = truncateToWidth(node.email, 10.5, NODE_WIDTH - 20);
-  const department = node.department ? truncateToWidth(node.department, 10, NODE_WIDTH - 20) : null;
+
+  const deptInfo = getDepartmentInfo(node.department);
+  const deptLabel = truncateToWidth(node.department ?? deptInfo.label, 10, NODE_WIDTH - 40);
+  const deptTextWidth = approxTextWidth(deptLabel, 10);
+  const DEPT_DOT_R = 3;
+  const DEPT_DOT_GAP = 5;
+  const deptChipWidth = DEPT_DOT_R * 2 + DEPT_DOT_GAP + deptTextWidth;
+  const deptStartX = -deptChipWidth / 2;
 
   const badgeRow = layoutPillRow(
     [layoutPill(node.role, 10, 8), layoutPill(node.is_active ? "Active" : "Inactive", 10, 8)],
@@ -89,6 +99,24 @@ export function OrgChartNodeCard({
       className={["cursor-pointer", isDimmed ? "opacity-30" : "opacity-100"].join(" ")}
       style={{ transition: "opacity 150ms ease" }}
     >
+      {/* Search-match ring — an independent sibling so it dims/undims
+          along with the rest of the node via the parent <g>'s opacity,
+          and its 4px outward offset keeps it clear of the card's own
+          border (which separately reflects isMe/isSelected). */}
+      {isMatched && (
+        <rect
+          x={-HALF_W - 4}
+          y={-HALF_H - 4}
+          width={NODE_WIDTH + 8}
+          height={NODE_HEIGHT + 8}
+          rx={18}
+          fill="none"
+          className="stroke-warning"
+          strokeWidth={2}
+          strokeDasharray="6 4"
+        />
+      )}
+
       {/* Card background + border */}
       <rect
         x={-HALF_W}
@@ -182,12 +210,19 @@ export function OrgChartNodeCard({
         );
       })}
 
-      {/* Department */}
-      {department && (
-        <text x={0} y={DEPT_Y} textAnchor="middle" className="fill-muted-foreground" style={{ fontSize: 10 }}>
-          {department}
+      {/* Department chip: colored dot + label */}
+      <g transform={`translate(0,${DEPT_Y})`}>
+        <circle cx={deptStartX + DEPT_DOT_R} cy={-3.5} r={DEPT_DOT_R} className={deptInfo.fillClass} />
+        <text
+          x={deptStartX + DEPT_DOT_R * 2 + DEPT_DOT_GAP}
+          y={0}
+          textAnchor="start"
+          className="fill-muted-foreground"
+          style={{ fontSize: 10 }}
+        >
+          {deptLabel}
         </text>
-      )}
+      </g>
 
       {/* Reporting-Manager-for pills */}
       {rmForRow.map(({ pill, centerX }) => (

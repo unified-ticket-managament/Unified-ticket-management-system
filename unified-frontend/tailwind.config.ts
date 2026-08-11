@@ -79,6 +79,23 @@ const config: Config = {
         warning: "rgb(var(--color-warning) / <alpha-value>)",
         danger: "rgb(var(--color-danger) / <alpha-value>)",
         info: "rgb(var(--color-info) / <alpha-value>)",
+
+        // Org-chart department chip colors — see org-chart/department-colors.ts,
+        // which is the only place these class names are referenced (as
+        // literal strings, so Tailwind's JIT scan of src/components/**
+        // picks them up despite the lookup-by-key indirection).
+        dept: {
+          ar: "rgb(var(--dept-ar) / <alpha-value>)",
+          referral: "rgb(var(--dept-referral) / <alpha-value>)",
+          authorization: "rgb(var(--dept-authorization) / <alpha-value>)",
+          iv: "rgb(var(--dept-iv) / <alpha-value>)",
+          credentialing: "rgb(var(--dept-credentialing) / <alpha-value>)",
+          coding: "rgb(var(--dept-coding) / <alpha-value>)",
+          "payment-posting": "rgb(var(--dept-payment-posting) / <alpha-value>)",
+          quality: "rgb(var(--dept-quality) / <alpha-value>)",
+          leadership: "rgb(var(--dept-leadership) / <alpha-value>)",
+          other: "rgb(var(--dept-other) / <alpha-value>)",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",

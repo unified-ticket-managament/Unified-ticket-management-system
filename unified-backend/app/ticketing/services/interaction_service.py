@@ -49,6 +49,7 @@ from app.ticketing.schemas.assignment import (
 )
 from app.ticketing.schemas.note import (
     InternalNoteCreate,
+    InternalNoteRecipientCandidate,
     InternalNoteResponse,
 )
 from app.ticketing.schemas.ticket import TicketUpdate
@@ -941,19 +942,47 @@ class InteractionService:
             current_user
         )
 
+        # Recipient selection is deliberately unrestricted by
+        # hierarchy/role/department/team/category — any active
+        # platform user the caller names is eligible. Only real
+        # eligibility rules apply: the user must actually exist and be
+        # active, and the sender is silently dropped from their own
+        # recipient list (mirrors the pre-existing "don't select
+        # yourself" UI convention rather than introducing a new one).
+        # Order is preserved (not just deduped) so a snapshot of
+        # "who this was sent to, in the order the sender picked them"
+        # survives on the Interaction even if a recipient is later
+        # renamed/deactivated.
+        recipient_ids: list[UUID] = []
+        recipient_names: list[str] = []
+        seen_recipient_ids: set[UUID] = set()
+        for candidate_id in request.recipient_user_ids:
+            if candidate_id in seen_recipient_ids or candidate_id == current_user.user_id:
+                continue
+            seen_recipient_ids.add(candidate_id)
+            candidate = await self.user_repository.get_by_id(candidate_id)
+            if candidate is None or not candidate.is_active:
+                continue
+            recipient_ids.append(candidate_id)
+            recipient_names.append(candidate.name)
+
+        payload: dict[str, Any] = {"note": request.note}
+        if recipient_ids:
+            payload["recipient_user_ids"] = [str(uid) for uid in recipient_ids]
+            payload["recipient_names"] = recipient_names
+
         interaction = await self._create_ticket_interaction(
             ticket_id=ticket_id,
             interaction_type="INTERNAL_NOTE",
             direction=InteractionDirection.INTERNAL,
-            payload={
-                "note": request.note,
-            },
+            payload=payload,
             performed_by=actor_id,
             subject=request.subject,
         )
 
         # Metadata only — the note text itself is never written to
-        # the audit trail.
+        # the audit trail. Recipient ids are metadata (who it was
+        # addressed to), not note content, so they're safe to include.
         await AuditLogService.log_event(
             self.interaction_repository.db,
             entity_type=AuditEntityType.INTERACTION,
@@ -962,18 +991,32 @@ class InteractionService:
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            new_values={"ticket_id": ticket_id},
+            new_values={
+                "ticket_id": ticket_id,
+                "recipient_user_ids": [str(uid) for uid in recipient_ids],
+            },
         )
 
         if self.notification_service is not None:
-            stakeholder_ids = await self._resolve_ticket_stakeholder_ids(
-                ticket, exclude_user_id=current_user.user_id
+            # A note addressed to specific recipients is delivered
+            # only to them — never to the fixed stakeholder set below,
+            # so it stays out of an unrelated stakeholder's System
+            # Mail. Falls back to the pre-existing stakeholder
+            # resolution only when the caller didn't address it to
+            # anyone (empty recipient list), preserving old behavior
+            # for any caller that never adopted the recipient field.
+            recipients_for_notify = (
+                recipient_ids
+                if recipient_ids
+                else await self._resolve_ticket_stakeholder_ids(
+                    ticket, exclude_user_id=current_user.user_id
+                )
             )
-            if stakeholder_ids:
+            if recipients_for_notify:
                 await self.notification_service.notify(
-                    stakeholder_ids,
+                    recipients_for_notify,
                     NotificationType.INTERNAL_NOTE_ADDED,
-                    title="A new internal note was added",
+                    title=f"Internal note from {actor_name or 'a teammate'}",
                     message=f"{ticket.title}: {request.subject}",
                     link=f"/tickets/{ticket_id}",
                     related_entity_type="ticket",
@@ -990,7 +1033,37 @@ class InteractionService:
 
             created_at=interaction.created_at,
 
+            recipient_user_ids=recipient_ids,
+
+            recipient_names=recipient_names,
+
         )
+
+    # ---------------------------------------------------------
+    # Internal Note recipient candidates ("To" picker)
+    # ---------------------------------------------------------
+
+    async def list_internal_note_recipients(self) -> list[InternalNoteRecipientCandidate]:
+        """
+        Every active platform user, any role, eligible as an Internal
+        Note "To" recipient — no ticket context, no hierarchy scoping,
+        and no extra permission beyond already being an authenticated
+        agent (the route this backs is already gated by
+        get_current_agent, the same bar every other ticketing route
+        clears). See UserRepository.list_all_active's own docstring
+        for why this doesn't just call RBAC's GET /api/v1/users.
+        """
+
+        users = await self.user_repository.list_all_active()
+        return [
+            InternalNoteRecipientCandidate(
+                user_id=user.user_id,
+                name=user.name,
+                email=user.email,
+                role_name=user.role.name if user.role is not None else "Unknown",
+            )
+            for user in users
+        ]
 
     # ---------------------------------------------------------
     # Reply To Client

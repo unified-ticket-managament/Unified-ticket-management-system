@@ -68,6 +68,7 @@ from app.ticketing.schemas.interaction import (
 from app.ticketing.schemas.assignment import AssignableAgentsResponse
 from app.ticketing.schemas.note import (
     InternalNoteCreate,
+    InternalNoteRecipientsResponse,
     InternalNoteResponse,
 )
 from app.ticketing.schemas.ticket import (
@@ -336,6 +337,14 @@ async def add_internal_note(
         edit_access_repository=edit_access_repository,
         escalation_service=build_escalation_service(db),
         client_repository=client_repository,
+        # Pre-existing gap, unrelated to the escalation/edit-access
+        # wiring above: this route never constructed a
+        # NotificationService at all, so INTERNAL_NOTE_ADDED never
+        # actually fired (bell, System Mail, or otherwise) despite
+        # add_internal_note's own notify() call — `self.notification_
+        # service is not None` was always False for every real request
+        # through this route.
+        notification_service=NotificationService(NotificationRepository(db)),
     )
 
     return await service.add_internal_note(
@@ -343,6 +352,33 @@ async def add_internal_note(
         request=request,
         current_user=current_user,
     )
+
+
+@router.get(
+    "/internal-notes/recipients",
+    response_model=InternalNoteRecipientsResponse,
+)
+async def list_internal_note_recipients(
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Backs the Internal Note "To" picker: every active platform user,
+    any role, with no hierarchy/category scoping — deliberately not
+    RBAC's own GET /api/v1/users (hierarchy-scoped for Staff/Team
+    Lead/Account Manager) or GET /api/v1/roles (role:view-gated, which
+    Staff doesn't hold by default). See UserRepository.list_all_active
+    and InteractionService.list_internal_note_recipients.
+    """
+
+    service = InteractionService(
+        interaction_repository=InteractionRepository(db),
+        ticket_repository=TicketRepository(db),
+        user_repository=UserRepository(db),
+    )
+
+    recipients = await service.list_internal_note_recipients()
+    return InternalNoteRecipientsResponse(recipients=recipients)
 
 
 # =========================================================

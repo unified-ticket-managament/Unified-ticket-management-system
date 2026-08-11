@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
@@ -175,13 +175,32 @@ async def list_users(
 async def get_organization_chart(
     service: OrganizationService = Depends(get_organization_service),
     current_user=Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Returns the organization hierarchy chart centered on the
     currently authenticated user.
+
+    Deliberately re-fetches a real, DB-backed User row rather than
+    trusting `current_user` as-is: on an RBAC-cache hit (see
+    app/dependencies/auth.py's `_build_transient_user`), `current_user`
+    is a transient object reconstructed straight from JWT claims that
+    only ever populates the handful of fields ticketing code reads
+    (role, category, permissions, ...) — it never set
+    `reporting_manager_id` at all, so every cache-hit request (i.e.
+    most of them, after a session's first) saw it as `None` regardless
+    of the real value, making the chart wrongly report "no reporting
+    manager" for anyone whose session happened to be cache-warm. This
+    is scoped to just this one route — the RBAC cache/JWT/transient-
+    user reconstruction itself is untouched, still correct for every
+    field it was actually built to carry.
     """
 
-    return await service.get_chart_for_user(current_user)
+    real_user = await UserRepository(db).get_by_id(current_user.user_id)
+    if real_user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+    return await service.get_chart_for_user(real_user)
 
 
 # --------------------------------------------------

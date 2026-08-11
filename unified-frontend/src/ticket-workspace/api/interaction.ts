@@ -7,6 +7,7 @@ import type {
   InteractionDirection,
   InteractionResponse,
   InteractionStatus,
+  InternalNoteRecipientCandidate,
   InternalNoteRequest,
   InternalNoteResponse,
   PriorityChangeRequest,
@@ -120,6 +121,14 @@ export async function addInternalNote(
     payload
   );
   return data;
+}
+
+// GET /tickets/internal-notes/recipients
+export async function listInternalNoteRecipients(): Promise<InternalNoteRecipientCandidate[]> {
+  const { data } = await apiClient.get<{ recipients: InternalNoteRecipientCandidate[] }>(
+    "/tickets/internal-notes/recipients"
+  );
+  return data.recipients;
 }
 
 // POST /tickets/{ticket_id}/reply

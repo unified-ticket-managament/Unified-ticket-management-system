@@ -9,8 +9,13 @@ import { UserMultiSelect } from "@tw/components/common/UserMultiSelect";
 import { validateFiles } from "@tw/lib/attachmentMeta";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { listClientContacts } from "@tw/api/clients";
-import { addInternalNote, replyToClient, uploadAttachment } from "@tw/api/interaction";
-import { listRbacRoles, listRbacUsers, type RbacUserSummary } from "@tw/api/rbacUsers";
+import {
+  addInternalNote,
+  listInternalNoteRecipients,
+  replyToClient,
+  uploadAttachment,
+} from "@tw/api/interaction";
+import type { SelectableUser } from "@tw/components/common/UserMultiSelect";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
@@ -27,8 +32,16 @@ function parseEmails(value: string): string[] {
 }
 
 // Fixed display order for the Internal Note "To" dropdown's role
-// groups — independent of whatever order the roles table returns.
-const TO_ROLE_ORDER = ["Super Admin", "Site Lead", "Account Manager", "Team Lead", "Staff"];
+// groups — independent of whatever order the API returns. Every
+// eligible platform role: none is excluded on hierarchy grounds.
+const TO_ROLE_ORDER = [
+  "Super Admin",
+  "Site Lead",
+  "Account Manager",
+  "Team Lead",
+  "Staff",
+  "Client",
+];
 
 interface TicketComposerProps {
   mode: ComposerMode;
@@ -72,14 +85,14 @@ export function TicketComposer({
   // ReplyComposer already uses for POST /tickets/{id}/attachments).
   const [replyFiles, setReplyFiles] = useState<File[]>([]);
 
-  // Internal Note To/CC/BCC — UI-only enhancement: addInternalNote has
-  // no recipient concept on the backend, so none of these three ever
-  // get sent with the request. They just let the author indicate who
-  // the note is really meant for, mirroring the Reply tab's envelope
-  // fields in shape (not in implementation — Reply's own CC/BCC are
-  // plain free-text; these are searchable multi-selects restricted to
-  // internal org members).
-  const [toRoleGroups, setToRoleGroups] = useState<Record<string, RbacUserSummary[]>>({});
+  // Internal Note To/CC/BCC — "To" is a real recipient list now: it's
+  // sent as recipient_user_ids and the backend delivers the note
+  // specifically to those users' Mail > System, on top of its
+  // existing Timeline/Interaction storage (see add_internal_note).
+  // CC/BCC remain the pre-existing UI-only affordance — the backend
+  // has no CC/BCC delivery concept for internal notes, and this pass
+  // deliberately didn't add one (only "To" was in scope).
+  const [toRoleGroups, setToRoleGroups] = useState<Record<string, SelectableUser[]>>({});
   const [noteToIds, setNoteToIds] = useState<string[]>([]);
   const [noteCcIds, setNoteCcIds] = useState<string[]>([]);
   const [noteBccIds, setNoteBccIds] = useState<string[]>([]);
@@ -107,17 +120,17 @@ export function TicketComposer({
 
   useEffect(() => {
     if (activeMode !== "note") return;
-    Promise.all([listRbacUsers(), listRbacRoles()])
-      .then(([users, roles]) => {
-        const roleNameById = new Map(roles.map((r) => [r.role_id, r.name]));
-        const grouped: Record<string, RbacUserSummary[]> = {};
-        users
-          .filter((u) => u.is_active)
-          .forEach((user) => {
-            const roleName = roleNameById.get(user.role_id);
-            if (!roleName) return;
-            (grouped[roleName] ??= []).push(user);
-          });
+    // Every eligible active platform user, unscoped by hierarchy —
+    // see GET /tickets/internal-notes/recipients' own docstring for
+    // why this is a dedicated endpoint rather than RBAC's own
+    // (hierarchy-scoped) GET /api/v1/users + (role:view-gated)
+    // GET /api/v1/roles.
+    listInternalNoteRecipients()
+      .then((candidates) => {
+        const grouped: Record<string, SelectableUser[]> = {};
+        candidates.forEach((candidate) => {
+          (grouped[candidate.role_name] ??= []).push(candidate);
+        });
         setToRoleGroups(grouped);
       })
       .catch(() => setToRoleGroups({}));
@@ -216,7 +229,11 @@ export function TicketComposer({
           bcc: parseEmails(replyBcc),
           attachment_source_interaction_id: attachmentSourceInteractionId,
         })
-      : await runNote(activeTicket.ticket_id, { note: message, subject: noteSubject });
+      : await runNote(activeTicket.ticket_id, {
+          note: message,
+          subject: noteSubject,
+          recipient_user_ids: noteToIds,
+        });
 
     if (result) {
       if (isReply) {
@@ -348,7 +365,7 @@ export function TicketComposer({
             />
             <UserMultiSelect
               label="To"
-              hint="Who this note is meant for — informational only, doesn't change who can see it."
+              hint="Delivered to each selected user's Mail > System. Doesn't grant them ticket access."
               groups={toRoleGroups}
               roleOrder={TO_ROLE_ORDER}
               selectedIds={noteToIds}

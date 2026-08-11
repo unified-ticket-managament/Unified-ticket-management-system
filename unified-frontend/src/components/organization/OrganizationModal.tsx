@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Maximize2, Minimize2, X } from "lucide-react";
+import { Maximize2, Minimize2, Search, X } from "lucide-react";
 
 import { EmptyState, ErrorState } from "@/components/shared/stats";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -15,13 +15,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { cn } from "@/lib/utils";
 import { organizationService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 
-import { OrganizationChart } from "./OrganizationChart";
-import { buildHierarchy, HierarchyNode } from "./hierarchy-builder";
+import { OrganizationChart, OrganizationChartHandle } from "./OrganizationChart";
+import { buildHierarchy, findMeNode, HierarchyNode } from "./hierarchy-builder";
+import { OrgChartLegend } from "./org-chart/OrgChartLegend";
+import { OrgChartStatsBar } from "./org-chart/OrgChartStatsBar";
+import { computeDepartmentCounts, computeOrgStats } from "./org-chart/stats";
+import { findMatchingUserIds } from "./org-chart/search";
 
 interface OrganizationModalProps {
   open: boolean;
@@ -35,6 +40,8 @@ export function OrganizationModal({
   const currentUserId = useAuthStore((s) => s.user?.user_id);
   const [selectedNode, setSelectedNode] = useState<HierarchyNode | null>(null);
   const [isMaximized, setIsMaximized] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const chartRef = useRef<OrganizationChartHandle>(null);
 
   const chartQuery = useQuery({
     queryKey: ["organization-chart"],
@@ -51,6 +58,7 @@ export function OrganizationModal({
     if (!nextOpen) {
       setSelectedNode(null);
       setIsMaximized(false);
+      setSearchQuery("");
     }
     onOpenChange(nextOpen);
   };
@@ -59,6 +67,29 @@ export function OrganizationModal({
     chartQuery.data && currentUserId
       ? buildHierarchy(chartQuery.data, currentUserId)
       : null;
+
+  const stats = useMemo(() => (hierarchy ? computeOrgStats(hierarchy) : null), [hierarchy]);
+  const departmentCounts = useMemo(
+    () => (hierarchy ? computeDepartmentCounts(hierarchy) : []),
+    [hierarchy]
+  );
+  const matchedIds = useMemo(
+    () => (hierarchy ? findMatchingUserIds(hierarchy, searchQuery) : new Set<string>()),
+    [hierarchy, searchQuery]
+  );
+  const hasSearch = searchQuery.trim().length > 0;
+
+  // The chart is now rooted at the viewed user's topmost real
+  // manager_id/teamlead_id ancestor (see OrganizationService — no more
+  // company-wide, role-implied tree) — so "does this user have a
+  // reporting manager" is simply "is the tree root someone other than
+  // them," and "does this user have direct reports" is just whether
+  // their own node in that tree has children. Neither is an error
+  // state (a top-of-company user genuinely has no manager; a Staff
+  // member genuinely may have no reports).
+  const meNode = hierarchy ? findMeNode(hierarchy) : null;
+  const hasReportingManager = !!hierarchy && !!currentUserId && hierarchy.user_id !== currentUserId;
+  const hasDirectReports = !!meNode && meNode.children.length > 0;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -87,6 +118,54 @@ export function OrganizationModal({
           <DialogTitle>Organization Chart</DialogTitle>
         </DialogHeader>
 
+        {hierarchy && meNode && (!hasReportingManager || !hasDirectReports) && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 px-1 text-xs text-muted-foreground">
+            {!hasReportingManager && <span>No reporting manager assigned</span>}
+            {!hasDirectReports && <span>No direct reports</span>}
+          </div>
+        )}
+
+        {isMaximized && hierarchy && stats && (
+          <div className="flex flex-col gap-3 border-b border-border pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <OrgChartStatsBar stats={stats} />
+
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") chartRef.current?.focusFirstMatch();
+                    }}
+                    placeholder="Search name, email, role, department…"
+                    className="h-8 w-64 pl-8 text-sm"
+                  />
+                </div>
+                {hasSearch && (
+                  <>
+                    <span className="whitespace-nowrap text-xs text-muted-foreground">
+                      {matchedIds.size} {matchedIds.size === 1 ? "match" : "matches"}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8"
+                      disabled={matchedIds.size === 0}
+                      onClick={() => chartRef.current?.focusFirstMatch()}
+                    >
+                      Jump to first
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <OrgChartLegend departmentCounts={departmentCounts} />
+          </div>
+        )}
+
         {chartQuery.isLoading && <WorkflowLoader loading size={56} className="min-h-[320px]" />}
 
         {chartQuery.isError && (
@@ -107,6 +186,7 @@ export function OrganizationModal({
                 purely its sizing/border context. */}
             <div className="relative flex-1 overflow-hidden rounded-lg border border-border bg-muted/20">
               <OrganizationChart
+                ref={chartRef}
                 node={hierarchy}
                 selectedNodeId={selectedNode?.user_id ?? null}
                 onSelectNode={(node) =>
@@ -114,6 +194,7 @@ export function OrganizationModal({
                     prev?.user_id === node.user_id ? null : node
                   )
                 }
+                matchedIds={hasSearch ? matchedIds : null}
               />
             </div>
 

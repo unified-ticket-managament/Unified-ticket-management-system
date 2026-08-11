@@ -26,7 +26,11 @@ def trim_payload_for_list(interaction: Interaction) -> dict[str, Any]:
         case "REPLY":
             return {"message": (payload.get("message") or "")[:200]}
         case "INTERNAL_NOTE":
-            return {"note": (payload.get("note") or "")[:200]}
+            return {
+                "note": (payload.get("note") or "")[:200],
+                "recipient_user_ids": payload.get("recipient_user_ids"),
+                "recipient_names": payload.get("recipient_names"),
+            }
         case "STATUS_CHANGE" | "PRIORITY_CHANGE":
             return {"from": payload.get("from"), "to": payload.get("to")}
         case "RESOLVED":

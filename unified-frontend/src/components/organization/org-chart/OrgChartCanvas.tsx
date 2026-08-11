@@ -19,6 +19,7 @@ import {
   NODE_WIDTH,
   OrgLayoutLink,
 } from "./layout";
+import { findAncestorOccurrenceIds } from "./search";
 import { MAX_SCALE, MIN_SCALE, useZoomPan } from "./useZoomPan";
 import { OrgChartNodeCard } from "./OrgChartNodeCard";
 
@@ -32,14 +33,15 @@ export interface OrgChartCanvasHandle {
   centerOnRoot: () => void;
   expandAll: () => void;
   collapseAll: () => void;
+  focusFirstMatch: () => void;
 }
 
 interface OrgChartCanvasProps {
   root: HierarchyNode;
   selectedNodeId: string | null;
   onSelectNode: (node: HierarchyNode) => void;
-  focusNodeId?: string | null;
   onZoomPercentChange?: (percent: number) => void;
+  matchedIds?: Set<string> | null;
 }
 
 function elbowPath(source: { x: number; y: number }, target: { x: number; y: number }): string {
@@ -62,7 +64,7 @@ function edgeClassName(relationship: OrgLayoutLink["relationship"]): string {
 
 export const OrgChartCanvas = forwardRef<OrgChartCanvasHandle, OrgChartCanvasProps>(
   function OrgChartCanvas(
-    { root, selectedNodeId, onSelectNode, focusNodeId, onZoomPercentChange },
+    { root, selectedNodeId, onSelectNode, onZoomPercentChange, matchedIds },
     ref
   ) {
     const svgRef = useRef<SVGSVGElement>(null);
@@ -82,6 +84,23 @@ export const OrgChartCanvas = forwardRef<OrgChartCanvasHandle, OrgChartCanvasPro
       onZoomPercentChange?.(Math.round(transform.k * 100));
     }, [transform.k, onZoomPercentChange]);
 
+    // Auto-reveal every match: only ever REMOVE ids from collapsedIds
+    // when the match set changes, never add — a manual collapse the
+    // user makes afterward is respected until the query changes again.
+    useEffect(() => {
+      if (!matchedIds || matchedIds.size === 0) return;
+      const ancestorIds = findAncestorOccurrenceIds(root, matchedIds);
+      if (ancestorIds.size === 0) return;
+      setCollapsedIds((prev) => {
+        let changed = false;
+        const next = new Set(prev);
+        ancestorIds.forEach((id) => {
+          if (next.delete(id)) changed = true;
+        });
+        return changed ? next : prev;
+      });
+    }, [matchedIds, root]);
+
     const centerOn = useCallback(
       (x: number, y: number, k: number, animate = true) => {
         const svgEl = svgRef.current;
@@ -91,6 +110,39 @@ export const OrgChartCanvas = forwardRef<OrgChartCanvasHandle, OrgChartCanvasPro
         applyTransform({ x: containerW / 2 - x * k, y: containerH / 2 - y * k, k }, animate);
       },
       [applyTransform]
+    );
+
+    // Shared by the toolbar's explicit "Fit to screen" button AND the
+    // initial auto-view below — fits the ENTIRE laid-out tree (every
+    // ancestor above the viewer plus their full descendant subtree,
+    // computeOrgLayout already includes both) into the viewport, so
+    // opening the chart shows the complete bidirectional hierarchy at
+    // once rather than only whatever's near the viewer at 100% zoom.
+    const fitToScreen = useCallback(
+      (animate = true) => {
+        const svgEl = svgRef.current;
+        if (!svgEl || layout.nodes.length === 0) return;
+
+        const minX = Math.min(...layout.nodes.map((n) => n.x)) - NODE_WIDTH / 2;
+        const maxX = Math.max(...layout.nodes.map((n) => n.x)) + NODE_WIDTH / 2;
+        const minY = Math.min(...layout.nodes.map((n) => n.y)) - NODE_HEIGHT / 2;
+        const maxY = Math.max(...layout.nodes.map((n) => n.y)) + NODE_HEIGHT / 2;
+
+        const containerW = svgEl.clientWidth;
+        const containerH = svgEl.clientHeight;
+        const bboxW = Math.max(maxX - minX, 1);
+        const bboxH = Math.max(maxY - minY, 1);
+
+        const scale = Math.min(
+          (containerW - FIT_PADDING * 2) / bboxW,
+          (containerH - FIT_PADDING * 2) / bboxH,
+          MAX_SCALE
+        );
+        const k = Math.max(scale, MIN_SCALE);
+
+        centerOn((minX + maxX) / 2, (minY + maxY) / 2, k, animate);
+      },
+      [layout.nodes, centerOn]
     );
 
     useImperativeHandle(
@@ -103,43 +155,34 @@ export const OrgChartCanvas = forwardRef<OrgChartCanvasHandle, OrgChartCanvasPro
           if (rootNode) centerOn(rootNode.x, rootNode.y, 1);
           else applyTransform({ x: 0, y: 0, k: 1 });
         },
-        fitToScreen: () => {
-          const svgEl = svgRef.current;
-          if (!svgEl || layout.nodes.length === 0) return;
-
-          const minX = Math.min(...layout.nodes.map((n) => n.x)) - NODE_WIDTH / 2;
-          const maxX = Math.max(...layout.nodes.map((n) => n.x)) + NODE_WIDTH / 2;
-          const minY = Math.min(...layout.nodes.map((n) => n.y)) - NODE_HEIGHT / 2;
-          const maxY = Math.max(...layout.nodes.map((n) => n.y)) + NODE_HEIGHT / 2;
-
-          const containerW = svgEl.clientWidth;
-          const containerH = svgEl.clientHeight;
-          const bboxW = Math.max(maxX - minX, 1);
-          const bboxH = Math.max(maxY - minY, 1);
-
-          const scale = Math.min(
-            (containerW - FIT_PADDING * 2) / bboxW,
-            (containerH - FIT_PADDING * 2) / bboxH,
-            MAX_SCALE
-          );
-          const k = Math.max(scale, MIN_SCALE);
-
-          centerOn((minX + maxX) / 2, (minY + maxY) / 2, k);
-        },
+        fitToScreen: () => fitToScreen(),
         centerOnRoot: () => {
           const rootNode = layout.nodes.find((n) => n.depth === 0);
           if (rootNode) centerOn(rootNode.x, rootNode.y, transform.k);
         },
         expandAll: () => setCollapsedIds(new Set()),
         collapseAll: () => setCollapsedIds(collectParentIds(root)),
+        focusFirstMatch: () => {
+          if (!matchedIds || matchedIds.size === 0) return;
+          const target = layout.nodes.find((n) => matchedIds.has(n.data.user_id));
+          if (target) centerOn(target.x, target.y, Math.max(transform.k, 1));
+        },
       }),
-      [layout.nodes, root, applyTransform, centerOn, zoomBy, transform.k]
+      [layout.nodes, root, applyTransform, centerOn, zoomBy, transform.k, matchedIds, fitToScreen]
     );
 
-    // Auto-center on the viewer's own ("ME") node the first time this
-    // root/focus target is available — same intent as the previous
-    // implementation's scrollIntoView-on-mount, now done via the SVG
-    // transform instead of DOM scrolling.
+    // Auto-fit the ENTIRE hierarchy (every ancestor above the viewer
+    // plus their full descendant subtree — one nested tree already
+    // combining both, see OrganizationService.get_chart_for_user) into
+    // view the first time this root is laid out. Previously this
+    // centered on just the viewer's own node at a fixed 100% zoom,
+    // which for anyone with many direct reports made the initial view
+    // look descendant-only even though the ancestor chain was already
+    // present in the data — a real, if purely visual, bug: the whole
+    // point of this chart is "where am I in the organization," which
+    // requires seeing both directions at once, not just the crowded
+    // side. The viewer's own node stays identifiable via its permanent
+    // "ME" badge/border (OrgChartNodeCard), not via camera position.
     const hasAutoFocused = useRef(false);
     useEffect(() => {
       hasAutoFocused.current = false;
@@ -147,21 +190,12 @@ export const OrgChartCanvas = forwardRef<OrgChartCanvasHandle, OrgChartCanvasPro
 
     useEffect(() => {
       if (hasAutoFocused.current) return;
-      // `focusNodeId` is a person's real user_id (possibly rendered at
-      // more than one occurrence in the tree — see layout.ts), not an
-      // occurrence id, so this resolves it by scanning rather than a
-      // direct nodesById lookup; picks the first occurrence found,
-      // same as the previous DOM-based implementation's
-      // querySelector(`[data-org-me="true"]`) picking the first match.
-      const targetNode = focusNodeId
-        ? layout.nodes.find((n) => n.data.user_id === focusNodeId)
-        : layout.nodes.find((n) => n.depth === 0);
-      if (!targetNode || !svgRef.current) return;
+      if (layout.nodes.length === 0 || !svgRef.current) return;
 
       hasAutoFocused.current = true;
-      const timer = setTimeout(() => centerOn(targetNode.x, targetNode.y, 1, false), 60);
+      const timer = setTimeout(() => fitToScreen(false), 60);
       return () => clearTimeout(timer);
-    }, [focusNodeId, layout.nodes, centerOn]);
+    }, [layout.nodes, fitToScreen]);
 
     return (
       <svg
@@ -209,6 +243,7 @@ export const OrgChartCanvas = forwardRef<OrgChartCanvasHandle, OrgChartCanvasPro
                 // the Details panel is about the person, not the
                 // specific position clicked.
                 isSelected={selectedNodeId === n.data.user_id}
+                isMatched={!!matchedIds?.has(n.data.user_id)}
                 hasChildren={n.hasChildren}
                 isCollapsed={n.isCollapsed}
                 isDimmed={highlightedIds !== null && !highlightedIds.has(n.id)}

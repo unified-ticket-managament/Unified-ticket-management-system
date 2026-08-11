@@ -37,11 +37,12 @@ import type {
 
 // Every notification_type the "System" folder shows — internal,
 // system-generated notices (SLA breach ladder + the escalation
-// ownership workflow + an OTP Rule's "Forward To" firing), deliberately
-// excluding MAIL_RECEIVED/CLIENT_REPLY (those are real client mail,
-// already shown in the regular Inbox) and the unrelated PERMISSION_*/
-// EDIT_ACCESS_*/TICKET_ASSIGNED types (a different notification
-// concern, still only surfaced via the topbar bell for now).
+// ownership workflow + an OTP Rule's "Forward To" firing) plus
+// Internal Note delivery, deliberately excluding MAIL_RECEIVED/
+// CLIENT_REPLY (those are real client mail, already shown in the
+// regular Inbox) and the unrelated PERMISSION_*/EDIT_ACCESS_*/
+// TICKET_ASSIGNED types (a different notification concern, still only
+// surfaced via the topbar bell for now).
 export const SYSTEM_NOTIFICATION_TYPES = [
   "SLA_HALF_ELAPSED",
   "SLA_AT_RISK",
@@ -52,6 +53,7 @@ export const SYSTEM_NOTIFICATION_TYPES = [
   "ESCALATION_ADVANCED",
   "ESCALATION_CLOSED",
   "OTP_FORWARDED",
+  "INTERNAL_NOTE_ADDED",
 ];
 
 const SUPERVISOR_ROLES = ["Site Lead", "Super Admin"];

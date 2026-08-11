@@ -58,6 +58,23 @@ class User(TimestampMixin, Base):
         nullable=True,
     )
 
+    # Organization-Chart-only reporting relationship — deliberately
+    # separate from manager_id/teamlead_id above, which continue to
+    # drive every existing permission-scoping/SLA/escalation/ticket-
+    # assignment consumer unchanged (see OrganizationService's own
+    # docstring). Unrestricted by role: any user may be any other
+    # user's reporting_manager_id, since the Organization Chart must
+    # reflect the real reporting line as-is, not one inferred from
+    # role names. Nullable (a top-of-company user has none) and
+    # initially backfilled from manager_id/teamlead_id by
+    # alembic_rbac's add_reporting_manager_id_to_users migration —
+    # editable independently of both going forward.
+    reporting_manager_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id"),
+        nullable=True,
+    )
+
     # Work-specialization category (Eligibility, AR, Claims, ...) —
     # nullable because only Staff/Team Lead are expected to have one;
     # every other role (and every pre-existing user, before this
@@ -187,6 +204,13 @@ class User(TimestampMixin, Base):
     teamlead: Mapped["User | None"] = relationship(
         "User",
         foreign_keys=[teamlead_id],
+        remote_side=[user_id],
+        post_update=True,
+    )
+
+    reporting_manager: Mapped["User | None"] = relationship(
+        "User",
+        foreign_keys=[reporting_manager_id],
         remote_side=[user_id],
         post_update=True,
     )

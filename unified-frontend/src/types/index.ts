@@ -39,6 +39,10 @@ export interface User {
   role_id: string;
   manager_id: string | null;
   teamlead_id: string | null;
+  // Organization-Chart-only reporting relationship — separate from
+  // manager_id/teamlead_id above, which keep their existing meaning.
+  // Unrestricted by role; see unified-backend's OrganizationService.
+  reporting_manager_id: string | null;
   category_id: string | null;
   is_active: boolean;
   created_at: string;
@@ -163,6 +167,7 @@ export interface UserForm {
   is_active: boolean;
   manager_id?: string | null;
   teamlead_id?: string | null;
+  reporting_manager_id?: string | null;
   category_id?: string | null;
 }
 

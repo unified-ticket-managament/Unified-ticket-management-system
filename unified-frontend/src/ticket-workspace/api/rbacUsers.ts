@@ -20,12 +20,25 @@ export interface RbacRoleSummary {
   name: string;
 }
 
+// GET /api/v1/users caps page_size at 100 server-side, so a single
+// request can silently truncate the "eligible recipient" list once
+// the company has more than 100 active users. Paginates through every
+// page instead, so the Internal Note "To" picker always offers every
+// eligible active user regardless of headcount.
 export async function listRbacUsers(): Promise<RbacUserSummary[]> {
-  const { data } = await apiClient.get<{ users: RbacUserSummary[]; total: number }>(
-    "/api/v1/users",
-    { params: { page: 1, page_size: 100 } }
-  );
-  return data.users;
+  const pageSize = 100;
+  const users: RbacUserSummary[] = [];
+  let page = 1;
+  while (true) {
+    const { data } = await apiClient.get<{ users: RbacUserSummary[]; total: number }>(
+      "/api/v1/users",
+      { params: { page, page_size: pageSize } }
+    );
+    users.push(...data.users);
+    if (users.length >= data.total || data.users.length === 0) break;
+    page += 1;
+  }
+  return users;
 }
 
 export async function listRbacRoles(): Promise<RbacRoleSummary[]> {

@@ -1,6 +1,15 @@
 import { useMemo, useState, type KeyboardEvent } from "react";
 import { X } from "lucide-react";
-import type { RbacUserSummary } from "@tw/api/rbacUsers";
+
+// Deliberately minimal/generic — not tied to any one API's response
+// shape (RbacUserSummary, InternalNoteRecipientCandidate, ...) so
+// this component stays reusable across callers that source their
+// candidate list differently.
+export interface SelectableUser {
+  user_id: string;
+  name: string;
+  email: string;
+}
 
 interface UserMultiSelectProps {
   label: string;
@@ -8,9 +17,9 @@ interface UserMultiSelectProps {
   placeholder?: string;
   // Role name -> active users holding that role, plus the fixed
   // display order for role groups — passed in rather than refetched
-  // here so To/CC/BCC all share one listRbacUsers()/listRbacRoles()
-  // fetch.
-  groups: Record<string, RbacUserSummary[]>;
+  // here so To/CC/BCC (or To/CC/BCC-shaped callers elsewhere) all
+  // share one fetch.
+  groups: Record<string, SelectableUser[]>;
   roleOrder: string[];
   selectedIds: string[];
   onChange: (ids: string[]) => void;
@@ -34,7 +43,7 @@ export function UserMultiSelect({
   const [isOpen, setIsOpen] = useState(false);
 
   const allUsers = useMemo(() => {
-    const withRole: { user: RbacUserSummary; roleName: string }[] = [];
+    const withRole: { user: SelectableUser; roleName: string }[] = [];
     for (const roleName of roleOrder) {
       for (const user of groups[roleName] ?? []) {
         withRole.push({ user, roleName });
@@ -45,7 +54,7 @@ export function UserMultiSelect({
 
   const selectedUsers = useMemo(
     () => selectedIds.map((id) => allUsers.find((u) => u.user.user_id === id)).filter(Boolean) as {
-      user: RbacUserSummary;
+      user: SelectableUser;
       roleName: string;
     }[],
     [allUsers, selectedIds]

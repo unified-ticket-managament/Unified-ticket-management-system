@@ -108,11 +108,26 @@ export function messageSender(message: InteractionResponse): string | null {
       return (payload.client_name as string) ?? (payload.from_email as string) ?? "Client";
     case "REPLY":
       return message.performed_by_name ?? "Agent";
-    case "INTERNAL_NOTE":
-      return message.performed_by_name ? `${message.performed_by_name} (internal note)` : null;
+    case "INTERNAL_NOTE": {
+      if (!message.performed_by_name) return null;
+      const recipientNames = internalNoteRecipientNames(message);
+      const to = recipientNames.length > 0 ? ` → ${recipientNames.join(", ")}` : "";
+      return `${message.performed_by_name} (internal note)${to}`;
+    }
     default:
       return message.performed_by_name ?? null;
   }
+}
+
+// The specific platform users an Internal Note was addressed to — a
+// snapshot taken at creation time (see add_internal_note), not a live
+// lookup, so it stays accurate even if a recipient is later renamed
+// or deactivated. Empty for a note sent with no explicit recipients
+// (the pre-existing stakeholder-notification fallback).
+export function internalNoteRecipientNames(message: InteractionResponse): string[] {
+  if (message.interaction_type !== "INTERNAL_NOTE") return [];
+  const names = (message.payload as Record<string, unknown> | undefined)?.recipient_names;
+  return Array.isArray(names) ? (names as string[]) : [];
 }
 
 export interface MessageRecipients {

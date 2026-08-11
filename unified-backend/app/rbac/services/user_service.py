@@ -128,6 +128,7 @@ class UserService:
             user_data.teamlead_id,
             user_data.category_id,
         )
+        await self._validate_reporting_manager_id(user_data.reporting_manager_id)
 
         user = User(
             name=user_data.name,
@@ -138,6 +139,7 @@ class UserService:
             role_id=user_data.role_id,
             manager_id=user_data.manager_id,
             teamlead_id=user_data.teamlead_id,
+            reporting_manager_id=user_data.reporting_manager_id,
             category_id=user_data.category_id,
             is_active=user_data.is_active,
         )
@@ -192,6 +194,7 @@ class UserService:
             "role_id": client_role_id,
             "manager_id": client.account_manager_id,
             "teamlead_id": None,
+            "reporting_manager_id": None,
             "category_id": None,
             "is_active": client.is_active,
             "date_of_birth": None,
@@ -443,6 +446,40 @@ class UserService:
                     detail="The assigned Team Lead's category must match this user's own category.",
                 )
 
+    async def _validate_reporting_manager_id(
+        self,
+        reporting_manager_id: UUID | None,
+        self_id: UUID | None = None,
+    ) -> None:
+        """
+        Lightweight validation for the Organization-Chart-only
+        reporting_manager_id field — deliberately unrestricted by role
+        (unlike manager_id/teamlead_id's _validate_manager_and_teamlead
+        above), since the chart must reflect the real reporting line
+        exactly as the database says, not one inferred from role names.
+        Only checks that the target exists and isn't the user's own id;
+        full cycle protection (A -> B -> A) is handled defensively by
+        OrganizationService's own chart-building guards, not enforced
+        at write time.
+        """
+
+        if reporting_manager_id is None:
+            return
+
+        if self_id is not None and reporting_manager_id == self_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A user cannot be their own reporting manager.",
+            )
+
+        target = await self.user_repository.get_by_id(reporting_manager_id)
+
+        if target is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Reporting manager not found.",
+            )
+
     # --------------------------------------------------
     # Get User
     # --------------------------------------------------
@@ -647,6 +684,17 @@ class UserService:
                 effective_manager_id,
                 effective_teamlead_id,
                 effective_category_id,
+            )
+
+        # reporting_manager_id is deliberately NOT in the trigger set
+        # above — it's an Organization-Chart-only field with no RBAC/
+        # authorization meaning (see OrganizationService's docstring),
+        # so editing it alone must not bump permission_version or
+        # re-run the unrelated manager_id/teamlead_id reporting-line
+        # check.
+        if "reporting_manager_id" in update_data:
+            await self._validate_reporting_manager_id(
+                update_data["reporting_manager_id"], self_id=user.user_id
             )
 
         old_values = {
