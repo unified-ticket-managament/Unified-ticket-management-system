@@ -52,14 +52,19 @@ OPEN_STATUSES = (
 
 def _resolution_sla_tier_case(now: datetime):
     """
-    Classifies a ticket's Resolution SLA clock into the same 4 tiers
-    (escalated/breached/at_risk/healthy) the frontend's slaMath.ts and
+    Classifies a ticket's Resolution SLA clock into the same 3 tiers
+    (escalated/at_risk/healthy) the frontend's slaMath.ts and
     sla_overview_counts below already use — same remaining-seconds-vs-
     target-seconds comparisons as sla_overview_counts (not a fraction
     division, which would divide by zero for a policy-less ticket),
     just returning a per-row label instead of aggregate counts. Caller
     must join ResolutionSLA and outerjoin SLAPolicy (on
     SLAPolicy.priority == ResolutionSLA.priority) first.
+
+    There used to be a separate "breached" tier at 100% (remaining_seconds
+    <= 0) with "escalated" only kicking in at 150%; the SLA lifecycle no
+    longer has a BREACHED tier for Resolution SLA at all — 100% elapsed
+    (remaining_seconds <= 0) is "escalated" now, full stop.
 
     NULL when there's no active (RUNNING) clock, or no matching policy
     row — deliberately not "healthy" in either case, since neither
@@ -73,8 +78,7 @@ def _resolution_sla_tier_case(now: datetime):
     return case(
         (ResolutionSLA.status != SLAClockStatus.RUNNING, None),
         (SLAPolicy.resolution_target_minutes.is_(None), None),
-        (remaining_seconds <= target_seconds * -0.5, "escalated"),
-        (remaining_seconds <= 0, "breached"),
+        (remaining_seconds <= 0, "escalated"),
         (remaining_seconds <= target_seconds * 0.2, "at_risk"),
         else_="healthy",
     )
@@ -163,6 +167,7 @@ class TicketRepository:
         account_manager_id: UUID | None = None,
         ticket_types: list[str] | None = None,
         agent_ids: list[UUID] | None = None,
+        escalation_override_condition=None,
     ) -> list:
         """
         Account Manager scoping can be supplied either way: `list_all`
@@ -187,6 +192,35 @@ class TicketRepository:
         narrowing `ticket_types`'s existing, unrelated category-pool
         meaning for every other caller (ticket list, interactions,
         dashboard stats).
+
+        `escalation_override_condition` implements the `ticket:view_escalated`
+        ticket-level visibility rule: "existing visibility OR (ticket
+        is currently escalated AND caller holds ticket:view_escalated)".
+        The caller (TicketService) decides whether the current user
+        actually holds that permission and passes the already-built
+        SQL condition to use for "is this ticket currently escalated"
+        — deliberately not built in here, since the *right* condition
+        differs by caller: `list_all`/`count_by_view` never otherwise
+        touch `ticket_escalations` in the same query, so they pass
+        `_escalated_exists_condition()` (a correlated EXISTS);
+        `list_visible_page` already unconditionally LEFT JOINs
+        `TicketEscalation` for its own display columns, so it passes
+        the much simpler `TicketEscalation.escalation_id.isnot(None)`
+        instead — reusing that same correlated EXISTS there as well
+        would reference `TicketEscalation` a second, ambiguous way in
+        the same statement and fail to compile. When a condition is
+        given and there's at least one real restriction above, the
+        whole AND'd block is wrapped in `OR escalation_override_condition`
+        instead of being returned as-is — since whichever condition is
+        passed is always keyed on `Ticket.ticket_id`, this can only
+        ever widen visibility for the one specific ticket that's
+        actually escalated right now, never for every other ticket
+        sharing its `client_company_id`/`ticket_type`, and it stops
+        widening the moment that ticket's escalation is closed. A
+        caller with no restriction at all (empty `conditions` — Site
+        Lead/Super Admin, or a category-less/client-less user who
+        already "sees nothing") has nothing to widen either way, so
+        this is a no-op for them.
         """
 
         conditions = []
@@ -208,6 +242,9 @@ class TicketRepository:
         if agent_ids is not None:
             # Same "empty list means sees nothing" convention as above.
             conditions.append(Ticket.agent_id.in_(agent_ids))
+
+        if escalation_override_condition is not None and conditions:
+            return [or_(and_(*conditions), escalation_override_condition)]
         return conditions
 
     def _escalated_exists_condition(self):
@@ -275,6 +312,7 @@ class TicketRepository:
         date_to: datetime | None = None,
         sort_by: str = "created_at",
         sort_dir: str = "desc",
+        include_escalated_override: bool = False,
     ) -> tuple[list[Ticket], int]:
         """
         `limit=None` (the default) preserves this method's original,
@@ -311,6 +349,9 @@ class TicketRepository:
             client_company_ids=client_company_ids,
             ticket_types=ticket_types,
             agent_ids=agent_ids,
+            escalation_override_condition=(
+                self._escalated_exists_condition() if include_escalated_override else None
+            ),
         )
 
         if agent_id is not None:
@@ -395,6 +436,7 @@ class TicketRepository:
         ticket_types: list[str] | None,
         assigned_to: UUID,
         viewer_user_id: UUID | None = None,
+        include_escalated_override: bool = False,
     ) -> dict[str, int]:
         """
         One grouped query, three FILTERed counts — the ticket-list
@@ -423,7 +465,11 @@ class TicketRepository:
         """
 
         conditions = self._visibility_conditions(
-            account_manager_id=account_manager_id, ticket_types=ticket_types
+            account_manager_id=account_manager_id,
+            ticket_types=ticket_types,
+            escalation_override_condition=(
+                self._escalated_exists_condition() if include_escalated_override else None
+            ),
         )
         escalated_condition = (
             self._escalated_owner_condition(viewer_user_id)
@@ -523,10 +569,10 @@ class TicketRepository:
     ) -> dict[str, int]:
         """
         The Dashboard's "SLA Overview" tile row (Running / Paused / At
-        Risk / Breached / Escalated / Completed) — one grouped query
-        under the same visibility scoping as every other view here,
-        replacing what useDashboardSlaCounts (frontend) used to do by
-        fetching every visible ticket unbounded and then calling
+        Risk / Escalated / Completed) — one grouped query under the
+        same visibility scoping as every other view here, replacing
+        what useDashboardSlaCounts (frontend) used to do by fetching
+        every visible ticket unbounded and then calling
         GET /tickets/{id}/sla once per ticket to classify it: an N+1
         round-trip pattern (1 + up to hundreds of individual SLA
         lookups) that was both why the tile was slow to resolve and why
@@ -545,13 +591,15 @@ class TicketRepository:
         comparison evaluate to NULL/false, the same "can't classify
         without a target" outcome the old client-side loop had.
 
-        `running`/`atRisk`/`breached`/`escalated` are deliberately not
-        mutually exclusive — `running` is every RUNNING clock
-        regardless of tier, and at_risk/breached/escalated are tier
-        sub-classifications of that same set — this preserves the
-        exact (if slightly unusual) counting semantics the previous
-        client-side implementation already had, so the numbers
-        strangers to this change would see don't shift underneath them.
+        `running`/`at_risk`/`escalated` are deliberately not mutually
+        exclusive — `running` is every RUNNING clock regardless of
+        tier, and at_risk/escalated are tier sub-classifications of
+        that same set. There used to be a separate `breached` bucket
+        for 100%-150% (with `escalated` only counting 150%+); the SLA
+        lifecycle no longer has a BREACHED tier for Resolution SLA at
+        all, so `escalated` now simply counts every RUNNING clock at or
+        past 100% (`remaining_seconds <= 0`) and the `breached` bucket
+        is gone rather than kept at a permanent zero.
         """
 
         conditions = self._visibility_conditions(
@@ -575,11 +623,6 @@ class TicketRepository:
                 func.count().filter(
                     ResolutionSLA.status == SLAClockStatus.RUNNING,
                     remaining_seconds <= 0,
-                    remaining_seconds > target_seconds * -0.5,
-                ),
-                func.count().filter(
-                    ResolutionSLA.status == SLAClockStatus.RUNNING,
-                    remaining_seconds <= target_seconds * -0.5,
                 ),
                 func.count().filter(ResolutionSLA.status == SLAClockStatus.COMPLETED),
             )
@@ -590,13 +633,12 @@ class TicketRepository:
         )
 
         result = await self.db.execute(query)
-        running, paused, at_risk, breached, escalated, completed = result.one()
+        running, paused, at_risk, escalated, completed = result.one()
 
         return {
             "running": running,
             "paused": paused,
             "at_risk": at_risk,
-            "breached": breached,
             "escalated": escalated,
             "completed": completed,
         }
@@ -619,6 +661,7 @@ class TicketRepository:
         date_to: datetime | None = None,
         sort_by: str = "created_at",
         sort_dir: str = "desc",
+        include_escalated_override: bool = False,
     ) -> TicketVisiblePage:
         """
         The ticket-list page's real query — same visibility/filter/
@@ -652,8 +695,8 @@ class TicketRepository:
         nearest Resolution SLA deadline, 4) the caller's own chosen
         sort column/direction, 5) `ticket_id` as a final, deterministic
         tie-breaker. `view == "pool"` gets its own fixed ordering too —
-        strictly by Resolution SLA tier (Escalated -> Breached -> At
-        Risk -> Healthy/unknown), then HIGH-priority, then nearest due
+        strictly by Resolution SLA tier (Escalated -> At Risk ->
+        Healthy/unknown), then HIGH-priority, then nearest due
         date, then the caller's chosen sort, then `ticket_id` — a
         deliberately different shape from `mine`'s (tier-first rather
         than escalation-flag-first), since surfacing at-risk pool
@@ -667,7 +710,21 @@ class TicketRepository:
         now = datetime.now(timezone.utc)
 
         conditions = self._visibility_conditions(
-            account_manager_id=account_manager_id, ticket_types=ticket_types
+            account_manager_id=account_manager_id,
+            ticket_types=ticket_types,
+            # TicketEscalation is already unconditionally LEFT JOINed
+            # below (_base_select) for this method's own display
+            # columns — reusing that join's own column instead of
+            # _escalated_exists_condition()'s fresh correlated EXISTS
+            # (which list_all/count_by_view use, having no other
+            # reason to reference ticket_escalations at all) avoids
+            # referencing the same table two conflicting ways in one
+            # statement, which SQLAlchemy can't compile.
+            escalation_override_condition=(
+                TicketEscalation.escalation_id.isnot(None)
+                if include_escalated_override
+                else None
+            ),
         )
 
         if view == "pool":
@@ -731,10 +788,9 @@ class TicketRepository:
         elif view == "pool":
             tier_rank = case(
                 (resolution_sla_tier == "escalated", 0),
-                (resolution_sla_tier == "breached", 1),
-                (resolution_sla_tier == "at_risk", 2),
-                (resolution_sla_tier == "healthy", 3),
-                else_=4,
+                (resolution_sla_tier == "at_risk", 1),
+                (resolution_sla_tier == "healthy", 2),
+                else_=3,
             )
             order_clauses = (
                 tier_rank.asc(),

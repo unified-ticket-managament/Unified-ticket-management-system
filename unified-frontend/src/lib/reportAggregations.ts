@@ -160,9 +160,9 @@ export function reportMetricsFromTickets(tickets: TicketResponse[]): ReportMetri
         ) / 10;
 
   const measured = tickets.filter((t) => t.resolution_sla_tier != null);
-  const compliant = measured.filter(
-    (t) => t.resolution_sla_tier !== "breached" && t.resolution_sla_tier !== "escalated"
-  );
+  // No "breached" tier anymore — "escalated" is Resolution SLA's sole
+  // non-compliant terminal tier now (100% elapsed, not 150%).
+  const compliant = measured.filter((t) => t.resolution_sla_tier !== "escalated");
   const slaCompliance = measured.length === 0 ? 100 : Math.round((compliant.length / measured.length) * 100);
 
   return { total, resolved, pending, closed, avgResolutionHours, slaCompliance };

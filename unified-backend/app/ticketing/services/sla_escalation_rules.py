@@ -15,11 +15,22 @@ from app.ticketing.services.access_control import TEAM_LEAD_ROLE_NAME
 
 # ---------------------------------------------------------------------
 # Threshold ladder — ordered so a single elapsed_fraction reading yields
-# every threshold it has crossed, oldest first (a clock discovered at
-# 160% fires HALF_ELAPSED, AT_RISK, BREACHED, and ESCALATED all in the
-# same tick — each is its own idempotent row via SLABreachNotification's
-# unique index, so this is safe even if a prior tick already recorded
-# the earlier ones).
+# every threshold it has crossed, oldest first (a clock discovered well
+# past its final tier fires every earlier one too, in the same tick —
+# each is its own idempotent row via SLABreachNotification's unique
+# index, so this is safe even if a prior tick already recorded the
+# earlier ones).
+#
+# First Response SLA still uses the full, original 4-tier ladder
+# (HALF_ELAPSED/AT_RISK/BREACHED/ESCALATED at 50/80/100/150%) — this is
+# the `thresholds_reached(...)` default shape, unchanged. Resolution SLA
+# no longer has a separate BREACHED tier: the SLA lifecycle collapses
+# BREACHED and the old 150% ESCALATED crossing into one — hitting 100%
+# *is* ESCALATED now, and triggers the escalation immediately (see
+# SLASweepService.run_sweep's classification loop, and
+# EscalationService.auto_escalate_if_needed's docstring). Callers that
+# want that narrower, 3-tier ladder pass `include_breached=False,
+# escalated=1.0` — see SLASweepService's Resolution-clock call site.
 # ---------------------------------------------------------------------
 
 THRESHOLDS = (
@@ -35,6 +46,8 @@ def thresholds_reached(
     *,
     half_elapsed: float = 0.5,
     at_risk: float = 0.8,
+    include_breached: bool = True,
+    escalated: float = 1.5,
 ) -> list[str]:
     """
     Pure classification — every named threshold `elapsed_fraction` has
@@ -42,16 +55,26 @@ def thresholds_reached(
     every clock used before per-priority "Warning 1"/"Warning 2"
     cutoffs existed (SLAPolicy.warning_1_percentage/warning_2_percentage,
     see the admin-facing SLA Timing Matrix) — callers with a resolved
-    policy pass those in instead. BREACHED (1.0) and ESCALATED (1.5)
-    stay fixed globally; only the two warning tiers are configurable.
+    policy pass those in instead.
+
+    `include_breached`/`escalated` are what let Resolution SLA and
+    First Response SLA share this one function while following two
+    different ladders: First Response keeps the default
+    (`include_breached=True, escalated=1.5` — BREACHED fixed at 1.0,
+    ESCALATED fixed at 1.5, both still globally fixed, never
+    per-priority); Resolution SLA's caller passes
+    `include_breached=False, escalated=1.0` instead, so BREACHED is
+    never returned at all and ESCALATED (the sole 100% terminal tier)
+    takes its cutoff.
     """
 
-    cutoffs = (
+    cutoffs = [
         ("HALF_ELAPSED", half_elapsed),
         ("AT_RISK", at_risk),
-        ("BREACHED", 1.0),
-        ("ESCALATED", 1.5),
-    )
+    ]
+    if include_breached:
+        cutoffs.append(("BREACHED", 1.0))
+    cutoffs.append(("ESCALATED", escalated))
     return [name for name, cutoff in cutoffs if elapsed_fraction >= cutoff]
 
 
@@ -82,30 +105,32 @@ FIRST_RESPONSE_RULES: dict[str, tuple[str, ...]] = {
     "ESCALATED": (RecipientRole.ACCOUNT_MANAGER, RecipientRole.GLOBAL_INBOX),
 }
 
-# Half-Elapsed/At-Risk/Breached: resolve to whoever is actually working
-# the ticket right now — the assigned agent (claimed), the escalation's
+# Half-Elapsed/At-Risk: resolve to whoever is actually working the
+# ticket right now — the assigned agent (claimed), the escalation's
 # current owner (escalated), or the category's Team Lead+staff pool
 # (unclaimed) — rather than a role ladder. A ticket's higher-ups only
 # ever learn about it through the escalation workflow's own
 # hierarchical notifications (EscalationService._notify_owners),
 # triggered separately when an escalation is created/advances.
 #
-# ESCALATED (150% elapsed) has no entry here at all, deliberately —
-# SLASweepService._notify_resolution skips notification entirely at
-# that tier. The old CLAIMED/UNCLAIMED role-ladder tables this
-# threshold used to consult (RESOLUTION_RULES_CLAIMED/UNCLAIMED) were
-# removed outright: 150% is the exact crossing that creates the
-# TicketEscalation (see run_sweep's classification loop — deliberately
-# not BREACHED/100%, so the current owner's own Breached notification
-# at 100% isn't pre-empted by an ownership handoff), so the real
-# escalation-created notification has already informed the actual
-# owner earlier in this same tick — a second, generic "Resolution SLA
-# Escalated" notification on top of that would be pure noise, not a
-# second real signal.
+# ESCALATED (100% elapsed, the sole terminal tier for Resolution SLA —
+# see thresholds_reached's own docstring) has no entry here at all,
+# deliberately — SLASweepService._notify_resolution skips notification
+# entirely at that tier. The old CLAIMED/UNCLAIMED role-ladder tables
+# this threshold used to consult (RESOLUTION_RULES_CLAIMED/UNCLAIMED)
+# were removed outright: ESCALATED/100% is the exact crossing that
+# creates the TicketEscalation (see run_sweep's classification loop),
+# so the real escalation-created notification has already informed the
+# actual owner earlier in this same tick — a second, generic "Resolution
+# SLA Escalated" notification on top of that would be pure noise, not a
+# second real signal. There used to be a separate BREACHED/100% tier
+# here too (notified the current owner one step before the 150%
+# ESCALATED crossing actually escalated); the SLA lifecycle no longer
+# has a BREACHED tier for Resolution SLA at all, so this key was removed
+# rather than left dead.
 RESOLUTION_RULES_CURRENT_OWNER: dict[str, tuple[str, ...]] = {
     "HALF_ELAPSED": (RecipientRole.CURRENT_OWNER,),
     "AT_RISK": (RecipientRole.CURRENT_OWNER,),
-    "BREACHED": (RecipientRole.CURRENT_OWNER,),
 }
 
 @dataclass

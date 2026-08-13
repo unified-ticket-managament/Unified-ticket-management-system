@@ -47,6 +47,7 @@ from app.ticketing.schemas.ticket import (
 )
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
+    AGENT_ROLE_NAMES,
     CATEGORY_SCOPED_ROLE_NAMES,
     ESCALATION_TAB_ROLE_NAMES,
     GLOBAL_INBOX_ROLE_NAMES,
@@ -356,35 +357,61 @@ class TicketService:
                 detail="Ticket not found.",
             )
 
-        ensure_agent_can_view_ticket(ticket, current_user)
-
-        owned_client_ids = await self._resolve_owned_client_ids(current_user)
-        if owned_client_ids is not None and ticket.client_company_id not in owned_client_ids:
+        # Still a hard gate regardless of ticket:view_escalated below —
+        # that permission widens *which tickets* an agent can see past
+        # their normal category/client scope, it never creates a new
+        # class of ticket-viewing user. Client accounts (outside
+        # AGENT_ROLE_NAMES entirely) stay blocked even if a future
+        # override ever granted them this permission.
+        if current_user.role.name not in AGENT_ROLE_NAMES:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have access to this ticket.",
             )
+
+        escalation = None
+        if self.ticket_escalation_repository is not None:
+            escalation = await self.ticket_escalation_repository.get_active_by_ticket_id(
+                ticket_id
+            )
+
+        # ticket:view_escalated — see TicketRepository._visibility_conditions'
+        # matching docstring for the same rule applied to the ticket
+        # list/counts. Only ever bypasses the category/client-ownership
+        # checks below for THIS ticket, and only while it actually has
+        # an active (non-CLOSED) escalation — once it's resolved/closed,
+        # `escalation` is None again on the very next fetch and normal
+        # visibility rules apply with no other state to unwind.
+        viewable_via_escalation = escalation is not None and has_permission(
+            current_user, "ticket:view_escalated"
+        )
+
+        if not viewable_via_escalation:
+            ensure_agent_can_view_ticket(ticket, current_user)
+
+            owned_client_ids = await self._resolve_owned_client_ids(current_user)
+            if owned_client_ids is not None and ticket.client_company_id not in owned_client_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You do not have access to this ticket.",
+                )
 
         await self._attach_names([ticket])
         await self._attach_related_tickets(ticket)
 
         response = TicketResponse.model_validate(ticket)
 
-        if self.ticket_escalation_repository is not None:
-            escalation = await self.ticket_escalation_repository.get_active_by_ticket_id(
-                ticket_id
+        if escalation is not None:
+            response.is_escalated = True
+            response.escalation_level = escalation.level
+            response.escalation_status = escalation.status
+            response.escalation_ack_due_at = escalation.ack_due_at
+            response.is_escalation_owner = (
+                str(current_user.user_id) in escalation.owner_ids
             )
-            if escalation is not None:
-                response.is_escalated = True
-                response.escalation_level = escalation.level
-                response.escalation_status = escalation.status
-                response.escalation_ack_due_at = escalation.ack_due_at
-                response.is_escalation_owner = (
-                    str(current_user.user_id) in escalation.owner_ids
-                )
-                response.escalation_pending_acceptance = (
-                    escalation.handling_stage_due_at is None
-                )
+            response.escalation_pending_acceptance = (
+                escalation.handling_stage_due_at is None
+            )
 
         return response
 
@@ -599,6 +626,17 @@ class TicketService:
         # or unassigned". Site Lead/Super Admin remain unrestricted.
         ticket_types = self._resolve_category_ticket_types(current_user)
 
+        # ticket:view_escalated — the ticket-level escalation-visibility
+        # override (see TicketRepository._visibility_conditions' own
+        # docstring). Passed through unconditionally regardless of
+        # `view`: it only ever widens the base category/client scope,
+        # so the "mine"/"pool" views' own additional AND'd conditions
+        # (agent_id == self / unclaimed) still correctly exclude a
+        # ticket that isn't actually assigned to this caller or is
+        # already claimed, and the "escalated" tab's own stricter
+        # current-owner condition is untouched either way.
+        can_view_escalated = has_permission(current_user, "ticket:view_escalated")
+
         if limit is not None:
             account_manager_id = (
                 current_user.user_id
@@ -621,6 +659,7 @@ class TicketService:
                 date_to=date_to,
                 sort_by=sort_by,
                 sort_dir=sort_dir,
+                include_escalated_override=can_view_escalated,
             )
 
             rows = [
@@ -676,6 +715,7 @@ class TicketService:
         tickets, total = await self.ticket_repository.list_all(
             client_company_ids=owned_client_ids,
             ticket_types=ticket_types,
+            include_escalated_override=can_view_escalated,
         )
 
         await self._attach_names(tickets)
@@ -707,16 +747,16 @@ class TicketService:
             if current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME
             else None
         )
+        can_view_escalated = has_permission(current_user, "ticket:view_escalated")
         counts = await self.ticket_repository.count_by_view(
             account_manager_id=account_manager_id,
             ticket_types=ticket_types,
             assigned_to=current_user.user_id,
             viewer_user_id=current_user.user_id,
+            include_escalated_override=can_view_escalated,
         )
 
-        if current_user.role.name not in ESCALATION_TAB_ROLE_NAMES and not has_permission(
-            current_user, "ticket:view_escalated"
-        ):
+        if current_user.role.name not in ESCALATION_TAB_ROLE_NAMES and not can_view_escalated:
             counts["escalated"] = 0
 
         return counts

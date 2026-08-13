@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSlaOverviewCounts } from "@tw/api/ticket";
 
+// No `breached` field — Resolution SLA no longer has a separate
+// BREACHED tier; `escalated` now covers everything at or past 100%
+// elapsed, not just past the old 150% cutoff (see
+// TicketRepository.sla_overview_counts).
 export interface DashboardSlaCounts {
   running: number;
   paused: number;
   atRisk: number;
-  breached: number;
   escalated: number;
   completed: number;
 }
@@ -14,7 +17,6 @@ const EMPTY_COUNTS: DashboardSlaCounts = {
   running: 0,
   paused: 0,
   atRisk: 0,
-  breached: 0,
   escalated: 0,
   completed: 0,
 };
@@ -49,7 +51,6 @@ export function useDashboardSlaCounts() {
         running: data.running,
         paused: data.paused,
         atRisk: data.at_risk,
-        breached: data.breached,
         escalated: data.escalated,
         completed: data.completed,
       });

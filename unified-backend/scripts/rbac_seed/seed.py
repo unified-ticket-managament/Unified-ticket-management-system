@@ -84,7 +84,7 @@ DEFAULT_PERMISSIONS = [
     ("ticket:view_audit_trail", "View a ticket's own audit trail"),
     ("ticket:view_global_audit_log", "View the global ticket audit log"),
     ("ticket:view_dashboard_kpis", "View ticket workspace dashboard KPIs"),
-    ("ticket:view_escalated", "View escalated tickets"),
+    ("ticket:view_escalated", "View Escalated Tickets"),
     ("ticket:acknowledge_escalation", "Acknowledge an escalated ticket"),
     ("ticket:manage_agents", "Activate or deactivate agent accounts"),
     ("ticket:manage_roles_permissions", "Manage roles and permissions for the ticket workspace"),
@@ -196,6 +196,15 @@ DEFAULT_ROLES = {
         "ticket:update_status", "ticket:reply", "ticket:upload_attachment",
         "ticket:editown_ticket",
         "ticket:view_audit_trail", "ticket:view_dashboard_kpis",
+        # Full for Staff too (was Override-only per the RBAC compliance
+        # audit above) — the ticket-level escalation-visibility feature
+        # needs every agent role able to hold this by default, not just
+        # supervisors, since the whole point is letting someone outside
+        # a ticket's normal category/client scope see it once it's
+        # escalated to them specifically (see
+        # TicketRepository._visibility_conditions' escalation_override
+        # param and TicketService.get_by_id).
+        "ticket:view_escalated",
         "user:view",
     ],
     # Renamed from "Viewer" — see root CLAUDE.md's Client-role section.
@@ -203,6 +212,11 @@ DEFAULT_ROLES = {
     # (alembic_rbac's a8c0e2f4b6d9) renames the row in place for any
     # database seeded before this rename, so this key always resolves
     # to that same pre-existing role rather than creating a new one.
+    # Deliberately NOT given ticket:view_escalated: Client sits outside
+    # AGENT_ROLE_NAMES entirely (see access_control.py), so it could
+    # never pass ticket-detail authorization anyway — granting it here
+    # would only reach the escalated-tab list gap, not real ticket
+    # access, and isn't part of this feature's intent.
     "Client": ["user:view", "role:view", "permission:view"],
 }
 

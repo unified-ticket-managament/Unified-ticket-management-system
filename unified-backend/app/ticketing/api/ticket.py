@@ -1057,7 +1057,7 @@ async def get_ticket_sla_overview_counts(
 ):
     """
     The Dashboard's "SLA Overview" tile row (Running/Paused/At Risk/
-    Breached/Escalated/Completed), computed server-side in one grouped
+    Escalated/Completed), computed server-side in one grouped
     query — replaces the frontend's old N+1 pattern (an unbounded
     GET /tickets fetch, then one GET /tickets/{id}/sla call per visible
     ticket) that used to back this same tile. See

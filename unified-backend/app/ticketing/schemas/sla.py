@@ -220,7 +220,9 @@ class SLASweepResponse(BaseModel):
     first_response_breached: int
     resolution_half_elapsed: int
     resolution_at_risk: int
-    resolution_breached: int
+    # No resolution_breached field — Resolution SLA no longer has a
+    # separate BREACHED tier; ESCALATED (below) is now the sole
+    # terminal tier, crossed at 100% elapsed rather than 150%.
     resolution_escalated: int
     notifications_sent: int
     escalations_created: int

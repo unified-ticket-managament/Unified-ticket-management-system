@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, Flame, PauseCircle, ShieldAlert, Timer, TriangleAlert } from "lucide-react";
+import { CheckCircle2, Flame, PauseCircle, ShieldAlert, Timer } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ModernStatCard } from "@/components/dashboard/ModernStatCard";
@@ -54,8 +54,7 @@ export function SlaOverviewSection() {
     { key: "running", title: "Running", subtitle: "Actively counting down", icon: Timer, tone: "default" },
     { key: "paused", title: "Paused", subtitle: "Waiting for Client / overridden", icon: PauseCircle, tone: "default" },
     { key: "atRisk", title: "At Risk", subtitle: "80%+ of target elapsed", icon: ShieldAlert, tone: "warning" },
-    { key: "breached", title: "Breached", subtitle: "Past the resolution target", icon: TriangleAlert, tone: "danger" },
-    { key: "escalated", title: "Escalated", subtitle: "150%+ of target elapsed", icon: Flame, tone: "danger" },
+    { key: "escalated", title: "Escalated", subtitle: "100%+ of target elapsed", icon: Flame, tone: "danger" },
     { key: "completed", title: "Completed", subtitle: "Ticket closed", icon: CheckCircle2, tone: "success" },
   ];
 
@@ -69,7 +68,7 @@ export function SlaOverviewSection() {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {items.map((item) => (
             <ModernStatCard
               key={item.key}

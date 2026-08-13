@@ -144,11 +144,13 @@ export async function getDashboardStats(
   return data;
 }
 
+// No `breached` field — Resolution SLA no longer has a separate
+// BREACHED tier; `escalated` now covers everything at or past 100%
+// elapsed.
 export interface SlaOverviewCounts {
   running: number;
   paused: number;
   at_risk: number;
-  breached: number;
   escalated: number;
   completed: number;
 }

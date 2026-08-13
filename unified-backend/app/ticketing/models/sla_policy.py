@@ -88,11 +88,14 @@ class SLAPolicy(Base):
 
     # Per-priority overrides for the sweep's HALF_ELAPSED/AT_RISK
     # elapsed-fraction thresholds (see sla_escalation_rules.py's
-    # thresholds_reached) — BREACHED (100%) and ESCALATED (150%) stay
-    # fixed globally; only these two "warning" tiers are configurable
-    # per priority, matching the admin-facing SLA Timing Matrix's
-    # "Warning 1"/"Warning 2" columns. Whole percentages (50.0/80.0),
-    # same convention as handling_sla_percentage above.
+    # thresholds_reached) — only these two "warning" tiers are
+    # configurable per priority, matching the admin-facing SLA Timing
+    # Matrix's "Warning 1"/"Warning 2" columns. The terminal tier stays
+    # fixed globally, not per-priority: for First Response SLA that's
+    # still BREACHED (100%) then ESCALATED (150%); for Resolution SLA
+    # there is no BREACHED tier at all — ESCALATED is the sole terminal
+    # tier, fixed at 100%. Whole percentages (50.0/80.0), same
+    # convention as handling_sla_percentage above.
     warning_1_percentage: Mapped[float] = mapped_column(
         Float,
         default=50.0,

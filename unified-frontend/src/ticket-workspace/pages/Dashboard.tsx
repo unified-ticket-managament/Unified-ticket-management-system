@@ -252,7 +252,7 @@ export function Dashboard() {
           </p>
           {/* Server-aggregated via GET /tickets/sla-overview-counts —
               see useDashboardSlaCounts. */}
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
             <StatCard
               icon={<Timer size={19} className="text-accent" />}
               label="Running"
@@ -275,18 +275,11 @@ export function Dashboard() {
               hint="80% or more of the resolution target elapsed"
             />
             <StatCard
-              icon={<AlertTriangle size={19} className="text-danger" />}
-              label="Breached"
-              value={slaCounts.breached}
-              tone="bg-danger/10"
-              hint="Past the resolution target"
-            />
-            <StatCard
               icon={<Flame size={19} className="text-danger" />}
               label="Escalated"
               value={slaCounts.escalated}
               tone="bg-danger/10"
-              hint="150% or more of the resolution target elapsed"
+              hint="100% or more of the resolution target elapsed"
             />
             <StatCard
               icon={<CheckCircle2 size={19} className="text-success" />}

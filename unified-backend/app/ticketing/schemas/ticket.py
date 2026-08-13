@@ -202,7 +202,7 @@ class TicketResponse(ORMBase):
     # escalation, or escalated with a healthy-looking clock (already
     # acknowledged, handling-SLA still fresh). None when there's no
     # active Resolution SLA clock or no matching policy.
-    resolution_sla_tier: Literal["healthy", "at_risk", "breached", "escalated"] | None = None
+    resolution_sla_tier: Literal["healthy", "at_risk", "escalated"] | None = None
 
 
 class TicketListItemResponse(ORMBase):
@@ -265,7 +265,7 @@ class TicketListItemResponse(ORMBase):
     escalation_pending_acceptance: bool = False
 
     # See TicketResponse's own matching field for the full rationale.
-    resolution_sla_tier: Literal["healthy", "at_risk", "breached", "escalated"] | None = None
+    resolution_sla_tier: Literal["healthy", "at_risk", "escalated"] | None = None
 
 
 class DashboardStatsResponse(BaseModel):
@@ -300,6 +300,8 @@ class SLAOverviewCountsResponse(BaseModel):
     running: int
     paused: int
     at_risk: int
-    breached: int
+    # No breached field — Resolution SLA no longer has a separate
+    # BREACHED tier; escalated (below) now covers everything at or
+    # past 100% elapsed, not just past the old 150% cutoff.
     escalated: int
     completed: int

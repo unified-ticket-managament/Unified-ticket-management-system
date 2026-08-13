@@ -283,9 +283,9 @@ class ResolutionSLARepository:
         # A genuinely new SLA cycle starts here — see
         # ResolutionSLA.escalation_cycle's own docstring. This is what
         # lets SLABreachNotification's (clock_type, clock_id, threshold,
-        # cycle) ledger re-fire HALF_ELAPSED/AT_RISK/BREACHED for this
-        # same clock row instead of treating them as already-notified
-        # forever from the pre-restart cycle.
+        # cycle) ledger re-fire HALF_ELAPSED/AT_RISK for this same clock
+        # row instead of treating them as already-notified forever from
+        # the pre-restart cycle.
         clock.escalation_cycle += 1
 
         await self.db.flush()
@@ -330,7 +330,8 @@ class ResolutionSLARepository:
     async def list_active_for_sweep(self) -> list[ResolutionSLA]:
         """
         Every still-RUNNING clock — the sweep's candidate set for
-        AT_RISK/BREACHED/ESCALATED classification. Paused clocks are
+        AT_RISK/ESCALATED classification (there is no BREACHED tier for
+        Resolution SLA). Paused clocks are
         naturally excluded by the status filter (a paused clock's
         due_at is frozen and meaningless until resume), and not
         bounded by due_at itself since AT_RISK fires before due_at is

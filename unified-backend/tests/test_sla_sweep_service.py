@@ -18,9 +18,10 @@
 #    Breached notification away from the ticket's actual current owner
 #    to the escalation's owner instead. Fixed by gating escalation
 #    creation on ESCALATED (150%) only — see
-#    test_half_at_risk_breached_all_go_to_current_owner_then_escalation_
-#    only_at_150_percent below, which is the regression test for
-#    exactly this.
+#    test_half_and_at_risk_go_to_current_owner_then_escalation_
+#    immediately_at_100_percent below, which is the regression test for
+#    exactly this (renamed and rewritten since — see the note below the
+#    numbered list — but still covering the same underlying guarantee).
 # 2. That same auto-escalation-creation step read the ticket from a
 #    batch snapshot taken at the very top of the sweep tick, rather
 #    than re-fetching it — a claim/transfer landing on the ticket
@@ -49,6 +50,21 @@
 #    test_escalation_failure_does_not_block_notifications_and_retries_cleanly,
 #    and test_full_stage_lifecycle_staff_then_accepted_team_lead_never_cross_contaminate
 #    below.
+#
+# A later change removed the BREACHED tier from Resolution SLA
+# entirely and moved its ESCALATED tier (the sole remaining terminal
+# tier, and the one that creates the TicketEscalation) from 150% down
+# to 100% — see sla_escalation_rules.thresholds_reached's own
+# docstring. Every test below that used to model a clock at exactly
+# 100% ("Breached, not yet escalated") or drove it separately through
+# 100% and then 150% was updated accordingly: 100% now escalates
+# immediately, there is no intermediate Breached notification for
+# Resolution SLA, and "past 150%" no longer means "further along the
+# same 4-tier ladder" — it's simply "past 100%," the same single
+# terminal crossing. First Response SLA's own ladder is untouched
+# (still BREACHED at 100%/ESCALATED at 150%) — none of the fixtures in
+# this file touch a FirstResponseSLA clock at all, so nothing here
+# needed adjusting on that side.
 #
 # Runs against the real (dev) database inside a transaction that is
 # always rolled back at the end — same convention as
@@ -159,7 +175,9 @@ async def _make_ticket_with_resolution_clock(
     is computed to sit at exactly `fraction` of its target elapsed, as
     of "now" — mirrors compute_elapsed_fraction's own formula in
     reverse. `fraction` > 1.0 is valid (simulates a clock already past
-    BREACHED/ESCALATED, e.g. to model a delayed first sweep tick).
+    ESCALATED, e.g. to model a delayed first sweep tick — Resolution
+    SLA has no BREACHED tier to be "past" separately, see
+    sla_escalation_rules.thresholds_reached's own docstring).
     """
 
     team_lead = await _get_team_lead(session)
@@ -255,18 +273,20 @@ async def _notifications_for(session, *, user_id, ticket_id) -> list[Notificatio
 # ---------------------------------------------------------------------
 
 
-async def test_half_at_risk_breached_all_go_to_current_owner_then_escalation_only_at_150_percent(
+async def test_half_and_at_risk_go_to_current_owner_then_escalation_immediately_at_100_percent(
     db_session,
 ):
     """
-    Regression test for fix 1 (see module docstring): Half-Elapsed,
-    At-Risk, and Breached must all route to the assigned Staff member
-    — including Breached at exactly 100%, which used to be silently
-    redirected to the Team Lead in the same tick an escalation was
-    (incorrectly) created. The Team Lead must receive nothing at all
-    until the clock actually reaches ESCALATED (150%), at which point
-    they get exactly one Auto-Escalated notification and the escalation
-    only then exists.
+    Resolution SLA's 3-tier ladder (no BREACHED tier at all — see
+    sla_escalation_rules.thresholds_reached's own docstring): Half-
+    Elapsed and At-Risk both route to the assigned Staff member exactly
+    as before. The Team Lead must receive nothing at all until the
+    clock actually reaches 100% elapsed — ESCALATED, the sole terminal
+    tier — at which point the escalation is created in the SAME tick
+    that crosses 100% (not deferred to a later 150% crossing), the Team
+    Lead gets exactly one Auto-Escalated notification, and Staff never
+    receives any "Breached" notification at all, since that tier no
+    longer exists for Resolution SLA.
     """
 
     team_lead = await _get_team_lead(db_session)
@@ -299,10 +319,14 @@ async def test_half_at_risk_breached_all_go_to_current_owner_then_escalation_onl
         await _notifications_for(db_session, user_id=team_lead.user_id, ticket_id=ticket.ticket_id)
         == []
     )
+    escalation_repo = TicketEscalationRepository(db_session)
+    assert await escalation_repo.get_active_by_ticket_id(ticket.ticket_id) is None
 
-    # BREACHED (100%) — the exact crossing that used to also trigger
-    # escalation creation, redirecting this notification to the Team
-    # Lead. Must still go to Staff, and no escalation may exist yet.
+    # 100% elapsed — ESCALATED, the sole terminal tier. The escalation
+    # is created in this exact tick (not deferred to 150%): Team Lead
+    # gets exactly one Auto-Escalated notification, Staff gets no
+    # further notification at all — critically, no SLA_BREACHED, since
+    # that tier no longer exists for Resolution SLA.
     await _set_fraction(db_session, resolution_sla, fraction=1.05)
     await service.run_sweep()
     staff_notifications = await _notifications_for(
@@ -311,27 +335,8 @@ async def test_half_at_risk_breached_all_go_to_current_owner_then_escalation_onl
     assert [n.notification_type for n in staff_notifications] == [
         NotificationType.SLA_HALF_ELAPSED,
         NotificationType.SLA_AT_RISK,
-        NotificationType.SLA_BREACHED,
     ]
-    assert (
-        await _notifications_for(db_session, user_id=team_lead.user_id, ticket_id=ticket.ticket_id)
-        == []
-    )
-    escalation_repo = TicketEscalationRepository(db_session)
-    assert await escalation_repo.get_active_by_ticket_id(ticket.ticket_id) is None
-
-    # ESCALATED (150%) — escalation is created now, Team Lead gets
-    # exactly one Auto-Escalated notification, Staff gets nothing more.
-    await _set_fraction(db_session, resolution_sla, fraction=1.55)
-    await service.run_sweep()
-    staff_notifications = await _notifications_for(
-        db_session, user_id=staff.user_id, ticket_id=ticket.ticket_id
-    )
-    assert [n.notification_type for n in staff_notifications] == [
-        NotificationType.SLA_HALF_ELAPSED,
-        NotificationType.SLA_AT_RISK,
-        NotificationType.SLA_BREACHED,
-    ]
+    assert NotificationType.SLA_BREACHED not in [n.notification_type for n in staff_notifications]
     team_lead_notifications = await _notifications_for(
         db_session, user_id=team_lead.user_id, ticket_id=ticket.ticket_id
     )
@@ -398,8 +403,10 @@ async def test_reassignment_after_milestone_keeps_old_notification_and_routes_fu
     Example 4: Staff A gets Half-Elapsed, then the ticket is reassigned
     to Staff B before At-Risk. Staff A must keep the one notification
     already sent and never receive another; Staff B must receive
-    At-Risk and Breached going forward, with no duplicate/historical
-    Half-Elapsed of their own.
+    At-Risk going forward, with no duplicate/historical Half-Elapsed of
+    their own, and — once the clock reaches 100% and escalates — no
+    Breached notification either, since Resolution SLA has no such
+    tier anymore.
     """
 
     staff_a, staff_b = await _get_staff_members(db_session, count=2)
@@ -437,6 +444,12 @@ async def test_reassignment_after_milestone_keeps_old_notification_and_routes_fu
         )
     ] == [NotificationType.SLA_AT_RISK]
 
+    # 100% elapsed — escalates immediately (see thresholds_reached's
+    # own docstring). Staff B gets no further sweep notification at
+    # all: no Breached (that tier doesn't exist for Resolution SLA),
+    # and ESCALATED itself is deliberately silent at this level — the
+    # escalation-created notification (routed to whoever the
+    # assignment chain resolves to, not necessarily Staff B) covers it.
     await _set_fraction(db_session, resolution_sla, fraction=1.05)
     await service.run_sweep()
 
@@ -451,7 +464,7 @@ async def test_reassignment_after_milestone_keeps_old_notification_and_routes_fu
         for n in await _notifications_for(
             db_session, user_id=staff_b.user_id, ticket_id=ticket.ticket_id
         )
-    ] == [NotificationType.SLA_AT_RISK, NotificationType.SLA_BREACHED]
+    ] == [NotificationType.SLA_AT_RISK]
 
 
 # ---------------------------------------------------------------------
@@ -467,8 +480,13 @@ async def test_delayed_scheduler_fires_every_genuinely_due_milestone_once_not_du
     (simulating a long-delayed first sweep tick, or a long-delayed
     scheduler catching up) must fire every threshold it has genuinely
     already crossed — once each, not zero, not duplicated — to the
-    current owner. Re-running the sweep immediately after must not
-    resend any of them.
+    current owner. ESCALATED (the crossing that also creates the
+    escalation) is deliberately silent at the sweep-notify level — see
+    thresholds_reached's/​_notify_resolution's own docstrings — so the
+    assigned Staff member here only ever gets HALF_ELAPSED and AT_RISK,
+    never a third "Breached" entry (that tier doesn't exist for
+    Resolution SLA at all). Re-running the sweep immediately after must
+    not resend any of them, and must not create a second escalation.
     """
 
     (staff,) = await _get_staff_members(db_session, count=1)
@@ -484,18 +502,20 @@ async def test_delayed_scheduler_fires_every_genuinely_due_milestone_once_not_du
             db_session, user_id=staff.user_id, ticket_id=ticket.ticket_id
         )
     ]
-    # All three genuinely-crossed thresholds fire together in this one
-    # tick, each exactly once — but try_record_many reports them as a
-    # set, so the sweep's own notify loop (and therefore insertion
-    # order) is NOT guaranteed to match the HALF_ELAPSED/AT_RISK/
-    # BREACHED ladder order. Compare as a multiset, not an ordered list.
+    # Both genuinely-crossed notify-level thresholds fire together in
+    # this one tick, each exactly once — but try_record_many reports
+    # them as a set, so the sweep's own notify loop (and therefore
+    # insertion order) is NOT guaranteed to match the HALF_ELAPSED/
+    # AT_RISK ladder order. Compare as a multiset, not an ordered list.
     assert sorted(first_pass) == sorted(
         [
             NotificationType.SLA_HALF_ELAPSED,
             NotificationType.SLA_AT_RISK,
-            NotificationType.SLA_BREACHED,
         ]
     )
+
+    escalation_repo = TicketEscalationRepository(db_session)
+    assert await escalation_repo.get_active_by_ticket_id(ticket.ticket_id) is not None
 
     await service.run_sweep()
     second_pass = [
@@ -645,7 +665,7 @@ async def test_empty_recipients_are_logged_and_counted_not_silently_lost(
     ):
         sent, recipients_were_empty = await service._notify_resolution(
             resolution_sla,
-            "BREACHED",
+            "AT_RISK",
             global_inbox_ids,
             category_cache,
             {ticket.ticket_id: ticket},
@@ -691,7 +711,7 @@ async def test_missing_ticket_is_logged_and_counted_not_silently_lost(
     ):
         sent, recipients_were_empty = await service._notify_resolution(
             resolution_sla,
-            "BREACHED",
+            "AT_RISK",
             global_inbox_ids,
             {},
             {},  # tickets_by_id deliberately empty — ticket "missing"
@@ -718,17 +738,20 @@ async def test_all_thresholds_crossed_in_one_tick_still_route_to_pre_escalation_
     db_session,
 ):
     """
-    A clock discovered already past 150% elapsed (e.g. a delayed sweep,
-    or a short SLA target relative to the sweep interval) has
-    HALF_ELAPSED/AT_RISK/BREACHED/ESCALATED all newly-crossed in a
-    single run_sweep() call — unlike the multi-tick scenario above,
-    where each threshold is recorded on its own separate tick. Auto-
-    escalation creation must not pre-empt this same tick's own
-    Half-Elapsed/At-Risk/Breached notifications: all three must still
-    reach the pre-escalation Staff owner, never the freshly-created
-    Team Lead escalation. Assertions use set comparison, not list order
-    — newly_recorded is an unordered set, so iteration order across the
-    four thresholds isn't guaranteed.
+    A clock discovered already well past 100% elapsed (e.g. a delayed
+    sweep, or a short SLA target relative to the sweep interval) has
+    HALF_ELAPSED/AT_RISK/ESCALATED all newly-crossed in a single
+    run_sweep() call — unlike the multi-tick scenario above, where each
+    threshold is recorded on its own separate tick. Auto-escalation
+    creation must not pre-empt this same tick's own Half-Elapsed/
+    At-Risk notifications: both must still reach the pre-escalation
+    Staff owner, never the freshly-created Team Lead escalation.
+    ESCALATED itself sends no notification of its own (see
+    thresholds_reached's/_notify_resolution's own docstrings), so Staff
+    gets exactly these two, never a third "Breached" one — that tier
+    doesn't exist for Resolution SLA. Assertions use set comparison,
+    not list order — newly_recorded is an unordered set, so iteration
+    order across the three thresholds isn't guaranteed.
     """
 
     team_lead = await _get_team_lead(db_session)
@@ -746,9 +769,8 @@ async def test_all_thresholds_crossed_in_one_tick_still_route_to_pre_escalation_
     assert {n.notification_type for n in staff_notifications} == {
         NotificationType.SLA_HALF_ELAPSED,
         NotificationType.SLA_AT_RISK,
-        NotificationType.SLA_BREACHED,
     }
-    assert len(staff_notifications) == 3
+    assert len(staff_notifications) == 2
 
     team_lead_notifications = await _notifications_for(
         db_session, user_id=team_lead.user_id, ticket_id=ticket.ticket_id
@@ -769,8 +791,8 @@ async def test_escalation_failure_does_not_block_notifications_and_retries_clean
 ):
     """
     If auto-escalation *execution* fails (simulating e.g. a transient DB
-    error) on a tick that also has newly-crossed HALF_ELAPSED/AT_RISK/
-    BREACHED for the same ticket, those notifications must already have
+    error) on a tick that also has newly-crossed HALF_ELAPSED/AT_RISK
+    for the same ticket, those notifications must already have
     succeeded — escalation now runs strictly after the notify loop, so
     a failure there cannot roll back or block what already committed.
     The next sweep tick must retry only the escalation; the
@@ -799,7 +821,6 @@ async def test_escalation_failure_does_not_block_notifications_and_retries_clean
     assert {n.notification_type for n in staff_notifications} == {
         NotificationType.SLA_HALF_ELAPSED,
         NotificationType.SLA_AT_RISK,
-        NotificationType.SLA_BREACHED,
     }
     assert result.errors >= 1
 
@@ -834,10 +855,13 @@ async def test_full_stage_lifecycle_staff_then_accepted_team_lead_never_cross_co
     db_session,
 ):
     """
-    End-to-end lifecycle: Staff owns the ticket through its own three
-    milestones, the ticket auto-escalates to Team Lead, Team Lead takes
-    over and accepts (acknowledge + confirm_assignment), and their own
-    handling-stage cycle then produces its own three milestones. Every
+    End-to-end lifecycle: Staff owns the ticket through Half-Elapsed
+    and At-Risk, the ticket auto-escalates to Team Lead the instant it
+    reaches 100% elapsed (no separate Breached step first — Resolution
+    SLA has no such tier, and ESCALATED is the 100% crossing itself
+    now, not a later 150% one), Team Lead takes over and accepts
+    (acknowledge + confirm_assignment), and their own handling-stage
+    cycle then produces its own Half-Elapsed/At-Risk. Every
     notification must belong to the SLA stage that actually generated
     it — Staff's set must never gain a post-escalation entry, and Team
     Lead's set must never contain Staff's stage-1 entries. No duplicates
@@ -851,25 +875,23 @@ async def test_full_stage_lifecycle_staff_then_accepted_team_lead_never_cross_co
     )
     service = _build_sweep_service(db_session)
 
-    # Stage 1 (Staff) — one milestone per tick.
+    # Stage 1 (Staff) — Half-Elapsed, then At-Risk, one milestone per tick.
     await service.run_sweep()
     await _set_fraction(db_session, resolution_sla, fraction=0.85)
-    await service.run_sweep()
-    await _set_fraction(db_session, resolution_sla, fraction=1.05)
     await service.run_sweep()
 
     staff_notifications = await _notifications_for(
         db_session, user_id=staff.user_id, ticket_id=ticket.ticket_id
     )
-    assert len(staff_notifications) == 3
+    assert len(staff_notifications) == 2
     assert {n.notification_type for n in staff_notifications} == {
         NotificationType.SLA_HALF_ELAPSED,
         NotificationType.SLA_AT_RISK,
-        NotificationType.SLA_BREACHED,
     }
 
-    # Auto-escalate to Team Lead.
-    await _set_fraction(db_session, resolution_sla, fraction=1.55)
+    # 100% elapsed — escalates to Team Lead immediately, in this same
+    # tick (no intermediate Breached step, no waiting for 150%).
+    await _set_fraction(db_session, resolution_sla, fraction=1.05)
     await service.run_sweep()
 
     escalation_repo = TicketEscalationRepository(db_session)
@@ -877,16 +899,16 @@ async def test_full_stage_lifecycle_staff_then_accepted_team_lead_never_cross_co
     assert escalation is not None
     assert escalation.level == EscalationLevel.ASSIGNMENT_CHAIN
 
-    # Staff must still show exactly the same 3 — nothing leaked in from
-    # the escalation crossing itself.
+    # Staff must still show exactly the same 2 — nothing leaked in from
+    # the escalation crossing itself, and critically no "Breached"
+    # entry either, since that tier doesn't exist for Resolution SLA.
     staff_notifications = await _notifications_for(
         db_session, user_id=staff.user_id, ticket_id=ticket.ticket_id
     )
-    assert len(staff_notifications) == 3
+    assert len(staff_notifications) == 2
     assert {n.notification_type for n in staff_notifications} == {
         NotificationType.SLA_HALF_ELAPSED,
         NotificationType.SLA_AT_RISK,
-        NotificationType.SLA_BREACHED,
     }
 
     # Team Lead takes over as the real assignee (mirrors what
@@ -906,8 +928,13 @@ async def test_full_stage_lifecycle_staff_then_accepted_team_lead_never_cross_co
     reloaded_clock = await resolution_sla_repo.get_by_ticket_id(ticket.ticket_id)
     assert reloaded_clock.escalation_cycle == 1
 
-    # Stage 2 (Team Lead's own new cycle) — their own
-    # Half-Elapsed/At-Risk/Breached, against the reshifted target.
+    # Stage 2 (Team Lead's own new cycle) — their own Half-Elapsed/
+    # At-Risk against the reshifted target. The third tick pushes the
+    # reshifted clock back past 100% too — this must NOT create a
+    # second escalation (one's already active) and must NOT produce a
+    # "Breached" notification (that tier doesn't exist), confirming the
+    # no-duplicate-escalation guarantee holds on a reshifted clock too,
+    # not just the original one.
     await _set_fraction(db_session, reloaded_clock, fraction=0.55)
     await service.run_sweep()
     await _set_fraction(db_session, reloaded_clock, fraction=0.85)
@@ -916,16 +943,16 @@ async def test_full_stage_lifecycle_staff_then_accepted_team_lead_never_cross_co
     await service.run_sweep()
 
     # Final assertions: Staff unchanged; Team Lead has exactly their
-    # own escalation-created notice plus their own 3 stage-2
-    # thresholds — never Staff's stage-1 ones; no duplicates anywhere.
+    # own escalation-created notice plus their own 2 stage-2
+    # thresholds — never Staff's stage-1 ones, never a duplicate
+    # escalation, no duplicates anywhere.
     staff_notifications = await _notifications_for(
         db_session, user_id=staff.user_id, ticket_id=ticket.ticket_id
     )
-    assert len(staff_notifications) == 3
+    assert len(staff_notifications) == 2
     assert {n.notification_type for n in staff_notifications} == {
         NotificationType.SLA_HALF_ELAPSED,
         NotificationType.SLA_AT_RISK,
-        NotificationType.SLA_BREACHED,
     }
 
     team_lead_notifications = await _notifications_for(
@@ -935,8 +962,16 @@ async def test_full_stage_lifecycle_staff_then_accepted_team_lead_never_cross_co
     assert team_lead_types.count(NotificationType.ESCALATION_CREATED) == 1
     assert team_lead_types.count(NotificationType.SLA_HALF_ELAPSED) == 1
     assert team_lead_types.count(NotificationType.SLA_AT_RISK) == 1
-    assert team_lead_types.count(NotificationType.SLA_BREACHED) == 1
-    assert len(team_lead_notifications) == 4
+    assert NotificationType.SLA_BREACHED not in team_lead_types
+    assert len(team_lead_notifications) == 3
+
+    # Never duplicated by the reshifted clock's own 100% crossing — the
+    # partial unique index (at most one non-CLOSED row per ticket)
+    # already guarantees this structurally, but confirm it's still the
+    # very same escalation, not a replaced one.
+    still_same_escalation = await escalation_repo.get_active_by_ticket_id(ticket.ticket_id)
+    assert still_same_escalation is not None
+    assert still_same_escalation.escalation_id == escalation.escalation_id
 
     for n in staff_notifications + team_lead_notifications:
         assert n.related_entity_id == ticket.ticket_id

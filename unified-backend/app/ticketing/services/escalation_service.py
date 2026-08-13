@@ -92,11 +92,12 @@ class EscalationService:
     Owns the internal escalation ownership/acknowledgment workflow
     (TicketEscalation) — an ownership hand-off chain that starts only
     when a ticket is escalated (manually via ticket:escalate, or
-    automatically the first time its Resolution SLA crosses ESCALATED
-    (150% elapsed) with nothing already active — deliberately not
-    BREACHED (100%), so the current owner's own Breached notification
-    isn't pre-empted by an ownership handoff in the same tick it fires)
-    and advances only if the current owner ignores their acknowledgment
+    automatically the first time its Resolution SLA crosses ESCALATED —
+    now the sole terminal tier, at 100% elapsed, with nothing already
+    active — the SLA lifecycle no longer has a separate BREACHED tier
+    at 100%: hitting 100% *is* ESCALATED, and the escalation is created
+    immediately rather than deferred to a later 150% crossing) and
+    advances only if the current owner ignores their acknowledgment
     window (waiting the full ack window at each step before moving to
     the next, via evaluate_overdue below).
 
@@ -471,14 +472,16 @@ class EscalationService:
     ) -> bool:
         """
         Called from SLASweepService the first time a Resolution SLA
-        clock crosses ESCALATED (150% elapsed, never BREACHED at 100% —
-        see run_sweep's own comment for why) — a no-op if this ticket
-        already has an active escalation (manual or automatic), so a
-        supervisor who pre-emptively escalated before the breach (see
-        the spec's own 12:30-escalation-before-13:00-breach example)
-        never gets a second, redundant chain created underneath them.
-        Returns whether a new escalation was actually created, so the
-        sweep can tally it into SLASweepResponse.
+        clock crosses ESCALATED — 100% elapsed, the sole terminal tier
+        in the Resolution SLA ladder (see thresholds_reached's own
+        docstring; there is no separate BREACHED tier anymore) — a
+        no-op if this ticket already has an active escalation (manual
+        or automatic), so a supervisor who pre-emptively escalated
+        before the SLA target was reached (see the spec's own
+        12:30-escalation-before-13:00-target example) never gets a
+        second, redundant chain created underneath them. Returns
+        whether a new escalation was actually created, so the sweep can
+        tally it into SLASweepResponse.
         """
 
         existing = await self.ticket_escalation_repository.get_active_by_ticket_id(
@@ -516,8 +519,8 @@ class EscalationService:
             title=f"Ticket Auto-Escalated: {ticket.title}",
             message=(
                 f"Ticket \"{ticket.title}\" ({ticket.current_priority.value} priority) "
-                "breached its Resolution SLA with no active escalation, so it was "
-                f"automatically escalated to {escalation.level.value.replace('_', ' ').title()}.\n\n"
+                "reached 100% of its Resolution SLA target with no active escalation, "
+                f"so it was automatically escalated to {escalation.level.value.replace('_', ' ').title()}.\n\n"
                 f"Please acknowledge by {escalation.ack_due_at.strftime('%Y-%m-%d %H:%M UTC')} "
                 "— if this isn't acknowledged in time, it will automatically "
                 "advance to the next level."

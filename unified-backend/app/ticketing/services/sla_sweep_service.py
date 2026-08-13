@@ -52,10 +52,15 @@ logger = logging.getLogger(__name__)
 
 CLOCK_TYPE_RESOLUTION = "RESOLUTION"
 
-# Fixed regardless of per-priority policy overrides — BREACHED/ESCALATED
-# never vary (see thresholds_reached's own docstring); only the two
-# warning tiers are configurable.
-_FIXED_THRESHOLD_CUTOFFS = {"BREACHED": 1.0, "ESCALATED": 1.5}
+# Fixed regardless of per-priority policy overrides — only the two
+# warning tiers are configurable (see thresholds_reached's own
+# docstring). First Response SLA still follows the original 4-tier
+# ladder; Resolution SLA no longer has a BREACHED tier at all, and its
+# sole terminal tier (ESCALATED) sits at 100%, not 150% — see
+# thresholds_reached's own docstring for why one shared function can
+# express both ladders.
+_FIRST_RESPONSE_FIXED_THRESHOLD_CUTOFFS = {"BREACHED": 1.0, "ESCALATED": 1.5}
+_RESOLUTION_FIXED_THRESHOLD_CUTOFFS = {"ESCALATED": 1.0}
 
 
 def _late_thresholds(
@@ -67,6 +72,7 @@ def _late_thresholds(
     half_elapsed_cutoff: float,
     at_risk_cutoff: float,
     grace_seconds: float,
+    fixed_cutoffs: dict[str, float],
 ) -> list[tuple[str, float]]:
     """
     For each threshold this tick found in `reached`, computes how many
@@ -84,6 +90,12 @@ def _late_thresholds(
     itself: `thresholds_reached` still correctly detects every crossed
     threshold the moment it's finally checked, it just checked late.
     This is purely a diagnostic signal for that operational gap.
+
+    `fixed_cutoffs` is the caller's own BREACHED/ESCALATED cutoff map —
+    `_FIRST_RESPONSE_FIXED_THRESHOLD_CUTOFFS` or
+    `_RESOLUTION_FIXED_THRESHOLD_CUTOFFS` — passed explicitly rather
+    than hardcoded in here, since the two clock types no longer share
+    the same terminal-tier shape.
     """
 
     target_seconds = target_minutes * 60
@@ -93,7 +105,7 @@ def _late_thresholds(
     cutoffs = {
         "HALF_ELAPSED": half_elapsed_cutoff,
         "AT_RISK": at_risk_cutoff,
-        **_FIXED_THRESHOLD_CUTOFFS,
+        **fixed_cutoffs,
     }
 
     late: list[tuple[str, float]] = []
@@ -213,7 +225,6 @@ class SLASweepService:
             "first_response_breached": 0,
             "resolution_half_elapsed": 0,
             "resolution_at_risk": 0,
-            "resolution_breached": 0,
             "resolution_escalated": 0,
         }
         notifications_sent = 0
@@ -313,6 +324,7 @@ class SLASweepService:
                 half_elapsed_cutoff=half_elapsed_cutoff,
                 at_risk_cutoff=at_risk_cutoff,
                 grace_seconds=late_grace_seconds,
+                fixed_cutoffs=_FIRST_RESPONSE_FIXED_THRESHOLD_CUTOFFS,
             ):
                 late_threshold_detections += 1
                 logger.warning(
@@ -386,15 +398,23 @@ class SLASweepService:
             policy = policy_by_priority.get(clock.priority)
             half_elapsed_cutoff = policy.warning_1_percentage / 100 if policy is not None else 0.5
             at_risk_cutoff = policy.warning_2_percentage / 100 if policy is not None else 0.8
+            # include_breached=False, escalated=1.0 — Resolution SLA's
+            # 3-tier ladder: HALF_ELAPSED (50%) / AT_RISK (80%) /
+            # ESCALATED (100%, the sole terminal tier — see
+            # thresholds_reached's own docstring). There is no
+            # BREACHED tier for Resolution SLA at all anymore, and
+            # ESCALATED no longer waits for 150%.
             reached = thresholds_reached(
-                fraction, half_elapsed=half_elapsed_cutoff, at_risk=at_risk_cutoff
+                fraction,
+                half_elapsed=half_elapsed_cutoff,
+                at_risk=at_risk_cutoff,
+                include_breached=False,
+                escalated=1.0,
             )
             if "HALF_ELAPSED" in reached:
                 counts["resolution_half_elapsed"] += 1
             if "AT_RISK" in reached:
                 counts["resolution_at_risk"] += 1
-            if "BREACHED" in reached:
-                counts["resolution_breached"] += 1
             if "ESCALATED" in reached:
                 counts["resolution_escalated"] += 1
 
@@ -406,6 +426,7 @@ class SLASweepService:
                 half_elapsed_cutoff=half_elapsed_cutoff,
                 at_risk_cutoff=at_risk_cutoff,
                 grace_seconds=late_grace_seconds,
+                fixed_cutoffs=_RESOLUTION_FIXED_THRESHOLD_CUTOFFS,
             ):
                 late_threshold_detections += 1
                 logger.warning(
@@ -441,9 +462,9 @@ class SLASweepService:
             # inline, in this same classification loop, could create the
             # new escalation BEFORE this tick's own notify loop resolves
             # recipients for that same clock's other newly-crossed
-            # thresholds (HALF_ELAPSED/AT_RISK/BREACHED) — whenever a
-            # clock is discovered already past 150% (a delayed sweep, or
-            # a short SLA target relative to the sweep interval),
+            # thresholds (HALF_ELAPSED/AT_RISK) — whenever a clock is
+            # discovered already well past 100% (a delayed sweep, or a
+            # short SLA target relative to the sweep interval),
             # thresholds_reached() returns all of them together in one
             # tick, and the notify loop's own refresh step (which is not
             # threshold-scoped) would then feed the *new* escalation's
@@ -454,11 +475,11 @@ class SLASweepService:
             # thresholds closes that window entirely — see the matching
             # regression tests in tests/test_sla_sweep_service.py.
             #
-            # Gated on ESCALATED (150%) only, deliberately NOT BREACHED
-            # (100%) — a clock crossing BREACHED still notifies the
-            # current owner (assigned agent) via RESOLUTION_RULES_
-            # CURRENT_OWNER below, same as HALF_ELAPSED/AT_RISK, with no
-            # ownership handoff yet.
+            # Gated on ESCALATED — Resolution SLA's sole terminal tier,
+            # now at 100% elapsed (there is no separate BREACHED tier to
+            # gate around anymore; the SLA lifecycle collapses what used
+            # to be a 100%-BREACHED-then-150%-ESCALATED sequence into a
+            # single crossing at 100% that escalates immediately).
             #
             # Skipped entirely for a ticket already present in
             # escalations_by_ticket_id (the batch prefetch above) —
@@ -587,9 +608,10 @@ class SLASweepService:
         # earlier could feed this same tick's own notify loop a
         # just-created escalation for a threshold that logically
         # belonged to the pre-escalation owner). By the time this runs,
-        # every one of this tick's HALF_ELAPSED/AT_RISK/BREACHED
-        # notifications has already read `escalations_by_ticket_id`, so
-        # nothing below can affect them.
+        # every one of this tick's HALF_ELAPSED/AT_RISK Resolution
+        # notifications (and First Response's own BREACHED, which this
+        # loop never touches) has already read `escalations_by_ticket_id`,
+        # so nothing below can affect them.
         for clock in pending_auto_escalations:
             # Re-fetched fresh here rather than reusing the tickets_by_id
             # snapshot taken at the top of this tick — the classification
@@ -806,24 +828,26 @@ class SLASweepService:
         Auto-escalation creation is NOT triggered from here (it used to
         be) — see the classification loop in run_sweep, which now calls
         EscalationService.auto_escalate_if_needed independently of this
-        newly-crossed gate, gated on the ESCALATED (150%) crossing only
-        (never BREACHED — see that loop's own comment for why). Nesting
-        it here meant a ticket only ever got one chance, ever, to
-        auto-escalate: the single sweep tick where its threshold was
-        first recorded in the notification ledger. A ticket that
-        crossed ESCALATED before that auto-escalation call existed (or
-        on a tick where it failed) would then never retry, since
-        "newly recorded" stays false forever for that (clock,
-        threshold) pair — this was a real bug, not a hypothetical one.
+        newly-crossed gate, gated on the ESCALATED crossing — Resolution
+        SLA's sole terminal tier, now at 100% elapsed rather than 150%,
+        with no separate BREACHED tier in between anymore (see
+        thresholds_reached's own docstring). Nesting it here meant a
+        ticket only ever got one chance, ever, to auto-escalate: the
+        single sweep tick where its threshold was first recorded in the
+        notification ledger. A ticket that crossed ESCALATED before that
+        auto-escalation call existed (or on a tick where it failed)
+        would then never retry, since "newly recorded" stays false
+        forever for that (clock, threshold) pair — this was a real bug,
+        not a hypothetical one.
 
-        HALF_ELAPSED/AT_RISK/BREACHED resolve recipients via
+        HALF_ELAPSED/AT_RISK resolve recipients via
         RESOLUTION_RULES_CURRENT_OWNER — whoever is actually working the
         ticket right now, never a wider role ladder — so Team Lead/
         Account Manager/Global Inbox no longer hear about a ticket from
         this sweep alone; they only learn about it through the
         escalation workflow's own hierarchical notifications
         (EscalationService._notify_owners) once the ticket is actually
-        escalated. ESCALATED (150% elapsed) sends no notification of
+        escalated. ESCALATED (100% elapsed) sends no notification of
         its own at all — that's the exact same crossing that creates
         the TicketEscalation (see run_sweep's classification loop), so
         the real escalation-created notification has already informed
@@ -943,16 +967,19 @@ class SLASweepService:
                     reason,
                 )
 
-        if threshold in ("BREACHED", "ESCALATED"):
+        # No SLA_BREACH_DETECTED audit event anymore — there is no
+        # BREACHED tier left in the Resolution SLA lifecycle to detect
+        # (see thresholds_reached's own docstring). The enum value
+        # itself is still defined (app/ticketing/enums/audit_enums.py)
+        # purely so historical rows written before this change keep
+        # rendering correctly in the Audit Log tab — nothing new writes
+        # it going forward.
+        if threshold == "ESCALATED":
             await AuditLogService.log_event(
                 self.ticket_repository.db,
                 entity_type=AuditEntityType.TICKET,
                 entity_id=ticket.ticket_id,
-                event_type=(
-                    AuditEventType.SLA_ESCALATED
-                    if threshold == "ESCALATED"
-                    else AuditEventType.SLA_BREACH_DETECTED
-                ),
+                event_type=AuditEventType.SLA_ESCALATED,
                 actor_id=None,
                 actor_name="SLA Sweep",
                 actor_role=ActorRole.SYSTEM,

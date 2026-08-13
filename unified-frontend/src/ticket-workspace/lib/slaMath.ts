@@ -9,15 +9,26 @@
 //
 // Deliberately mirrors the backend's own thresholds/formula
 // (unified-backend/app/ticketing/services/sla_service.py's
-// compute_elapsed_fraction, and sla_sweep_service.py's THRESHOLDS) so
-// the frontend's tier classification agrees with what the sweep would
-// eventually report — but with one intentional correction: the
-// backend's own `elapsed_fraction` keeps climbing against wall-clock
-// time even while a clock is PAUSED (due_at is frozen but the fraction
-// isn't recomputed relative to that freeze). This file's
-// computeElapsedFraction is PAUSED-aware and freezes the fraction at
-// the moment of pausing instead, so the UI doesn't show a paused
-// ticket's bar creeping toward 100% for no reason.
+// compute_elapsed_fraction, and sla_escalation_rules.py's
+// thresholds_reached) so the frontend's tier classification agrees
+// with what the sweep would eventually report — but with one
+// intentional correction: the backend's own `elapsed_fraction` keeps
+// climbing against wall-clock time even while a clock is PAUSED
+// (due_at is frozen but the fraction isn't recomputed relative to that
+// freeze). This file's computeElapsedFraction is PAUSED-aware and
+// freezes the fraction at the moment of pausing instead, so the UI
+// doesn't show a paused ticket's bar creeping toward 100% for no
+// reason.
+//
+// `SlaTier` stays 4-valued because First Response SLA (Mail's own
+// countdown — useFirstResponseCountdown.ts, MessageList.tsx's
+// firstResponseTierFor) still follows the original ladder: BREACHED at
+// 100%, ESCALATED at 150%, exactly like the backend's own
+// thresholds_reached default. Resolution SLA no longer has a BREACHED
+// tier at all — its terminal tier is ESCALATED at 100% — so its own
+// caller (useTicketSla.ts) passes classifyTier's second argument to
+// get that narrower 3-tier ladder instead of changing the shared
+// default and breaking First Response's display.
 // ==========================================================
 
 export type SlaTier = "healthy" | "at_risk" | "breached" | "escalated";
@@ -26,9 +37,20 @@ const AT_RISK_THRESHOLD = 0.8;
 const BREACHED_THRESHOLD = 1.0;
 const ESCALATED_THRESHOLD = 1.5;
 
-export function classifyTier(fraction: number): SlaTier {
-  if (fraction >= ESCALATED_THRESHOLD) return "escalated";
-  if (fraction >= BREACHED_THRESHOLD) return "breached";
+export interface ClassifyTierOptions {
+  // false for Resolution SLA (see this file's own top comment) — the
+  // BREACHED tier is skipped entirely, so `escalatedThreshold` decides
+  // where "escalated" starts instead of 1.5.
+  includeBreached?: boolean;
+  escalatedThreshold?: number;
+}
+
+export function classifyTier(fraction: number, options?: ClassifyTierOptions): SlaTier {
+  const includeBreached = options?.includeBreached ?? true;
+  const escalatedThreshold = options?.escalatedThreshold ?? ESCALATED_THRESHOLD;
+
+  if (fraction >= escalatedThreshold) return "escalated";
+  if (includeBreached && fraction >= BREACHED_THRESHOLD) return "breached";
   if (fraction >= AT_RISK_THRESHOLD) return "at_risk";
   return "healthy";
 }

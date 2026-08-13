@@ -138,9 +138,10 @@ class TestFirstResponseAccountManagerNeverDropped:
 
 class TestRuleTableCompleteness:
     # RESOLUTION_RULES_CURRENT_OWNER is deliberately partial (no
-    # ESCALATED entry — see TestResolutionEscalatedHasNoRuleEntry
-    # below), so only FIRST_RESPONSE_RULES is checked for full
-    # threshold coverage here.
+    # ESCALATED entry, and — since Resolution SLA has no BREACHED tier
+    # at all — no BREACHED entry either; see
+    # TestResolutionEscalatedHasNoRuleEntry below), so only
+    # FIRST_RESPONSE_RULES is checked for full threshold coverage here.
     @pytest.mark.parametrize("rules", [FIRST_RESPONSE_RULES])
     def test_every_threshold_has_a_rule_entry(self, rules):
         for name, _ in THRESHOLDS:
@@ -260,7 +261,8 @@ class TestManagerScopeNeverBroadensBeyondTheOwningClient:
 
 
 class TestResolutionEscalatedHasNoRuleEntry:
-    # Deliberate: Resolution SLA's ESCALATED (150%) tier sends no
+    # Deliberate: Resolution SLA's ESCALATED tier (now the sole
+    # terminal tier, at 100% elapsed rather than 150%) sends no
     # notification at all (SLASweepService._notify_resolution skips it
     # outright) — the real escalation-created notification, fired
     # earlier at the crossing that first creates the TicketEscalation,
@@ -268,3 +270,14 @@ class TestResolutionEscalatedHasNoRuleEntry:
     # reintroduce the redundant notification this was removed for.
     def test_escalated_is_absent(self):
         assert "ESCALATED" not in RESOLUTION_RULES_CURRENT_OWNER
+
+    # Also deliberate, for a different reason: Resolution SLA has no
+    # BREACHED tier at all anymore (see sla_escalation_rules.
+    # thresholds_reached's own docstring) — SLASweepService's
+    # Resolution-clock call site passes include_breached=False, so
+    # thresholds_reached can never return "BREACHED" for a Resolution
+    # clock in the first place. A rule entry reappearing here would be
+    # dead code, not a bug exactly, but a sign the ladder narrowing
+    # was reverted without updating this table to match.
+    def test_breached_is_also_absent(self):
+        assert "BREACHED" not in RESOLUTION_RULES_CURRENT_OWNER

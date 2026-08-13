@@ -25,8 +25,8 @@ class SLABreachNotification(Base):
     against two overlapping sweep runs, with no application-level
     lock needed. `cycle` was added alongside the original three columns
     (see its own docstring below) after a real bug: without it, a
-    Resolution clock's HALF_ELAPSED/AT_RISK/BREACHED could only ever
-    notify once in the clock's whole lifetime, even across a legitimate
+    Resolution clock's HALF_ELAPSED/AT_RISK could only ever notify once
+    in the clock's whole lifetime, even across a legitimate
     escalation-driven restart of the same clock row.
     """
 
@@ -52,7 +52,14 @@ class SLABreachNotification(Base):
         nullable=False,
     )
 
-    # AT_RISK (80%) / BREACHED (100%) / ESCALATED (150%).
+    # HALF_ELAPSED (50%) / AT_RISK (80%), plus, for First Response
+    # only, BREACHED (100%) / ESCALATED (150%) — Resolution SLA's own
+    # terminal tier is ESCALATED at 100%, with no BREACHED tier at all
+    # (see sla_escalation_rules.thresholds_reached's own docstring). A
+    # free-form string column with no CHECK constraint, so this is a
+    # pure application-level vocabulary change — no migration needed,
+    # and any pre-existing 'BREACHED' row for a Resolution clock is
+    # simply inert going forward.
     threshold: Mapped[str] = mapped_column(
         String(20),
         nullable=False,

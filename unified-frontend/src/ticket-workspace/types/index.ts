@@ -457,9 +457,12 @@ export interface TicketResponse {
   // display-only shape as the escalation fields above, but an
   // independent signal (see lib/slaMath.ts's SlaTier — kept as an
   // inline literal here rather than importing from lib/, matching
-  // this file's existing types-only role). None when there's no
-  // active Resolution SLA clock or no matching policy.
-  resolution_sla_tier?: "healthy" | "at_risk" | "breached" | "escalated" | null;
+  // this file's existing types-only role). Only 3 values, unlike
+  // SlaTier's 4 — Resolution SLA has no BREACHED tier at all; its
+  // sole terminal tier is "escalated", now at 100% elapsed rather
+  // than 150%. None when there's no active Resolution SLA clock or
+  // no matching policy.
+  resolution_sla_tier?: "healthy" | "at_risk" | "escalated" | null;
 }
 
 export interface RelateTicketRequest {

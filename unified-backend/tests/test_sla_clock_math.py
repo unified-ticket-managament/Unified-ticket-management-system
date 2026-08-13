@@ -243,3 +243,52 @@ class TestThresholdBoundaryRequirements:
             "AT_RISK",
         ]
         assert thresholds_reached(0.45) == []  # same fraction, default cutoffs -> nothing yet
+
+
+class TestThresholdsReachedResolutionLadder:
+    """
+    Resolution SLA's own 3-tier ladder — HALF_ELAPSED (50%) / AT_RISK
+    (80%) / ESCALATED (100%, the sole terminal tier) — passed as
+    `include_breached=False, escalated=1.0` by SLASweepService's
+    Resolution-clock call site. There is no BREACHED tier at all in
+    this shape: hitting 100% immediately reaches ESCALATED, not a
+    separate 100%-then-150% two-step. First Response SLA's own call
+    sites never pass these kwargs, so TestThresholdsReached/
+    TestThresholdBoundaryRequirements above (unchanged, still passing)
+    continue to cover its original 4-tier ladder.
+    """
+
+    RESOLUTION_KWARGS = {"include_breached": False, "escalated": 1.0}
+
+    def test_below_half_elapsed_reaches_nothing(self):
+        assert thresholds_reached(0.3, **self.RESOLUTION_KWARGS) == []
+
+    def test_between_half_elapsed_and_at_risk_reaches_only_half_elapsed(self):
+        assert thresholds_reached(0.6, **self.RESOLUTION_KWARGS) == ["HALF_ELAPSED"]
+
+    def test_between_at_risk_and_100_percent_reaches_half_elapsed_and_at_risk(self):
+        assert thresholds_reached(0.95, **self.RESOLUTION_KWARGS) == ["HALF_ELAPSED", "AT_RISK"]
+
+    def test_just_before_100_percent_is_not_yet_escalated(self):
+        reached = thresholds_reached(0.999, **self.RESOLUTION_KWARGS)
+        assert "ESCALATED" not in reached
+        assert reached == ["HALF_ELAPSED", "AT_RISK"]
+
+    def test_exactly_100_percent_escalates_immediately_with_no_breached_step(self):
+        reached = thresholds_reached(1.0, **self.RESOLUTION_KWARGS)
+        assert reached == ["HALF_ELAPSED", "AT_RISK", "ESCALATED"]
+        assert "BREACHED" not in reached
+
+    def test_past_150_percent_is_still_just_escalated_once_never_a_second_tier(self):
+        # The old ladder would have this crossing BREACHED then
+        # ESCALATED as two separate tiers; the new one has only one
+        # terminal tier to cross, no matter how far past 100% it's
+        # discovered.
+        reached = thresholds_reached(1.8, **self.RESOLUTION_KWARGS)
+        assert reached == ["HALF_ELAPSED", "AT_RISK", "ESCALATED"]
+
+    def test_per_priority_warning_overrides_still_apply_on_the_narrower_ladder(self):
+        assert thresholds_reached(0.45, half_elapsed=0.25, at_risk=0.4, **self.RESOLUTION_KWARGS) == [
+            "HALF_ELAPSED",
+            "AT_RISK",
+        ]

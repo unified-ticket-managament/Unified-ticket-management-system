@@ -132,8 +132,13 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
       })
     : null;
 
+  // Resolution SLA's own ladder — no BREACHED tier, ESCALATED at 100%
+  // elapsed rather than 150% (see slaMath.ts's own top comment for why
+  // this isn't the shared classifyTier default).
   const tier: SlaTier | null =
-    resolution?.status === "RUNNING" && elapsedFraction != null ? classifyTier(elapsedFraction) : null;
+    resolution?.status === "RUNNING" && elapsedFraction != null
+      ? classifyTier(elapsedFraction, { includeBreached: false, escalatedThreshold: 1.0 })
+      : null;
 
   // Instant client-side feedback the moment a tier crosses a
   // threshold — doesn't wait for the backend sweep (which, locally,
@@ -146,15 +151,15 @@ export function useTicketSla(ticketId: string | undefined, ticketPriority: Ticke
     lastTierRef.current = tier;
     if (previous === null || previous === tier) return;
 
-    const order: SlaTier[] = ["healthy", "at_risk", "breached", "escalated"];
+    // No "breached" entry — Resolution SLA never produces that tier
+    // anymore (see the `tier` derivation above).
+    const order: SlaTier[] = ["healthy", "at_risk", "escalated"];
     if (order.indexOf(tier) <= order.indexOf(previous)) return;
 
     if (tier === "at_risk") {
       pushToast("Resolution SLA is now At Risk (80% of target elapsed).", "info");
-    } else if (tier === "breached") {
-      pushToast("Resolution SLA has been Breached.", "error");
     } else if (tier === "escalated") {
-      pushToast("Resolution SLA has Escalated (150% of target elapsed).", "error");
+      pushToast("Resolution SLA has Escalated (100% of target elapsed).", "error");
     }
   }, [tier, pushToast]);
 
