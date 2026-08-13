@@ -23,3 +23,19 @@ export async function listClientContacts(clientId: string): Promise<ClientContac
   const { data } = await apiClient.get<ClientContact[]>(`/clients/${clientId}/contacts`);
   return data;
 }
+
+// GET /clients/{client_id}/contacts?configured_only=true — just the
+// curated client_contacts rows, no interaction-derived merge. Used by
+// the RBAC Users/Clients admin UI (the Clients list page and the
+// Create/Edit User dialog's Client-role contact-email field) — the
+// merged listClientContacts() above would otherwise leak every
+// person who's ever emailed in as an editable "contact", which the
+// admin Save action would then permanently promote into the curated
+// list on the next save.
+export async function listConfiguredClientContacts(clientId: string): Promise<ClientContact[]> {
+  const { data } = await apiClient.get<ClientContact[]>(
+    `/clients/${clientId}/contacts`,
+    { params: { configured_only: true } }
+  );
+  return data;
+}

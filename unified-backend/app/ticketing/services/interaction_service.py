@@ -2266,8 +2266,8 @@ class InteractionService:
             await self.notification_service.notify(
                 new_agent.user_id,
                 NotificationType.TICKET_ASSIGNED,
-                title="A ticket was assigned to you",
-                message=ticket.title,
+                title="A ticket was transferred to you" if old_agent_id is not None else "A ticket was assigned to you",
+                message=f"Ticket TKT-{ticket.ticket_number:02d}: {ticket.title}",
                 link=f"/tickets/{ticket_id}",
                 related_entity_type="ticket",
                 related_entity_id=ticket_id,
@@ -2292,7 +2292,7 @@ class InteractionService:
                     stakeholder_ids,
                     NotificationType.TICKET_ASSIGNED,
                     title="A ticket was reassigned" if old_agent_id is not None else "A ticket was assigned",
-                    message=f"{ticket.title} — assigned to {new_agent.name}",
+                    message=f"Ticket TKT-{ticket.ticket_number:02d}: {ticket.title} — assigned to {new_agent.name}",
                     link=f"/tickets/{ticket_id}",
                     related_entity_type="ticket",
                     related_entity_id=ticket_id,
@@ -2379,6 +2379,30 @@ class InteractionService:
                 "agent_name": current_user.name,
             },
         )
+
+        # Stakeholder awareness only — the claimer performed this
+        # themselves and doesn't need telling. Reuses
+        # _resolve_ticket_stakeholder_ids (the same "who has a stake in
+        # this ticket" resolver status/priority/resolution/note changes
+        # already use), which reads the now-refreshed `ticket.agent_id`
+        # (== current_user.user_id after the claim above) to resolve
+        # the claimer's own Team Lead and the client's Account Manager,
+        # excluding the claimer itself per that helper's own
+        # "actor never gets notified about their own change" rule.
+        if self.notification_service is not None:
+            stakeholder_ids = await self._resolve_ticket_stakeholder_ids(
+                ticket, exclude_user_id=current_user.user_id
+            )
+            if stakeholder_ids:
+                await self.notification_service.notify(
+                    stakeholder_ids,
+                    NotificationType.TICKET_ASSIGNED,
+                    title="A ticket was claimed",
+                    message=f"Ticket TKT-{ticket.ticket_number:02d}: {ticket.title} — claimed by {current_user.name}.",
+                    link=f"/tickets/{ticket_id}",
+                    related_entity_type="ticket",
+                    related_entity_id=ticket_id,
+                )
 
         # Claiming an escalated (unclaimed) ticket is exactly the same
         # "took ownership" act transfer_agent's own call below is —

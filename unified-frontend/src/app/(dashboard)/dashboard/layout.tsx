@@ -56,7 +56,7 @@ export default function DashboardLayoutSegment({
           role === ROLE_NAMES.TEAM_LEAD ||
           role === ROLE_NAMES.STAFF
         ? slugLength > 0
-        : true;
+        : false;
 
   if (!showWorkspace) {
     return <>{children}</>;

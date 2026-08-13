@@ -2,9 +2,9 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Eye, EyeOff, Loader2 } from "lucide-react";
+import { Eye, EyeOff, Loader2, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useForm } from "react-hook-form";
+import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
@@ -29,6 +29,23 @@ import { dedupeRolesByName, getCreatableRoleNames, ROLE_NAMES } from "@/lib/role
 import { categoryService, roleService, userService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 import { Category, Role, User } from "@/types";
+import { listConfiguredClientContacts } from "@tw/api/clients";
+
+// The five internal-organization roles — every role except Client.
+// Mirrors unified-backend/app/rbac/services/user_service.py's
+// DESIGNATION_REQUIRED_ROLE_NAMES exactly (all five require
+// Designation + Personal Email; keep both in sync if this changes).
+const INTERNAL_ROLE_NAMES: string[] = [
+  ROLE_NAMES.SUPER_ADMIN,
+  ROLE_NAMES.SITE_LEAD,
+  ROLE_NAMES.ACCOUNT_MANAGER,
+  ROLE_NAMES.TEAM_LEAD,
+  ROLE_NAMES.STAFF,
+];
+
+// Mirrors user_service.py's REPORTING_MANAGER_OPTIONAL_ROLE_NAMES —
+// every internal role requires a Reporting Manager except Site Lead.
+const REPORTING_MANAGER_OPTIONAL_ROLE_NAMES: string[] = [ROLE_NAMES.SITE_LEAD];
 
 function buildSchema(mode: "create" | "edit", currentUserRole: string | undefined, roleMap: Map<string, string>) {
   return z
@@ -41,20 +58,43 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
       teamlead_id: z.string().optional(),
       // Organization-Chart-only field, independent of manager_id/
       // teamlead_id above and their role-specific required-ness rules
-      // below — unrestricted by role, always optional.
+      // below — unrestricted by role, always optional at the schema
+      // level (required-ness for internal roles other than Site Lead
+      // is enforced in the superRefine below instead, since it
+      // depends on which role is selected).
       reporting_manager_id: z.string().optional(),
       category_id: z.string().optional(),
-      password:
-        mode === "create"
-          ? z.string().min(8, "Password must be at least 8 characters")
-          : z
-              .union([z.string().min(8, "Password must be at least 8 characters"), z.literal("")])
-              .optional(),
+      designation: z.string().optional(),
+      alternate_email: z
+        .union([z.string().email("Enter a valid email"), z.literal("")])
+        .optional(),
+      contact_emails: z
+        .array(z.object({ value: z.string() }))
+        .optional(),
+      // Client has no login of its own — required-ness (min 8 chars in
+      // create mode) is enforced below in superRefine, gated on the
+      // selected role, rather than unconditionally here, since the
+      // Password field is hidden entirely for Client (see the JSX).
+      password: z
+        .union([z.string().min(8, "Password must be at least 8 characters"), z.literal("")])
+        .optional(),
     })
     .superRefine((data, ctx) => {
       const selectedRoleName = roleMap.get(data.role_id);
       const needsCategory =
         selectedRoleName === ROLE_NAMES.STAFF || selectedRoleName === ROLE_NAMES.TEAM_LEAD;
+
+      if (
+        mode === "create" &&
+        selectedRoleName !== ROLE_NAMES.CLIENT &&
+        (!data.password || data.password.length < 8)
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["password"],
+          message: "Password must be at least 8 characters",
+        });
+      }
 
       if (needsCategory && !data.category_id) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["category_id"], message: "Select a category" });
@@ -84,6 +124,70 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
         // field instead of as a generic submit failure.
         if (!data.manager_id) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["manager_id"], message: "Select an Account Manager" });
+        }
+
+        const emails = (data.contact_emails ?? [])
+          .map((entry) => entry.value.trim())
+          .filter((value) => value.length > 0);
+
+        if (emails.length === 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["contact_emails"],
+            message: "At least one contact email is required.",
+          });
+        }
+
+        const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        const seen = new Set<string>();
+        data.contact_emails?.forEach((entry, index) => {
+          const value = entry.value.trim();
+          if (!value) return;
+
+          if (!emailPattern.test(value)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["contact_emails", index, "value"],
+              message: "Enter a valid email",
+            });
+            return;
+          }
+
+          const normalized = value.toLowerCase();
+          if (seen.has(normalized)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ["contact_emails", index, "value"],
+              message: "Duplicate contact email",
+            });
+          }
+          seen.add(normalized);
+        });
+      } else if (selectedRoleName && INTERNAL_ROLE_NAMES.includes(selectedRoleName)) {
+        // Designation + Personal Email are mandatory for every
+        // internal role; Reporting Manager is mandatory for every
+        // internal role except Site Lead — mirrors
+        // user_service.py's own DESIGNATION_REQUIRED_ROLE_NAMES/
+        // REPORTING_MANAGER_OPTIONAL_ROLE_NAMES exactly.
+        if (!data.designation || !data.designation.trim()) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["designation"], message: "Designation is required" });
+        }
+        if (!data.alternate_email || !data.alternate_email.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["alternate_email"],
+            message: "Personal Email is required",
+          });
+        }
+        if (
+          !REPORTING_MANAGER_OPTIONAL_ROLE_NAMES.includes(selectedRoleName) &&
+          !data.reporting_manager_id
+        ) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["reporting_manager_id"],
+            message: "Reporting Manager is required",
+          });
         }
       }
     });
@@ -135,6 +239,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
     reset,
     watch,
     setValue,
+    control,
     formState: { errors, isSubmitting },
   } = useForm<UserFormValues>({
     resolver: zodResolver(buildSchema(mode, currentUser?.role, roleMap)),
@@ -148,8 +253,13 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
       teamlead_id: "",
       reporting_manager_id: "",
       category_id: "",
+      designation: "",
+      alternate_email: "",
+      contact_emails: [{ value: "" }],
     },
   });
+
+  const contactEmailsArray = useFieldArray({ control, name: "contact_emails" });
 
   useEffect(() => {
     if (open) {
@@ -163,6 +273,9 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
         teamlead_id: user?.teamlead_id ?? "",
         reporting_manager_id: user?.reporting_manager_id ?? "",
         category_id: user?.category_id ?? "",
+        designation: user?.designation ?? "",
+        alternate_email: user?.alternate_email ?? "",
+        contact_emails: [{ value: "" }],
       });
       setShowPassword(false);
     }
@@ -183,6 +296,29 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
   // buildSchema/the mutation payload below.
   const showClientHierarchy = roleName === ROLE_NAMES.CLIENT;
   const showHierarchyFields = showStaffHierarchy || showTeamLeadHierarchy || showClientHierarchy;
+  const showInternalRoleFields = !!roleName && INTERNAL_ROLE_NAMES.includes(roleName);
+
+  // Editing an existing Client — fetch its curated (configured-only,
+  // never the interaction-derived merge — see
+  // listConfiguredClientContacts' own docstring) contact list to
+  // prefill the field array below, once roles have loaded enough to
+  // know the edited user is really a Client.
+  const isEditingClient = mode === "edit" && showClientHierarchy;
+
+  const clientContactsQuery = useQuery({
+    queryKey: ["client-contacts", user?.user_id],
+    queryFn: () => listConfiguredClientContacts(user!.user_id),
+    enabled: open && isEditingClient,
+  });
+
+  useEffect(() => {
+    if (clientContactsQuery.data && clientContactsQuery.data.length > 0) {
+      setValue(
+        "contact_emails",
+        clientContactsQuery.data.map((contact) => ({ value: contact.email }))
+      );
+    }
+  }, [clientContactsQuery.data, setValue]);
 
   // Enabled whenever the dialog is open (not gated on
   // showHierarchyFields) — the Reporting Manager picker below is
@@ -252,7 +388,28 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
 
       // Unconditional, unrestricted by role — independent of
       // hierarchyFields' role-specific manager_id/teamlead_id rules.
-      const reportingManagerField = { reporting_manager_id: values.reporting_manager_id || null };
+      // Absent entirely for Client (see root CLAUDE.md's Client-role
+      // section — a Client has no Organization Chart position).
+      const reportingManagerField =
+        selectedRoleName === ROLE_NAMES.CLIENT
+          ? {}
+          : { reporting_manager_id: values.reporting_manager_id || null };
+
+      // Designation + Personal Email — internal roles only.
+      const internalProfileFields =
+        selectedRoleName && INTERNAL_ROLE_NAMES.includes(selectedRoleName)
+          ? { designation: values.designation || null, alternate_email: values.alternate_email || null }
+          : {};
+
+      // Contact Emails — Client only, full-replace semantics on edit.
+      const contactEmailFields =
+        selectedRoleName === ROLE_NAMES.CLIENT
+          ? {
+              contact_emails: (values.contact_emails ?? [])
+                .map((entry) => entry.value.trim())
+                .filter((value) => value.length > 0),
+            }
+          : {};
 
       if (mode === "edit" && user) {
         return userService.update(user.user_id, {
@@ -262,6 +419,8 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
           is_active: values.is_active,
           ...hierarchyFields,
           ...reportingManagerField,
+          ...internalProfileFields,
+          ...contactEmailFields,
         });
       }
 
@@ -273,6 +432,8 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
         is_active: values.is_active,
         ...hierarchyFields,
         ...reportingManagerField,
+        ...internalProfileFields,
+        ...contactEmailFields,
       });
     },
     onSuccess: () => {
@@ -296,6 +457,29 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
     },
   });
 
+  // Flattens both the array-level ("at least one contact email is
+  // required") and per-row ("enter a valid email"/"duplicate")
+  // zod issues added in buildSchema's Client branch into one list of
+  // plain strings — avoids fighting react-hook-form's not-fully-typed
+  // array-error shape for a field this dynamic.
+  const contactEmailErrorMessages: string[] = (() => {
+    const arrayError = errors.contact_emails as
+      | { message?: string; root?: { message?: string } }
+      | Array<{ value?: { message?: string } }>
+      | undefined;
+
+    if (!arrayError) return [];
+
+    if (Array.isArray(arrayError)) {
+      return arrayError
+        .map((entry) => entry?.value?.message)
+        .filter((message): message is string => !!message);
+    }
+
+    const message = arrayError.message ?? arrayError.root?.message;
+    return message ? [message] : [];
+  })();
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -305,42 +489,13 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
 
         <form onSubmit={handleSubmit((values) => mutation.mutate(values))} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="name">Full Name</Label>
-            <Input id="name" placeholder="Jane Doe" {...register("name")} />
+            <Label htmlFor="name">{showClientHierarchy ? "Client Name" : "Full Name"}</Label>
+            <Input
+              id="name"
+              placeholder={showClientHierarchy ? "Apollo Hospitals" : "Jane Doe"}
+              {...register("name")}
+            />
             {errors.name && <p className="text-sm text-destructive">{errors.name.message}</p>}
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="email">Email</Label>
-            <Input id="email" type="email" placeholder="jane@company.com" {...register("email")} />
-            {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="password">
-              {mode === "create" ? "Password" : "New Password (optional)"}
-            </Label>
-            <div className="relative">
-              <Input
-                id="password"
-                type={showPassword ? "text" : "password"}
-                placeholder="••••••••"
-                className="pr-10"
-                {...register("password")}
-              />
-              <button
-                type="button"
-                onClick={() => setShowPassword((prev) => !prev)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
-                aria-label={showPassword ? "Hide password" : "Show password"}
-                tabIndex={-1}
-              >
-                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-            {errors.password && (
-              <p className="text-sm text-destructive">{errors.password.message}</p>
-            )}
           </div>
 
           <div className="space-y-2">
@@ -359,6 +514,70 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
             </Select>
             {errors.role_id && <p className="text-sm text-destructive">{errors.role_id.message}</p>}
           </div>
+
+          {showInternalRoleFields && (
+            <div className="space-y-2">
+              <Label htmlFor="designation">Designation</Label>
+              <Input
+                id="designation"
+                placeholder="Team Lead - AR Operations"
+                {...register("designation")}
+              />
+              {errors.designation && (
+                <p className="text-sm text-destructive">{errors.designation.message}</p>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <Label htmlFor="email">Organization Email</Label>
+            <Input id="email" type="email" placeholder="jane@company.com" {...register("email")} />
+            {errors.email && <p className="text-sm text-destructive">{errors.email.message}</p>}
+          </div>
+
+          {showInternalRoleFields && (
+            <div className="space-y-2">
+              <Label htmlFor="alternate_email">Personal Email</Label>
+              <Input
+                id="alternate_email"
+                type="email"
+                placeholder="jane@gmail.com"
+                {...register("alternate_email")}
+              />
+              {errors.alternate_email && (
+                <p className="text-sm text-destructive">{errors.alternate_email.message}</p>
+              )}
+            </div>
+          )}
+
+          {!showClientHierarchy && (
+            <div className="space-y-2">
+              <Label htmlFor="password">
+                {mode === "create" ? "Password" : "New Password (optional)"}
+              </Label>
+              <div className="relative">
+                <Input
+                  id="password"
+                  type={showPassword ? "text" : "password"}
+                  placeholder="••••••••"
+                  className="pr-10"
+                  {...register("password")}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((prev) => !prev)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                  aria-label={showPassword ? "Hide password" : "Show password"}
+                  tabIndex={-1}
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+              {errors.password && (
+                <p className="text-sm text-destructive">{errors.password.message}</p>
+              )}
+            </div>
+          )}
 
           {showCategoryField && (
             <div className="space-y-2">
@@ -542,32 +761,92 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
                   Account Manager.
                 </p>
               </div>
+
+              <div className="space-y-2">
+                <Label>Contact Emails</Label>
+                {contactEmailsArray.fields.map((field, index) => (
+                  <div key={field.id} className="flex items-center gap-2">
+                    <Input
+                      placeholder="contact@hospital.com"
+                      {...register(`contact_emails.${index}.value` as const)}
+                    />
+                    {contactEmailsArray.fields.length > 1 && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => contactEmailsArray.remove(index)}
+                        aria-label="Remove contact email"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+                ))}
+                {contactEmailErrorMessages.map((message, index) => (
+                  <p key={index} className="text-sm text-destructive">
+                    {message}
+                  </p>
+                ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="gap-1"
+                  onClick={() => contactEmailsArray.append({ value: "" })}
+                >
+                  <Plus className="h-4 w-4" />
+                  Add Contact
+                </Button>
+              </div>
             </div>
           )}
 
-          <div className="space-y-2 rounded-lg border border-dashed border-border p-3">
-            <Label>Reporting Manager (Organization Chart)</Label>
-            <Select
-              value={reportingManagerId || ""}
-              onValueChange={(value) => setValue("reporting_manager_id", value, { shouldValidate: true })}
-            >
-              <SelectTrigger>
-                <SelectValue placeholder="Select a reporting manager (optional)" />
-              </SelectTrigger>
-              <SelectContent>
-                {reportingManagerOptions.map((u) => (
-                  <SelectItem key={u.user_id} value={u.user_id}>
-                    {u.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              Determines this person&apos;s position in the Organization Chart. Independent of the
-              Account Manager/Team Lead assignment above — any active user, of any role, may be
-              picked. Leave unset if they have no reporting manager (e.g. the top of the company).
-            </p>
-          </div>
+          {!showClientHierarchy && (
+            <div className="space-y-2 rounded-lg border border-dashed border-border p-3">
+              <Label>
+                Reporting Manager (Organization Chart)
+                {showInternalRoleFields &&
+                  !REPORTING_MANAGER_OPTIONAL_ROLE_NAMES.includes(roleName ?? "") && (
+                    <span className="text-destructive"> *</span>
+                  )}
+              </Label>
+              <Select
+                value={reportingManagerId || ""}
+                onValueChange={(value) => setValue("reporting_manager_id", value, { shouldValidate: true })}
+              >
+                <SelectTrigger>
+                  <SelectValue
+                    placeholder={
+                      showInternalRoleFields &&
+                      REPORTING_MANAGER_OPTIONAL_ROLE_NAMES.includes(roleName ?? "")
+                        ? "Select a reporting manager (optional)"
+                        : "Select a reporting manager"
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {reportingManagerOptions.map((u) => (
+                    <SelectItem key={u.user_id} value={u.user_id}>
+                      {u.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {errors.reporting_manager_id && (
+                <p className="text-sm text-destructive">{errors.reporting_manager_id.message}</p>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Determines this person&apos;s position in the Organization Chart. Independent of the
+                Account Manager/Team Lead assignment above — any active user, of any role, may be
+                picked.
+                {showInternalRoleFields &&
+                REPORTING_MANAGER_OPTIONAL_ROLE_NAMES.includes(roleName ?? "")
+                  ? " Leave unset if they have no reporting manager (e.g. the top of the company)."
+                  : ""}
+              </p>
+            </div>
+          )}
 
           <div className="flex items-center justify-between rounded-lg border border-border p-3">
             <div>

@@ -35,7 +35,7 @@ from app.ticketing.services.access_control import (
 from app.ticketing.services.assignment_service import AssignmentService
 from app.ticketing.services.audit_log_service import AuditLogService
 from app.ticketing.services.sla_service import SLAService
-from app.notifications.service import NotificationType
+from app.notifications.service import NotificationService, NotificationType
 
 
 class InboxTicketService:
@@ -56,6 +56,7 @@ class InboxTicketService:
         sla_service: SLAService | None = None,
         client_repository=None,
         interaction_service=None,
+        notification_service: NotificationService | None = None,
     ):
         self.ticket_repository = ticket_repository
         self.interaction_repository = interaction_repository
@@ -67,6 +68,7 @@ class InboxTicketService:
         # that method's own comments. Not needed for
         # create_ticket_from_interaction.
         self.interaction_service = interaction_service
+        self.notification_service = notification_service
 
     # ---------------------------------------------------------
     # Shared Validation
@@ -200,6 +202,25 @@ class InboxTicketService:
             ticket = await self.ticket_repository.update(
                 ticket,
                 TicketUpdate(current_status=new_status),
+            )
+
+        # A ticket born already assigned (the "Assigned To" picker
+        # above resolved to someone) notifies that agent the same way
+        # transfer_agent notifies a newly-assigned agent — reusing the
+        # same TICKET_ASSIGNED type rather than inventing a parallel
+        # "ticket created" notification, since from the assignee's own
+        # perspective this is the same event: a ticket is now theirs.
+        # No-ops for a ticket created unassigned (resolved_agent_id is
+        # None) or when no notification_service was wired in.
+        if resolved_agent_id is not None and self.notification_service is not None:
+            await self.notification_service.notify(
+                resolved_agent_id,
+                NotificationType.TICKET_ASSIGNED,
+                title="New ticket assigned to you",
+                message=f"Ticket TKT-{ticket.ticket_number:02d}: {ticket.title}",
+                link=f"/tickets/{ticket.ticket_id}",
+                related_entity_type="ticket",
+                related_entity_id=ticket.ticket_id,
             )
 
         # Moves the interaction AND every reply already filed under

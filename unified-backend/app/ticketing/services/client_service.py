@@ -112,7 +112,9 @@ class ClientService:
             for client in clients
         ]
 
-    async def list_contacts(self, client_id) -> list[ClientContactResponse]:
+    async def list_contacts(
+        self, client_id, configured_only: bool = False
+    ) -> list[ClientContactResponse]:
         """
         Every known contact address for a client company — merges two
         sources rather than relying on just one:
@@ -133,7 +135,21 @@ class ClientService:
         Backs both reply composers' "To" picker (an agent isn't
         limited to whoever happened to send the thread being replied
         to) and Compose's own "To" picker.
+
+        `configured_only=True` skips the interaction-derived merge
+        entirely and returns exactly the curated `client_contacts`
+        rows — used by the Users/Clients admin UI's Edit Client form
+        to prefill its contact-email list. That form's Save writes a
+        full-replace of whatever it displays (see
+        UserService._update_client_user's `contact_emails` handling),
+        so prefilling it with the merged, interaction-derived set
+        would silently promote every random person who ever emailed
+        in into a permanent configured contact on the next save.
         """
+
+        if configured_only:
+            configured = await self.client_repository.list_contacts_by_client_id(client_id)
+            return [ClientContactResponse(email=contact.email, name=None) for contact in configured]
 
         interaction_names: dict[str, str | None] = {}
         if self.interaction_repository is not None:

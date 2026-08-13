@@ -47,15 +47,15 @@ export function SlaOverviewSection() {
   const items: Array<{
     key: keyof DashboardSlaCounts;
     title: string;
-    subtitle: string;
+    subtitle?: string;
     icon: typeof Timer;
     tone: "default" | "success" | "warning" | "danger";
   }> = [
     { key: "running", title: "Running", subtitle: "Actively counting down", icon: Timer, tone: "default" },
     { key: "paused", title: "Paused", subtitle: "Waiting for Client / overridden", icon: PauseCircle, tone: "default" },
     { key: "atRisk", title: "At Risk", subtitle: "80%+ of target elapsed", icon: ShieldAlert, tone: "warning" },
-    { key: "escalated", title: "Escalated", subtitle: "100%+ of target elapsed", icon: Flame, tone: "danger" },
-    { key: "completed", title: "Completed", subtitle: "Ticket closed", icon: CheckCircle2, tone: "success" },
+    { key: "escalated", title: "Escalated", subtitle: "100% resolution time", icon: Flame, tone: "danger" },
+    { key: "completed", title: "Completed", icon: CheckCircle2, tone: "success" },
   ];
 
   return (

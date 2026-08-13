@@ -134,15 +134,15 @@ async def create_ticket_from_interaction(
     interaction_repository = InteractionRepository(db)
     assignment_service = AssignmentService(UserRepository(db))
     client_repository = ClientRepository(db)
+    notification_service = NotificationService(NotificationRepository(db))
 
     service = InboxTicketService(
         ticket_repository=ticket_repository,
         interaction_repository=interaction_repository,
         assignment_service=assignment_service,
-        sla_service=build_sla_service(
-            db, notification_service=NotificationService(NotificationRepository(db))
-        ),
+        sla_service=build_sla_service(db, notification_service=notification_service),
         client_repository=client_repository,
+        notification_service=notification_service,
     )
 
     return await service.create_ticket_from_interaction(request, current_user=current_user)
@@ -451,11 +451,14 @@ async def claim_ticket(
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
+        client_repository=client_repository,
+        notification_service=NotificationService(NotificationRepository(db)),
         escalation_service=build_escalation_service(db),
     )
 

@@ -125,7 +125,7 @@ export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
               still fully live just below, as the real "Breached"/
               "Escalated" tiles in SlaOverviewSection. */}
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
-            <ModernStatCard title="Open Tickets" value={stats?.open ?? 0} subtitle="Awaiting first response" icon={Ticket} />
+            <ModernStatCard title="Operational Tickets" value={stats?.open ?? 0} subtitle="Awaiting first response" icon={Ticket} />
             <ModernStatCard
               title="Resolved Today"
               value={stats?.resolved_today ?? 0}

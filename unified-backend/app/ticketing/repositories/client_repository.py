@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ticketing.models.client import Client
@@ -157,6 +157,35 @@ class ClientRepository:
             )
         )
         return list(result.scalars().all())
+
+    async def set_contacts(self, client_id: UUID, emails: list[str]) -> list[ClientContact]:
+        """
+        Full-replace: deletes every existing client_contacts row for
+        this client, then inserts exactly the given list (first entry
+        marked is_primary) — one code path for both the initial set at
+        Client creation (replacing an empty set) and an edit's add/
+        remove (replacing the existing set), rather than separate
+        create/diff/delete methods. Caller (UserService) is
+        responsible for requiring at least one email and rejecting
+        duplicates before calling this — this method trusts its input.
+        Relies on the request's own session lifecycle for
+        commit/rollback, same as every other method here.
+        """
+
+        await self.db.execute(
+            delete(ClientContact).where(ClientContact.client_id == client_id)
+        )
+
+        contacts = [
+            ClientContact(client_id=client_id, email=email.lower(), is_primary=index == 0)
+            for index, email in enumerate(emails)
+        ]
+        self.db.add_all(contacts)
+        await self.db.flush()
+        for contact in contacts:
+            await self.db.refresh(contact)
+
+        return contacts
 
     async def update_linked_fields(
         self,

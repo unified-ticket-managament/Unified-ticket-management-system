@@ -68,6 +68,7 @@ async def list_clients(
 )
 async def list_client_contacts(
     client_id: UUID,
+    configured_only: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -76,6 +77,12 @@ async def list_client_contacts(
     contacted our shared inbox from, most-recently-used first — used
     by the reply composer's "To" dropdown so an agent isn't limited
     to whichever contact happened to send the thread being replied to.
+
+    `?configured_only=true` returns just the curated `client_contacts`
+    rows instead (no interaction-derived merge) — see
+    ClientService.list_contacts' own docstring for why the Edit
+    Client form needs this narrower variant rather than the default
+    merged list.
     """
 
     service = ClientService(
@@ -84,4 +91,4 @@ async def list_client_contacts(
         interaction_repository=InteractionRepository(db),
     )
 
-    return await service.list_contacts(client_id)
+    return await service.list_contacts(client_id, configured_only=configured_only)

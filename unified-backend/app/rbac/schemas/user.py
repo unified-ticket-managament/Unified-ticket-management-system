@@ -56,6 +56,12 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str
 
+    # Client role only — at least one is required (validated in
+    # UserService, since a fixed Field(min_length=1) here would also
+    # apply to every non-Client role's always-None default). Ignored
+    # for every other role.
+    contact_emails: list[EmailStr] | None = None
+
 
 # -----------------------------
 # Update User
@@ -84,6 +90,11 @@ class UserUpdate(BaseModel):
     time_format: str | None = None
     time_zone: str | None = None
     default_dashboard: str | None = None
+
+    # Client role only — full-replace semantics (see
+    # ClientRepository.set_contacts). Omit entirely to leave a
+    # Client's existing contacts untouched.
+    contact_emails: list[EmailStr] | None = None
 
 
 # -----------------------------

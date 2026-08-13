@@ -9,6 +9,7 @@ from app.auth.password import get_password_hash
 from app.rbac.repositories import CategoryRepository, RoleRepository, UserRepository
 from app.rbac.schemas.audit_log import AuditLogCreate
 from app.rbac.schemas.user import UserCreate, UserUpdate
+from app.rbac.services import access_control
 from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.organization_service import OrganizationService
 from app.ticketing.models.client import Client
@@ -21,6 +22,17 @@ from app.ticketing.services.client_service import ClientService
 # because RBAC's role-name literals live only in the frontend's
 # role-access.ts today; keep this set in sync with it by hand.
 CATEGORY_REQUIRED_ROLE_NAMES = {"Staff", "Team Lead"}
+
+# The five internal-organization roles (every role except Client) — see
+# access_control.USER_CREATION_ROLE_MATRIX for who may assign them.
+# Designation is mandatory for all five; Personal Email
+# (users.alternate_email) likewise. Reporting Manager
+# (users.reporting_manager_id) is mandatory for all five except Site
+# Lead — see REPORTING_MANAGER_OPTIONAL_ROLE_NAMES below.
+DESIGNATION_REQUIRED_ROLE_NAMES = {
+    "Super Admin", "Site Lead", "Account Manager", "Team Lead", "Staff",
+}
+REPORTING_MANAGER_OPTIONAL_ROLE_NAMES = {"Site Lead"}
 
 # The client-facing role (renamed from "Viewer" — see root CLAUDE.md's
 # Client-role section). Unlike every other role, a "Client" user is
@@ -85,6 +97,14 @@ class UserService:
                 detail="Role not found.",
             )
 
+        # Backend-enforced mirror of the frontend's CREATABLE_ROLES_BY_ROLE
+        # dropdown filter — a crafted request can't bypass it just because
+        # the actor holds `user:create` in general. Checked before either
+        # branch below, since it applies identically to Client and every
+        # internal role.
+        if actor is not None:
+            access_control.ensure_can_create_role(actor, role.name)
+
         # A "Client" user is never stored in `users` at all — see
         # CLIENT_ROLE_NAME's own docstring and root CLAUDE.md's
         # Client-role section. Fully separate branch, own storage.
@@ -105,6 +125,29 @@ class UserService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Category is required for Staff and Team Lead users.",
             )
+
+        # Designation/Personal Email/Reporting Manager are mandatory for
+        # every internal role except Reporting Manager on Site Lead — see
+        # DESIGNATION_REQUIRED_ROLE_NAMES/REPORTING_MANAGER_OPTIONAL_ROLE_NAMES.
+        if role.name in DESIGNATION_REQUIRED_ROLE_NAMES:
+            if not user_data.designation or not user_data.designation.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Designation is required.",
+                )
+            if not user_data.alternate_email or not user_data.alternate_email.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Personal Email is required.",
+                )
+            if (
+                role.name not in REPORTING_MANAGER_OPTIONAL_ROLE_NAMES
+                and user_data.reporting_manager_id is None
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Reporting Manager is required.",
+                )
 
         if user_data.category_id is not None:
 
@@ -142,6 +185,13 @@ class UserService:
             reporting_manager_id=user_data.reporting_manager_id,
             category_id=user_data.category_id,
             is_active=user_data.is_active,
+            # Required (validated above) for every internal role — see
+            # DESIGNATION_REQUIRED_ROLE_NAMES. Previously never
+            # persisted here at all (the old Create User form never
+            # sent them), a latent gap that would have silently
+            # dropped them now that they're mandatory.
+            designation=user_data.designation,
+            alternate_email=user_data.alternate_email,
         )
 
         user = await self.user_repository.create(user)
@@ -231,6 +281,37 @@ class UserService:
             "updated_at": client.updated_at,
         }
 
+    @staticmethod
+    def _normalize_contact_emails(contact_emails: list[str] | None) -> list[str]:
+        """
+        At least one contact email is required for a Client (see root
+        CLAUDE.md's Client-role section and the create-form spec this
+        validates against); no fixed maximum. Rejects a case-insensitive
+        duplicate within the same submitted list up front with a clear
+        400 rather than letting it fall through to client_contacts'
+        own (client_id, email) unique-constraint violation.
+        """
+
+        emails = [email.strip() for email in (contact_emails or []) if email and email.strip()]
+
+        if not emails:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one contact email is required.",
+            )
+
+        seen: set[str] = set()
+        for email in emails:
+            normalized = email.lower()
+            if normalized in seen:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Duplicate contact email: {email}.",
+                )
+            seen.add(normalized)
+
+        return emails
+
     async def _create_client_user(
         self,
         user_data: UserCreate,
@@ -253,6 +334,8 @@ class UserService:
                 detail="An Account Manager must be assigned when creating a Client user.",
             )
 
+        contact_emails = self._normalize_contact_emails(user_data.contact_emails)
+
         if await self.user_repository.exists(user_data.email):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -269,6 +352,13 @@ class UserService:
         )
 
         client = await self.client_repository.get_by_id(created.client_id)
+
+        # If contact persistence below raises, the just-created `clients`
+        # row is rolled back too — no explicit commit happens anywhere in
+        # this request until the surrounding get_db dependency's own
+        # request-scoped session commits after a successful response, so
+        # an exception here rolls back both writes together.
+        await self.client_repository.set_contacts(client.client_id, contact_emails)
 
         if not user_data.is_active:
             client = await self.client_repository.update_linked_fields(
@@ -324,6 +414,12 @@ class UserService:
                 detail=f"Client users do not support: {', '.join(sorted(unsupported_fields))}.",
             )
 
+        # Full-replace semantics — see ClientRepository.set_contacts'
+        # own docstring. Popped out of update_data (rather than left
+        # in) since it has no column on `clients` itself for the
+        # update_linked_fields call below.
+        new_contact_emails = update_data.pop("contact_emails", None)
+
         if "email" in update_data:
             existing_client = await self.client_repository.get_by_inbox_email(
                 update_data["email"]
@@ -366,6 +462,11 @@ class UserService:
             account_manager_id=update_data.get("manager_id"),
             is_active=update_data.get("is_active"),
         )
+
+        if new_contact_emails is not None:
+            await self.client_repository.set_contacts(
+                client.client_id, self._normalize_contact_emails(new_contact_emails)
+            )
 
         if update_data:
             await self.audit_log_service.create_log(
@@ -668,6 +769,12 @@ class UserService:
                     detail="Role not found.",
                 )
 
+            # Same backend-enforced role-vs-role check create_user runs —
+            # changing a user's role via Edit User is just as much a
+            # "create/assign this role" action as the initial creation.
+            if actor is not None:
+                access_control.ensure_can_create_role(actor, new_role.name)
+
             # An internal user's storage table is decided once, at
             # create time, by which role was picked (see
             # CLIENT_ROLE_NAME's own docstring) — a Client lives at a
@@ -705,12 +812,46 @@ class UserService:
                 effective_category_id,
             )
 
-        # reporting_manager_id is deliberately NOT in the trigger set
-        # above — it's an Organization-Chart-only field with no RBAC/
-        # authorization meaning (see OrganizationService's docstring),
-        # so editing it alone must not bump permission_version or
-        # re-run the unrelated manager_id/teamlead_id reporting-line
-        # check.
+        # Designation/Personal Email/Reporting Manager required-ness —
+        # re-checked whenever role_id changes (a new role may have
+        # different requirements) or one of the fields being checked is
+        # itself being cleared, falling back to the user's existing
+        # value otherwise (mirrors the manager/teamlead check above).
+        if update_data.keys() & {"role_id", "designation", "alternate_email", "reporting_manager_id"}:
+            if final_role_name in DESIGNATION_REQUIRED_ROLE_NAMES:
+                effective_designation = update_data.get("designation", user.designation)
+                effective_alternate_email = update_data.get("alternate_email", user.alternate_email)
+                effective_reporting_manager_id = update_data.get(
+                    "reporting_manager_id", user.reporting_manager_id
+                )
+
+                if not effective_designation or not str(effective_designation).strip():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Designation is required.",
+                    )
+                if not effective_alternate_email or not str(effective_alternate_email).strip():
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Personal Email is required.",
+                    )
+                if (
+                    final_role_name not in REPORTING_MANAGER_OPTIONAL_ROLE_NAMES
+                    and effective_reporting_manager_id is None
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Reporting Manager is required.",
+                    )
+
+        # reporting_manager_id is deliberately NOT in the manager_id/
+        # teamlead_id trigger set two blocks up — it's an Organization-
+        # Chart-only field with no RBAC/authorization meaning (see
+        # OrganizationService's docstring), so editing it alone must not
+        # bump permission_version or re-run the unrelated manager_id/
+        # teamlead_id reporting-line check (it's still covered by the
+        # designation/reporting-manager required-ness block immediately
+        # above, and by its own existence check right here).
         if "reporting_manager_id" in update_data:
             await self._validate_reporting_manager_id(
                 update_data["reporting_manager_id"], self_id=user.user_id

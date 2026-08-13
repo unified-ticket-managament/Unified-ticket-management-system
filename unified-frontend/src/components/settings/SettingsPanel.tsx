@@ -3,23 +3,12 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { AxiosError } from "axios";
-import { Bell, Laptop, Loader2, Settings2, ShieldCheck, Smartphone } from "lucide-react";
+import { Loader2, Settings2, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { ChangePasswordDialog } from "@/components/settings/change-password-dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -67,9 +56,11 @@ interface SettingsPanelProps {
 }
 
 // The previously-standalone /settings page's non-identity content
-// (application preferences, notifications, security, sessions),
-// relocated to render inside a Dialog on the Profile page (opened via
-// its Settings gear button). The old "Account Settings" card (name/
+// (application preferences, security), relocated to render inside a
+// Dialog on the Profile page (opened via its Settings gear button).
+// Notifications and Session Management were later removed outright
+// (no longer offered anywhere in the product). The old "Account
+// Settings" card (name/
 // email/phone/address/avatar) was removed outright — those fields are
 // owned exclusively by the Profile page's own Edit Profile dialog now,
 // so editing them never appears twice. Language/Time Zone/Date Format/
@@ -86,34 +77,12 @@ export function SettingsPanel({ open, record }: SettingsPanelProps) {
 
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
 
-  const notifications = useSettingsStore((s) => s.notifications);
-  const setNotification = useSettingsStore((s) => s.setNotification);
   const security = useSettingsStore((s) => s.security);
   const setSecurity = useSettingsStore((s) => s.setSecurity);
-  const sessions = useSettingsStore((s) => s.sessions);
-  const revokeSession = useSettingsStore((s) => s.revokeSession);
-  const revokeAllOtherSessions = useSettingsStore((s) => s.revokeAllOtherSessions);
-
-  const otherSessionsCount = sessions.filter((s) => !s.current).length;
 
   const TIME_FORMAT_OPTIONS = [
     { value: "12h", label: t("common.timeFormat12h") },
     { value: "24h", label: t("common.timeFormat24h") },
-  ];
-
-  const NOTIFICATION_ITEMS = [
-    { key: "email" as const, label: t("settings.notifEmail"), description: t("settings.notifEmailDesc") },
-    { key: "push" as const, label: t("settings.notifPush"), description: t("settings.notifPushDesc") },
-    {
-      key: "productUpdates" as const,
-      label: t("settings.notifProductUpdates"),
-      description: t("settings.notifProductUpdatesDesc"),
-    },
-    {
-      key: "securityAlerts" as const,
-      label: t("settings.notifSecurityAlerts"),
-      description: t("settings.notifSecurityAlertsDesc"),
-    },
   ];
 
   const form = useForm<PreferencesValues>({
@@ -256,39 +225,6 @@ export function SettingsPanel({ open, record }: SettingsPanelProps) {
         </CardContent>
       </Card>
 
-      {/* Notifications */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Bell className="h-4 w-4" />
-            {t("settings.notifications")}
-          </CardTitle>
-          <CardDescription>{t("settings.notificationsDescription")}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {NOTIFICATION_ITEMS.map((item) => (
-            <div key={item.key} className="flex items-center justify-between rounded-lg border border-border p-3">
-              <div>
-                <p className="text-sm font-medium">{item.label}</p>
-                <p className="text-xs text-muted-foreground">{item.description}</p>
-              </div>
-              <Switch
-                checked={notifications[item.key]}
-                onCheckedChange={(checked) => {
-                  setNotification(item.key, checked);
-                  toast({
-                    title: t("settings.toggleToast", {
-                      label: item.label,
-                      status: t(checked ? "settings.enabled" : "settings.disabled"),
-                    }),
-                  });
-                }}
-              />
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-
       {/* Security */}
       <Card>
         <CardHeader>
@@ -338,94 +274,6 @@ export function SettingsPanel({ open, record }: SettingsPanelProps) {
               {t("settings.changePassword")}
             </Button>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Session Management */}
-      <Card>
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <div>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Laptop className="h-4 w-4" />
-              {t("settings.sessionManagement")}
-            </CardTitle>
-            <CardDescription>{t("settings.sessionManagementDescription")}</CardDescription>
-          </div>
-
-          {otherSessionsCount > 0 && (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="outline" size="sm">
-                  {t("settings.signOutAllOtherSessions")}
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>{t("settings.signOutAllOtherSessionsConfirmTitle")}</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    {t("settings.signOutAllOtherSessionsConfirmDescription")}
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={() => {
-                      revokeAllOtherSessions();
-                      toast({ title: t("settings.signedOutAllOtherSessionsToast") });
-                    }}
-                  >
-                    {t("settings.signOutConfirm")}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {sessions.map((session) => (
-            <div
-              key={session.id}
-              className="flex items-center justify-between gap-3 rounded-lg border border-border p-3"
-            >
-              <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-                  {session.device.toLowerCase().includes("iphone") ||
-                  session.device.toLowerCase().includes("android") ? (
-                    <Smartphone className="h-4 w-4" />
-                  ) : (
-                    <Laptop className="h-4 w-4" />
-                  )}
-                </div>
-                <div>
-                  <p className="text-sm font-medium">
-                    {session.device}
-                    {session.current && (
-                      <span className="ml-2 rounded-full bg-emerald-500/15 px-2 py-0.5 text-xs font-medium text-emerald-500">
-                        {t("settings.thisDevice")}
-                      </span>
-                    )}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {session.location} · {session.lastActive}
-                  </p>
-                </div>
-              </div>
-
-              {!session.current && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="text-destructive hover:text-destructive"
-                  onClick={() => {
-                    revokeSession(session.id);
-                    toast({ title: t("settings.sessionRevokedToast") });
-                  }}
-                >
-                  {t("settings.revoke")}
-                </Button>
-              )}
-            </div>
-          ))}
         </CardContent>
       </Card>
 

@@ -93,6 +93,38 @@ def ensure_can_manage_role_permissions(actor: User, target_role: Role) -> None:
         )
 
 
+# --------------------------------------------------------------------
+# Create User: which target roles an actor may assign when creating
+# (or, via ensure_can_create_role's second call site in
+# UserService.update_user, re-assigning) a user. This is the backend
+# half of the security fix — the frontend's own CREATABLE_ROLES_BY_ROLE
+# (lib/role-access.ts) only ever hid disallowed roles from the Select;
+# nothing previously stopped a crafted POST /users request from
+# assigning any role at all. Keep both in sync if this ever changes.
+#
+# No entry (Team Lead/Staff/Client) = every target role denied — matches
+# those roles never holding `user:create` by default anyway (this is
+# defense in depth, not the only gate). `None` = unrestricted (any of
+# the six roles).
+USER_CREATION_ROLE_MATRIX: dict[str, set[str] | None] = {
+    "Super Admin": None,
+    "Site Lead": None,
+    "Account Manager": {"Team Lead", "Staff", "Client"},
+}
+
+
+def ensure_can_create_role(actor: User, target_role_name: str) -> None:
+    """403s unless `actor`'s own role is permitted to create/assign `target_role_name`."""
+
+    allowed = USER_CREATION_ROLE_MATRIX.get(actor.role.name, set())
+
+    if allowed is not None and target_role_name not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"You are not permitted to create a {target_role_name} user.",
+        )
+
+
 def ensure_can_grant_role_permissions(actor: User, newly_granted_names: list[str]) -> None:
     """
     For PERMISSION_OWNERSHIP_SCOPED_ROLE only: 403s if any of the

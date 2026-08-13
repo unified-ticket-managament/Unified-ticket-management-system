@@ -169,6 +169,15 @@ export interface UserForm {
   teamlead_id?: string | null;
   reporting_manager_id?: string | null;
   category_id?: string | null;
+  // Internal roles only (Super Admin/Site Lead/Account Manager/Team
+  // Lead/Staff) — required server-side per role, see
+  // unified-backend/app/rbac/services/user_service.py's
+  // DESIGNATION_REQUIRED_ROLE_NAMES.
+  designation?: string | null;
+  alternate_email?: string | null;
+  // Client role only — full-replace on edit, at least one required on
+  // create. Omitted entirely for every other role.
+  contact_emails?: string[];
 }
 
 export interface RoleForm {

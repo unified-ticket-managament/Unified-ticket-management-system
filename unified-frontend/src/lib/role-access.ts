@@ -25,6 +25,7 @@ export type NavItemKey =
   | "All Tickets"
   | "My Tickets"
   | "Users"
+  | "Clients"
   | "Roles"
   | "Audit Logs"
   | "Reports"
@@ -44,6 +45,7 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   "All Tickets": "nav.allTickets",
   "My Tickets": "nav.myTickets",
   Users: "nav.users",
+  Clients: "nav.clients",
   Roles: "nav.roles",
   "Audit Logs": "nav.auditLogs",
   Reports: "nav.reports",
@@ -116,6 +118,7 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
   [ROLE_NAMES.SUPER_ADMIN]: [
     "Dashboard",
     "Users",
+    "Clients",
     "Reports",
     "Inbox",
     "Interactions",
@@ -128,6 +131,7 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
   [ROLE_NAMES.SITE_LEAD]: [
     "Dashboard",
     "Users",
+    "Clients",
     "Reports",
     "Inbox",
     "Interactions",
@@ -136,7 +140,7 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Reporting Managers",
     "Rules",
   ],
-  [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
+  [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Clients", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
   [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
   [ROLE_NAMES.STAFF]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
   [ROLE_NAMES.CLIENT]: ["Dashboard", "Permission Requests"],
@@ -195,10 +199,15 @@ export function canManageRoles(role: string | undefined): boolean {
 
 // Roles that a given logged-in role is permitted to assign when creating a
 // new user. `undefined` means no restriction (all roles are selectable).
+// Mirrors unified-backend/app/rbac/services/access_control.py's
+// USER_CREATION_ROLE_MATRIX exactly — keep both in sync if this ever
+// changes. Site Lead is unrestricted (same as Super Admin) and Account
+// Manager includes Client, per the current product spec — a narrower
+// set used to apply to both before this was corrected.
 const CREATABLE_ROLES_BY_ROLE: Record<string, string[] | undefined> = {
   [ROLE_NAMES.SUPER_ADMIN]: undefined,
-  [ROLE_NAMES.SITE_LEAD]: [ROLE_NAMES.ACCOUNT_MANAGER, ROLE_NAMES.TEAM_LEAD, ROLE_NAMES.STAFF],
-  [ROLE_NAMES.ACCOUNT_MANAGER]: [ROLE_NAMES.TEAM_LEAD, ROLE_NAMES.STAFF],
+  [ROLE_NAMES.SITE_LEAD]: undefined,
+  [ROLE_NAMES.ACCOUNT_MANAGER]: [ROLE_NAMES.TEAM_LEAD, ROLE_NAMES.STAFF, ROLE_NAMES.CLIENT],
 };
 
 /**

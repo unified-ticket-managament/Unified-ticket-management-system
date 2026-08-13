@@ -38,7 +38,7 @@ export default function LoginPage() {
 
   const [status, setStatus] = useState<Status>("idle");
   const [showPassword, setShowPassword] = useState(false);
-  const [rememberMe, setRememberMe] = useState(true);
+  const [rememberMe, setRememberMe] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
 
   const {
@@ -48,7 +48,7 @@ export default function LoginPage() {
     formState: { errors },
   } = useForm<LoginValues>({
     resolver: zodResolver(loginSchema),
-    defaultValues: { email: "admin@rbac.com", password: "Admin@123456" },
+    defaultValues: { email: "", password: "" },
   });
 
   useEffect(() => {

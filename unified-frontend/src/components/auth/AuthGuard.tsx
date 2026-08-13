@@ -18,6 +18,7 @@ export function AuthGuard({ children }: Props) {
   const router = useRouter();
 
   const setUser = useAuthStore((state) => state.setUser);
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
 
   const [loading, setLoading] = useState(true);
 
@@ -65,7 +66,7 @@ export function AuthGuard({ children }: Props) {
     };
   }, [router, setUser]);
 
-  if (loading) {
+  if (loading || !isAuthenticated) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="w-full max-w-md space-y-4">

@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   BarChart3,
+  Building2,
   ChevronsLeft,
   ChevronsRight,
   ClipboardList,
@@ -65,6 +66,11 @@ const menuItems: {
     title: "Users",
     href: "/users",
     icon: Users,
+  },
+  {
+    title: "Clients",
+    href: "/clients",
+    icon: Building2,
   },
   {
     title: "Roles",
