@@ -1,9 +1,22 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AxiosError } from "axios";
-import { Check, KeyRound, MoreHorizontal, Pencil, Plus, Shield, Trash2, Users as UsersIcon } from "lucide-react";
+import {
+  Building2,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  KeyRound,
+  Loader2,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  Shield,
+  Trash2,
+  Users as UsersIcon,
+} from "lucide-react";
 
 import { PermissionGuard } from "@/components/auth/PermissionGuard";
 import { PageHeader } from "@/components/layout/dashboard-shell";
@@ -15,6 +28,7 @@ import {
   groupLabel,
   groupPermissionsByModule,
 } from "@/components/roles/role-permissions-dialog";
+import { UserFormDialog } from "@/components/users/user-form-dialog";
 import { EmptyState, ErrorState } from "@/components/shared/stats";
 import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import {
@@ -40,11 +54,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
-import { cn, formatDate } from "@/lib/utils";
-import { canManageRoles, ROLE_NAMES } from "@/lib/role-access";
-import { permissionService, roleService, userService } from "@/services";
+import { cn, formatDate, getApiErrorMessage } from "@/lib/utils";
+import { canManageRoles, getCreatableRoleNames, ROLE_NAMES } from "@/lib/role-access";
+import { permissionService, roleService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 import { Permission, Role, User } from "@/types";
+import { listClients, listConfiguredClientContacts } from "@tw/api/clients";
+import type { ClientResponse } from "@tw/types";
 
 // Master list is deliberately narrower than the full role catalog — only
 // these six, in this exact order. A custom role created via "Create Role"
@@ -89,6 +105,50 @@ function prettifyAction(permissionName: string): string {
     .join(" ");
 }
 
+// Contact emails come from `client_contact` (via the existing
+// GET /clients/{id}/contacts?configured_only=true endpoint — see
+// unified-backend's ClientService.list_contacts docstring), fetched
+// lazily on first expand and cached per client_id thereafter.
+function ClientContactsList({ clientId }: { clientId: string }) {
+  const contactsQuery = useQuery({
+    queryKey: ["client-contacts-configured", clientId],
+    queryFn: () => listConfiguredClientContacts(clientId),
+  });
+
+  if (contactsQuery.isLoading) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Loading contacts...
+      </div>
+    );
+  }
+
+  if (contactsQuery.isError) {
+    return (
+      <p className="text-sm text-destructive">
+        {getApiErrorMessage(contactsQuery.error, "Failed to load contact emails.")}
+      </p>
+    );
+  }
+
+  const contacts = contactsQuery.data ?? [];
+
+  if (contacts.length === 0) {
+    return <p className="text-sm text-muted-foreground">No contact emails on file.</p>;
+  }
+
+  return (
+    <ul className="space-y-1">
+      {contacts.map((contact) => (
+        <li key={contact.email} className="text-sm text-muted-foreground">
+          • {contact.email}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export default function RolesPage() {
   const { toast } = useToast();
   const { t } = useTranslation();
@@ -110,26 +170,25 @@ export default function RolesPage() {
   const [deletingRole, setDeletingRole] = useState<Role | null>(null);
   const [permissionsDialogOpen, setPermissionsDialogOpen] = useState(false);
 
+  // Client-role detail state — Client data/contacts live in
+  // `clients`/`client_contacts`, never `users` (see root CLAUDE.md's
+  // Client-role section), so this is a parallel query/UI branch
+  // rather than a filter over allUsers like every internal role uses.
+  const [expandedClientId, setExpandedClientId] = useState<string | null>(null);
+  const [clientFormOpen, setClientFormOpen] = useState(false);
+  const [editingClient, setEditingClient] = useState<User | null>(null);
+
   const rolesQuery = useQuery({
     queryKey: ["roles-cards"],
     queryFn: () => roleService.list({ page: 1, page_size: 100 }),
   });
 
-  // Same key as the Users page's own "users-table" query (and Audit
-  // Logs' matching query) — identical call/params, so TanStack
-  // Query's cache (staleTime: 30_000, see query-provider.tsx) shares
-  // one request across all three pages instead of a fresh identical
-  // fetch every time any of them mounts. Also means a user mutated
-  // from the Users page (which invalidates "users-table") correctly
-  // invalidates this page's copy too, instead of it silently staying
-  // stale until its own 30s window happened to expire.
-  const usersQuery = useQuery({
-    queryKey: ["users-table"],
-    queryFn: () => userService.list({ page: 1, page_size: 100 }),
+  const clientsQuery = useQuery({
+    queryKey: ["clients-list"],
+    queryFn: () => listClients(),
   });
 
   const allRoles: Role[] = rolesQuery.data?.roles ?? [];
-  const allUsers: User[] = usersQuery.data?.users ?? [];
 
   const orderedRoles = useMemo(() => {
     return ROLE_ORDER.map((name) => allRoles.find((r) => r.name === name)).filter(
@@ -142,16 +201,93 @@ export default function RolesPage() {
     [orderedRoles, selectedRoleId]
   );
 
+  // Every internal (non-Client) role's FULL, company-wide population —
+  // deliberately NOT the hierarchy-scoped GET /users this page used to
+  // call (see root CLAUDE.md's Roles-page-visibility note): an Account
+  // Manager clicking Team Lead/Staff must see every Team Lead/Staff,
+  // not just their own reporting subtree. One query per role via
+  // GET /roles/{role_id}/users (server-side gated to Super Admin/Site
+  // Lead/Account Manager regardless of who calls it) — cheap at this
+  // table's real size, and each result caches independently by
+  // role_id. This intentionally does NOT touch the Users page's own
+  // "users-table" query/cache key at all.
+  const nonClientRoles = useMemo(
+    () => orderedRoles.filter((role) => role.name !== ROLE_NAMES.CLIENT),
+    [orderedRoles]
+  );
+
+  const roleUsersResults = useQueries({
+    queries: nonClientRoles.map((role) => ({
+      queryKey: ["role-users", role.role_id],
+      queryFn: () => roleService.getUsersForRole(role.role_id),
+    })),
+  });
+
+  const roleUsersMap = useMemo(() => {
+    const map = new Map<string, User[]>();
+    nonClientRoles.forEach((role, index) => {
+      map.set(role.role_id, roleUsersResults[index]?.data ?? []);
+    });
+    return map;
+  }, [nonClientRoles, roleUsersResults]);
+
+  const roleUsersLoading = roleUsersResults.some((result) => result.isLoading);
+  const roleUsersError = roleUsersResults.find((result) => result.isError)?.error;
+
   const userCounts = useMemo(() => {
     const counts = new Map<string, number>();
-    allUsers.forEach((user) => counts.set(user.role_id, (counts.get(user.role_id) ?? 0) + 1));
+    roleUsersMap.forEach((users, roleId) => counts.set(roleId, users.length));
     return counts;
-  }, [allUsers]);
+  }, [roleUsersMap]);
 
   const assignedUsers = useMemo(
-    () => (selectedRole ? allUsers.filter((user) => user.role_id === selectedRole.role_id) : []),
-    [allUsers, selectedRole]
+    () => (selectedRole ? roleUsersMap.get(selectedRole.role_id) ?? [] : []),
+    [roleUsersMap, selectedRole]
   );
+
+  const clients: ClientResponse[] = clientsQuery.data ?? [];
+  const isClientRole = selectedRole?.name === ROLE_NAMES.CLIENT;
+  const clientRoleId = useMemo(
+    () => allRoles.find((r) => r.name === ROLE_NAMES.CLIENT)?.role_id,
+    [allRoles]
+  );
+  const creatableRoleNames = getCreatableRoleNames(currentUser?.role);
+  const canCreateClient =
+    creatableRoleNames === null || creatableRoleNames.includes(ROLE_NAMES.CLIENT);
+
+  // Reuses UserFormDialog's existing Client-edit branch (see that
+  // component's own docstrings) — POST/PUT /users already routes a
+  // Client role_id to the `clients` table via UserService, so a
+  // `ClientResponse` just needs to be reshaped into the User-shaped
+  // object that dialog expects, not a second edit form.
+  function clientToEditableUser(client: ClientResponse): User {
+    return {
+      user_id: client.client_id,
+      name: client.name,
+      email: client.inbox_email ?? "",
+      role_id: clientRoleId ?? "",
+      manager_id: client.account_manager_id,
+      teamlead_id: null,
+      reporting_manager_id: null,
+      category_id: null,
+      is_active: client.is_active,
+      is_on_leave: false,
+      created_at: client.created_at,
+      updated_at: client.created_at,
+      date_of_birth: null,
+      alternate_email: null,
+      phone_number: null,
+      office_location: null,
+      department: null,
+      team: null,
+      designation: null,
+      language: null,
+      date_format: null,
+      time_format: null,
+      time_zone: null,
+      default_dashboard: null,
+    };
+  }
 
   const permissionsQuery = useQuery({
     queryKey: ["role-permissions", selectedRole?.role_id],
@@ -232,7 +368,18 @@ export default function RolesPage() {
           <div className="space-y-2">
             {orderedRoles.map((role) => {
               const isSelected = selectedRole?.role_id === role.role_id;
-              const count = userCounts.get(role.role_id) ?? 0;
+              // Client is sourced from `clients`, never `users` — its
+              // card count must reflect that table, not a (always
+              // zero) lookup into userCounts.
+              const isClient = role.name === ROLE_NAMES.CLIENT;
+              const count = isClient ? clients.length : userCounts.get(role.role_id) ?? 0;
+              const countLabel = isClient
+                ? count === 1
+                  ? "client"
+                  : "clients"
+                : count === 1
+                  ? "user"
+                  : "users";
 
               return (
                 <Card
@@ -251,12 +398,12 @@ export default function RolesPage() {
                           isSelected ? "bg-primary text-primary-foreground" : "bg-primary/10 text-primary"
                         )}
                       >
-                        <Shield className="h-4 w-4" />
+                        {isClient ? <Building2 className="h-4 w-4" /> : <Shield className="h-4 w-4" />}
                       </div>
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold">{role.name}</p>
                         <p className="text-xs text-muted-foreground">
-                          {count} {count === 1 ? "user" : "users"}
+                          {count} {countLabel}
                         </p>
                       </div>
                     </div>
@@ -328,15 +475,23 @@ export default function RolesPage() {
                       {ROLE_DESCRIPTIONS[selectedRole.name] ?? "No description available."}
                     </p>
                   </div>
+                  {!isClientRole && (
+                    <div>
+                      <p className="text-xs text-muted-foreground">Role Level</p>
+                      <p className="mt-1 font-medium">{ROLE_LEVELS[selectedRole.name] ?? "—"}</p>
+                    </div>
+                  )}
                   <div>
-                    <p className="text-xs text-muted-foreground">Role Level</p>
-                    <p className="mt-1 font-medium">{ROLE_LEVELS[selectedRole.name] ?? "—"}</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Total Assigned Users</p>
+                    <p className="text-xs text-muted-foreground">
+                      {isClientRole ? "Total Clients" : "Total Assigned Users"}
+                    </p>
                     <Badge variant="secondary" className="mt-1 w-fit gap-1.5">
-                      <UsersIcon className="h-3 w-3" />
-                      {assignedUsers.length}
+                      {isClientRole ? (
+                        <Building2 className="h-3 w-3" />
+                      ) : (
+                        <UsersIcon className="h-3 w-3" />
+                      )}
+                      {isClientRole ? clients.length : assignedUsers.length}
                     </Badge>
                   </div>
                   <div>
@@ -405,17 +560,20 @@ export default function RolesPage() {
           )}
         </div>
 
-        {/* Assigned Users — full width below the row above. Bounded
-            height with its own scrollbar once the list grows past it,
-            so Role Information/Permissions never move or scroll. */}
-        {selectedRole && (
+        {/* Assigned Users (internal roles) / Clients (Client role) —
+            full width below the row above. Bounded height with its
+            own scrollbar once the list grows past it, so Role
+            Information/Permissions never move or scroll. */}
+        {selectedRole && !isClientRole && (
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Assigned Users</CardTitle>
             </CardHeader>
             <CardContent className="max-h-[420px] space-y-1 overflow-y-auto">
-              {usersQuery.isLoading ? (
+              {roleUsersLoading ? (
                 <WorkflowLoader loading size={40} />
+              ) : roleUsersError ? (
+                <ErrorState message={getApiErrorMessage(roleUsersError, "Failed to load users for this role.")} />
               ) : assignedUsers.length === 0 ? (
                 <EmptyState title="No users assigned" description="Users with this role will appear here." />
               ) : (
@@ -446,6 +604,126 @@ export default function RolesPage() {
             </CardContent>
           </Card>
         )}
+
+        {selectedRole && isClientRole && (
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0">
+              <CardTitle className="text-base">Clients</CardTitle>
+              {canCreateClient && (
+                <PermissionGuard permission="user:create">
+                  <Button
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={() => {
+                      setEditingClient(null);
+                      setClientFormOpen(true);
+                    }}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Create Client
+                  </Button>
+                </PermissionGuard>
+              )}
+            </CardHeader>
+            <CardContent className="max-h-[420px] space-y-1 overflow-y-auto p-0">
+              {clientsQuery.isLoading ? (
+                <WorkflowLoader loading size={40} />
+              ) : clientsQuery.isError ? (
+                <ErrorState
+                  message={getApiErrorMessage(clientsQuery.error, "Failed to load clients.")}
+                />
+              ) : clients.length === 0 ? (
+                <EmptyState
+                  title="No clients yet"
+                  description="Create one with the button above."
+                />
+              ) : (
+                <div className="divide-y divide-border">
+                  {clients.map((client) => {
+                    const isExpanded = expandedClientId === client.client_id;
+                    return (
+                      <div key={client.client_id}>
+                        <button
+                          type="button"
+                          className="flex w-full items-center justify-between gap-3 p-3 text-left transition-colors hover:bg-muted/50"
+                          onClick={() =>
+                            setExpandedClientId(isExpanded ? null : client.client_id)
+                          }
+                        >
+                          <div className="flex min-w-0 items-center gap-2">
+                            {isExpanded ? (
+                              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                            ) : (
+                              <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                            )}
+                            <Avatar className="h-9 w-9 shrink-0">
+                              <AvatarFallback>{client.name.charAt(0).toUpperCase()}</AvatarFallback>
+                            </Avatar>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium">{client.name}</p>
+                              <p className="truncate text-xs text-muted-foreground">
+                                {client.inbox_email ?? "No organization email"}
+                              </p>
+                            </div>
+                          </div>
+                          <div
+                            className="flex shrink-0 items-center gap-2"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <Badge variant={client.is_active ? "success" : "destructive"}>
+                              {client.is_active ? "Active" : "Inactive"}
+                            </Badge>
+                            <PermissionGuard permission="user:update">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                aria-label="Edit client"
+                                onClick={() => setEditingClient(clientToEditableUser(client))}
+                              >
+                                <Pencil className="h-4 w-4" />
+                              </Button>
+                            </PermissionGuard>
+                          </div>
+                        </button>
+
+                        {isExpanded && (
+                          <div className="space-y-3 border-t border-border bg-muted/30 p-4 pl-11">
+                            <div>
+                              <p className="text-xs font-medium text-muted-foreground">
+                                Organization Email
+                              </p>
+                              <p className="text-sm">{client.inbox_email ?? "—"}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium text-muted-foreground">
+                                Account Manager
+                              </p>
+                              <p className="text-sm">
+                                {client.account_manager_name ?? "Unassigned"}
+                                {!client.account_manager_active && (
+                                  <span className="ml-2 text-xs text-destructive">
+                                    (no longer an active Account Manager)
+                                  </span>
+                                )}
+                              </p>
+                            </div>
+                            <div>
+                              <p className="text-xs font-medium text-muted-foreground">
+                                Contact Emails
+                              </p>
+                              <ClientContactsList clientId={client.client_id} />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
         </>
       )}
 
@@ -458,6 +736,21 @@ export default function RolesPage() {
           }
         }}
         role={editingRole}
+      />
+
+      {/* Reuses UserFormDialog's existing Client-role branch — see
+          clientToEditableUser above — rather than a second Client
+          creation/edit form. */}
+      <UserFormDialog
+        open={clientFormOpen || !!editingClient}
+        onOpenChange={(open) => {
+          if (!open) {
+            setClientFormOpen(false);
+            setEditingClient(null);
+          }
+        }}
+        user={editingClient}
+        defaultRoleId={clientRoleId}
       />
 
       <RolePermissionsDialog

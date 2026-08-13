@@ -48,6 +48,17 @@ def _build_transient_user(payload: dict) -> User:
         name=payload.get("name") or "",
         email=payload.get("email") or "",
         is_active=True,
+        # Not carried in the JWT (display-only, never authorization-
+        # relevant) — must still be a real bool here, not left unset:
+        # a transient instance never gets the column default applied,
+        # so an unset attribute reads back None, which fails Pydantic
+        # validation wherever this object feeds a `me`-style summary
+        # (AssignableUserSummary.is_on_leave: bool). Confirmed live as
+        # a 500 on every cache-hit transfer-candidates/assignable-
+        # agents request. Worst case is the caller's OWN picker entry
+        # briefly missing its "(Leave)" tag — every other user in
+        # those pickers comes from a real DB row.
+        is_on_leave=False,
         role_id=UUID(payload["role_id"]) if payload.get("role_id") else None,
         category_id=UUID(payload["category_id"]) if payload.get("category_id") else None,
         permission_version=payload.get("permission_version"),

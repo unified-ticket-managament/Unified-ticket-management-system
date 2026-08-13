@@ -31,14 +31,14 @@ async def list_rules(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Every Mail Rule and OTP Rule, Mail Rules first — read is open to
-    any authenticated agent (only create/update/delete/reorder are
-    gated on rule:manage), matching this repo's general "read is
-    open, write is gated" bias (see e.g. GET /sla/policies).
+    Every Mail Rule and OTP Rule, Mail Rules first — gated on
+    rule:manage, same as every other Rules endpoint, since Rules moved
+    under Mail and is now restricted to the four roles holding that
+    permission (Super Admin, Site Lead, Account Manager, Team Lead).
     """
 
     service = RuleService(RuleRepository(db))
-    return await service.list_all()
+    return await service.list_all(current_user=current_user)
 
 
 @router.get(
@@ -51,7 +51,7 @@ async def get_rule(
     db: AsyncSession = Depends(get_db),
 ):
     service = RuleService(RuleRepository(db))
-    return await service.get(rule_id)
+    return await service.get(rule_id, current_user=current_user)
 
 
 @router.post(

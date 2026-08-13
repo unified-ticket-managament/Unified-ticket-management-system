@@ -199,9 +199,13 @@ interface UserFormDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   user?: User | null;
+  // Create mode only (ignored once `user` is set) — lets a caller open
+  // this dialog with a role already selected, e.g. the Roles page's
+  // "Create Client" button on the Client role's own detail view.
+  defaultRoleId?: string;
 }
 
-export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps) {
+export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: UserFormDialogProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
@@ -267,7 +271,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
         name: user?.name ?? "",
         email: user?.email ?? "",
         password: "",
-        role_id: user?.role_id ?? "",
+        role_id: user?.role_id ?? defaultRoleId ?? "",
         is_active: user?.is_active ?? true,
         manager_id: user?.manager_id ?? "",
         teamlead_id: user?.teamlead_id ?? "",
@@ -279,7 +283,7 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
       });
       setShowPassword(false);
     }
-  }, [open, user, reset]);
+  }, [open, user, defaultRoleId, reset]);
 
   const roleId = watch("role_id");
   const isActive = watch("is_active");
@@ -439,6 +443,21 @@ export function UserFormDialog({ open, onOpenChange, user }: UserFormDialogProps
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["users-table"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard-users"] });
+      // A Client save (create or edit) writes to `clients`/
+      // `client_contacts`, not `users` — invalidate the Roles page's
+      // Client-role list/contacts too so it doesn't keep showing
+      // stale data after this dialog closes. Harmless no-op refetch
+      // for every non-Client save.
+      queryClient.invalidateQueries({ queryKey: ["clients-list"] });
+      if (user) {
+        queryClient.invalidateQueries({ queryKey: ["client-contacts-configured", user.user_id] });
+      }
+      // The Roles page's per-role "Assigned Users" counts (GET
+      // /roles/{role_id}/users) are a separate cache key from
+      // "users-table" — invalidate the whole prefix so creating/
+      // editing/reactivating an internal user is reflected there too
+      // without a manual reload.
+      queryClient.invalidateQueries({ queryKey: ["role-users"] });
       toast({
         title: mode === "create" ? "User created" : "User updated",
         description:

@@ -167,7 +167,12 @@ function RuleTable({
   );
 }
 
-export default function RulesPage() {
+// Rules lives inside Mail now (Mail → Rules is the one canonical entry
+// point — see InboxPage.tsx's rulesOpen state and MailSidebar.tsx's
+// Rules button) rather than a standalone /settings/rules route.
+// Everything below is unchanged from that former page — only the
+// breadcrumb was updated to reflect the new nesting.
+export function RulesPanel() {
   const currentUser = useAuthStore((s) => s.user);
   const hasPermission = useAuthStore((s) => s.hasPermission);
   const { toast } = useToast();
@@ -238,7 +243,13 @@ export default function RulesPage() {
 
   return (
     <div className="space-y-6">
-      <Breadcrumbs items={[{ label: "Dashboard", href: "/dashboard" }, { label: "Rules" }]} />
+      <Breadcrumbs
+        items={[
+          { label: "Dashboard", href: "/dashboard" },
+          { label: "Mail", href: "/dashboard/inbox" },
+          { label: "Rules" },
+        ]}
+      />
 
       <PageHeader
         title="Rules"

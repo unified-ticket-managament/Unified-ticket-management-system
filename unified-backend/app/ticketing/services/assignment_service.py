@@ -26,7 +26,10 @@ from app.ticketing.services.access_control import (
 
 def _summary(user: User) -> AssignableUserSummary:
     return AssignableUserSummary(
-        user_id=user.user_id, name=user.name, employee_number=user.employee_number
+        user_id=user.user_id,
+        name=user.name,
+        employee_number=user.employee_number,
+        is_on_leave=user.is_on_leave,
     )
 
 

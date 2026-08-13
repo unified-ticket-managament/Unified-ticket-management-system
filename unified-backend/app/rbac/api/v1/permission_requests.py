@@ -164,7 +164,9 @@ async def list_eligible_approver_users(
 ):
     candidates = await service.list_eligible_approver_users(permission_id, current_user)
     return [
-        EligibleApproverUser(user_id=u.user_id, name=u.name, role_name=role_name)
+        EligibleApproverUser(
+            user_id=u.user_id, name=u.name, role_name=role_name, is_on_leave=u.is_on_leave
+        )
         for u, role_name in candidates
     ]
 

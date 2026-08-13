@@ -14,8 +14,15 @@ export function formatTicketNumber(ticketNumber: number): string {
 // back to the bare name when no official employee_number exists (demo/
 // system accounts). Never touches the underlying selected value, which
 // remains the user's UUID everywhere this is used for display only.
-export function formatAssigneeLabel(user: { name: string; employee_number?: string | null }): string {
-  return user.employee_number ? `${user.name} (${user.employee_number})` : user.name;
+// A user currently on leave gets " (Leave)" appended after that —
+// purely an indicator, never affects selectability/ordering.
+export function formatAssigneeLabel(user: {
+  name: string;
+  employee_number?: string | null;
+  is_on_leave?: boolean;
+}): string {
+  const base = user.employee_number ? `${user.name} (${user.employee_number})` : user.name;
+  return user.is_on_leave ? `${base} (Leave)` : base;
 }
 
 export function formatDateTime(iso: string): string {

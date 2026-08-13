@@ -5,7 +5,6 @@ import { usePathname, useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   BarChart3,
-  Building2,
   ChevronsLeft,
   ChevronsRight,
   ClipboardList,
@@ -21,7 +20,6 @@ import {
   Timer,
   UserCircle,
   Users,
-  Workflow,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -68,11 +66,6 @@ const menuItems: {
     icon: Users,
   },
   {
-    title: "Clients",
-    href: "/clients",
-    icon: Building2,
-  },
-  {
     title: "Roles",
     href: "/roles",
     icon: Shield,
@@ -111,11 +104,6 @@ const menuItems: {
     title: "Reporting Managers",
     href: "/settings/reporting-managers",
     icon: Network,
-  },
-  {
-    title: "Rules",
-    href: "/settings/rules",
-    icon: Workflow,
   },
   {
     title: "Permission Requests",

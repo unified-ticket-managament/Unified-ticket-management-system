@@ -13,6 +13,10 @@ class AssignableUserSummary(BaseModel):
     # remains user_id. None for accounts with no official employee
     # record (demo/system accounts).
     employee_number: str | None = None
+    # Display-only Leave indicator — see shared_models.models.User.
+    # is_on_leave's own docstring. Never narrows/reorders this picker;
+    # the frontend appends "(Leave)" to the label when true.
+    is_on_leave: bool = False
 
 
 class AssignableGroup(BaseModel):

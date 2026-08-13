@@ -93,6 +93,20 @@ class User(TimestampMixin, Base):
         nullable=False,
     )
 
+    # Whether this user is currently on leave — a display-only
+    # indicator (see the Leave toggle in the user profile/detail view)
+    # never enforced as an eligibility/authorization rule anywhere: a
+    # user on leave still appears, selectable, in every ticket
+    # create/assign/transfer and permission-request picker, just
+    # annotated "(Leave)". Deliberately independent of is_active/
+    # permission_version — toggling it is not an authorization change.
+    is_on_leave: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        server_default="false",
+    )
+
     # Bumped whenever anything auth-relevant about this user changes
     # (role/category/manager/teamlead reassignment, activation state,
     # a personal permission override grant/revoke) or whenever their

@@ -11,6 +11,10 @@ export interface AuthUser {
   role: string;
   role_id: string;
   is_active: boolean;
+  // Display-only Leave indicator (see shared_models.models.User.
+  // is_on_leave's own docstring) — never an authorization rule.
+  // Optional for back-compat with any cached response predating it.
+  is_on_leave?: boolean;
   permissions: string[];
   override_permissions?: string[];
   scoped_permissions?: Record<string, string[]>;
@@ -45,6 +49,10 @@ export interface User {
   reporting_manager_id: string | null;
   category_id: string | null;
   is_active: boolean;
+  // Display-only Leave indicator — see shared_models.models.User.
+  // is_on_leave's own docstring. Never narrows/filters a user picker;
+  // surfaced only as "(Leave)" appended to the name.
+  is_on_leave: boolean;
   created_at: string;
   updated_at: string;
   employee_number?: string | null;
@@ -128,6 +136,7 @@ export interface EligibleApproverUser {
   user_id: string;
   name: string;
   role_name: string;
+  is_on_leave: boolean;
 }
 
 export interface TeammateStaffOption {
@@ -165,6 +174,9 @@ export interface UserForm {
   password?: string;
   role_id: string;
   is_active: boolean;
+  // Display-only Leave indicator, editable from the user detail
+  // drawer's own toggle — see the User interface's own doc comment.
+  is_on_leave?: boolean;
   manager_id?: string | null;
   teamlead_id?: string | null;
   reporting_manager_id?: string | null;
@@ -193,6 +205,9 @@ export interface ProfileForm {
   email?: string;
   password?: string;
   current_password?: string;
+  // Self-toggled from the Profile page's own header — see the User
+  // interface's own doc comment on is_on_leave.
+  is_on_leave?: boolean;
   date_of_birth?: string | null;
   alternate_email?: string | null;
   phone_number?: string | null;

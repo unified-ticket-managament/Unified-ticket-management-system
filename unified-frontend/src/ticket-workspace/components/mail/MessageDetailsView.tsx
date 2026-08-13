@@ -343,6 +343,7 @@ export function MessageDetailsView({
   // the Open Pool as team-scoped work, not silently claimed by its
   // creator.
   const [assignableAgents, setAssignableAgents] = useState<AssignableAgentsResponse | null>(null);
+  const [assignableAgentsError, setAssignableAgentsError] = useState(false);
   const [assignedToChoice, setAssignedToChoice] = useState<string>("unassigned");
   const [selectedAssigneeId, setSelectedAssigneeId] = useState("");
 
@@ -373,6 +374,16 @@ export function MessageDetailsView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email.interaction_id, email.ticket_id]);
 
+  function loadAssignableAgents(category: string) {
+    setAssignableAgentsError(false);
+    listAssignableAgents(category || undefined)
+      .then(setAssignableAgents)
+      .catch(() => {
+        setAssignableAgents(null);
+        setAssignableAgentsError(true);
+      });
+  }
+
   useEffect(() => {
     // Re-fetches whenever the dialog's own Category selection changes
     // (not just once on mount) — the Team Lead/Staff groups are scoped
@@ -380,12 +391,13 @@ export function MessageDetailsView({
     // stale, unscoped list would otherwise linger from before the user
     // picked a category. Resets any already-chosen assignee too, since
     // a Team Lead/Staff picked under the old category may not even be
-    // in the new category's list.
+    // in the new category's list. A failed fetch is tracked separately
+    // (assignableAgentsError) so it renders as a distinct, retryable
+    // error rather than silently collapsing to just "Unassigned (Team)"
+    // with no explanation.
     setAssignedToChoice("unassigned");
     setSelectedAssigneeId("");
-    listAssignableAgents(ticketType || undefined)
-      .then(setAssignableAgents)
-      .catch(() => setAssignableAgents(null));
+    loadAssignableAgents(ticketType);
   }, [ticketType]);
 
   // Every personal address this client has ever emailed the shared
@@ -969,6 +981,23 @@ export function MessageDetailsView({
                     ))}
                   </SelectContent>
                 </Select>
+
+                {assignableAgentsError && (
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs text-destructive">
+                      Couldn't load assignable people — try again.
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-6 px-2 text-xs"
+                      onClick={() => loadAssignableAgents(ticketType)}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                )}
 
                 {assignedToGroup && (
                   assignedToGroup.users.length === 0 ? (

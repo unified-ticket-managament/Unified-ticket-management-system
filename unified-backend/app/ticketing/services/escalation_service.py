@@ -71,7 +71,12 @@ def _to_assignable_group(role_name: str, users: list[User]) -> AssignableGroup:
     return AssignableGroup(
         role=role_name,
         users=[
-            AssignableUserSummary(user_id=u.user_id, name=u.name, employee_number=u.employee_number)
+            AssignableUserSummary(
+                user_id=u.user_id,
+                name=u.name,
+                employee_number=u.employee_number,
+                is_on_leave=u.is_on_leave,
+            )
             for u in users
         ],
     )
@@ -1133,6 +1138,7 @@ class EscalationService:
                     user_id=current_user.user_id,
                     name=current_user.name,
                     employee_number=current_user.employee_number,
+                    is_on_leave=current_user.is_on_leave,
                 )
             ),
             groups=groups,

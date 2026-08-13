@@ -73,6 +73,9 @@ class EligibleApproverUser(BaseModel):
     user_id: UUID
     name: str
     role_name: str
+    # Display-only Leave indicator — see shared_models.models.User.
+    # is_on_leave's own docstring. Never narrows this candidate list.
+    is_on_leave: bool = False
 
 
 class TeammateStaffOption(BaseModel):

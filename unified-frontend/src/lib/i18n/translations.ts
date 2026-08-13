@@ -20,7 +20,6 @@ const en = {
   "nav.myTickets": "My Tickets",
   "nav.queue": "Queue",
   "nav.users": "Users",
-  "nav.clients": "Clients",
   "nav.roles": "Roles",
   "nav.permissions": "Permissions",
   "nav.auditLogs": "Audit Logs",
@@ -118,6 +117,7 @@ const en = {
   "profile.statusInactive": "Inactive",
   "profile.statusOnline": "Online",
   "profile.statusOffline": "Offline",
+  "profile.leave": "Leave",
 
   "profile.informationTitle": "Profile Information",
   "profile.personalDetails": "Personal Details",
@@ -194,7 +194,6 @@ const es: Record<keyof typeof en, string> = {
   "nav.myTickets": "Mis tickets",
   "nav.queue": "Cola",
   "nav.users": "Usuarios",
-  "nav.clients": "Clientes",
   "nav.roles": "Roles",
   "nav.permissions": "Permisos",
   "nav.auditLogs": "Registros de auditoría",
@@ -292,6 +291,7 @@ const es: Record<keyof typeof en, string> = {
   "profile.statusInactive": "Inactivo",
   "profile.statusOnline": "En línea",
   "profile.statusOffline": "Desconectado",
+  "profile.leave": "Permiso",
 
   "profile.informationTitle": "Información del perfil",
   "profile.personalDetails": "Datos personales",
@@ -368,7 +368,6 @@ const fr: Record<keyof typeof en, string> = {
   "nav.myTickets": "Mes tickets",
   "nav.queue": "File d'attente",
   "nav.users": "Utilisateurs",
-  "nav.clients": "Clients",
   "nav.roles": "Rôles",
   "nav.permissions": "Autorisations",
   "nav.auditLogs": "Journaux d'audit",
@@ -466,6 +465,7 @@ const fr: Record<keyof typeof en, string> = {
   "profile.statusInactive": "Inactif",
   "profile.statusOnline": "En ligne",
   "profile.statusOffline": "Hors ligne",
+  "profile.leave": "Congé",
 
   "profile.informationTitle": "Informations du profil",
   "profile.personalDetails": "Coordonnées personnelles",
@@ -542,7 +542,6 @@ const de: Record<keyof typeof en, string> = {
   "nav.myTickets": "Meine Tickets",
   "nav.queue": "Warteschlange",
   "nav.users": "Benutzer",
-  "nav.clients": "Kunden",
   "nav.roles": "Rollen",
   "nav.permissions": "Berechtigungen",
   "nav.auditLogs": "Prüfprotokolle",
@@ -640,6 +639,7 @@ const de: Record<keyof typeof en, string> = {
   "profile.statusInactive": "Inaktiv",
   "profile.statusOnline": "Online",
   "profile.statusOffline": "Offline",
+  "profile.leave": "Urlaub",
 
   "profile.informationTitle": "Profilinformationen",
   "profile.personalDetails": "Persönliche Angaben",

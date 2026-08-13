@@ -25,7 +25,6 @@ export type NavItemKey =
   | "All Tickets"
   | "My Tickets"
   | "Users"
-  | "Clients"
   | "Roles"
   | "Audit Logs"
   | "Reports"
@@ -37,15 +36,13 @@ export type NavItemKey =
   | "Profile"
   | "Settings"
   | "SLA Timing Matrix"
-  | "Reporting Managers"
-  | "Rules";
+  | "Reporting Managers";
 
 export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   Dashboard: "nav.dashboard",
   "All Tickets": "nav.allTickets",
   "My Tickets": "nav.myTickets",
   Users: "nav.users",
-  Clients: "nav.clients",
   Roles: "nav.roles",
   "Audit Logs": "nav.auditLogs",
   Reports: "nav.reports",
@@ -58,7 +55,6 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   Settings: "nav.settings",
   "SLA Timing Matrix": "nav.slaTimingMatrix",
   "Reporting Managers": "nav.reportingManagers",
-  Rules: "nav.rules",
 };
 
 
@@ -118,7 +114,6 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
   [ROLE_NAMES.SUPER_ADMIN]: [
     "Dashboard",
     "Users",
-    "Clients",
     "Reports",
     "Inbox",
     "Interactions",
@@ -126,21 +121,18 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Ticket Audit Log",
     "SLA Timing Matrix",
     "Reporting Managers",
-    "Rules",
   ],
   [ROLE_NAMES.SITE_LEAD]: [
     "Dashboard",
     "Users",
-    "Clients",
     "Reports",
     "Inbox",
     "Interactions",
     "Tickets",
     "Ticket Audit Log",
     "Reporting Managers",
-    "Rules",
   ],
-  [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Clients", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
+  [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
   [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
   [ROLE_NAMES.STAFF]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
   [ROLE_NAMES.CLIENT]: ["Dashboard", "Permission Requests"],

@@ -24,6 +24,10 @@ class UserBase(BaseModel):
     # requirement depends on which role_id was chosen).
     category_id: UUID | None = None
     is_active: bool = True
+    # Display-only Leave indicator (see shared_models.models.User.
+    # is_on_leave's own docstring) — never an authorization/eligibility
+    # rule, purely surfaced as "(Leave)" wherever a user picker renders.
+    is_on_leave: bool = False
 
     # The official, human-readable Employee ID (e.g. "266") — see
     # shared_models.models.User's own docstring. Purely additional to
@@ -76,6 +80,7 @@ class UserUpdate(BaseModel):
     reporting_manager_id: UUID | None = None
     category_id: UUID | None = None
     is_active: bool | None = None
+    is_on_leave: bool | None = None
     employee_number: str | None = None
 
     date_of_birth: date | None = None

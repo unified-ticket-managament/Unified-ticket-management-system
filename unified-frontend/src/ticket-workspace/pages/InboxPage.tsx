@@ -12,6 +12,7 @@ import { SystemMailList } from "@tw/components/mail/SystemMailList";
 import { useMailInbox, type MailViewKey } from "@tw/hooks/useMailInbox";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { useAuthContext } from "@tw/context/AuthContext";
+import { RulesPanel } from "@/components/rules/RulesPanel";
 
 const VIEW_LABELS: Record<MailViewKey, string> = {
   pending: "Inbox",
@@ -39,7 +40,9 @@ export function InboxPage() {
   const { currentUser } = useAuthContext();
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeInitialValues, setComposeInitialValues] = useState<ComposeInitialValues | undefined>(undefined);
+  const [rulesOpen, setRulesOpen] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
+  const canManageRules = (currentUser?.permissions ?? []).includes("rule:manage");
 
   // Tracks whatever message was open right before Compose/Forward
   // opened (openCompose always clears `selectedEmail`), so the Back
@@ -60,6 +63,7 @@ export function InboxPage() {
       setSelectedEmail(null);
       setComposeInitialValues(initial);
       setComposeOpen(true);
+      setRulesOpen(false);
     },
     [setSelectedEmail]
   );
@@ -83,6 +87,7 @@ export function InboxPage() {
   const handleSelectView = useCallback(
     (view: MailViewKey) => {
       setComposeOpen(false);
+      setRulesOpen(false);
       setSelectedEmail(null);
       mail.selectFolder(null);
       mail.setActiveView(view);
@@ -93,14 +98,23 @@ export function InboxPage() {
   const handleSelectFolder = useCallback(
     (folderId: string) => {
       setComposeOpen(false);
+      setRulesOpen(false);
       setSelectedEmail(null);
       mail.selectFolder(folderId);
     },
     [setSelectedEmail, mail.selectFolder]
   );
 
+  const handleOpenRules = useCallback(() => {
+    setComposeOpen(false);
+    setSelectedEmail(null);
+    mail.selectFolder(null);
+    setRulesOpen(true);
+  }, [setSelectedEmail, mail.selectFolder]);
+
   async function handleOpen(interactionId: string) {
     setComposeOpen(false);
+    setRulesOpen(false);
     await mail.openThread(interactionId);
   }
 
@@ -179,10 +193,15 @@ export function InboxPage() {
           folderCounts={mail.folderCounts}
           activeFolderId={mail.activeFolderId}
           onSelectFolder={handleSelectFolder}
+          canManageRules={canManageRules}
+          rulesActive={rulesOpen}
+          onOpenRules={handleOpenRules}
         />
 
         <div className="min-h-[560px] min-w-0 flex-1">
-          {composeOpen ? (
+          {rulesOpen ? (
+            <RulesPanel />
+          ) : composeOpen ? (
             <ComposeView
               clients={mail.clients}
               clientsLoading={mail.clientsLoading}

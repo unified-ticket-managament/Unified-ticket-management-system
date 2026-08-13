@@ -34,6 +34,7 @@ from app.rbac.schemas.auth import (
 # name/email's own truthy-only checks below which predate this set
 # and are left as they were.
 _PROFILE_FIELD_NAMES = {
+    "is_on_leave",
     "date_of_birth",
     "alternate_email",
     "phone_number",
@@ -275,6 +276,7 @@ class AuthService:
             role=user.role.name,
             role_id=user.role_id,
             is_active=user.is_active,
+            is_on_leave=user.is_on_leave,
             permissions=permissions,
             override_permissions=override_permissions,
             scoped_permissions=scoped_permissions,

@@ -1,21 +1,33 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
 from app.database.session import get_db
 from app.rbac.repositories.audit_log_repository import AuditLogRepository
 from app.rbac.repositories.role_repository import RoleRepository
+from app.rbac.repositories.user_repository import UserRepository
 from app.rbac.schemas.role import (
     RoleCreate,
     RoleListResponse,
     RoleResponse,
     RoleUpdate,
 )
-from app.rbac.services.access_control import ensure_has_permission
+from app.rbac.schemas.user import UserResponse
+from app.rbac.services.access_control import (
+    ensure_can_view_full_role_population,
+    ensure_has_permission,
+)
 from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.role_service import RoleService
+
+# The client-facing role — never stored in `users` at all (see
+# UserService.CLIENT_ROLE_NAME's own docstring). GET /roles/{id}/users
+# returns an empty list for it rather than erroring, since Client
+# membership is a legitimate question with a legitimate (empty, from
+# this table's perspective) answer.
+CLIENT_ROLE_NAME = "Client"
 
 router = APIRouter(
     prefix="/roles",
@@ -128,6 +140,46 @@ async def get_role(
     ensure_has_permission(current_user, "role:view")
 
     return await service.get_role(role_id)
+
+
+# --------------------------------------------------
+# List Users For Role (Roles page "Assigned Users"/counts only)
+# --------------------------------------------------
+
+
+@router.get(
+    "/{role_id}/users",
+    response_model=list[UserResponse],
+    status_code=status.HTTP_200_OK,
+    summary="List Users For Role",
+)
+async def list_users_for_role(
+    role_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_active_user),
+):
+    """
+    Every active user holding this role, company-wide — deliberately
+    NOT hierarchy-scoped (unlike GET /users, which is scoped via
+    UserService.list_users/OrganizationService.get_subordinate_user_ids
+    for Account Manager/Team Lead). Backs the Roles page's "Assigned
+    Users" panel and per-role counts only; every other consumer of
+    hierarchy scoping (the Users page, the Organization Chart,
+    permission-override grant/revoke authority) is untouched by this
+    route and keeps reading from its own existing code path.
+    """
+
+    ensure_has_permission(current_user, "role:view")
+    ensure_can_view_full_role_population(current_user)
+
+    role = await RoleRepository(db).get_by_id(role_id)
+    if role is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Role not found.")
+
+    if role.name == CLIENT_ROLE_NAME:
+        return []
+
+    return await UserRepository(db).get_by_role(role_id)
 
 
 # --------------------------------------------------

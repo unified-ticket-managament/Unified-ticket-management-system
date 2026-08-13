@@ -9,7 +9,7 @@ export function TicketHeader({ ticket }: { ticket: TicketResponse }) {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0">
           <p className="font-mono text-[11px] font-semibold tracking-wide text-accent">
-            TKT-{shortId(ticket.ticket_id, 8)}
+            TKT-{String(ticket.ticket_number).padStart(2, "0")}
           </p>
           <h2 className="mt-1 text-xl font-bold leading-tight text-slate-900">
             {ticket.title}

@@ -28,11 +28,13 @@ class RuleService:
     def __init__(self, rule_repository: RuleRepository):
         self.rule_repository = rule_repository
 
-    async def list_all(self) -> list[RuleResponse]:
+    async def list_all(self, current_user: User) -> list[RuleResponse]:
+        ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
         rules = await self.rule_repository.list_all()
         return [RuleResponse.model_validate(r) for r in rules]
 
-    async def get(self, rule_id: UUID) -> RuleResponse:
+    async def get(self, rule_id: UUID, current_user: User) -> RuleResponse:
+        ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
         rule = await self._get_or_404(rule_id)
         return RuleResponse.model_validate(rule)
 

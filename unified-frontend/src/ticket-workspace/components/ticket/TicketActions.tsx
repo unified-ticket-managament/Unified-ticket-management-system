@@ -100,6 +100,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   const [newPriority, setNewPriority] = useState<TicketPriority>("HIGH");
   const [transferGroups, setTransferGroups] = useState<AssignableGroup[]>([]);
   const [transferMe, setTransferMe] = useState<AssignableUserSummary | null>(null);
+  const [transferCandidatesError, setTransferCandidatesError] = useState(false);
   const [newAgentId, setNewAgentId] = useState("");
   const [transferReason, setTransferReason] = useState("");
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
@@ -129,14 +130,15 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
     successMessage: (res) => res.message,
   });
 
-  useEffect(() => {
-    if (!activeTicket) return;
-    // Role- and hierarchy-scoped for THIS ticket specifically (see
-    // InteractionService.get_transfer_candidates) — who appears here
-    // now differs by the caller's own role, e.g. a Site Lead sees
-    // Team Leads + a category Account Manager (while an escalation is
-    // active) + category Staff, a Team Lead sees only category Staff.
-    getTransferCandidates(activeTicket.ticket_id)
+  // Every active, agent-capable user other than the ticket's current
+  // agent and the caller themselves (see
+  // InteractionService.get_transfer_candidates's own docstring) — any
+  // role, any category, any hierarchy level. A failed fetch is tracked
+  // separately from a genuinely-empty result (transferCandidatesError)
+  // so the two don't render identically — see the Modal below.
+  function loadTransferCandidates(ticketId: string) {
+    setTransferCandidatesError(false);
+    getTransferCandidates(ticketId)
       .then((res) => {
         setTransferGroups(res.groups);
         setTransferMe(res.me);
@@ -144,7 +146,13 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
       .catch(() => {
         setTransferGroups([]);
         setTransferMe(null);
+        setTransferCandidatesError(true);
       });
+  }
+
+  useEffect(() => {
+    if (!activeTicket) return;
+    loadTransferCandidates(activeTicket.ticket_id);
   }, [activeTicket?.ticket_id]);
 
   useEffect(() => {
@@ -529,7 +537,20 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
           </Button>
         }
       >
-        {!hasTransferCandidates ? (
+        {transferCandidatesError ? (
+          <div className="flex flex-col gap-2">
+            <p className="text-sm text-danger">
+              Couldn't load eligible people — check your connection and try again.
+            </p>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => activeTicket && loadTransferCandidates(activeTicket.ticket_id)}
+            >
+              Retry
+            </Button>
+          </div>
+        ) : !hasTransferCandidates ? (
           <p className="text-sm text-muted">
             No one is currently eligible for you to
             {isUnclaimed ? " assign this ticket to" : " transfer this ticket to"}.

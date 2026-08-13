@@ -169,6 +169,9 @@ DEFAULT_ROLES = {
         # Role & permission — can view and grant/revoke scoped overrides
         # for their own reports, but not edit role definitions.
         "role:view", "permission:view", "permission:override_grant", "permission:override_revoke",
+        # Mail/OTP Rules engine — Account Manager is one of the four
+        # roles granted access when Rules moved under Mail.
+        "rule:manage",
     ],
     "Team Lead": [
         # close_ticket/reopen/hide_interaction/view_global_audit_log are
@@ -185,6 +188,9 @@ DEFAULT_ROLES = {
         "ticket:view_escalated", "ticket:acknowledge_escalation",
         "user:view", "user:update",
         "role:view",
+        # Mail/OTP Rules engine — Team Lead is one of the four roles
+        # granted access when Rules moved under Mail.
+        "rule:manage",
     ],
     "Staff": [
         # hide_interaction is deliberately absent — override-only per

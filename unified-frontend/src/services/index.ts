@@ -223,6 +223,18 @@ export const roleService = {
   delete: async (id: string) => {
     await api.delete(`/roles/${id}`);
   },
+
+  // Every active user holding this role, company-wide — deliberately
+  // NOT hierarchy-scoped, unlike userService.list(). Backs the Roles
+  // page's "Assigned Users" panel and per-role counts only; gated
+  // server-side to Super Admin/Site Lead/Account Manager (see
+  // unified-backend's access_control.ensure_can_view_full_role_
+  // population) regardless of who calls it.
+  getUsersForRole: async (roleId: string): Promise<User[]> => {
+    const response = await api.get(`/roles/${roleId}/users`);
+
+    return response.data;
+  },
 };
 
 /* -------------------------------------------------------------------------- */

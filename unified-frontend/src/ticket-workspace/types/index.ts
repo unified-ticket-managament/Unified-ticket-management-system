@@ -141,6 +141,10 @@ export interface AssignableUserSummary {
   // Official, human-readable Employee ID (e.g. "266") — display only,
   // the picker's own selected value is always user_id.
   employee_number?: string | null;
+  // Display-only Leave indicator — see shared_models.models.User.
+  // is_on_leave's own docstring. Never narrows/reorders this picker;
+  // formatAssigneeLabel appends "(Leave)" to the name when true.
+  is_on_leave?: boolean;
 }
 
 export interface AssignableGroup {

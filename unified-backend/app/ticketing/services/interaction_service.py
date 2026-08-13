@@ -2125,6 +2125,7 @@ class InteractionService:
                 user_id=current_user.user_id,
                 name=current_user.name,
                 employee_number=current_user.employee_number,
+                is_on_leave=current_user.is_on_leave,
             ),
             groups=groups,
         )

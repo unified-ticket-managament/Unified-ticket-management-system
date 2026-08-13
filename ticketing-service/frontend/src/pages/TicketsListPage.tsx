@@ -416,7 +416,7 @@ export function TicketsListPage() {
                       className="cursor-pointer transition-colors hover:bg-surfaceHover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
                     >
                       <td className="px-5 py-3.5 font-mono text-xs text-muted">
-                        {shortId(ticket.ticket_id)}
+                        TKT-{String(ticket.ticket_number).padStart(2, "0")}
                       </td>
                       <td className="max-w-[240px] truncate px-5 py-3.5 font-medium text-slate-900">
                         {ticket.title}

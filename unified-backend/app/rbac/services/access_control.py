@@ -71,6 +71,36 @@ MANAGEABLE_PERMISSION_TARGET_ROLES: dict[str, set[str] | None] = {
 PERMISSION_OWNERSHIP_SCOPED_ROLE = "Account Manager"
 
 
+# --------------------------------------------------------------------
+# Roles page ("Users -> Roles -> select a role") full-role-population
+# visibility — GET /roles/{role_id}/users. `role:view` alone isn't a
+# tight enough gate on its own: Team Lead and the client-facing
+# "Client" role both hold `role:view` by default (see
+# scripts/rbac_seed/seed.py's DEFAULT_ROLES), but only Super Admin/
+# Site Lead/Account Manager are meant to see a role's full,
+# unrestricted-by-hierarchy membership here — the same three roles
+# that can already navigate to /roles at all today (mirrors
+# ROLES_BUTTON_VISIBLE_ROLES in the frontend's users/page.tsx).
+#
+# Deliberately independent of OrganizationService.get_subordinate_
+# user_ids/_build_subtree — this is a company-wide "who holds this
+# role" query, not a reporting-hierarchy one, and must never be
+# confused with (or fed back into) the hierarchy scoping that governs
+# the Users page, the Organization Chart, or permission-override
+# grant/revoke authority.
+ROLES_PAGE_FULL_VISIBILITY_ROLE_NAMES: set[str] = {"Super Admin", "Site Lead", "Account Manager"}
+
+
+def ensure_can_view_full_role_population(actor: User) -> None:
+    """403s unless `actor`'s own role may see a role's full, company-wide membership."""
+
+    if actor.role.name not in ROLES_PAGE_FULL_VISIBILITY_ROLE_NAMES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not permitted to view a role's full user list.",
+        )
+
+
 def get_manageable_permission_target_role_names(actor: User) -> set[str] | None:
     """None means unrestricted (any role, including the actor's own)."""
 

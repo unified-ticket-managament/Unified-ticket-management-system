@@ -26,6 +26,9 @@ class CurrentUser(BaseModel):
     role: str
     role_id: UUID
     is_active: bool
+    # Display-only Leave indicator, self-toggled from the Profile page
+    # — see shared_models.models.User.is_on_leave's own docstring.
+    is_on_leave: bool = False
     permissions: list[str]
     override_permissions: list[str] = []
     scoped_permissions: dict[str, list[str]] = {}
@@ -61,6 +64,11 @@ class UpdateProfileRequest(BaseModel):
     email: EmailStr | None = None
     current_password: str | None = None
     password: str | None = None
+
+    # Self-toggled from the Profile page's own header — every role may
+    # set their own leave status, regardless of whether they hold
+    # user:update (which Staff does not by default).
+    is_on_leave: bool | None = None
 
     # Self-service editable profile fields (see root CLAUDE.md's
     # Profile module section). `team`/role/user_id/reports-to are

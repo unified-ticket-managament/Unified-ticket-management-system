@@ -291,6 +291,7 @@ export interface RelatedTicketSummary {
 
 export interface TicketResponse {
   ticket_id: string;
+  ticket_number: number;
   client_id: string | null;
   client_company_id: string | null;
   agent_id: string | null;

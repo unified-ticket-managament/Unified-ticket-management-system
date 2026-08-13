@@ -273,7 +273,8 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
               <SelectContent>
                 {eligibleApprovers.map((approver) => (
                   <SelectItem key={approver.user_id} value={approver.user_id}>
-                    {approver.name} — {approver.role_name}
+                    {approver.name}
+                    {approver.is_on_leave ? " (Leave)" : ""} — {approver.role_name}
                   </SelectItem>
                 ))}
               </SelectContent>
