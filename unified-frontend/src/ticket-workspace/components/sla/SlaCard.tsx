@@ -24,6 +24,16 @@ import type { TicketPriority } from "@tw/types";
 // rather than a blanket role bypass.
 const RESOLUTION_OVERRIDE_BYPASS_ROLES = new Set(["Site Lead", "Super Admin"]);
 
+// Escalation routing follows the ticket's own assignment history now,
+// not role hierarchy (see root CLAUDE.md's "SLA & Escalation" section)
+// — every non-terminal step is the generic ASSIGNMENT_CHAIN level, so
+// "Team Lead"/"Manager" would be actively misleading here. SITE_LEAD
+// stays literal (the terminal Site Lead/Super Admin safety net).
+const ESCALATION_LEVEL_LABEL: Record<string, string> = {
+  ASSIGNMENT_CHAIN: "Escalated",
+  SITE_LEAD: "Site Lead",
+};
+
 export function SlaCard({
   ticketId,
   ticketPriority,
@@ -370,7 +380,7 @@ export function SlaCard({
               <div>
                 <dt className="text-muted">Current Level</dt>
                 <dd className="font-medium text-slate-800">
-                  {escalation.level.replace("_", " ")}
+                  {ESCALATION_LEVEL_LABEL[escalation.level] ?? escalation.level.replace("_", " ")}
                 </dd>
               </div>
               <div>

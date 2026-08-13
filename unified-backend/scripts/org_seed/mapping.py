@@ -6,6 +6,8 @@
 # and import_org_data.py (the real write), so the two can never drift
 # out of sync on what a given row resolves to.
 
+from scripts.org_seed import source_data
+
 SITE_LEAD_ROLE = "Site Lead"
 ACCOUNT_MANAGER_ROLE = "Account Manager"
 TEAM_LEAD_ROLE = "Team Lead"
@@ -91,27 +93,18 @@ def resolve_category(designation: str, process: str) -> str | None:
 
 
 # --------------------------------------------------------------------
-# Client contact -> clients.inbox_email
+# Client name -> clients.inbox_email
 # --------------------------------------------------------------------
-# Default rule: the first contact email for a client that isn't on an
-# internal probeps.com/painmedpa.com domain. These two clients need an
-# explicit override because that default picks something unsuitable
-# (see the plan's "Client Contacts" section for why).
-PRIMARY_CONTACT_OVERRIDE = {
-    "FFJ": "lisa@familyfirstjville.com",
-    "PCRR": "bhargavibkola@gmail.com",
-}
-
-_INTERNAL_DOMAINS = {"probeps.com", "painmedpa.com"}
+# Locked business rule: clients.inbox_email is ONLY ever the client's
+# curated, explicit official distribution/intake address
+# (source_data.DISTRIBUTION_EMAILS) — never inferred from a contact
+# email, the account manager, an employee, or "whichever contact came
+# first" (the previous, incorrect default this replaced). A client
+# with no row in DISTRIBUTION_EMAILS has no configured distribution
+# email at all, and gets None here -> NULL in the database, never a
+# guessed substitute.
 
 
-def pick_primary_contact(client_name: str, emails: list[str]) -> str:
-    if client_name in PRIMARY_CONTACT_OVERRIDE:
-        return PRIMARY_CONTACT_OVERRIDE[client_name]
-
-    for email in emails:
-        domain = email.strip().lower().rsplit("@", 1)[-1]
-        if domain not in _INTERNAL_DOMAINS:
-            return email
-
-    return emails[0]
+def resolve_distribution_email(client_name: str) -> str | None:
+    email = source_data.DISTRIBUTION_EMAILS.get(client_name)
+    return email.strip().lower() if email else None

@@ -451,29 +451,41 @@ def ensure_can_compose_for_client(client, current_user: User) -> None:
     """
     Gates POST /inbox/compose — who may author a brand-new outbound
     email (no prior inbound message) to one of the platform's
-    clients. Mirrors ensure_agent_can_view_pending_interaction's
-    ownership rule (Site Lead/Super Admin unrestricted, Account
-    Manager only their own clients), since starting a new pre-ticket
-    thread is the same kind of "own this client's mail" action as
-    claiming/archiving/snoozing one. Team Lead/Staff are deliberately
-    excluded — they only ever work already-ticketed mail, scoped by
-    category/assignment, and have no pre-ticket client-ownership
-    concept to compose into.
+    clients. `communication:reply_external` (RBAC's own Manage-
+    Permissions editor — the same permission Reply/Reply All on an
+    already-ticketed message already gate on, see
+    MessageDetailsView.tsx's canReplyExternal) is the source of truth
+    for whether a role/user may compose external mail at all; this
+    used to be a hardcoded role-name check (Site Lead/Super Admin
+    unconditionally, Account Manager only their own clients, every
+    other role — including a Team Lead explicitly granted the
+    permission — unconditionally denied), which meant granting the
+    permission through the RBAC UI had no effect here.
+
+    Business ownership stays exactly as before on top of the
+    permission check: Site Lead/Super Admin remain unrestricted,
+    Account Manager stays scoped to their own clients (this is a data-
+    ownership rule, not a permission gap, so it isn't satisfied by
+    holding the permission alone). Any other role holding the
+    permission (e.g. Team Lead) is unrestricted like Site Lead/Super
+    Admin — Compose has no per-role client-ownership concept outside
+    Account Manager's own-clients rule.
     """
+
+    ensure_has_permission(current_user, "communication:reply_external")
 
     if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
         return
 
-    if (
-        current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME
-        and client.account_manager_id == current_user.user_id
-    ):
-        return
+    if current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME:
+        if client.account_manager_id == current_user.user_id:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to compose mail for this client.",
+        )
 
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="You do not have permission to compose mail for this client.",
-    )
+    return
 
 
 def has_permission(current_user: User, permission_name: str) -> bool:

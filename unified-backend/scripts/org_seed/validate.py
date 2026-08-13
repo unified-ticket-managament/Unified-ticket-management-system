@@ -80,7 +80,7 @@ def main() -> None:
             lead_emp = employees[assignment.employee_id]
             fallback_note = " (fallback: no lead listed, using Account Manager)" if assignment.via_fallback else ""
             print(f"    {assignment.lead_role:14} -> {lead_emp.name}{fallback_note}")
-        print(f"    inbox_email -> {client.primary_contact_email}")
+        print(f"    inbox_email -> {client.inbox_email if client.inbox_email is not None else '(none — NULL)'}")
         print(f"    contact_emails ({len(client.contact_emails)}): {', '.join(client.contact_emails)}")
 
     # ------------------------------------------------------------

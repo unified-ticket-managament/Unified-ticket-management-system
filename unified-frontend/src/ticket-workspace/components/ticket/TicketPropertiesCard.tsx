@@ -14,13 +14,14 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 // Full-width ticket properties, laid out in two rows exactly as
-// specced (Client/Status/Priority/Created By/Assigned To, then
-// Category/Created On/Latest Updated/Version) — every value sourced
-// directly from the existing ticket response, nothing hardcoded.
+// specced (Client/Status/Priority/Created By/Assigned To/Assigned By,
+// then Category/Created On/Latest Updated/Version) — every value
+// sourced directly from the existing ticket response, nothing
+// hardcoded.
 export function TicketPropertiesCard({ ticket }: { ticket: TicketResponse }) {
   return (
     <Card title="Properties">
-      <div className="grid grid-cols-2 gap-x-5 gap-y-4 sm:grid-cols-5">
+      <div className="grid grid-cols-2 gap-x-5 gap-y-4 sm:grid-cols-3 lg:grid-cols-6">
         <Field label="Client">
           {ticket.client_company_name ??
             ticket.client_name ??
@@ -39,6 +40,11 @@ export function TicketPropertiesCard({ ticket }: { ticket: TicketResponse }) {
         </Field>
         <Field label="Assigned To">
           {ticket.agent_id ? ticket.agent_name ?? shortId(ticket.agent_id) : "Unassigned"}
+        </Field>
+        <Field label="Assigned By">
+          {ticket.assigned_by
+            ? ticket.assigned_by_name ?? shortId(ticket.assigned_by)
+            : "—"}
         </Field>
       </div>
 

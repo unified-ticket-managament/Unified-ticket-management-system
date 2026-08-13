@@ -131,6 +131,9 @@ class TicketService:
         user_ids.update(
             ticket.closed_by for ticket in tickets if ticket.closed_by is not None
         )
+        user_ids.update(
+            ticket.assigned_by for ticket in tickets if ticket.assigned_by is not None
+        )
 
         company_ids: set[UUID] = set()
         if self.client_repository is not None:
@@ -189,6 +192,9 @@ class TicketService:
             )
             ticket.closed_by_name = (
                 names.get(ticket.closed_by) if ticket.closed_by else None
+            )
+            ticket.assigned_by_name = (
+                names.get(ticket.assigned_by) if ticket.assigned_by else None
             )
 
     # ---------------------------------------------------------
@@ -637,6 +643,8 @@ class TicketService:
                     client_company_name=client_company_name,
                     agent_name=agent_name,
                     created_by_name=created_by_name,
+                    assigned_by=assigned_by,
+                    assigned_by_name=assigned_by_name,
                     is_escalated=escalation_status is not None,
                     escalation_level=escalation_level,
                     escalation_status=escalation_status,
@@ -651,6 +659,8 @@ class TicketService:
                     client_company_name,
                     agent_name,
                     created_by_name,
+                    assigned_by,
+                    assigned_by_name,
                     escalation_level,
                     escalation_status,
                     escalation_ack_due_at,
@@ -784,6 +794,8 @@ class TicketService:
                 client_company_name,
                 agent_name,
                 created_by_name,
+                assigned_by,
+                assigned_by_name,
                 escalation_level,
                 escalation_status,
                 escalation_ack_due_at,
@@ -811,6 +823,8 @@ class TicketService:
                 client_company_name=client_company_name,
                 agent_name=agent_name,
                 created_by_name=created_by_name,
+                assigned_by=assigned_by,
+                assigned_by_name=assigned_by_name,
                 is_escalated=escalation_status is not None,
                 escalation_level=escalation_level,
                 escalation_status=escalation_status,

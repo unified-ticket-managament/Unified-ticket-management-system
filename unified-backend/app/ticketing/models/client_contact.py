@@ -10,14 +10,26 @@ from shared_models.database import Base
 
 class ClientContact(Base):
     """
-    A known contact email address for a client company — distinct from
-    `Client.inbox_email` (the single address inbound mail is matched
-    against) and from `ClientContactResponse` (computed on the fly from
-    `Interaction.from_email` for the ticket workspace's "who's emailed
-    in" view). Added for the real-org-data migration: real clients have
-    several known contacts, which the original schema had nowhere to
-    store ahead of any ticket ever arriving from them. `is_primary`
-    marks the one contact promoted to `Client.inbox_email` at seed time.
+    A known contact email address for a client company — an individual
+    employee/contact at that company, always distinct from
+    `Client.inbox_email` (the client's own official distribution/
+    intake address; see that model's docstring). Every one of a
+    client's configured contact emails belongs here — none of them is
+    ever the same address as `Client.inbox_email`, and the org-data
+    import (scripts/org_seed/) actively excludes a client's
+    distribution email from this table even if it happened to appear
+    in the source contact list. Distinct too from `ClientContactResponse`
+    (computed on the fly from `Interaction.from_email` for the ticket
+    workspace's "who's emailed in" view, then merged with this table's
+    rows — see `ClientService.list_contacts`).
+
+    `is_primary` no longer means "promoted to `Client.inbox_email`" —
+    that concept doesn't exist anymore now that the distribution
+    email is a curated, explicit value never derived from a contact
+    (see `scripts/org_seed/mapping.resolve_distribution_email`). The
+    org-data import always leaves it `False`; the column is kept for
+    any other caller that wants to flag one contact as more
+    significant than the rest, independent of `inbox_email`.
     """
 
     __tablename__ = "client_contacts"

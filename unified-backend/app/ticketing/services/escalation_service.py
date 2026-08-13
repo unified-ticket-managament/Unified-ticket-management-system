@@ -8,6 +8,7 @@ from shared_models.models import User
 
 from app.notifications.service import NotificationService, NotificationType
 from app.ticketing.enums import (
+    OWNER_ROLE_REPORTING_MANAGER,
     TRIGGERED_BY_AUTO_SLA_BREACH,
     TRIGGERED_BY_MANUAL,
     CLOSED_REASON_TICKET_RESOLVED,
@@ -18,13 +19,10 @@ from app.ticketing.enums import (
     EscalationStatus,
     TicketPriority,
 )
-from app.rbac.repositories.reporting_manager_repository import (
-    ReportingManagerRepository,
-)
 from app.ticketing.models.resolution_sla import ResolutionSLA
 from app.ticketing.models.ticket import Ticket
 from app.ticketing.models.ticket_escalation import TicketEscalation
-from app.ticketing.repositories.category_repository import CategoryRepository
+from app.ticketing.repositories.audit_log_repository import AuditLogRepository
 from app.ticketing.repositories.resolution_sla_repository import ResolutionSLARepository
 from app.ticketing.repositories.sla_policy_repository import SLAPolicyRepository
 from app.ticketing.repositories.ticket_escalation_repository import (
@@ -42,30 +40,30 @@ from app.ticketing.schemas.ticket import TicketUpdate
 from app.ticketing.schemas.ticket_action import TicketActionResponse
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
-    GLOBAL_INBOX_ROLE_NAMES,
+    AGENT_ROLE_NAMES,
     SITE_LEAD_ROLE_NAME,
+    STAFF_ROLE_NAME,
     SUPER_ADMIN_ROLE_NAME,
     SUPERVISOR_ROLE_NAMES,
+    TEAM_LEAD_ROLE_NAME,
     ensure_agent_can_view_ticket,
+    ensure_can_reassign_ticket,
     ensure_ticket_not_closed,
     has_permission,
 )
-from app.ticketing.services.assignment_service import STAFF_ROLE_NAME
 from app.ticketing.services.escalation_handling_sla_service import (
     EscalationHandlingSlaService,
     build_escalation_handling_sla_service,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
-from app.ticketing.services.escalation_rules import next_level, resolve_manager_ids
+from app.ticketing.services.escalation_rules import (
+    build_chain_owner_ids,
+    resolve_owners_for_chain,
+)
 from app.ticketing.services.sla_breach_notifier import (
     build_absolute_link,
     resolve_global_inbox_user_ids,
     send_notification_emails,
-)
-from app.ticketing.services.sla_escalation_rules import (
-    TEAM_LEAD_ROLE_NAME,
-    RecipientContext,
-    resolve_team_lead,
 )
 
 
@@ -92,24 +90,30 @@ DEFAULT_HANDLING_STAGE_TARGET_MINUTES = 60
 class EscalationService:
     """
     Owns the internal escalation ownership/acknowledgment workflow
-    (TicketEscalation) — a chain of TEAM_LEAD -> MANAGER -> SITE_LEAD
-    ownership hand-offs that starts only when a ticket is escalated
-    (manually via ticket:escalate, or automatically the first time its
-    Resolution SLA crosses ESCALATED (150% elapsed) with nothing
-    already active — deliberately not BREACHED (100%), so the current
-    owner's own Breached notification isn't pre-empted by an ownership
-    handoff in the same tick it fires) and advances only if the current
-    owner ignores their
-    acknowledgment window (waiting the full ack window at each level
-    before moving to the next, via evaluate_overdue below).
+    (TicketEscalation) — an ownership hand-off chain that starts only
+    when a ticket is escalated (manually via ticket:escalate, or
+    automatically the first time its Resolution SLA crosses ESCALATED
+    (150% elapsed) with nothing already active — deliberately not
+    BREACHED (100%), so the current owner's own Breached notification
+    isn't pre-empted by an ownership handoff in the same tick it fires)
+    and advances only if the current owner ignores their acknowledgment
+    window (waiting the full ack window at each step before moving to
+    the next, via evaluate_overdue below).
 
-    The STARTING level is not always TEAM_LEAD — see
-    _resolve_starting_level: a Staff-owned (or unclaimed) ticket starts
-    at TEAM_LEAD as usual, but a ticket already assigned to a Team Lead
-    themselves starts one level up at MANAGER (Account Manager)
-    instead, and one assigned to an Account Manager starts at
-    SITE_LEAD — escalating "to" whoever already owns the ticket and
-    isn't acting on it would just re-notify the same person.
+    Routing follows the ticket's own assignment history, not role
+    hierarchy — see escalation_rules.build_chain_owner_ids/
+    resolve_owners_for_chain and root CLAUDE.md's "SLA & Escalation"
+    section for the full design. In short: the first step is whoever
+    assigned the ticket to its current owner (Ticket.assigned_by),
+    plus — only when the current owner is Staff — their own
+    reporting_manager_id as a parallel recipient (deduped if it's the
+    same person). If ignored, the next step climbs one more hop up the
+    real assignment history (reconstructed from ticket_audit_logs,
+    since Ticket.assigned_by only ever reflects the *current*
+    assignment). Site Lead/Super Admin remain the one terminal,
+    role-based safety net — reached only once that chain is genuinely
+    exhausted (or was empty to begin with), never as a routing step in
+    its own right.
 
     Never invents its own reshift math for the Resolution SLA clock —
     the two deliberate exceptions are _set_ticket_priority_to_critical
@@ -171,6 +175,7 @@ class EscalationService:
         resolution_sla_repository: ResolutionSLARepository,
         sla_policy_repository: SLAPolicyRepository,
         user_repository: UserRepository,
+        audit_log_repository: AuditLogRepository,
         notification_service: NotificationService | None = None,
         escalation_handling_sla_service: EscalationHandlingSlaService | None = None,
     ):
@@ -179,6 +184,10 @@ class EscalationService:
         self.resolution_sla_repository = resolution_sla_repository
         self.sla_policy_repository = sla_policy_repository
         self.user_repository = user_repository
+        # The one place the historical assignment chain (beyond
+        # Ticket.assigned_by's single current-state field) is
+        # reconstructed — see escalation_rules.build_chain_owner_ids.
+        self.audit_log_repository = audit_log_repository
         self.notification_service = notification_service
         # Optional so existing callers/tests that construct this
         # service directly (see tests/test_escalation_service.py) keep
@@ -188,70 +197,49 @@ class EscalationService:
         self.escalation_handling_sla_service = escalation_handling_sla_service
 
     # ---------------------------------------------------------
-    # Owner resolution
+    # Owner resolution — assignment-chain based, not role hierarchy.
+    # See escalation_rules.build_chain_owner_ids/resolve_owners_for_chain
+    # for the actual routing logic; this class only wires the two
+    # together with this service's own repositories.
     # ---------------------------------------------------------
 
-    async def _resolve_owners_for_level(
-        self, *, level: EscalationLevel, ticket: Ticket
-    ) -> set[UUID]:
+    async def _build_chain(self, ticket: Ticket) -> list[UUID]:
+        return await build_chain_owner_ids(ticket, self.audit_log_repository)
+
+    async def _resolve_step(
+        self, *, ticket: Ticket, chain_owner_ids: list[UUID], chain_position: int
+    ) -> tuple[EscalationLevel, dict[UUID, str]]:
         """
-        TEAM_LEAD reuses sla_escalation_rules.resolve_team_lead's exact
-        claimed/unclaimed logic (self-claim edge cases included) — the
-        same "who is this ticket's Team Lead" question the Resolution
-        SLA notification ladder already answers, asked here for
-        ownership instead of just notification. MANAGER walks one more
-        hop up the reporting line (see escalation_rules.resolve_manager_ids).
-        SITE_LEAD is the same GLOBAL_INBOX (Site Lead + Super Admin)
-        used everywhere else in this codebase's SLA code.
-        """
-
-        if level == EscalationLevel.SITE_LEAD:
-            return await resolve_global_inbox_user_ids(self.user_repository)
-
-        if ticket.agent_id is not None:
-            assigned_agent = await self.user_repository.get_by_id(ticket.agent_id)
-            ctx = RecipientContext(assigned_agent=assigned_agent)
-        else:
-            team_leads = await self.user_repository.list_active_by_role_and_category(
-                TEAM_LEAD_ROLE_NAME, ticket.ticket_type
-            )
-            ctx = RecipientContext(team_leads=team_leads)
-
-        team_lead_ids = resolve_team_lead(ctx)
-
-        if level == EscalationLevel.TEAM_LEAD:
-            return team_lead_ids
-
-        # MANAGER
-        if not team_lead_ids:
-            return set()
-        team_lead_users = await self.user_repository.list_by_ids(list(team_lead_ids))
-        return resolve_manager_ids(team_lead_users)
-
-    async def _resolve_owners_with_fallback(
-        self, *, starting_level: EscalationLevel, ticket: Ticket
-    ) -> tuple[EscalationLevel, set[UUID]]:
-        """
-        Skips forward through the chain if a level resolves to nobody
-        (e.g. an unclaimed ticket in a category with no Team Lead
-        assigned yet) rather than creating an escalation nobody can
-        act on — same "degrade safely, never raise" convention as
-        sla_escalation_rules.resolve_recipients.
+        Resolves one escalation step's (level, owner -> role-tag map).
+        `chain_position >= len(chain_owner_ids)` means the chain is
+        exhausted (or was empty to begin with) — the terminal Site
+        Lead/Super Admin safety net, level=SITE_LEAD; every other
+        position is level=ASSIGNMENT_CHAIN. Never a role name — see
+        the class docstring.
         """
 
-        level: EscalationLevel | None = starting_level
-        while level is not None:
-            owners = await self._resolve_owners_for_level(level=level, ticket=ticket)
-            if owners:
-                return level, owners
-            level = next_level(level)
-
-        logger.warning(
-            "Escalation for ticket %s resolved to zero owners at every level "
-            "(no Team Lead/Manager/Site Lead could be found).",
-            ticket.ticket_id,
+        owners = await resolve_owners_for_chain(
+            ticket=ticket,
+            chain_owner_ids=chain_owner_ids,
+            chain_position=chain_position,
+            user_repository=self.user_repository,
+            resolve_site_lead_fallback_ids=lambda: resolve_global_inbox_user_ids(
+                self.user_repository
+            ),
         )
-        return EscalationLevel.SITE_LEAD, set()
+        level = (
+            EscalationLevel.SITE_LEAD
+            if chain_position >= len(chain_owner_ids)
+            else EscalationLevel.ASSIGNMENT_CHAIN
+        )
+        if not owners:
+            logger.warning(
+                "Escalation for ticket %s resolved to zero owners at chain "
+                "position %s (no Site Lead/Super Admin could be found either).",
+                ticket.ticket_id,
+                chain_position,
+            )
+        return level, owners
 
     async def _ack_target_minutes(self, priority: TicketPriority) -> int:
         policy = await self.sla_policy_repository.get_by_priority(priority)
@@ -278,13 +266,14 @@ class EscalationService:
             return
 
         # Super Admin/Site Lead see every escalation regardless of
-        # which level currently owns it (Super Admin: "All
+        # which step currently owns it (Super Admin: "All
         # escalations"; Site Lead: "Escalations") — not just once the
-        # ladder happens to reach SITE_LEAD. Reuses the same
-        # already-established GLOBAL_INBOX resolver the SITE_LEAD
-        # level itself uses (`_resolve_owners_for_level` above); the
+        # chain happens to be exhausted. Reuses the same
+        # already-established GLOBAL_INBOX resolver the terminal
+        # SITE_LEAD fallback itself uses (`_resolve_step` above); the
         # set union means an owner who's also in this set (e.g. the
-        # ladder has already reached SITE_LEAD) isn't notified twice.
+        # chain has already reached the terminal fallback) isn't
+        # notified twice.
         recipient_ids = owner_ids | await resolve_global_inbox_user_ids(self.user_repository)
 
         if self.notification_service is not None:
@@ -607,41 +596,6 @@ class EscalationService:
         stage_pct = percentages[min(stage - 1, len(percentages) - 1)]
         return round(policy.resolution_target_minutes * stage_pct / 100)
 
-    async def _resolve_starting_level(self, ticket: Ticket) -> EscalationLevel:
-        """
-        Escalation starts one level above whoever currently owns (or
-        would own) the ticket — notifying someone who's already
-        sitting on it and evidently not acting achieves nothing. An
-        unclaimed ticket, or one assigned to Staff, starts at the
-        normal TEAM_LEAD floor. A ticket already assigned to a Team
-        Lead themselves (they claimed it directly, or a prior
-        escalation assigned it to them) skips straight to MANAGER
-        (Account Manager) — re-notifying the same Team Lead who
-        already owns it would be pointless. A ticket assigned to an
-        Account Manager skips straight to SITE_LEAD for the same
-        reason. Site Lead/Super Admin are already the terminal level;
-        no further level exists above them to start at, so this falls
-        back to TEAM_LEAD in that case (the fallback chain in
-        _resolve_owners_with_fallback will still resolve correctly
-        off the ticket's own category/client, same as an ordinary
-        Staff-owned ticket) rather than inventing a level this ladder
-        doesn't have.
-        """
-
-        if ticket.agent_id is None:
-            return EscalationLevel.TEAM_LEAD
-
-        agent = await self.user_repository.get_by_id(ticket.agent_id)
-        if agent is None:
-            return EscalationLevel.TEAM_LEAD
-
-        role_name = agent.role.name
-        if role_name == TEAM_LEAD_ROLE_NAME:
-            return EscalationLevel.MANAGER
-        if role_name == ACCOUNT_MANAGER_ROLE_NAME:
-            return EscalationLevel.SITE_LEAD
-        return EscalationLevel.TEAM_LEAD
-
     async def _create_escalation(
         self,
         *,
@@ -669,9 +623,9 @@ class EscalationService:
         await self._set_ticket_priority_to_critical(ticket)
 
         now = datetime.now(timezone.utc)
-        starting_level = await self._resolve_starting_level(ticket)
-        level, owner_ids = await self._resolve_owners_with_fallback(
-            starting_level=starting_level, ticket=ticket
+        chain_owner_ids = await self._build_chain(ticket)
+        level, owners = await self._resolve_step(
+            ticket=ticket, chain_owner_ids=chain_owner_ids, chain_position=0
         )
         # Resolved from original_priority, not ticket.current_priority —
         # by this point the priority flip above has already set the
@@ -689,7 +643,10 @@ class EscalationService:
                 resolution_clock.resolution_sla_id if resolution_clock is not None else None
             ),
             level=level,
-            owner_ids=owner_ids,
+            owner_ids=set(owners.keys()),
+            owner_roles=owners,
+            chain_owner_ids=chain_owner_ids,
+            chain_position=0,
             triggered_by=triggered_by,
             triggered_by_user_id=triggered_by_user_id,
             ack_due_at=now + timedelta(minutes=ack_minutes),
@@ -1002,6 +959,21 @@ class EscalationService:
                 detail="Only the current escalation owner can confirm this assignment.",
             )
 
+        # Confirming "keep the current assignee" collapses to a
+        # self-assign in the rare case the Reporting Manager is
+        # themselves already ticket.agent_id — barred the same as the
+        # transfer_agent branch in InteractionService.
+        # acknowledge_and_assign_escalation.
+        if (
+            ticket.agent_id == current_user.user_id
+            and escalation.owner_roles.get(str(current_user.user_id))
+            == OWNER_ROLE_REPORTING_MANAGER
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Reporting managers cannot assign this ticket to themselves.",
+            )
+
         now = datetime.now(timezone.utc)
         await self._complete_acceptance(
             ticket=ticket,
@@ -1081,33 +1053,30 @@ class EscalationService:
         self, ticket_id: UUID, current_user: User
     ) -> AssignableAgentsResponse:
         """
-        Every role's candidate list is scoped to the ticket's own
-        category (ticket.ticket_type) and follows the same hierarchy
-        this workflow's ownership chain already uses (TEAM_LEAD ->
-        MANAGER -> SITE_LEAD, see the class docstring) one level down
-        from the caller's own rank:
-
-        - Super Admin: every active Site Lead, plus that category's
-          Account Manager(s), Team Lead(s), and Staff.
-        - Site Lead: that category's Account Manager(s) (via
-          ReportingManagerTeam — see _resolve_category_account_managers;
-          this is the one real Account-Manager<->category relationship
-          in this data model, not Client.account_manager_id, which is a
-          single client's owner, not "AMs of this category"), Team
-          Lead(s), and Staff. Deliberately no Site Lead group of its
-          own — a Site Lead never hands a ticket to another Site Lead.
-        - Account Manager: that category's Team Lead(s) and Staff —
-          not narrowed to their own direct reports, since any of that
-          category's Team Leads is a valid hand-off target regardless
-          of real manager_id reporting line (mirrors the wider
-          ticket-assignment relationship documented in root CLAUDE.md's
-          "Organization Structure" section).
-        - Team Lead: that category's Staff.
-        - Staff: no candidates (unchanged — Staff was never given
-          escalation-assignment capability, and isn't granted it here).
+        Who the caller may hand this escalated ticket to when
+        acknowledging it — every active, agent-capable user other than
+        the ticket's current agent and the caller themselves, grouped
+        by role. This is the exact same "existing assignment
+        permissions" InteractionService.get_transfer_candidates already
+        offers for an ordinary reassignment (any active, agent-capable
+        user, any role/category/hierarchy — see that method's own
+        docstring), reused here rather than standing up a second,
+        escalation-specific candidate table. ensure_can_reassign_ticket
+        is the same reason: an escalation owner who couldn't reassign
+        an ordinary ticket shouldn't be shown a candidate list here they
+        can't actually act on either.
 
         The caller's own "assign to myself" option is the separate `me`
-        field, never included in `groups`.
+        field, never included in `groups` — and is omitted entirely
+        (`me=None`) when the caller's own owner_roles tag for this
+        escalation is OWNER_ROLE_REPORTING_MANAGER: a Reporting Manager
+        may Acknowledge + Assign to someone else, but never to
+        themselves (root CLAUDE.md's "SLA & Escalation" section, Rule
+        4/Flow E). Every other tagged owner (OWNER_ROLE_ASSIGNEE_CHAIN/
+        _SITE_LEAD_FALLBACK) keeps full existing permissions, including
+        self-assign — see InteractionService.
+        acknowledge_and_assign_escalation for the matching, non-
+        bypassable backend enforcement of this same rule.
         """
 
         ticket = await self.ticket_repository.get_by_id(ticket_id)
@@ -1116,56 +1085,54 @@ class EscalationService:
                 status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found."
             )
         ensure_agent_can_view_ticket(ticket, current_user)
+        ensure_can_reassign_ticket(current_user)
 
-        groups: list[AssignableGroup] = []
-        role_name = current_user.role.name
+        escalation = await self.ticket_escalation_repository.get_active_by_ticket_id(
+            ticket_id
+        )
 
-        if role_name in GLOBAL_INBOX_ROLE_NAMES:
-            if role_name == SUPER_ADMIN_ROLE_NAME:
-                site_leads = await self.user_repository.list_active_by_role_name(
-                    SITE_LEAD_ROLE_NAME
-                )
-                groups.append(_to_assignable_group(SITE_LEAD_ROLE_NAME, site_leads))
-
-            account_managers = await self._resolve_category_account_managers(
-                ticket.ticket_type
+        current_agent_id = ticket.agent_id
+        by_role: dict[str, list[User]] = {
+            role_name: []
+            for role_name in (
+                STAFF_ROLE_NAME,
+                TEAM_LEAD_ROLE_NAME,
+                ACCOUNT_MANAGER_ROLE_NAME,
+                SITE_LEAD_ROLE_NAME,
+                SUPER_ADMIN_ROLE_NAME,
             )
-            groups.append(_to_assignable_group(ACCOUNT_MANAGER_ROLE_NAME, account_managers))
+        }
+        for user in await self.user_repository.list_all_active():
+            role_name = user.role.name if user.role is not None else None
+            if role_name not in AGENT_ROLE_NAMES:
+                continue
+            if user.user_id in (current_agent_id, current_user.user_id):
+                continue
+            by_role[role_name].append(user)
 
-            team_leads = await self.user_repository.list_active_by_role_and_category(
-                TEAM_LEAD_ROLE_NAME, ticket.ticket_type
-            )
-            groups.append(_to_assignable_group(TEAM_LEAD_ROLE_NAME, team_leads))
+        groups = [
+            _to_assignable_group(role_name, users)
+            for role_name, users in by_role.items()
+            if users
+        ]
 
-            staff = await self.user_repository.list_active_by_role_and_category(
-                STAFF_ROLE_NAME, ticket.ticket_type
-            )
-            groups.append(_to_assignable_group(STAFF_ROLE_NAME, staff))
-
-        elif role_name == ACCOUNT_MANAGER_ROLE_NAME:
-            team_leads = await self.user_repository.list_active_by_role_and_category(
-                TEAM_LEAD_ROLE_NAME, ticket.ticket_type
-            )
-            groups.append(_to_assignable_group(TEAM_LEAD_ROLE_NAME, team_leads))
-
-            staff = await self.user_repository.list_active_by_role_and_category(
-                STAFF_ROLE_NAME, ticket.ticket_type
-            )
-            groups.append(_to_assignable_group(STAFF_ROLE_NAME, staff))
-
-        elif role_name == TEAM_LEAD_ROLE_NAME:
-            staff = await self.user_repository.list_active_by_role_and_category(
-                STAFF_ROLE_NAME, ticket.ticket_type
-            )
-            groups.append(_to_assignable_group(STAFF_ROLE_NAME, staff))
+        is_reporting_manager = (
+            escalation is not None
+            and escalation.owner_roles.get(str(current_user.user_id))
+            == OWNER_ROLE_REPORTING_MANAGER
+        )
 
         return AssignableAgentsResponse(
-            me=AssignableUserSummary(
-                user_id=current_user.user_id,
-                name=current_user.name,
-                employee_number=current_user.employee_number,
+            me=(
+                None
+                if is_reporting_manager
+                else AssignableUserSummary(
+                    user_id=current_user.user_id,
+                    name=current_user.name,
+                    employee_number=current_user.employee_number,
+                )
             ),
-            groups=[g for g in groups if g.users],
+            groups=groups,
         )
 
     # ---------------------------------------------------------
@@ -1204,14 +1171,23 @@ class EscalationService:
         returned again here.
         """
 
-        old_level = escalation.level
-        upcoming = next_level(old_level)
-        if upcoming is None and not allow_terminal_renotify:
-            return None
-        target_level = upcoming if upcoming is not None else old_level
+        # Stored as strings (JSONB) — converted back to UUID so the
+        # dict-key identity checks in resolve_owners_for_chain (e.g. the
+        # Reporting-Manager dedup) compare like with like against
+        # User.reporting_manager_id, a real UUID.
+        chain_owner_ids = [UUID(s) for s in escalation.chain_owner_ids]
 
-        new_level, owner_ids = await self._resolve_owners_with_fallback(
-            starting_level=target_level, ticket=ticket
+        already_terminal = escalation.chain_position >= len(chain_owner_ids)
+        if already_terminal and not allow_terminal_renotify:
+            return None
+        target_position = (
+            escalation.chain_position if already_terminal else escalation.chain_position + 1
+        )
+
+        new_level, owners = await self._resolve_step(
+            ticket=ticket,
+            chain_owner_ids=chain_owner_ids,
+            chain_position=target_position,
         )
         # original_priority, not ticket.current_priority — see
         # _create_escalation's matching comment. The ticket has already
@@ -1234,7 +1210,9 @@ class EscalationService:
         updated = await self.ticket_escalation_repository.advance(
             escalation,
             new_level=new_level,
-            owner_ids=owner_ids,
+            owner_ids=set(owners.keys()),
+            owner_roles=owners,
+            chain_position=target_position,
             ack_due_at=new_ack_due_at,
             now=now,
         )
@@ -1380,25 +1358,25 @@ class EscalationService:
         # same `escalation` object before either is written).
         escalation.handling_stage_due_at = None
 
-        # Deliberately NOT next_level(old_level) — unlike
-        # evaluate_overdue's ack-window-lapse case above (where the
-        # current level's owner never even acknowledged it, so genuinely
-        # climbing the ladder one level is correct), a handling-SLA
-        # breach means someone DID accept and settle ownership, and it's
-        # THAT assignee who then failed to resolve it in time. That's a
-        # fresh failure against the ticket's current ownership, not
-        # evidence the current escalation level itself is unreachable —
-        # so this recomputes the starting level the exact same way a
-        # brand-new escalation would (_resolve_starting_level), rather
-        # than unconditionally skipping past whoever's actually still
-        # working it. For the common case — Team Lead accepted and
-        # handed the ticket back to Staff, and Staff then missed the
-        # handling window — this correctly lands back on TEAM_LEAD
-        # again, instead of jumping straight to MANAGER every time.
-        target_level = await self._resolve_starting_level(ticket)
-
-        new_level, owner_ids = await self._resolve_owners_with_fallback(
-            starting_level=target_level, ticket=ticket
+        # Deliberately NOT just climbing to the next chain position —
+        # unlike evaluate_overdue's ack-window-lapse case above (where
+        # the current owner never even acknowledged it, so genuinely
+        # climbing one hop further is correct), a handling-SLA breach
+        # means someone DID accept and settle ownership, and it's THAT
+        # assignee who then failed to resolve it in time. That's a
+        # fresh failure against the ticket's now-different current
+        # ownership (agent_id/assigned_by both changed the moment
+        # acceptance completed), not evidence the current chain itself
+        # is unreachable — so this rebuilds the chain fresh, the exact
+        # same way a brand-new escalation would, and resets
+        # chain_position back to 0 against it. For the common case —
+        # Team Lead accepted and handed the ticket back to Staff, and
+        # Staff then missed the handling window — this correctly lands
+        # back on the Team Lead again (their own assigned_by-derived
+        # chain position 0), instead of jumping straight past them.
+        new_chain_owner_ids = await self._build_chain(ticket)
+        new_level, owners = await self._resolve_step(
+            ticket=ticket, chain_owner_ids=new_chain_owner_ids, chain_position=0
         )
         # original_priority, not ticket.current_priority — see
         # _create_escalation's matching comment.
@@ -1408,7 +1386,10 @@ class EscalationService:
         updated = await self.ticket_escalation_repository.advance(
             escalation,
             new_level=new_level,
-            owner_ids=owner_ids,
+            owner_ids=set(owners.keys()),
+            owner_roles=owners,
+            chain_owner_ids=new_chain_owner_ids,
+            chain_position=0,
             ack_due_at=new_ack_due_at,
             now=now,
         )
@@ -1417,6 +1398,7 @@ class EscalationService:
             # escalation since it was read. Nothing left to do.
             return False
 
+        owner_ids = set(owners.keys())
         await AuditLogService.log_event(
             self.ticket_repository.db,
             entity_type=AuditEntityType.TICKET,
@@ -1554,6 +1536,7 @@ def build_escalation_service(
         resolution_sla_repository=ResolutionSLARepository(db),
         sla_policy_repository=SLAPolicyRepository(db),
         user_repository=UserRepository(db),
+        audit_log_repository=AuditLogRepository(db),
         notification_service=notification_service,
         escalation_handling_sla_service=build_escalation_handling_sla_service(db),
     )

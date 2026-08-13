@@ -25,10 +25,16 @@ class AssignableGroup(BaseModel):
 class AssignableAgentsResponse(BaseModel):
     """
     Who the current user may assign a new ticket to when promoting an
-    inbox email — always includes `me` (assigning to yourself), plus
+    inbox email — usually includes `me` (assigning to yourself), plus
     zero or more role-grouped hierarchies depending on the caller's own
-    role (see AssignmentService.get_assignable_groups).
+    role (see AssignmentService.get_assignable_groups). `me` is `None`
+    only for EscalationService.get_acknowledge_candidates' one
+    exception: a Reporting-Manager-tagged escalation owner may not
+    assign the ticket to themselves (see that method's own docstring) —
+    every other caller of this schema (AssignmentService.
+    get_assignable_groups, InteractionService.get_transfer_candidates)
+    still always returns a real value.
     """
 
-    me: AssignableUserSummary
+    me: AssignableUserSummary | None = None
     groups: list[AssignableGroup]

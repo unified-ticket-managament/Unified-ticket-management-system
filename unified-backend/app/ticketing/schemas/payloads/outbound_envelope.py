@@ -53,3 +53,19 @@ class OutboundEnvelope(BaseModel):
     body: str
 
     attachments: list[EnvelopeAttachment] = Field(default_factory=list)
+
+    # Microsoft Graph's own native message id of the inbound message
+    # this envelope is replying to (EmailPayload.provider_message_id,
+    # see that field's docstring) — None for a brand-new Compose (no
+    # prior message to reply to) or when the message being replied to
+    # arrived via a transport that never captured Graph's own id.
+    # GraphMailProviderClient.send_email uses this to call Graph's
+    # reply/replyAll action on the real message instead of sendMail,
+    # keeping the send genuinely threaded in Outlook/Gmail; None here
+    # means "send with sendMail", exactly as before this field existed.
+    reply_to_provider_message_id: str | None = None
+
+    # Only meaningful alongside reply_to_provider_message_id — selects
+    # Graph's replyAll action instead of reply. Ignored (treated as
+    # plain sendMail) when reply_to_provider_message_id is None.
+    reply_all: bool = False

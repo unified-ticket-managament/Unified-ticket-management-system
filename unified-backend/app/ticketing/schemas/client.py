@@ -29,7 +29,10 @@ class ClientResponse(BaseModel):
 
     client_id: UUID
     name: str
-    inbox_email: str
+    # The client's official distribution/intake address — None when
+    # it has no configured distribution email (see Client's own
+    # docstring; never inferred from a contact/employee address).
+    inbox_email: str | None
     account_manager_id: UUID
     is_active: bool
     created_at: datetime

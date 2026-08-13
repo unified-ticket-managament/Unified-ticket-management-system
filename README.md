@@ -12,6 +12,142 @@ A combined RBAC (authentication, users, roles, permissions) and support-ticketin
 | `shared_models/` | The one real copy of the `User`/`Role` SQLAlchemy models, installed as a local editable package by `unified-backend`. | — |
 
 Both API domains share **one physical PostgreSQL database** (Neon) but keep independent Alembic migration histories (`unified-backend/alembic_rbac/`, `unified-backend/alembic_ticketing/`).
+# Clone Repository
+
+```bash
+git clone <repository-url>
+```
+
+Example
+
+```bash
+git clone https://github.com/unified-ticket-managament/Phase_1.git
+```
+
+Move into the project
+
+```bash
+cd Phase_1
+```
+
+---
+
+# Backend Setup
+
+## Create Virtual Environment
+
+Windows
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+Linux / macOS
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+## Install Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+## Configure Environment Variables
+
+Create a `.env` file inside the `backend/` folder.
+
+Example
+
+```env
+APP_NAME=Ticket Management System
+APP_ENV=development
+DEBUG=True
+
+DATABASE_URL=<your_async_database_url>
+
+ALEMBIC_DATABASE_URL=<your_psycopg2_database_url>
+
+LOG_LEVEL=INFO
+
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+
+# Object storage for attachments — STORAGE_BACKEND=supabase (default) or "s3"
+STORAGE_BACKEND=supabase
+STORAGE_BUCKET=communication-attachments
+STORAGE_URL_EXPIRY_SECONDS=3600
+
+# Required when STORAGE_BACKEND=supabase
+SUPABASE_URL=<your_supabase_project_url>
+SUPABASE_SERVICE_ROLE_KEY=<your_supabase_service_role_key>
+
+# Required when STORAGE_BACKEND=s3 (e.g. local MinIO, see below)
+STORAGE_ENDPOINT_URL=http://localhost:9000
+STORAGE_ACCESS_KEY=<key>
+STORAGE_SECRET_KEY=<secret>
+STORAGE_REGION=us-east-1
+STORAGE_USE_SSL=False
+```
+
+See `backend/.env.example` for the full, always-current list.
+
+## Run Database Migrations
+
+```bash
+cd backend
+alembic upgrade head
+```
+
+## Run the Backend
+
+```bash
+uvicorn app.main:app --reload
+```
+
+Runs on port 8000, not uvicorn's default 8000, since the RBAC service's own backend
+(`rbac-service/backend`) already defaults to 8000 and both are commonly run at the same time.
+
+Server runs at `http://127.0.0.1:8000`
+
+Swagger UI: `http://127.0.0.1:8000/docs`
+
+ReDoc: `http://127.0.0.1:8000/redoc`
+
+---
+
+# Frontend Setup
+
+```bash
+cd frontend
+npm install
+```
+
+Create a `.env` file (copy `.env.example`):
+
+```env
+VITE_API_BASE_URL=http://localhost:3000
+```
+
+Then run:
+
+```bash
+npm run dev
+```
+
+App runs at `http://localhost:5173` and talks to the backend at
+`VITE_API_BASE_URL` (see `src/api/client.ts`) — make sure the backend from
+the previous section is running first.
+
+Other scripts:
+
+```bash
+npm run build     # tsc -b && vite build — type-checks then produces dist/
+npm run preview    # preview the production build locally
+```
+
 
 ## Quick start (local development)
 

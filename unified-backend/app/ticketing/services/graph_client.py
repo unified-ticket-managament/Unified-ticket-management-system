@@ -1,7 +1,11 @@
 # graph_client.py
 #
 # The real Microsoft Graph implementation of the MailProviderClient
-# seam (mail_provider.py) — send_email() calls Graph's sendMail API,
+# seam (mail_provider.py) — send_email() calls Graph's sendMail API
+# for a brand-new message, or Graph's reply/replyAll message action
+# (via _send_reply) when the envelope carries
+# reply_to_provider_message_id, i.e. it's replying to a specific
+# existing Graph message rather than composing a new one.
 # fetch_message() calls Graph's message-by-id API. Both are used only
 # once GraphAuthClient successfully authenticates (see graph_auth.py);
 # get_mail_provider_client() is the single place that decides whether
@@ -87,6 +91,32 @@ def _build_send_mail_message(envelope: OutboundEnvelope) -> dict:
     return message
 
 
+def _build_reply_action_body(envelope: OutboundEnvelope) -> dict:
+    """
+    Builds the request body for Graph's reply/replyAll message action
+    — the `message` sub-object fully overrides recipients/attachments
+    rather than relying on the action's own default recipient
+    population (reply defaults To the original sender; replyAll
+    additionally defaults Cc to the original message's own To+Cc) —
+    this platform always resolves the correct To/Cc/Bcc (including
+    any agent-picked "To" override) into the envelope itself before
+    dispatch, so which action is used only changes which Graph
+    endpoint is hit, never who actually receives the mail.
+    """
+
+    message: dict = {
+        "toRecipients": _build_recipients([envelope.to_email]),
+    }
+    if envelope.cc:
+        message["ccRecipients"] = _build_recipients(envelope.cc)
+    if envelope.bcc:
+        message["bccRecipients"] = _build_recipients(envelope.bcc)
+    if envelope.attachments:
+        message["attachments"] = _build_graph_attachments(envelope.attachments)
+
+    return {"comment": envelope.body, "message": message}
+
+
 class GraphMailProviderClient(MailProviderClient):
     def __init__(self, auth_client: GraphAuthClient, mailbox_address: str, api_base_url: str):
         self._auth_client = auth_client
@@ -98,6 +128,9 @@ class GraphMailProviderClient(MailProviderClient):
         return {"Authorization": f"Bearer {token}"}
 
     async def send_email(self, envelope: OutboundEnvelope) -> MailProviderSendResult:
+        if envelope.reply_to_provider_message_id:
+            return await self._send_reply(envelope)
+
         message = _build_send_mail_message(envelope)
 
         url = f"{self._api_base_url}/users/{self._mailbox_address}/sendMail"
@@ -131,6 +164,68 @@ class GraphMailProviderClient(MailProviderClient):
         # envelope.message_id (already stored on the Interaction before
         # this call, see email_envelope.py) remains the only id this
         # platform ever tracks for the outbound message.
+        return MailProviderSendResult(
+            provider_message_id=envelope.message_id,
+            status="SENT",
+        )
+
+    async def _send_reply(self, envelope: OutboundEnvelope) -> MailProviderSendResult:
+        """
+        Sends a reply via Graph's own reply/replyAll message action
+        instead of sendMail, so it lands threaded under the original
+        conversation in Outlook/Gmail — Graph handles the quoting and
+        conversationId continuity itself once pointed at the real
+        message being replied to
+        (envelope.reply_to_provider_message_id), unlike sendMail,
+        which always creates a brand-new, unthreaded message (see
+        _build_send_mail_message's own docstring).
+
+        `message` here fully overrides recipients/attachments rather
+        than relying on reply/replyAll's own default recipient
+        population — this platform already resolved the correct
+        To/Cc/Bcc (including any agent-picked "To" override) into the
+        envelope before this call, so the action used (reply vs.
+        replyAll) only changes which Graph endpoint is hit, not who
+        actually receives the mail.
+        """
+
+        action = "replyAll" if envelope.reply_all else "reply"
+        url = (
+            f"{self._api_base_url}/users/{self._mailbox_address}/messages/"
+            f"{envelope.reply_to_provider_message_id}/{action}"
+        )
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                url,
+                headers=await self._authorized_headers(),
+                json=_build_reply_action_body(envelope),
+            )
+
+        if response.status_code != 202:
+            logger.error(
+                "Graph %s failed: status=%s reply_to=%s to=%s subject=%r body=%s",
+                action,
+                response.status_code,
+                envelope.reply_to_provider_message_id,
+                envelope.to_email,
+                envelope.subject,
+                response.text,
+            )
+            raise GraphAPIError(response.status_code, response.text)
+
+        logger.info(
+            "graph provider %s: reply_to=%s message_id=%s to=%s subject=%r",
+            action,
+            envelope.reply_to_provider_message_id,
+            envelope.message_id,
+            envelope.to_email,
+            envelope.subject,
+        )
+
+        # Same as sendMail — reply/replyAll also return 202 Accepted
+        # with no body, so envelope.message_id remains the only id
+        # this platform tracks for the outbound message.
         return MailProviderSendResult(
             provider_message_id=envelope.message_id,
             status="SENT",

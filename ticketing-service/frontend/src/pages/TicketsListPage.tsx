@@ -392,6 +392,7 @@ export function TicketsListPage() {
                     <th className="px-5 py-3.5">Status</th>
                     <th className="px-5 py-3.5">Priority</th>
                     <th className="px-5 py-3.5">Assigned Agent</th>
+                    <th className="px-5 py-3.5">Assigned By</th>
                     <th className="px-5 py-3.5">
                       <SortHeader label="Last Updated" sortField="updated_at" />
                     </th>
@@ -444,6 +445,16 @@ export function TicketsListPage() {
                           )
                         ) : (
                           <span className="text-muted">Unclaimed</span>
+                        )}
+                      </td>
+                      {/* "Assigned By" — who performed the claim/
+                          transfer that produced the assignee in the
+                          previous column, never the assignee
+                          themselves. A real, persisted column on the
+                          ticket (Ticket.assigned_by). */}
+                      <td className="px-5 py-3.5 text-slate-700">
+                        {ticket.assigned_by_name ?? (
+                          <span className="text-muted">—</span>
                         )}
                       </td>
                       <td className="px-5 py-3.5 text-xs text-muted">

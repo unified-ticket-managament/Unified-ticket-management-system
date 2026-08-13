@@ -160,6 +160,11 @@ class InboxTicketService:
 
                 agent_id=resolved_agent_id,
 
+                # Who performed the initial assignment — the ticket's
+                # creator, only when the ticket is actually born
+                # assigned. See Ticket.assigned_by's own docstring.
+                assigned_by=actor_id if resolved_agent_id is not None else None,
+
                 created_by=actor_id,
 
                 title=request.title,

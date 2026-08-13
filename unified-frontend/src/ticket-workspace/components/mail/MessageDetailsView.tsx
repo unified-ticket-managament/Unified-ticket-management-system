@@ -416,7 +416,7 @@ export function MessageDetailsView({
     assignedToChoice === "unassigned"
       ? undefined
       : assignedToChoice === "self" || !assignedToGroup
-        ? assignableAgents?.me.user_id
+        ? assignableAgents?.me?.user_id
         : selectedAssigneeId || undefined;
 
   const selectedExistingTicket = clientTickets.find((t) => t.ticket_id === existingTicketId) ?? null;
@@ -424,7 +424,7 @@ export function MessageDetailsView({
   const reopenAssignGroupData = reopenCandidates?.groups.find((group) => group.role === reopenAssignGroup) ?? null;
   const resolvedReopenAgentId =
     reopenAssignGroup === "me"
-      ? reopenCandidates?.me.user_id
+      ? reopenCandidates?.me?.user_id
       : reopenAssignGroupData
         ? reopenAssigneeId || undefined
         : undefined;
@@ -475,6 +475,7 @@ export function MessageDetailsView({
         bcc: payload.bcc,
         to_email: payload.to,
         attachment_source_interaction_id: attachmentSourceInteractionId,
+        reply_all: replyMode === "replyAll",
       });
       if (result) {
         showUndoSendToast(pushToast, result.interaction_id, "Reply sent.");
@@ -516,6 +517,7 @@ export function MessageDetailsView({
       cc: payload.cc,
       bcc: payload.bcc,
       to_email: payload.to,
+      reply_all: replyMode === "replyAll",
     });
     if (result) {
       setReplyMode(null);
@@ -957,7 +959,7 @@ export function MessageDetailsView({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="unassigned">Unassigned (Team)</SelectItem>
-                    {assignableAgents && (
+                    {assignableAgents?.me && (
                       <SelectItem value="self">Myself ({formatAssigneeLabel(assignableAgents.me)})</SelectItem>
                     )}
                     {assignableAgents?.groups.map((group) => (
@@ -1097,7 +1099,7 @@ export function MessageDetailsView({
                           <SelectValue placeholder="Choose who to assign..." />
                         </SelectTrigger>
                         <SelectContent>
-                          {reopenCandidates && (
+                          {reopenCandidates?.me && (
                             <SelectItem value="me">Myself ({formatAssigneeLabel(reopenCandidates.me)})</SelectItem>
                           )}
                           {reopenCandidates?.groups.map((group) => (

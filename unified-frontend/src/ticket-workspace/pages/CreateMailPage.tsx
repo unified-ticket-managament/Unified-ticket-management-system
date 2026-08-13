@@ -12,7 +12,15 @@ import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { receiveIncomingEmail } from "@tw/api/email";
 import { validateFiles } from "@tw/lib/attachmentMeta";
-import type { EmailResponse } from "@tw/types";
+import type { ClientResponse, EmailResponse } from "@tw/types";
+
+// A client with no configured distribution email (Client.inbox_email
+// is nullable — see the backend model's own docstring) has no
+// address for a dummy inbound email to "arrive at", so it can't be
+// simulated here at all — only clients with one are selectable.
+function hasInboxEmail(client: ClientResponse): client is ClientResponse & { inbox_email: string } {
+  return Boolean(client.inbox_email);
+}
 
 function randomMessageId() {
   return `<msg-${Date.now()}-${Math.floor(Math.random() * 10000)}@dummy.local>`;
@@ -31,7 +39,8 @@ export function CreateMailPage() {
   // `clients` used to be fetched independently on every mount of this
   // page — it's now shared, session-wide lookup data fetched once by
   // WorkflowContext instead (see that context's own comment).
-  const { clients } = useWorkflowContext();
+  const { clients: allClients } = useWorkflowContext();
+  const clients = allClients.filter(hasInboxEmail);
   const [toEmail, setToEmail] = useState("");
   const [fromEmail, setFromEmail] = useState("mary.j@abcclinic.com");
   const [fromName, setFromName] = useState("Mary Johnson");
@@ -103,8 +112,9 @@ export function CreateMailPage() {
           <div className="flex flex-col gap-4">
             {clients.length === 0 ? (
               <p className="rounded-md2 border border-warning/20 bg-warning/5 px-3.5 py-2.5 text-xs text-slate-700">
-                No clients onboarded yet — create one via <code>POST /clients</code> before
-                sending a dummy email.
+                No clients with a configured distribution email yet — onboard one via{" "}
+                <code>POST /clients</code>, or set one for an existing client, before sending a
+                dummy email.
               </p>
             ) : (
               <SelectInput

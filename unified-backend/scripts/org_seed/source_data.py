@@ -245,3 +245,39 @@ CLIENT_CONTACTS = {
         "mmatthews@performanceortho.com", "smaziarz@performanceortho.com",
     ],
 }
+
+# --------------------------------------------------------------------
+# Dataset 4: Client distribution/inbox email
+# --------------------------------------------------------------------
+# client_name -> the client's official distribution/intake mailbox
+# address, i.e. clients.inbox_email. A deliberately curated, explicit
+# list, provided directly by the business — NEVER derived from
+# CLIENT_CONTACTS above (a contact email is a real person at the
+# client company; the distribution email is the client's own official
+# intake address, an entirely separate concept, even though both
+# happen to live in the same clients/client_contacts tables). A client
+# with no entry here has no distribution email at all — its
+# inbox_email is NULL, not one of its contacts.
+#
+# Three of the 16 CLIENTS above (East West Pain Institute, CPC, Sekel
+# Health) are deliberately absent — no distribution email exists for
+# them. "Alleviate" isn't one of the 16 clients in CLIENTS/
+# CLIENT_CONTACTS yet, but is kept here so a future import resolves it
+# correctly rather than silently falling through to None the moment
+# it's added.
+DISTRIBUTION_EMAILS: dict[str, str] = {
+    "PCRR": "pcrrpractices@probeps.com",
+    "CTFS": "CTFS@probeps.com",
+    "ATX 360 PM": "ATx360@probeps.com",
+    "APM": "apm@probeps.com",
+    "Taral Sharma MD PA": "Dr.Sharma@probeps.com",
+    "Compassionate Womens health": "CWH@probeps.com",
+    "Cameron pediatrics": "Cameron@probeps.com",
+    "FFJ": "Familyfirst@probeps.com",
+    "Nexus Pain care LLC": "nexuspain@painmedpa.com",
+    "LEFC": "lefc@probeps.com",
+    "HEEL & SOLE FOOT & ANKLE, PLLC": "HeelSoleFA@probeps.com",
+    "MMC": "Metroplex@probeps.com",  # Metroplex Medical Center
+    "Performance Ortho": "performanceortho@painmedpa.com",
+    "Alleviate": "alleviatepain@painmedpa.com",
+}

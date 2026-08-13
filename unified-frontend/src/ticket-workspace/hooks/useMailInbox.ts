@@ -250,6 +250,8 @@ export function useMailInbox() {
     selectedEmail,
     setSelectedEmail,
     clients,
+    clientsLoading,
+    clientsError,
     categories: contextCategories,
   } = useWorkflowContext();
   const { currentUser } = useAuthContext();
@@ -1155,6 +1157,8 @@ export function useMailInbox() {
     openingId,
     openedIds,
     clients,
+    clientsLoading,
+    clientsError,
     clientFilter,
     setClientFilter,
     priorityFilter,

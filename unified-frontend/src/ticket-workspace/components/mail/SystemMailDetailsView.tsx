@@ -16,6 +16,39 @@ interface SystemMailDetailsViewProps {
   onMarkRead: (notificationId: string) => Promise<unknown>;
 }
 
+interface ParsedInternalNote {
+  body: string;
+  senderName: string;
+  recipientNames: string[];
+}
+
+// InteractionService.add_internal_note (backend) writes an
+// INTERNAL_NOTE_ADDED notification's `message` as
+// "<full note body>\n\nFrom: <sender>[\nTo: <recipients>]" — there's
+// no dedicated sender/recipient column on Notification, so this is
+// the one place that format is parsed back apart, purely for display.
+// Returns null for anything that doesn't match (e.g. a notification
+// created before this format existed), which callers treat as "show
+// the raw message, no sender/recipient line" — the same safe-degrade
+// convention this codebase already uses for a stale/older JWT claim.
+const INTERNAL_NOTE_MESSAGE_PATTERN = /^([\s\S]*)\n\nFrom: (.+?)(?:\nTo: (.+))?$/;
+
+function parseInternalNoteMessage(message: string): ParsedInternalNote | null {
+  const match = message.match(INTERNAL_NOTE_MESSAGE_PATTERN);
+  if (!match) return null;
+  const [, body, senderName, recipientsRaw] = match;
+  return {
+    body,
+    senderName: senderName.trim(),
+    recipientNames: recipientsRaw
+      ? recipientsRaw
+          .split(",")
+          .map((name) => name.trim())
+          .filter(Boolean)
+      : [],
+  };
+}
+
 // A deliberately narrower sibling of MessageDetailsView — a system
 // notice has no reply/forward/attachments/ticket-action toolbar, no
 // thread, and isn't tied to a real Interaction, so this only ever
@@ -36,6 +69,17 @@ export function SystemMailDetailsView({
   const isMailLink = notification.related_entity_type === "interaction";
   const actionLabel = isMailLink ? "View Mail" : "View Ticket";
 
+  // Only an INTERNAL_NOTE_ADDED notification's message is ever
+  // written in the "<body>\n\nFrom: ...\nTo: ..." shape
+  // parseInternalNoteMessage expects — every other type keeps
+  // rendering notification.message verbatim, unaffected.
+  const internalNote =
+    notification.notification_type === "INTERNAL_NOTE_ADDED"
+      ? parseInternalNoteMessage(notification.message)
+      : null;
+  const senderLabel = internalNote?.senderName ?? "System";
+  const bodyText = internalNote?.body ?? notification.message;
+
   useEffect(() => {
     if (!notification.is_read) {
       onMarkRead(notification.notification_id);
@@ -53,10 +97,20 @@ export function SystemMailDetailsView({
             <Bell className="h-5 w-5" />
           </div>
           <div className="min-w-0">
-            <h1 className="text-[17px] font-semibold text-foreground">{notification.title}</h1>
+            <h1 className="break-words text-[17px] font-semibold text-foreground">
+              {notification.title}
+            </h1>
             <p className="mt-1 text-[13px] text-muted-foreground">
-              From: <span className="font-medium text-foreground/80">System</span>
+              From: <span className="font-medium text-foreground/80">{senderLabel}</span>
             </p>
+            {internalNote && internalNote.recipientNames.length > 0 && (
+              <p className="mt-0.5 text-[13px] text-muted-foreground">
+                To:{" "}
+                <span className="font-medium text-foreground/80">
+                  {internalNote.recipientNames.join(", ")}
+                </span>
+              </p>
+            )}
           </div>
         </div>
         <Badge variant="secondary" className="flex-none text-[11px]">
@@ -65,8 +119,8 @@ export function SystemMailDetailsView({
       </div>
 
       <div
-        className="text-[14px] leading-relaxed text-foreground/90"
-        dangerouslySetInnerHTML={{ __html: linkifyPlainText(notification.message) }}
+        className="whitespace-pre-wrap break-words text-[14px] leading-relaxed text-foreground/90 [&_a]:break-all"
+        dangerouslySetInnerHTML={{ __html: linkifyPlainText(bodyText) }}
       />
 
       <div className="mt-2 flex items-center gap-2 border-t border-border pt-4">

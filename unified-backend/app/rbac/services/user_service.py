@@ -185,7 +185,26 @@ class UserService:
         CLAUDE.md's Client-role section. `client_id` doubles as
         `user_id` here; a Client has no category/teamlead/profile
         fields of its own, so those are always null.
+
+        `UserResponse.email` is a required `EmailStr` — but
+        `Client.inbox_email` is nullable now (a client with no
+        configured distribution email genuinely has none; see
+        `Client`'s own docstring). Rather than let that surface as an
+        opaque pydantic validation 500 the first time such a client is
+        fetched/updated/(de)activated by id, this is a clear, explicit
+        409 instead.
         """
+
+        if client.inbox_email is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "This client has no configured distribution email, so it "
+                    "can't be viewed or managed as a Client user yet — set "
+                    "one first (via the Clients admin page, or this "
+                    "endpoint's own email field)."
+                ),
+            )
 
         return {
             "user_id": client.client_id,

@@ -77,6 +77,22 @@ class ClientRepository:
         )
         return result.scalars().first()
 
+    async def list_contacts_by_client_id(self, client_id: UUID) -> list[ClientContact]:
+        """
+        Every configured contact address for a client, from the seeded
+        client_contacts table (see ClientContact's own docstring) —
+        the authoritative "who's a real contact at this company" list,
+        independent of whether they've actually emailed the shared
+        inbox yet. Primary contact first, then alphabetical.
+        """
+
+        result = await self.db.execute(
+            select(ClientContact)
+            .where(ClientContact.client_id == client_id)
+            .order_by(ClientContact.is_primary.desc(), ClientContact.email.asc())
+        )
+        return list(result.scalars().all())
+
     async def get_by_inbox_email(self, inbox_email: str) -> Client | None:
         """
         Same lookup as get_active_by_inbox_email but without the

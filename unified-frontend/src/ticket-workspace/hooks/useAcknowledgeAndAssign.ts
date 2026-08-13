@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { acknowledgeTicketEscalation, getAcknowledgeCandidates } from "@tw/api/sla";
 import { useApiAction } from "@tw/hooks/useApiAction";
-import { useAuthContext } from "@tw/context/AuthContext";
 import type { AssignableGroup, AssignableUserSummary } from "@tw/types";
 
 interface TargetTicket {
@@ -35,14 +34,18 @@ interface ConfirmResult {
  * the gap this redesign closes.
  */
 export function useAcknowledgeAndAssign() {
-  const { currentUser } = useAuthContext();
   const [isOpen, setIsOpen] = useState(false);
   const [target, setTarget] = useState<TargetTicket | null>(null);
-  // Role-scoped groups from the backend (see
-  // EscalationService.get_acknowledge_candidates) — who appears here
-  // differs by the caller's own role, e.g. a Site Lead sees Team
-  // Lead + Account Manager options, a Team Lead sees Staff.
+  // Candidate groups AND `me` both come straight from the backend (see
+  // EscalationService.get_acknowledge_candidates) — `me` is `null`
+  // whenever the caller is a Reporting-Manager-tagged escalation owner
+  // (they may Acknowledge + Assign to someone else, never to
+  // themselves — root CLAUDE.md's "SLA & Escalation" section, Rule
+  // 4/Flow E). This used to be hardcoded from currentUser regardless
+  // of what the backend said, which meant "Myself" was always offered
+  // and pre-selected even for a caller who isn't allowed to self-assign.
   const [groups, setGroups] = useState<AssignableGroup[]>([]);
+  const [me, setMe] = useState<AssignableUserSummary | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState("");
 
   const { run: runAcknowledgeAndAssign, isLoading: isSubmitting } = useApiAction(
@@ -51,26 +54,34 @@ export function useAcknowledgeAndAssign() {
 
   function open(ticket: TargetTicket) {
     setTarget(ticket);
-    setSelectedAgentId(ticket.currentAgentId ?? currentUser?.user_id ?? "");
+    // Never pre-select "myself" here — the candidates response (and
+    // its own `me`, possibly null) hasn't loaded yet, and defaulting
+    // to currentUser regardless of eligibility is exactly the bug this
+    // hook used to have.
+    setSelectedAgentId(ticket.currentAgentId ?? "");
     setIsOpen(true);
     getAcknowledgeCandidates(ticket.ticketId)
-      .then((res) => setGroups(res.groups))
-      .catch(() => setGroups([]));
+      .then((res) => {
+        setGroups(res.groups);
+        setMe(res.me);
+      })
+      .catch(() => {
+        setGroups([]);
+        setMe(null);
+      });
   }
 
   function close() {
     setIsOpen(false);
   }
 
-  // Flat, id-keyed view of every selectable person (self + every
-  // group's users) — used only for the name-lookup logic below, which
-  // doesn't care which role group an id came from. The modal itself
-  // renders `groups` as separate <optgroup>s, plus "Myself" on its own.
-  const allUsers: AssignableUserSummary[] = currentUser
-    ? [
-        { user_id: currentUser.user_id, name: currentUser.name },
-        ...groups.flatMap((g) => g.users).filter((u) => u.user_id !== currentUser.user_id),
-      ]
+  // Flat, id-keyed view of every selectable person (me, if allowed,
+  // plus every group's users) — used only for the name-lookup logic
+  // below, which doesn't care which role group an id came from. The
+  // modal itself renders `groups` as separate <optgroup>s, plus
+  // "Myself" (when `me` is non-null) on its own.
+  const allUsers: AssignableUserSummary[] = me
+    ? [me, ...groups.flatMap((g) => g.users).filter((u) => u.user_id !== me.user_id)]
     : groups.flatMap((g) => g.users);
 
   // The one action this hook exposes now — acknowledges the
@@ -88,8 +99,8 @@ export function useAcknowledgeAndAssign() {
       // The real display name, not the dropdown's "Myself (...)"
       // label — callers patch their own ticket row/state with this.
       const agentName =
-        selectedAgentId === currentUser?.user_id
-          ? currentUser.name
+        selectedAgentId === me?.user_id
+          ? me.name
           : allUsers.find((u) => u.user_id === selectedAgentId)?.name;
       return { success: true, agentId: selectedAgentId, agentName };
     }
@@ -107,8 +118,9 @@ export function useAcknowledgeAndAssign() {
     // own Transfer picker, which excludes the caller in favor of a
     // separate Claim button) — assigning an already-acknowledged
     // escalation is exactly the moment a supervisor decides whether to
-    // take it on personally or delegate it.
-    me: currentUser ? { user_id: currentUser.user_id, name: currentUser.name } : null,
+    // take it on personally or delegate it. `null` when the backend
+    // says this caller isn't allowed to (see the state comment above).
+    me,
     groups,
     selectedAgentId,
     setSelectedAgentId,

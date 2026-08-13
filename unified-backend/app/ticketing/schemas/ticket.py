@@ -24,6 +24,13 @@ class TicketCreate(BaseModel):
 
     agent_id: UUID | None = None
 
+    # Who performed the initial assignment when the ticket is born
+    # already assigned (the Create Ticket "Assigned To" picker) — the
+    # caller (InboxTicketService.create_ticket_from_interaction) sets
+    # this to the creating agent, never accepted from the request body.
+    # Left None when the ticket is born unclaimed.
+    assigned_by: UUID | None = None
+
     created_by: UUID | None = None
 
     title: str = Field(..., min_length=1, max_length=255)
@@ -49,6 +56,11 @@ class TicketUpdate(BaseModel):
     """
 
     agent_id: UUID | None = None
+
+    # Set alongside agent_id on every assignment/reassignment
+    # (InteractionService.transfer_agent) — the actor performing the
+    # change, never accepted from the request body.
+    assigned_by: UUID | None = None
 
     title: str | None = Field(default=None, min_length=1, max_length=255)
 
@@ -120,6 +132,24 @@ class TicketResponse(ORMBase):
     agent_name: str | None = None
     created_by_name: str | None = None
     closed_by_name: str | None = None
+
+    # "Assigned By" — the user who performed the assignment action
+    # (initial pre-assignment at creation, a claim, or a transfer)
+    # that produced the CURRENT agent_id above. Deliberately distinct
+    # from agent_id (current assignee), created_by (who opened the
+    # ticket, if different from whoever first assigned it), and any
+    # Reporting Manager relationship (an unrelated org-chart concept —
+    # see ReportingManagerTeam). A real, persisted column on Ticket
+    # (assigned_by), stamped explicitly by every assignment code path
+    # (InteractionService.transfer_agent/claim_ticket,
+    # InboxTicketService.create_ticket_from_interaction) rather than
+    # re-derived from the audit trail at read time. `assigned_by_name`
+    # is still resolved by TicketService (not persisted) the same way
+    # agent_name/created_by_name are. None for a still-unclaimed
+    # ticket, or a pre-existing ticket the introducing migration
+    # couldn't backfill from history.
+    assigned_by: UUID | None = None
+    assigned_by_name: str | None = None
 
     # Populated only on GET /tickets/{id} (not the list view, to
     # avoid an N+1 lookup per row) — see TicketService._attach_related_tickets.
@@ -209,6 +239,13 @@ class TicketListItemResponse(ORMBase):
     client_company_name: str | None = None
     agent_name: str | None = None
     created_by_name: str | None = None
+
+    # See TicketResponse's own matching field for the full rationale —
+    # a real, persisted column read straight off the row; assigned_by_name
+    # is resolved via the same LEFT JOIN as agent_name/created_by_name
+    # (see TicketRepository.list_visible_page).
+    assigned_by: UUID | None = None
+    assigned_by_name: str | None = None
 
     # See TicketResponse's own matching fields for the full rationale
     # — same LEFT JOIN-sourced, display-only escalation signal.

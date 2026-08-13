@@ -48,7 +48,10 @@ class Client:
     account_manager_employee_id: int
     lead_assignments: list[ClientLeadAssignment] = field(default_factory=list)
     contact_emails: list[str] = field(default_factory=list)
-    primary_contact_email: str = ""
+    # clients.inbox_email — the client's curated distribution address
+    # (mapping.resolve_distribution_email), or None if it has none.
+    # Deliberately never derived from contact_emails.
+    inbox_email: str | None = None
 
 
 @dataclass
@@ -278,7 +281,17 @@ def build() -> BuildResult:
             ))
             continue
 
-        client = Client(name=client_name, account_manager_employee_id=manager_emp.employee_id)
+        client = Client(
+            name=client_name,
+            account_manager_employee_id=manager_emp.employee_id,
+            inbox_email=mapping.resolve_distribution_email(client_name),
+        )
+        if client.inbox_email is None:
+            issues.append(ValidationIssue(
+                "warning", "client_with_no_distribution_email",
+                f"Client {client_name!r} has no configured distribution email — "
+                "its inbox_email will be NULL.",
+            ))
 
         for lead_role, alias in (
             ("AR_LEAD", ar_lead_alias),
@@ -306,7 +319,11 @@ def build() -> BuildResult:
 
     # ------------------------------------------------------------
     # Client contacts: dedupe within a client, flag cross-client dupes,
-    # pick the primary contact -> inbox_email.
+    # and defensively exclude the client's own distribution email (see
+    # client.inbox_email, already resolved above) should it ever
+    # appear in the source contact list — it never does for today's
+    # 16 clients, but a contact must never be stored again as the
+    # distribution address.
     # ------------------------------------------------------------
 
     email_to_clients: dict[str, list[str]] = {}
@@ -325,6 +342,13 @@ def build() -> BuildResult:
         deduped: list[str] = []
         for raw_email in raw_emails:
             normalized = raw_email.strip().lower()
+            if client.inbox_email is not None and normalized == client.inbox_email:
+                issues.append(ValidationIssue(
+                    "warning", "contact_matches_distribution_email",
+                    f"Contact {raw_email!r} for client {client_name!r} is the same as its "
+                    "distribution email — stored only as inbox_email, not duplicated as a contact.",
+                ))
+                continue
             if normalized in seen_in_client:
                 issues.append(ValidationIssue(
                     "warning", "duplicate_client_contact",
@@ -336,7 +360,6 @@ def build() -> BuildResult:
             email_to_clients.setdefault(normalized, []).append(client_name)
 
         client.contact_emails = deduped
-        client.primary_contact_email = mapping.pick_primary_contact(client_name, deduped)
 
     all_client_names = {c[0] for c in source_data.CLIENTS}
     for missing_client in all_client_names - set(source_data.CLIENT_CONTACTS.keys()):
@@ -352,14 +375,19 @@ def build() -> BuildResult:
                 f"Contact email {email!r} appears under more than one client: {sorted(set(client_names))}.",
             ))
 
+    # NULL is exempt from this check by design — Postgres's own unique
+    # index already allows any number of NULL inbox_email rows, and
+    # several of these clients are expected to have none configured.
     inbox_email_to_clients: dict[str, list[str]] = {}
     for client in clients.values():
-        inbox_email_to_clients.setdefault(client.primary_contact_email, []).append(client.name)
+        if client.inbox_email is None:
+            continue
+        inbox_email_to_clients.setdefault(client.inbox_email, []).append(client.name)
     for inbox_email, client_names in inbox_email_to_clients.items():
         if len(client_names) > 1:
             issues.append(ValidationIssue(
                 "error", "duplicate_inbox_email",
-                f"Primary contact {inbox_email!r} was picked for more than one client "
+                f"Distribution email {inbox_email!r} is configured for more than one client "
                 f"({client_names})  -  clients.inbox_email must be unique.",
             ))
 

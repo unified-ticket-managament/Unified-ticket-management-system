@@ -185,6 +185,8 @@ export function InboxPage() {
           {composeOpen ? (
             <ComposeView
               clients={mail.clients}
+              clientsLoading={mail.clientsLoading}
+              clientsError={mail.clientsError}
               initialValues={composeInitialValues}
               isSending={mail.isComposing}
               onSend={handleComposeSend}

@@ -45,6 +45,8 @@ def build_reply_envelope(
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
     to_email_override: str | None = None,
+    reply_to_provider_message_id: str | None = None,
+    reply_all: bool = False,
 ) -> OutboundEnvelope | None:
     """
     Builds the outbound envelope for a reply: From is always the
@@ -77,6 +79,13 @@ def build_reply_envelope(
     requires a resolvable recipient somewhere, so an override can't be
     used to bypass the "nothing to dispatch" case below.
 
+    `reply_to_provider_message_id`, when known (the inbound message's
+    own Graph id — see EmailPayload.provider_message_id), makes the
+    resulting envelope threaded via Graph's real reply/replyAll action
+    instead of sendMail (see graph_client.py); `reply_all` selects
+    which of the two. None/False (the default) preserves the old
+    sendMail-only behavior exactly.
+
     Returns None if there's no sender to reply to (e.g. a reply on a
     ticket whose originating email is unknown) — callers should treat
     that as "nothing to dispatch" rather than an error.
@@ -101,6 +110,8 @@ def build_reply_envelope(
         in_reply_to=inbound_message_id,
         references=references,
         body=body,
+        reply_to_provider_message_id=reply_to_provider_message_id,
+        reply_all=reply_all,
     )
 
 

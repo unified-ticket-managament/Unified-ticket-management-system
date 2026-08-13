@@ -47,6 +47,7 @@ from app.ticketing.models.client import Client
 from app.ticketing.models.escalation_handling_sla import EscalationHandlingSLA
 from app.ticketing.models.resolution_sla import ResolutionSLA
 from app.ticketing.models.ticket import Ticket
+from app.ticketing.repositories.audit_log_repository import AuditLogRepository
 from app.ticketing.repositories.escalation_handling_sla_repository import (
     EscalationHandlingSlaRepository,
 )
@@ -168,6 +169,7 @@ def _build_escalation_service(session) -> EscalationService:
         resolution_sla_repository=ResolutionSLARepository(session),
         sla_policy_repository=SLAPolicyRepository(session),
         user_repository=UserRepository(session),
+        audit_log_repository=AuditLogRepository(session),
         notification_service=None,
         escalation_handling_sla_service=build_escalation_handling_sla_service(session),
     )

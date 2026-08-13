@@ -44,7 +44,6 @@ from app.ticketing.schemas.interaction import (
 )
 from app.ticketing.schemas.assignment import (
     AssignableAgentsResponse,
-    AssignableGroup,
     AssignableUserSummary,
 )
 from app.ticketing.schemas.note import (
@@ -67,11 +66,9 @@ from app.ticketing.repositories.audit_log_repository import AuditLogRepository
 from app.ticketing.schemas.audit_log import AuditLogResponse
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
-    GLOBAL_INBOX_ROLE_NAMES,
+    AGENT_ROLE_NAMES,
     SITE_LEAD_ROLE_NAME,
     SUPER_ADMIN_ROLE_NAME,
-    SUPERVISOR_ROLE_NAMES,
-    TEAM_LEAD_TRANSFER_ROLE_NAMES,
     ensure_account_manager_owns_ticket_client,
     ensure_agent_can_act_on_ticket,
     ensure_agent_can_view_pending_interaction,
@@ -106,6 +103,7 @@ from app.ticketing.services.sla_escalation_rules import (
 )
 
 from app.ticketing.enums import (
+    OWNER_ROLE_REPORTING_MANAGER,
     AuditEntityType,
     AuditEventType,
     EscalationStatus,
@@ -1013,11 +1011,26 @@ class InteractionService:
                 )
             )
             if recipients_for_notify:
+                # title is the note's own real subject (not "ticket:
+                # subject", and not "Internal note from X" — the
+                # sender now rides in `message` instead, see below) so
+                # the Mail System tab can show the complete subject
+                # verbatim. message leads with the full note body
+                # (previously missing entirely — only the subject was
+                # ever included), followed by a "\n\nFrom: ...\nTo:
+                # ..." metadata footer that SystemMailDetailsView.tsx
+                # parses back out to render sender/recipients as their
+                # own fields — reusing this same note's own already-
+                # resolved actor_name/recipient_names, not a second
+                # write or a new column.
+                metadata_lines = [f"From: {actor_name or 'a teammate'}"]
+                if recipient_names:
+                    metadata_lines.append(f"To: {', '.join(recipient_names)}")
                 await self.notification_service.notify(
                     recipients_for_notify,
                     NotificationType.INTERNAL_NOTE_ADDED,
-                    title=f"Internal note from {actor_name or 'a teammate'}",
-                    message=f"{ticket.title}: {request.subject}",
+                    title=request.subject,
+                    message=f"{request.note}\n\n" + "\n".join(metadata_lines),
                     link=f"/tickets/{ticket_id}",
                     related_entity_type="ticket",
                     related_entity_id=ticket_id,
@@ -1094,6 +1107,15 @@ class InteractionService:
         envelope), *before* dispatch — previously that upload's files
         were only ever recorded on the ticket's own timeline, never on
         the actual outgoing email.
+
+        When the message being replied to arrived via Microsoft Graph
+        (`inbound_payload.provider_message_id` is set), the envelope
+        carries that id through so the transport layer sends via
+        Graph's own reply/replyAll message action instead of sendMail
+        — the reply then lands threaded under the original Outlook/
+        Gmail conversation rather than as a new, unrelated message.
+        Falls back to plain sendMail (unthreaded) when that id isn't
+        known, exactly as before this existed.
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
@@ -1169,6 +1191,8 @@ class InteractionService:
                     cc=request.cc,
                     bcc=request.bcc,
                     to_email_override=request.to_email,
+                    reply_to_provider_message_id=inbound_payload.provider_message_id,
+                    reply_all=request.reply_all,
                 )
 
         payload: dict[str, Any] = {"message": request.message}
@@ -1330,6 +1354,8 @@ class InteractionService:
                 cc=request.cc,
                 bcc=request.bcc,
                 to_email_override=request.to_email,
+                reply_to_provider_message_id=inbound_payload.provider_message_id,
+                reply_all=request.reply_all,
             )
 
         payload: dict[str, Any] = {"message": request.message}
@@ -2033,119 +2059,66 @@ class InteractionService:
 
     # ---------------------------------------------------------
     # Transfer candidates — who the caller may transfer THIS ticket to.
-    # Built to mirror transfer_agent's own acceptance rules exactly
-    # (below), rather than the flat, role-blind "category Staff" list
-    # the Transfer Ticket dropdown used before this — a candidate
-    # offered here must always be one transfer_agent will actually
-    # accept, and vice versa. Deliberately a different, wider method
-    # from EscalationService.get_acknowledge_candidates: that one is
-    # scoped specifically to escalation acceptance and has its own,
-    # narrower per-role table (no self-assignment option, no Site Lead
-    # group, Account Manager only reachable one way) — this one
-    # reflects the ordinary Transfer Ticket action's full authorization
-    # surface instead.
+    # By explicit product requirement, this is now every active,
+    # agent-capable user (AGENT_ROLE_NAMES — every RBAC role except the
+    # client-facing Viewer) company-wide, grouped by role for display
+    # only — not scoped by the ticket's own category, the caller's own
+    # role, or the org-chart reporting hierarchy, the way the previous
+    # per-role branch table (Team-Lead-only-via-AM, Site-Lead-only-via-
+    # Super-Admin, Account-Manager-only-during-escalation, Staff-must-
+    # match-ticket-category) used to restrict it. transfer_agent below
+    # is widened to accept exactly this same set, so every candidate
+    # offered here is guaranteed to succeed on submit. Deliberately a
+    # different, wider method from EscalationService.
+    # get_acknowledge_candidates: that one is scoped specifically to
+    # escalation acceptance and keeps its own, narrower per-role table
+    # — untouched by this change.
     # ---------------------------------------------------------
 
     async def get_transfer_candidates(
         self, ticket_id: UUID, current_user: User
     ) -> AssignableAgentsResponse:
         """
-        Per current_user's own role, mirroring transfer_agent line for
-        line:
+        Every active, agent-capable user other than the ticket's
+        current agent and the caller themselves (self-assignment is
+        offered separately via the `me` field, same convention
+        EscalationService.get_acknowledge_candidates already
+        established), grouped by role in a fixed display order (Staff,
+        Team Lead, Account Manager, Site Lead, Super Admin).
 
-        - Self ("me") is always returned — transfer_agent's self-assign
-          branch is available to any SUPERVISOR_ROLE_NAMES member, so
-          the frontend decides whether to render it based on the
-          caller's own role, same convention
-          EscalationService.get_acknowledge_candidates already
-          established for its own `me` field.
-        - Team Lead group: every active Team Lead company-wide (not
-          category-scoped) when current_user's role is in
-          TEAM_LEAD_TRANSFER_ROLE_NAMES (Account Manager, Site Lead,
-          Super Admin) — matches the widened, unscoped
-          Organization-Structure ticket-assignment relationship
-          transfer_agent already authorizes.
-        - Site Lead group: every active Site Lead, Super Admin only.
-        - Account Manager group: category-matched Account Manager(s)
-          (via ReportingManagerTeam — the same resolver
-          EscalationService already uses), for Site Lead/Super Admin
-          (GLOBAL_INBOX_ROLE_NAMES) — but ONLY while the ticket has an
-          active (non-CLOSED) escalation, since that's the one and only
-          condition under which transfer_agent accepts an Account
-          Manager as a transfer target at all.
-        - Staff group: active Staff in the ticket's own category,
-          always attempted regardless of current_user's specific role
-          (transfer_agent's Staff-target branch doesn't itself branch
-          on the caller's role beyond the ensure_can_reassign_ticket
-          gate already applied above) — this is the one group every
-          caller who can reassign at all is offered.
-
-        The ticket's own currently-assigned agent is excluded from
-        every group (and from `me`, implicitly, since a caller can
-        never already be the current agent and see themselves offered
-        as a "new" target) — transfer_agent itself 400s on "already
-        assigned to this agent," so offering it here would just be a
-        guaranteed-to-fail option.
+        `me` is always returned — the frontend decides whether to
+        render "Myself" based on the caller's own role, unchanged from
+        before this method was widened.
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_agent_can_view_ticket(ticket, current_user)
         ensure_can_reassign_ticket(current_user)
 
-        role_name = current_user.role.name
         current_agent_id = ticket.agent_id
-        groups: list[AssignableGroup] = []
-
-        if role_name in TEAM_LEAD_TRANSFER_ROLE_NAMES:
-            team_leads = await self.user_repository.list_active_by_role_name(
-                TEAM_LEAD_ROLE_NAME
-            )
-            groups.append(
-                _to_assignable_group(
-                    TEAM_LEAD_ROLE_NAME,
-                    [u for u in team_leads if u.user_id != current_agent_id],
-                )
-            )
-
-        if role_name == SUPER_ADMIN_ROLE_NAME:
-            site_leads = await self.user_repository.list_active_by_role_name(
-                SITE_LEAD_ROLE_NAME
-            )
-            groups.append(
-                _to_assignable_group(
-                    SITE_LEAD_ROLE_NAME,
-                    [u for u in site_leads if u.user_id != current_agent_id],
-                )
-            )
-
-        if role_name in GLOBAL_INBOX_ROLE_NAMES and self.escalation_service is not None:
-            active_escalation = (
-                await self.escalation_service.ticket_escalation_repository.get_active_by_ticket_id(
-                    ticket_id
-                )
-            )
-            if active_escalation is not None:
-                account_managers = (
-                    await self.escalation_service._resolve_category_account_managers(
-                        ticket.ticket_type
-                    )
-                )
-                groups.append(
-                    _to_assignable_group(
-                        ACCOUNT_MANAGER_ROLE_NAME,
-                        [u for u in account_managers if u.user_id != current_agent_id],
-                    )
-                )
-
-        staff = await self.user_repository.list_active_by_role_and_category(
-            STAFF_ROLE_NAME, ticket.ticket_type
-        )
-        groups.append(
-            _to_assignable_group(
+        by_role: dict[str, list[User]] = {
+            role_name: []
+            for role_name in (
                 STAFF_ROLE_NAME,
-                [u for u in staff if u.user_id != current_agent_id],
+                TEAM_LEAD_ROLE_NAME,
+                ACCOUNT_MANAGER_ROLE_NAME,
+                SITE_LEAD_ROLE_NAME,
+                SUPER_ADMIN_ROLE_NAME,
             )
-        )
+        }
+        for user in await self.user_repository.list_all_active():
+            role_name = user.role.name if user.role is not None else None
+            if role_name not in AGENT_ROLE_NAMES:
+                continue
+            if user.user_id in (current_agent_id, current_user.user_id):
+                continue
+            by_role[role_name].append(user)
+
+        groups = [
+            _to_assignable_group(role_name, users)
+            for role_name, users in by_role.items()
+            if users
+        ]
 
         return AssignableAgentsResponse(
             me=AssignableUserSummary(
@@ -2153,7 +2126,7 @@ class InteractionService:
                 name=current_user.name,
                 employee_number=current_user.employee_number,
             ),
-            groups=[g for g in groups if g.users],
+            groups=groups,
         )
 
     # ---------------------------------------------------------
@@ -2167,11 +2140,12 @@ class InteractionService:
         current_user: User,
     ) -> TicketActionResponse:
         """
-        Transfers full ownership of a ticket to a different
-        active Staff member. The previous agent loses all
-        rights on the ticket the moment this completes — the
-        new agent_id fully replaces the old one, it isn't
-        shared or co-owned.
+        Transfers full ownership of a ticket to a different active,
+        agent-capable user (see AGENT_ROLE_NAMES) — any role, any
+        category, any hierarchy level. The previous agent loses all
+        rights on the ticket the moment this completes — the new
+        agent_id fully replaces the old one, it isn't shared or
+        co-owned.
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
@@ -2192,129 +2166,26 @@ class InteractionService:
             current_user
         )
 
-        # Resolved once, up front, since both the widened candidate
-        # check below and the pre-existing category guard need to know
-        # whether this ticket is actively escalated right now.
-        active_escalation = None
-        if self.escalation_service is not None:
-            active_escalation = (
-                await self.escalation_service.ticket_escalation_repository.get_active_by_ticket_id(
-                    ticket_id
-                )
-            )
-
-        # Set whenever the candidate was resolved via a branch below
-        # that already loaded the full row with role+category eager-
-        # loaded (Team Lead, Site Lead, Account Manager, or self) — the
-        # Staff category guard further down reuses it instead of a
-        # second round trip.
-        new_agent_full: User | None = None
-        # True for every supervisor-tier target (self, Team Lead, Site
-        # Lead, Account Manager) — none of these roles are scoped to a
-        # work-specialization category the way Staff is (see
-        # CATEGORY_SCOPED_ROLE_NAMES), so the Staff-only category check
-        # below never applies to them.
-        skip_category_check = False
-
-        # Self-assignment: a Team Lead/Account Manager/Site Lead/Super
-        # Admin assigning the ticket to *themselves*. Always valid,
-        # unconditionally — they already own/are handling this
-        # escalation/ticket by virtue of being the one making the call
-        # (ensure_can_reassign_ticket above already authorized them to
-        # act at all), so none of the "transfer to some other named
-        # agent" candidate rules below apply. Previously this fell
-        # through to the Staff-only / TEAM_LEAD_TRANSFER_ROLE_NAMES
-        # branches below and was rejected outright — e.g. a Team Lead
-        # selecting "Myself" was checked against "is the *caller* an
-        # Account Manager/Site Lead/Super Admin transferring *to* a
-        # Team Lead", which a Team Lead assigning to themselves can
-        # never satisfy.
+        # Target acceptance widened per explicit product requirement:
+        # any active, agent-capable user (AGENT_ROLE_NAMES — every RBAC
+        # role except the client-facing Viewer) is now a valid
+        # transfer/assign target, regardless of role, category, or
+        # reporting hierarchy — replacing the previous per-role/
+        # category branch table (Team-Lead-only-via-Account-Manager,
+        # Site-Lead-only-via-Super-Admin, Account-Manager-only-during-
+        # an-active-escalation, Staff-must-match-ticket-category).
+        # get_transfer_candidates above is widened to match exactly, so
+        # every candidate it offers is guaranteed to be accepted here.
+        new_agent = await self.user_repository.get_by_id(request.new_agent_id)
         if (
-            request.new_agent_id == current_user.user_id
-            and current_user.role.name in SUPERVISOR_ROLE_NAMES
-            and current_user.is_active
+            new_agent is None
+            or not new_agent.is_active
+            or new_agent.role is None
+            or new_agent.role.name not in AGENT_ROLE_NAMES
         ):
-            new_agent = current_user
-            new_agent_full = current_user
-            skip_category_check = True
-        else:
-            new_agent = await self.user_repository.get_active_staff_by_id(
-                request.new_agent_id
-            )
-
-        if new_agent is None:
-            candidate = await self.user_repository.get_by_id(request.new_agent_id)
-            if candidate is not None and candidate.is_active:
-                if (
-                    candidate.role.name == TEAM_LEAD_ROLE_NAME
-                    and current_user.role.name in TEAM_LEAD_TRANSFER_ROLE_NAMES
-                ):
-                    # Business rule (root CLAUDE.md's Organization
-                    # Structure section): every Account Manager (and
-                    # Site Lead/Super Admin) can hand a ticket directly
-                    # to ANY Team Lead, regardless of department — the
-                    # Account Manager decides which category should own
-                    # it, so this is deliberately NOT scoped to the
-                    # ticket's own ticket_type, unlike the Staff target
-                    # check below. Allowed both during and outside an
-                    # active escalation — this is the ordinary
-                    # AM-assigns-to-Team-Lead workflow, not just the
-                    # escalation acceptance path.
-                    new_agent = candidate
-                    new_agent_full = candidate
-                    skip_category_check = True
-                elif (
-                    candidate.role.name == SITE_LEAD_ROLE_NAME
-                    and current_user.role.name == SUPER_ADMIN_ROLE_NAME
-                ):
-                    # Only Super Admin may hand a ticket directly to a
-                    # Site Lead (see the Acknowledge & Assign role
-                    # table) — Site Lead is otherwise never a transfer
-                    # target, including for itself via this branch
-                    # (self-assignment is covered above).
-                    new_agent = candidate
-                    new_agent_full = candidate
-                    skip_category_check = True
-                elif (
-                    active_escalation is not None
-                    and candidate.role.name == ACCOUNT_MANAGER_ROLE_NAME
-                    and current_user.role.name in GLOBAL_INBOX_ROLE_NAMES
-                    and self.escalation_service is not None
-                ):
-                    # An actively-escalated ticket's "who owns it going
-                    # forward" can legitimately be an Account Manager,
-                    # but only when a Site Lead/Super Admin is the one
-                    # assigning it (see the Acknowledge & Assign role
-                    # table — Account Manager itself never hands a
-                    # ticket to another Account Manager, and Team Lead
-                    # never reaches this branch at all). Re-validated
-                    # against the exact same candidate set
-                    # EscalationService.get_acknowledge_candidates
-                    # offers the caller — every Account Manager who is
-                    # a Reporting Manager for the ticket's category
-                    # (ReportingManagerTeam) — rather than trusting the
-                    # submitted id alone, and rather than duplicating a
-                    # second, independently-drifting definition of
-                    # "valid Account Manager" here.
-                    if await self.escalation_service.is_valid_account_manager_target(
-                        ticket, candidate.user_id
-                    ):
-                        new_agent = candidate
-                        new_agent_full = candidate
-                        skip_category_check = True
-
-        if new_agent is None:
             raise HTTPException(
                 status_code=http_status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "New agent must be an active Staff member, an "
-                    "active Team Lead when transferred by an Account "
-                    "Manager, Site Lead, or Super Admin, an active "
-                    "Account Manager when transferred by a Site Lead "
-                    "or Super Admin during an active escalation, an "
-                    "active Site Lead when transferred by a Super "
-                    "Admin, or the caller themselves."
-                ),
+                detail="New agent must be an active platform user.",
             )
 
         if ticket.agent_id == new_agent.user_id:
@@ -2322,30 +2193,6 @@ class InteractionService:
                 status_code=http_status.HTTP_400_BAD_REQUEST,
                 detail="Ticket is already assigned to this agent.",
             )
-
-        # A Staff target must belong to the ticket's own work-
-        # specialization category (mirrors ensure_agent_can_view_ticket's
-        # own category gate) — per the Organization Structure business
-        # rule, a Team Lead must never be able to hand a ticket to
-        # another category's Staff, escalated or not. This used to only
-        # be enforced during an active escalation; it's unconditional
-        # now. Doesn't apply to a supervisor-tier target
-        # (skip_category_check above, deliberately unscoped by category
-        # per that same rule — Team Lead/Site Lead/Account Manager/
-        # self are none of them category-scoped roles).
-        if not skip_category_check:
-            if new_agent_full is None:
-                new_agent_full = await self.user_repository.get_by_id(new_agent.user_id)
-            new_agent_category = (
-                new_agent_full.category.category_name.value
-                if new_agent_full is not None and new_agent_full.category is not None
-                else None
-            )
-            if new_agent_category != ticket.ticket_type:
-                raise HTTPException(
-                    status_code=http_status.HTTP_400_BAD_REQUEST,
-                    detail="This staff member is not part of the ticket's category.",
-                )
 
         old_agent_id = ticket.agent_id
         old_agent_name = None
@@ -2365,7 +2212,13 @@ class InteractionService:
         old_status = ticket.current_status
         new_status = resolve_status_after_assignment(old_status)
         status_will_change = new_status is not None
-        update_fields: dict[str, Any] = {"agent_id": new_agent.user_id}
+        update_fields: dict[str, Any] = {
+            "agent_id": new_agent.user_id,
+            # Who performed this reassignment — current_user, not
+            # new_agent (the target). See Ticket.assigned_by's own
+            # docstring for why this is distinct from agent_id.
+            "assigned_by": actor_id,
+        }
         if status_will_change:
             update_fields["current_status"] = new_status
 
@@ -2640,6 +2493,22 @@ class InteractionService:
             raise HTTPException(
                 status_code=http_status.HTTP_400_BAD_REQUEST,
                 detail="An assignee is required to acknowledge this escalation.",
+            )
+
+        # A Reporting Manager owner may Acknowledge + Assign to someone
+        # else, but never to themselves — the real, non-bypassable
+        # enforcement of Rule 4/Flow E (root CLAUDE.md's "SLA &
+        # Escalation" section); EscalationService.get_acknowledge_
+        # candidates omitting `me` from the picker is only what keeps
+        # the UI from offering the option in the first place.
+        if (
+            assignee_id == current_user.user_id
+            and escalation.owner_roles.get(str(current_user.user_id))
+            == OWNER_ROLE_REPORTING_MANAGER
+        ):
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="Reporting managers cannot assign this ticket to themselves.",
             )
 
         if ticket.agent_id is not None and ticket.agent_id == assignee_id:

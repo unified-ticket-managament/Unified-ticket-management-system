@@ -11,9 +11,18 @@ from shared_models.database import Base
 class Client(Base):
     """
     A client company onboarded onto the platform, identified by a
-    real email address stored in `inbox_email`. How that address is
-    matched against an inbound email depends on where the email
-    arrived (see EmailService.receive_email / is_configured_graph_mailbox):
+    real email address stored in `inbox_email` — the client's own
+    official distribution/intake address, never one automatically
+    picked from its individual employee/contact addresses (those live
+    in `ClientContact` instead; see that model's own docstring).
+    Nullable: a client with no configured distribution email has
+    `inbox_email = NULL` rather than a guessed substitute — see
+    scripts/org_seed/mapping.py's `resolve_distribution_email`, the
+    single place this value is ever decided at import time.
+
+    How that address is matched against an inbound email depends on
+    where the email arrived (see EmailService.receive_email /
+    is_configured_graph_mailbox):
 
     - Mail arriving at the one configured Microsoft Graph shared
       mailbox (every real client today) is matched by the message's
@@ -49,9 +58,12 @@ class Client(Base):
     )
 
     # Always stored lowercased so lookups are a plain equality match.
-    inbox_email: Mapped[str] = mapped_column(
+    # Nullable — a unique index still allows any number of NULLs in
+    # Postgres, so several clients with no configured distribution
+    # email can coexist without tripping the uniqueness constraint.
+    inbox_email: Mapped[str | None] = mapped_column(
         String(255),
-        nullable=False,
+        nullable=True,
         unique=True,
     )
 

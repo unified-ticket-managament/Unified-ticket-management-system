@@ -19,6 +19,7 @@ from app.ticketing.schemas.payloads import EnvelopeAttachment, OutboundEnvelope
 from app.ticketing.services.graph_auth import _cached_graph_auth_client, build_graph_auth_client
 from app.ticketing.services.graph_client import (
     _build_recipients,
+    _build_reply_action_body,
     _build_send_mail_message,
     build_graph_mail_provider_client,
 )
@@ -296,6 +297,169 @@ def test_build_send_mail_message_includes_attachments_as_graph_file_attachments(
             "contentBytes": "aGVsbG8=",
         }
     ]
+
+
+# ---------------------------------------------------------
+# Envelope -> Graph reply/replyAll body mapping (graph_client.py)
+# ---------------------------------------------------------
+
+
+def test_build_reply_action_body_uses_comment_for_agent_text():
+    """
+    Unlike sendMail (which puts the agent's text in `body`), the
+    reply/replyAll action's own body-of-the-request uses `comment` —
+    Graph prepends this above the quoted original message and handles
+    the quoting/threading itself, which is what keeps the send inside
+    the original Outlook/Gmail conversation.
+    """
+
+    envelope = _envelope(reply_to_provider_message_id="AAMkAG-native-id")
+
+    body = _build_reply_action_body(envelope)
+
+    assert body["comment"] == envelope.body
+    assert "body" not in body["message"]
+
+
+def test_build_reply_action_body_overrides_recipients_explicitly():
+    envelope = _envelope(
+        reply_to_provider_message_id="AAMkAG-native-id",
+        cc=["cc@example.com"],
+        bcc=["bcc@example.com"],
+    )
+
+    body = _build_reply_action_body(envelope)
+
+    assert body["message"]["toRecipients"] == [
+        {"emailAddress": {"address": envelope.to_email}}
+    ]
+    assert body["message"]["ccRecipients"] == [{"emailAddress": {"address": "cc@example.com"}}]
+    assert body["message"]["bccRecipients"] == [{"emailAddress": {"address": "bcc@example.com"}}]
+
+
+def test_build_reply_action_body_omits_empty_cc_bcc():
+    envelope = _envelope(reply_to_provider_message_id="AAMkAG-native-id")
+
+    body = _build_reply_action_body(envelope)
+
+    assert "ccRecipients" not in body["message"]
+    assert "bccRecipients" not in body["message"]
+
+
+def test_build_reply_action_body_includes_attachments_as_graph_file_attachments():
+    envelope = _envelope(
+        reply_to_provider_message_id="AAMkAG-native-id",
+        attachments=[
+            EnvelopeAttachment(
+                filename="invoice.pdf",
+                content_type="application/pdf",
+                content_base64="aGVsbG8=",
+            )
+        ],
+    )
+
+    body = _build_reply_action_body(envelope)
+
+    assert body["message"]["attachments"] == [
+        {
+            "@odata.type": "#microsoft.graph.fileAttachment",
+            "name": "invoice.pdf",
+            "contentType": "application/pdf",
+            "contentBytes": "aGVsbG8=",
+        }
+    ]
+
+
+async def test_send_email_dispatches_to_reply_endpoint_when_provider_message_id_set(monkeypatch):
+    """
+    The one branch point that decides Graph reply/replyAll vs.
+    sendMail: envelope.reply_to_provider_message_id being set is what
+    routes a send through the threaded reply action instead of
+    sendMail — this is confirmed by intercepting the outbound httpx
+    call itself, not just checking the pure message-building helpers
+    above.
+    """
+
+    import app.ticketing.services.graph_client as graph_client_module
+
+    captured: dict = {}
+
+    class _FakeResponse:
+        status_code = 202
+        text = ""
+
+    class _FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["json"] = json
+            return _FakeResponse()
+
+    monkeypatch.setattr(graph_client_module.httpx, "AsyncClient", lambda timeout=30.0: _FakeAsyncClient())
+
+    client = graph_client_module.GraphMailProviderClient(
+        auth_client=None,
+        mailbox_address="mailbox@example.com",
+        api_base_url="https://graph.microsoft.com/v1.0",
+    )
+    monkeypatch.setattr(client, "_authorized_headers", lambda: _fake_headers())
+
+    envelope = _envelope(reply_to_provider_message_id="AAMkAG-native-id", reply_all=True)
+
+    result = await client.send_email(envelope)
+
+    assert captured["url"].endswith("/messages/AAMkAG-native-id/replyAll")
+    assert captured["json"]["comment"] == envelope.body
+    assert result.provider_message_id == envelope.message_id
+    assert result.status == "SENT"
+
+
+async def test_send_email_dispatches_to_send_mail_when_no_reply_target(monkeypatch):
+    import app.ticketing.services.graph_client as graph_client_module
+
+    captured: dict = {}
+
+    class _FakeResponse:
+        status_code = 202
+        text = ""
+
+    class _FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["json"] = json
+            return _FakeResponse()
+
+    monkeypatch.setattr(graph_client_module.httpx, "AsyncClient", lambda timeout=30.0: _FakeAsyncClient())
+
+    client = graph_client_module.GraphMailProviderClient(
+        auth_client=None,
+        mailbox_address="mailbox@example.com",
+        api_base_url="https://graph.microsoft.com/v1.0",
+    )
+    monkeypatch.setattr(client, "_authorized_headers", lambda: _fake_headers())
+
+    envelope = _envelope()  # reply_to_provider_message_id is None (Compose)
+
+    result = await client.send_email(envelope)
+
+    assert captured["url"].endswith("/sendMail")
+    assert captured["json"]["message"]["subject"] == envelope.subject
+    assert result.provider_message_id == envelope.message_id
+
+
+async def _fake_headers() -> dict:
+    return {"Authorization": "Bearer test-token"}
 
 
 # ---------------------------------------------------------

@@ -100,6 +100,34 @@ def test_build_reply_envelope_account_manager_email_none_is_safe():
     assert envelope.cc == []
 
 
+def test_build_reply_envelope_carries_reply_to_provider_message_id_and_reply_all():
+    envelope = build_reply_envelope(
+        from_email="ticketing@probeps.com",
+        inbound_payload=_inbound_payload(),
+        inbound_message_id="<original@example.com>",
+        body="Reply body.",
+        reply_to_provider_message_id="AAMkAGraphNativeId==",
+        reply_all=True,
+    )
+
+    assert envelope is not None
+    assert envelope.reply_to_provider_message_id == "AAMkAGraphNativeId=="
+    assert envelope.reply_all is True
+
+
+def test_build_reply_envelope_defaults_reply_fields_to_sendmail_behavior():
+    envelope = build_reply_envelope(
+        from_email="ticketing@probeps.com",
+        inbound_payload=_inbound_payload(),
+        inbound_message_id="<original@example.com>",
+        body="Reply body.",
+    )
+
+    assert envelope is not None
+    assert envelope.reply_to_provider_message_id is None
+    assert envelope.reply_all is False
+
+
 def test_build_compose_envelope_uses_shared_mailbox_as_from_not_client_address():
     """
     Client.inbox_email now stores the client's own real address (used

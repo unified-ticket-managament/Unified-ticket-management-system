@@ -52,6 +52,7 @@ const CLOSED_TICKET_STATUSES = new Set<TicketStatus>(["RESOLVED", "CLOSED"]);
 const ESCALATION_LEVEL_LABEL: Record<string, string> = {
   TEAM_LEAD: "Team Lead",
   MANAGER: "Manager",
+  ASSIGNMENT_CHAIN: "Escalated",
   SITE_LEAD: "Site Lead",
 };
 
@@ -571,6 +572,7 @@ export function TicketsListPage() {
                     <th className="px-5 py-3.5">Status</th>
                     <th className="px-5 py-3.5">Priority</th>
                     <th className="px-5 py-3.5">Assigned Agent</th>
+                    <th className="px-5 py-3.5">Assigned By</th>
                     <th className="px-5 py-3.5">Escalation</th>
                     <th className="px-5 py-3.5">
                       <SortHeader label="Last Updated" sortField="updated_at" />
@@ -656,6 +658,18 @@ export function TicketsListPage() {
                           )
                         ) : (
                           <span className="text-muted">Unclaimed</span>
+                        )}
+                      </td>
+                      {/* "Assigned By" — who performed the claim/
+                          transfer that produced the assignee in the
+                          previous column, never the assignee
+                          themselves. A real, persisted column on the
+                          ticket (Ticket.assigned_by) — "—" for a
+                          still-unclaimed ticket or one with no
+                          derivable assignment history. */}
+                      <td className="px-5 py-3.5 text-slate-700">
+                        {ticket.assigned_by_name ?? (
+                          <span className="text-muted">—</span>
                         )}
                       </td>
                       <td className="px-5 py-3.5 text-xs">

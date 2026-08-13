@@ -14,6 +14,14 @@ import { listClients } from "@/api/clients";
 import { validateFiles } from "@/lib/attachmentMeta";
 import type { ClientResponse, EmailResponse } from "@/types";
 
+// A client with no configured distribution email (Client.inbox_email
+// is nullable — see the backend model's own docstring) has no
+// address for a dummy inbound email to "arrive at", so it can't be
+// simulated here at all — only clients with one are selectable.
+function hasInboxEmail(client: ClientResponse): client is ClientResponse & { inbox_email: string } {
+  return Boolean(client.inbox_email);
+}
+
 function randomMessageId() {
   return `<msg-${Date.now()}-${Math.floor(Math.random() * 10000)}@dummy.local>`;
 }
@@ -27,7 +35,8 @@ const ALLOWED_ROLES = ["Site Lead"];
 
 export function CreateMailPage() {
   const { currentUser } = useAuthContext();
-  const [clients, setClients] = useState<ClientResponse[]>([]);
+  const [allClients, setAllClients] = useState<ClientResponse[]>([]);
+  const clients = allClients.filter(hasInboxEmail);
   const [toEmail, setToEmail] = useState("");
   const [fromEmail, setFromEmail] = useState("mary.j@abcclinic.com");
   const [fromName, setFromName] = useState("Mary Johnson");
@@ -42,8 +51,9 @@ export function CreateMailPage() {
     listClients()
       .then((fetched) => {
         if (cancelled) return;
-        setClients(fetched);
-        if (fetched.length > 0) setToEmail(fetched[0].inbox_email);
+        setAllClients(fetched);
+        const withInboxEmail = fetched.filter(hasInboxEmail);
+        if (withInboxEmail.length > 0) setToEmail(withInboxEmail[0].inbox_email);
       })
       .catch(() => {
         // Keep the empty list — the send button stays disabled below.
@@ -109,8 +119,9 @@ export function CreateMailPage() {
           <div className="flex flex-col gap-4">
             {clients.length === 0 ? (
               <p className="rounded-md2 border border-warning/20 bg-warning/5 px-3.5 py-2.5 text-xs text-slate-700">
-                No clients onboarded yet — create one via <code>POST /clients</code> (or run{" "}
-                <code>scripts/seed_clients.py</code>) before sending a dummy email.
+                No clients with a configured distribution email yet — onboard one via{" "}
+                <code>POST /clients</code> (or run <code>scripts/seed_clients.py</code>), or set
+                one for an existing client, before sending a dummy email.
               </p>
             ) : (
               <SelectInput

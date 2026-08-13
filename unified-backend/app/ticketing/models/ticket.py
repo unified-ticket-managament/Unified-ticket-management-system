@@ -79,6 +79,26 @@ class Ticket(Base):
         index=True,
     )
 
+    # "Assigned By" — the user who performed the assignment action
+    # (initial pre-assignment at ticket creation, a self-claim, or a
+    # transfer) that produced the CURRENT agent_id above. Stamped
+    # explicitly by every code path that writes agent_id (see
+    # InteractionService.transfer_agent/claim_ticket and
+    # InboxTicketService.create_ticket_from_interaction) — never
+    # re-derived at read time. Deliberately distinct from: agent_id
+    # (current assignee), created_by (who opened the ticket, if
+    # different from whoever first assigned it), and any Reporting
+    # Manager relationship (an unrelated org-chart concept —
+    # ReportingManagerTeam). Nullable — NULL for a still-unclaimed
+    # ticket, and left NULL by the migration that introduced this
+    # column for any pre-existing ticket it couldn't confidently
+    # backfill from the audit trail.
+    assigned_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id"),
+        nullable=True,
+    )
+
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.user_id"),

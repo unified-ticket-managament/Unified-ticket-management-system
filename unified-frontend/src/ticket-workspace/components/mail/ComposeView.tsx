@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, Save, Send, Trash2 } from "lucide-react";
+import { ArrowLeft, Save, Send, Trash2, X } from "lucide-react";
+import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -14,13 +15,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
 import { listRbacRoles, listRbacUsers, type RbacUserSummary } from "@tw/api/rbacUsers";
+import { listClientContacts } from "@tw/api/clients";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { htmlToPlainText } from "@tw/lib/richText";
-import type { ClientResponse } from "@tw/types";
+import type { ClientContact, ClientResponse } from "@tw/types";
 
 const LOCAL_DRAFT_KEY = "utms-mail-compose-draft";
 
@@ -79,6 +82,13 @@ function clearLocalDraft() {
 
 interface ComposeViewProps {
   clients: ClientResponse[];
+  // Distinguishes "still fetching the client list" and "the fetch
+  // failed" from "fetched fine, and there are genuinely zero clients"
+  // — all three used to look identical (`clients` is an empty array
+  // in every case), which is what let the empty-state message render
+  // while the request was still in flight.
+  clientsLoading: boolean;
+  clientsError: boolean;
   initialValues?: ComposeInitialValues;
   isSending: boolean;
   onSend: (payload: {
@@ -107,6 +117,16 @@ function parseEmails(value: string): string[] {
     .filter(Boolean);
 }
 
+// Same validation convention as EditProfileDialog/user-form-dialog/the
+// login form (a bare `z.string().email()` check) — there's no shared
+// isValidEmail-style utility anywhere in this codebase, so this
+// mirrors those call sites rather than inventing a new one.
+const emailAddressSchema = z.string().trim().email();
+
+function isValidEmailAddress(value: string): boolean {
+  return emailAddressSchema.safeParse(value).success;
+}
+
 // View 3 — replaces the right pane in-place when Compose is clicked
 // (never navigation). "Save Draft" here is genuinely functional but
 // local-only (browser storage): unlike Reply, a brand-new Compose
@@ -115,24 +135,73 @@ function parseEmails(value: string): string[] {
 // persistence is real (survives navigating away and back), just not
 // synced across devices, and is disclosed as such rather than
 // silently pretending it's server-backed.
-export function ComposeView({ clients, initialValues, isSending, onSend, onDiscard, onBack }: ComposeViewProps) {
+export function ComposeView({
+  clients,
+  clientsLoading,
+  clientsError,
+  initialValues,
+  isSending,
+  onSend,
+  onDiscard,
+  onBack,
+}: ComposeViewProps) {
   const { currentUser } = useAuthContext();
   const { pushToast } = useToast();
   const isForward = initialValues?.mode === "forward";
 
+  // `communication:reply_external` (the same permission that gates
+  // Reply/Reply All on an already-ticketed message, see
+  // MessageDetailsView.tsx's canReplyExternal) is the source of truth
+  // for whether the current user may compose external mail at all —
+  // this used to be a hardcoded role check that ignored it entirely
+  // (any role other than Account Manager/Site Lead/Super Admin was
+  // unconditionally blocked, even one granted the permission via the
+  // Roles UI, e.g. Team Lead). The backend's ensure_can_compose_for_
+  // client (interaction_service.compose_email's authorization) is the
+  // matching, final source of truth — this is only the UI-side gate,
+  // kept in sync with it rather than duplicating a separate rule.
+  const canComposeExternally = !!currentUser?.permissions.includes(
+    "communication:reply_external"
+  );
+
   const composableClients = useMemo(() => {
-    if (!currentUser) return [];
-    if (currentUser.role === "Site Lead" || currentUser.role === "Super Admin") return clients;
+    if (!currentUser || !canComposeExternally) return [];
     if (currentUser.role === "Account Manager") {
       return clients.filter((c) => c.account_manager_id === currentUser.user_id);
     }
-    return [];
-  }, [clients, currentUser]);
+    // Every other role holding the permission (Site Lead/Super Admin,
+    // and now any role explicitly granted it, e.g. Team Lead) is
+    // unrestricted — Compose has no per-role client-ownership concept
+    // outside Account Manager's own-clients business rule, and
+    // Client itself carries no category/team-lead field to scope by.
+    return clients;
+  }, [clients, currentUser, canComposeExternally]);
 
   const localDraft = useMemo(() => (initialValues ? null : readLocalDraft()), [initialValues]);
 
+  // "From" — which client this message is filed under (still a
+  // required field on POST /inbox/compose regardless of who the
+  // actual recipient turns out to be). Picking one here is what
+  // drives the "To" field's contact suggestions below; it no longer
+  // doubles as the recipient itself, which is also what fixes the
+  // "external address left Send disabled" bug — canSend (below) no
+  // longer requires the "To" text to match a client at all.
   const [clientId, setClientId] = useState(initialValues?.clientId ?? localDraft?.clientId ?? "");
+  // "To" — the actual recipient(s). A plain comma-separated address
+  // list, same convention as Cc/Bcc (parseEmails below) rather than a
+  // chip UI, so entering more than one is just typing/selecting more
+  // than once. Independent of clientId: a manually-typed external
+  // address is exactly as valid a recipient as a dropdown-picked
+  // contact, which is what makes canSend correct for both cases.
   const [toEmail, setToEmail] = useState(initialValues?.toEmail ?? localDraft?.toEmail ?? "");
+  // Combobox UI state for the (non-forward) "To" field below — the
+  // input's value IS toEmail itself (no separate query string).
+  const [showToSuggestions, setShowToSuggestions] = useState(false);
+  // Known contact addresses for the selected "From" client — backs
+  // the "To" suggestion dropdown, same listClientContacts endpoint
+  // TicketComposer.tsx/MessageDetailsView.tsx already use for their
+  // own reply "To" pickers.
+  const [clientContacts, setClientContacts] = useState<ClientContact[]>([]);
   const [cc, setCc] = useState(localDraft?.cc ?? "");
   const [bcc, setBcc] = useState(localDraft?.bcc ?? "");
   const [subject, setSubject] = useState(initialValues?.subject ?? localDraft?.subject ?? "");
@@ -196,37 +265,101 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Covers a restored local draft whose client list wasn't loaded yet
-  // at mount — resolves the recipient from the preset client once the
-  // client list is available. The "To" dropdown is the only recipient
-  // input now (no separate free-text field to preserve), so this
-  // always wins once clientId is set. Forward mode is deliberately
-  // excluded — its "To" is an internal user, never derived from the
-  // client, and clientId there is only carried along to satisfy
-  // POST /inbox/compose's required field (see handleSend below), not
-  // to drive the recipient.
+  // Fetches the selected "From" client's known contacts whenever it
+  // changes — mirrors TicketComposer.tsx's/MessageDetailsView.tsx's
+  // own effect for their reply "To" pickers. Forward mode never shows
+  // a client picker at all, so it's excluded; a cleared/unset clientId
+  // just means no contact suggestions yet, not an error.
   useEffect(() => {
-    if (isForward || !clientId || toEmail.trim()) return;
-    const client = composableClients.find((c) => c.client_id === clientId);
-    if (client?.inbox_email) setToEmail(client.inbox_email);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [composableClients, isForward]);
+    if (isForward || !clientId) {
+      setClientContacts([]);
+      return;
+    }
+    let cancelled = false;
+    listClientContacts(clientId)
+      .then((contacts) => {
+        if (!cancelled) setClientContacts(contacts);
+      })
+      .catch(() => {
+        if (!cancelled) setClientContacts([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isForward, clientId]);
 
   const canCompose = composableClients.length > 0;
   const isEmpty = isRichTextEmpty(bodyHtml);
-  const canSend = Boolean(clientId && toEmail.trim() && subject.trim() && !isEmpty);
+  // Every comma-separated entry in "To" — a dropdown-picked contact
+  // and a manually-typed external address are both just entries in
+  // this same list, so neither kind is treated as more "valid" than
+  // the other (this is also the fix for the reported bug: canSend
+  // used to require the typed text to literally match a client, which
+  // left an external address stuck disabled — it no longer looks at
+  // clientId at all here, only at whether every entry is a valid
+  // email).
+  const toEntries = useMemo(() => parseEmails(toEmail), [toEmail]);
+  const invalidToEntries = useMemo(
+    () => toEntries.filter((entry) => !isValidEmailAddress(entry)),
+    [toEntries]
+  );
+  const canSend = Boolean(
+    clientId && toEntries.length > 0 && invalidToEntries.length === 0 && subject.trim() && !isEmpty
+  );
 
-  // Every real client now sends/receives through the one shared
-  // ticketing@probeps.com mailbox — there's no more per-client "From"
-  // identity to pick (see root CLAUDE.md's client-matching rework).
-  // The "To" dropdown is the single source of recipient selection —
-  // picking a client resolves the actual recipient address internally
-  // from that client's own real address (Client.inbox_email); there's
-  // no separate recipient-email input to keep in sync.
-  function handleClientChange(nextClientId: string) {
-    setClientId(nextClientId);
-    const client = composableClients.find((c) => c.client_id === nextClientId);
-    setToEmail(client?.inbox_email ?? "");
+  // The "To" field is a single text input (never a separate field —
+  // see the component's own comment on parseEmails/Cc/Bcc for the
+  // established comma-separated-multiple-addresses convention this
+  // reuses) with a suggestion dropdown layered on top: suggestions are
+  // the selected "From" client's known contacts, filtered by whatever
+  // is typed after the last comma, excluding contacts already present
+  // in the field. Selecting one fills in just that in-progress segment
+  // (see handleSelectContactSuggestion) rather than replacing the
+  // whole field, so it composes naturally with already-entered
+  // recipients. Text that never matches a suggestion is still a
+  // perfectly valid recipient — it's simply an external address.
+  const toLastSegment = useMemo(() => {
+    const segments = toEmail.split(",");
+    return segments[segments.length - 1].trim().toLowerCase();
+  }, [toEmail]);
+
+  const toSuggestions = useMemo(() => {
+    if (!clientId) return [];
+    const chosen = new Set(toEntries.map((entry) => entry.toLowerCase()));
+    return clientContacts.filter((contact) => {
+      if (chosen.has(contact.email.toLowerCase())) return false;
+      if (!toLastSegment) return true;
+      return (
+        contact.email.toLowerCase().includes(toLastSegment) ||
+        (contact.name ?? "").toLowerCase().includes(toLastSegment)
+      );
+    });
+  }, [clientContacts, clientId, toEntries, toLastSegment]);
+
+  const selectedClient = composableClients.find((c) => c.client_id === clientId);
+
+  function handleFromChange(newClientId: string) {
+    setClientId(newClientId);
+    // Recipients are specific to whichever client this message is
+    // filed under — switching "From" clears them rather than leaving
+    // a stale contact address associated with the wrong client.
+    setToEmail("");
+  }
+
+  function handleSelectContactSuggestion(contact: ClientContact) {
+    const segments = toEmail.split(",");
+    segments[segments.length - 1] = ` ${contact.email}`;
+    setToEmail(
+      segments
+        .map((segment) => segment.trim())
+        .filter(Boolean)
+        .join(", ")
+    );
+    setShowToSuggestions(false);
+  }
+
+  function handleClearRecipient() {
+    setToEmail("");
   }
 
   function handleSaveDraft() {
@@ -242,12 +375,18 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
 
   async function handleSend() {
     if (!canSend) return;
+    // onSend/POST /inbox/compose still take one primary `to_email`
+    // (see ComposeEmailRequest on the backend, deliberately
+    // unchanged) — "To" supporting several entries is a UI-level
+    // convenience, so every recipient past the first rides along as
+    // an additional Cc rather than requiring a backend/API change.
+    const [primaryTo, ...extraTo] = toEntries;
     const result = await onSend({
       clientId,
-      toEmail: toEmail.trim(),
+      toEmail: primaryTo,
       subject: subject.trim(),
       message: htmlToPlainText(bodyHtml),
-      cc: parseEmails(cc),
+      cc: Array.from(new Set([...extraTo, ...parseEmails(cc)])),
       bcc: parseEmails(bcc),
       files,
     });
@@ -281,19 +420,52 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-        {!canCompose ? (
+        {clientsLoading ? (
+          <WorkflowLoader loading size={56} />
+        ) : clientsError ? (
           <div className="rounded-lg border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
-            {currentUser
-              ? "Composing new mail is only available to Account Managers (for their own clients) and Site Lead/Super Admin."
-              : "Loading..."}
+            Couldn't load clients. Try refreshing the page.
+          </div>
+        ) : !canCompose ? (
+          <div className="rounded-lg border border-border bg-muted/30 px-4 py-6 text-center text-sm text-muted-foreground">
+            {!currentUser
+              ? "Loading..."
+              : !canComposeExternally
+                ? "You don't have permission to compose external mail. Ask an administrator to grant you the \"communication:reply_external\" permission."
+                : "There are no clients available for you to compose mail to."}
           </div>
         ) : (
           <div className="flex flex-col gap-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">From</label>
-              <div className="flex h-9 items-center rounded-md border border-border bg-muted/30 px-3 text-sm text-muted-foreground">
-                Ticketing Support &lt;ticketing@probeps.com&gt;
-              </div>
+              {isForward ? (
+                <div className="flex h-9 items-center rounded-md border border-border bg-muted/30 px-3 text-sm text-muted-foreground">
+                  Ticketing Support &lt;ticketing@probeps.com&gt;
+                </div>
+              ) : (
+                // Every outbound message still actually dispatches
+                // from the one shared support mailbox (unchanged,
+                // backend-enforced) — this picks which authorized
+                // client the message is filed under, sourced from the
+                // same composableClients scoping (Account Manager:
+                // own clients only; else: unrestricted) already used
+                // elsewhere in this component, never a hardcoded
+                // list. Selecting one populates the "To" field's
+                // contact suggestions below.
+                <Select value={clientId} onValueChange={handleFromChange}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select a client" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {composableClients.map((client) => (
+                      <SelectItem key={client.client_id} value={client.client_id}>
+                        {client.name}
+                        {client.inbox_email ? ` · ${client.inbox_email}` : " · (no distribution email configured)"}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
 
             <div>
@@ -319,22 +491,87 @@ export function ComposeView({ clients, initialValues, isSending, onSend, onDisca
                   </SelectContent>
                 </Select>
               ) : (
-                <Select value={clientId} onValueChange={handleClientChange}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Choose a client to email" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {composableClients.map((client) => (
-                      <SelectItem key={client.client_id} value={client.client_id}>
-                        {client.name} · {client.inbox_email}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="relative">
+                  <div className="relative">
+                    <Input
+                      type="text"
+                      value={toEmail}
+                      onChange={(e) => {
+                        setToEmail(e.target.value);
+                        setShowToSuggestions(true);
+                      }}
+                      onFocus={() => setShowToSuggestions(true)}
+                      onBlur={() => window.setTimeout(() => setShowToSuggestions(false), 150)}
+                      placeholder="Select a contact or enter an email…"
+                      className="pr-8"
+                      aria-invalid={invalidToEntries.length > 0}
+                    />
+                    {toEmail.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleClearRecipient}
+                        aria-label="Clear recipients"
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {showToSuggestions && (
+                    <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-md border border-border bg-popover shadow-md">
+                      {!clientId ? (
+                        <p className="px-3 py-2.5 text-xs text-muted-foreground">
+                          Select a client in the From field to see their known contacts, or type
+                          an external address directly.
+                        </p>
+                      ) : toSuggestions.length === 0 ? (
+                        <p className="px-3 py-2.5 text-xs text-muted-foreground">
+                          No matching contact — the typed address will be used as-is.
+                        </p>
+                      ) : (
+                        toSuggestions.map((contact) => (
+                          <button
+                            type="button"
+                            key={contact.email}
+                            // onMouseDown (not onClick) fires before the
+                            // input's onBlur closes the dropdown.
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              handleSelectContactSuggestion(contact);
+                            }}
+                            className="flex w-full flex-col items-start px-3 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-muted"
+                          >
+                            <span className="font-medium">{contact.name ?? contact.email}</span>
+                            {contact.name && (
+                              <span className="text-[11px] text-muted-foreground">
+                                {contact.email}
+                              </span>
+                            )}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+              {invalidToEntries.length > 0 && (
+                <p className="mt-1 text-[11px] text-destructive">
+                  {invalidToEntries.length === 1
+                    ? `"${invalidToEntries[0]}" isn't a valid email address.`
+                    : "Enter valid email addresses, separated by commas."}
+                </p>
               )}
               {isForward && (
                 <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
                   Forwarding is limited to internal organization users — no external addresses.
+                </p>
+              )}
+              {!isForward && (
+                <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                  {selectedClient
+                    ? `Filed under ${selectedClient.name} — pick one of their contacts above, or add any external address (separate multiple with commas).`
+                    : "Select a client in the From field above, then pick a contact or type any external address (separate multiple with commas)."}
                 </p>
               )}
             </div>

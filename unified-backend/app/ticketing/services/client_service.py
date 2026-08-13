@@ -114,35 +114,61 @@ class ClientService:
 
     async def list_contacts(self, client_id) -> list[ClientContactResponse]:
         """
-        Every distinct personal address this client company has ever
-        emailed our shared inbox from, most-recently-used first —
-        backs the reply composer's "To" picker so an agent can
-        address a reply to any contact who has actually written in,
-        not only whoever happened to send the one thread being
-        replied to.
+        Every known contact address for a client company — merges two
+        sources rather than relying on just one:
+
+        - The configured `client_contacts` table (seeded from the
+          official org-data import, see ClientContact's own
+          docstring) — the authoritative "who's a real contact at
+          this company" list, listed first, independent of whether
+          they've actually emailed the shared inbox yet. This is what
+          backs Compose's "To" dropdown once a client is picked.
+        - Every distinct personal address this client has actually
+          emailed our shared inbox from, most-recently-used first —
+          picks up a real contact who wrote in but isn't (yet, or
+          never was) in the configured list, and is also the only
+          source with a display name (EmailPayload.from_name),
+          layered onto a configured-list match by email when present.
+
+        Backs both reply composers' "To" picker (an agent isn't
+        limited to whoever happened to send the thread being replied
+        to) and Compose's own "To" picker.
         """
 
-        if self.interaction_repository is None:
-            return []
+        interaction_names: dict[str, str | None] = {}
+        if self.interaction_repository is not None:
+            emails = await self.interaction_repository.list_inbound_emails_for_client(
+                client_id
+            )
+            for interaction in emails:
+                try:
+                    payload = EmailPayload.model_validate(interaction.payload)
+                except Exception:
+                    continue
 
-        emails = await self.interaction_repository.list_inbound_emails_for_client(
-            client_id
-        )
+                if not payload.from_email or payload.from_email in interaction_names:
+                    continue
+
+                interaction_names[payload.from_email] = payload.from_name
 
         seen: set[str] = set()
         contacts: list[ClientContactResponse] = []
-        for interaction in emails:
-            try:
-                payload = EmailPayload.model_validate(interaction.payload)
-            except Exception:
-                continue
 
-            if not payload.from_email or payload.from_email in seen:
+        configured = await self.client_repository.list_contacts_by_client_id(client_id)
+        for contact in configured:
+            if contact.email in seen:
                 continue
-
-            seen.add(payload.from_email)
+            seen.add(contact.email)
             contacts.append(
-                ClientContactResponse(email=payload.from_email, name=payload.from_name)
+                ClientContactResponse(
+                    email=contact.email, name=interaction_names.get(contact.email)
+                )
             )
+
+        for email, name in interaction_names.items():
+            if email in seen:
+                continue
+            seen.add(email)
+            contacts.append(ClientContactResponse(email=email, name=name))
 
         return contacts

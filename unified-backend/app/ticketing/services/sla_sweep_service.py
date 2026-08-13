@@ -7,6 +7,7 @@ from app.notifications.service import NotificationService
 from app.ticketing.enums import ActorRole, AuditEntityType, AuditEventType
 from app.ticketing.models.first_response_sla import FirstResponseSLA
 from app.ticketing.models.resolution_sla import ResolutionSLA
+from app.ticketing.repositories.audit_log_repository import AuditLogRepository
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.first_response_sla_repository import (
     FirstResponseSLARepository,
@@ -183,6 +184,7 @@ class SLASweepService:
             resolution_sla_repository=resolution_sla_repository,
             sla_policy_repository=sla_policy_repository,
             user_repository=user_repository,
+            audit_log_repository=AuditLogRepository(ticket_repository.db),
             notification_service=notification_service,
             escalation_handling_sla_service=self.escalation_handling_sla_service,
         )

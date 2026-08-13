@@ -72,7 +72,10 @@ export interface ClientCreateRequest {
 export interface ClientResponse {
   client_id: string;
   name: string;
-  inbox_email: string;
+  // The client's official distribution/intake address — null when it
+  // has none configured (never inferred from a contact/employee
+  // address; see the backend Client model's own docstring).
+  inbox_email: string | null;
   account_manager_id: string;
   is_active: boolean;
   created_at: string;
@@ -305,6 +308,16 @@ export interface TicketResponse {
   client_company_name: string | null;
   agent_name: string | null;
   created_by_name: string | null;
+
+  // "Assigned By" — the user who performed the assignment (initial
+  // pre-assignment at creation, a claim, or a transfer) that produced
+  // the CURRENT agent_id above. Distinct from agent_id (current
+  // assignee) and created_by (who opened the ticket). A real,
+  // persisted column on the backend, stamped explicitly by every
+  // assignment code path. Null for a still-unclaimed ticket, or a
+  // pre-existing ticket with no derivable assignment history.
+  assigned_by?: string | null;
+  assigned_by_name?: string | null;
   related_tickets: RelatedTicketSummary[];
 }
 

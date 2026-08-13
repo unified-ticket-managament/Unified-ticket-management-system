@@ -191,14 +191,18 @@ async def main() -> None:
         clients_by_name: dict[str, Client] = {}
 
         for client_rec in result.clients.values():
+            # Matched by name, not inbox_email — several clients can
+            # legitimately share a NULL inbox_email (no configured
+            # distribution address), which inbox_email could never
+            # have disambiguated between anyway.
             existing = (
-                await session.execute(select(Client).where(Client.inbox_email == client_rec.primary_contact_email))
+                await session.execute(select(Client).where(Client.name == client_rec.name))
             ).scalar_one_or_none()
 
             if existing is None:
                 existing = Client(
                     name=client_rec.name,
-                    inbox_email=client_rec.primary_contact_email,
+                    inbox_email=client_rec.inbox_email,
                     account_manager_id=users_by_employee_id[client_rec.account_manager_employee_id].user_id,
                 )
                 session.add(existing)
@@ -244,11 +248,17 @@ async def main() -> None:
                     )
                 ).scalar_one_or_none()
                 if existing is None:
+                    # No contact is ever marked primary by this
+                    # import anymore — "primary" used to mean
+                    # "promoted to inbox_email", a concept that no
+                    # longer exists now that inbox_email is a
+                    # curated, explicit distribution address (see
+                    # mapping.resolve_distribution_email).
                     session.add(
                         ClientContact(
                             client_id=client.client_id,
                             email=email,
-                            is_primary=(email == client_rec.primary_contact_email),
+                            is_primary=False,
                         )
                     )
 

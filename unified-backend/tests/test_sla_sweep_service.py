@@ -95,11 +95,10 @@ from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.ticket import TicketUpdate
 from app.ticketing.services.sla_sweep_service import SLASweepService
 
-# "Eligibility" (used by test_escalation_service.py/test_transfer_agent_
-# ownership.py) only has 1 seeded active Staff member in this dev
-# database — not enough for this file's two-distinct-owner reassignment
-# scenarios (Examples 3/4). "Claims" has 2 Staff + 1 Team Lead seeded.
-TEAM_LEAD_CATEGORY = "Claims"
+# "Payment Posting" has multiple Staff + 1 Team Lead seeded — enough
+# for this file's two-distinct-owner reassignment scenarios (Examples
+# 3/4). Matches test_escalation_service.py's own TEAM_LEAD_CATEGORY.
+TEAM_LEAD_CATEGORY = "Payment Posting"
 
 
 @pytest.fixture
@@ -179,6 +178,16 @@ async def _make_ticket_with_resolution_clock(
         ticket_id=uuid.uuid4(),
         client_company_id=client.client_id,
         agent_id=agent_id,
+        # Assignment-chain escalation routing (root CLAUDE.md's "SLA &
+        # Escalation" section) resolves owners from assigned_by/
+        # created_by, not role/category — a claimed ticket here is
+        # modeled as "this Team Lead assigned it to this Staff member",
+        # so any test in this file that escalates still lands on the
+        # same team_lead this helper already resolves everything else
+        # (client ownership, category) from, instead of falling through
+        # to the terminal Site Lead/Super Admin safety net.
+        assigned_by=team_lead.user_id if agent_id is not None else None,
+        created_by=team_lead.user_id,
         title="SLA sweep regression test ticket",
         ticket_type=TEAM_LEAD_CATEGORY,
         current_status="OPEN",
@@ -331,7 +340,7 @@ async def test_half_at_risk_breached_all_go_to_current_owner_then_escalation_onl
     ]
     escalation = await escalation_repo.get_active_by_ticket_id(ticket.ticket_id)
     assert escalation is not None
-    assert escalation.level == EscalationLevel.TEAM_LEAD
+    assert escalation.level == EscalationLevel.ASSIGNMENT_CHAIN
 
 
 async def test_milestone_not_sent_before_its_own_threshold(db_session):
@@ -533,12 +542,22 @@ async def test_escalation_starting_level_reflects_ownership_as_of_escalation_tim
     the refresh) when the ticket is already CRITICAL, which is exactly
     the gap this fix's own explicit, unconditional re-fetch closes.
 
-    Ticket starts unclaimed (agent_id=None); the simulated concurrent
-    reassignment hands it to the Team Lead themselves. If the sweep
-    used its stale initial snapshot, _resolve_starting_level would see
-    agent_id=None and start the escalation at TEAM_LEAD — re-notifying
-    the very Team Lead who just took the ticket. With the fix, it sees
-    the Team Lead now owns it and correctly skips to MANAGER instead.
+    Ticket starts unclaimed (agent_id=None, so assigned_by/created_by
+    are what build_chain_owner_ids would fall back on); the simulated
+    concurrent reassignment hands it to the Team Lead themselves (via a
+    raw UPDATE touching only agent_id — assigned_by deliberately stays
+    untouched, exactly as a real concurrent transfer_agent call
+    wouldn't have happened yet either). If the sweep used its stale
+    initial snapshot, build_chain_owner_ids would see agent_id=None and
+    build the chain off created_by (this helper's own team_lead) —
+    re-notifying the very Team Lead who just took the ticket. With the
+    fix, it sees the Team Lead now owns it and correctly builds the
+    chain from *their* assigned_by/created_by instead — both of which
+    point back to this same team_lead (assigned_by is still None post-
+    "concurrent" update, created_by is team_lead), which is circular
+    (holder == created_by) and resolves to no chain at all — correctly
+    falling through to the terminal Site Lead/Super Admin safety net
+    rather than re-notifying team_lead either way.
     """
 
     team_lead = await _get_team_lead(db_session)
@@ -582,7 +601,13 @@ async def test_escalation_starting_level_reflects_ownership_as_of_escalation_tim
         ticket.ticket_id
     )
     assert escalation is not None
-    assert escalation.level == EscalationLevel.MANAGER
+    # The fix's re-fetch observed the concurrent reassignment (agent_id
+    # is no longer None) and built the chain from the Team Lead's own
+    # assigned_by/created_by — not from the stale agent_id=None
+    # snapshot, which would have incorrectly re-notified team_lead
+    # himself via created_by.
+    assert escalation.level == EscalationLevel.SITE_LEAD
+    assert str(team_lead.user_id) not in escalation.owner_ids
 
 
 # ---------------------------------------------------------------------
@@ -736,7 +761,7 @@ async def test_all_thresholds_crossed_in_one_tick_still_route_to_pre_escalation_
         ticket.ticket_id
     )
     assert escalation is not None
-    assert escalation.level == EscalationLevel.TEAM_LEAD
+    assert escalation.level == EscalationLevel.ASSIGNMENT_CHAIN
 
 
 async def test_escalation_failure_does_not_block_notifications_and_retries_cleanly(
@@ -795,7 +820,7 @@ async def test_escalation_failure_does_not_block_notifications_and_retries_clean
 
     escalation = await escalation_repo.get_active_by_ticket_id(ticket.ticket_id)
     assert escalation is not None
-    assert escalation.level == EscalationLevel.TEAM_LEAD
+    assert escalation.level == EscalationLevel.ASSIGNMENT_CHAIN
 
     team_lead_notifications = await _notifications_for(
         db_session, user_id=team_lead.user_id, ticket_id=ticket.ticket_id
@@ -850,7 +875,7 @@ async def test_full_stage_lifecycle_staff_then_accepted_team_lead_never_cross_co
     escalation_repo = TicketEscalationRepository(db_session)
     escalation = await escalation_repo.get_active_by_ticket_id(ticket.ticket_id)
     assert escalation is not None
-    assert escalation.level == EscalationLevel.TEAM_LEAD
+    assert escalation.level == EscalationLevel.ASSIGNMENT_CHAIN
 
     # Staff must still show exactly the same 3 — nothing leaked in from
     # the escalation crossing itself.

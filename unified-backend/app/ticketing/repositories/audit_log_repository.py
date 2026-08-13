@@ -119,6 +119,43 @@ class AuditLogRepository:
         )
         return list(result.scalars().all())
 
+    async def find_prior_assigner(
+        self, *, ticket_id: UUID, agent_user_id: UUID
+    ) -> UUID | None:
+        """
+        "Who assigned this ticket to `agent_user_id`" — the `actor_id`
+        of the most recent AGENT_TRANSFERRED/TICKET_CLAIMED row on this
+        ticket whose `new_values["agent_id"]` equals `agent_user_id`.
+        This is the one place the historical assignment chain (beyond
+        the single, current-state `Ticket.assigned_by`) is
+        reconstructed — see EscalationService/escalation_rules.py's
+        `build_chain_owner_ids`, which climbs one hop at a time by
+        calling this repeatedly. Returns None if no such event exists
+        (e.g. `agent_user_id` was the ticket's very first assignee, set
+        at creation rather than via a later transfer/claim) — the
+        caller treats that as a dead end, not an error.
+
+        A TICKET_CLAIMED row's own `actor_id` equals `agent_user_id`
+        itself (a self-claim) — deliberately not filtered out here;
+        the caller's own dead-end check (`assigner == holder`) is what
+        recognizes that case and stops climbing, so this method stays
+        a plain, unopinionated lookup.
+        """
+
+        result = await self.db.execute(
+            select(AuditLog.actor_id)
+            .where(
+                AuditLog.ticket_id == ticket_id,
+                AuditLog.event_type.in_(
+                    [AuditEventType.AGENT_TRANSFERRED, AuditEventType.TICKET_CLAIMED]
+                ),
+                AuditLog.new_values["agent_id"].astext == str(agent_user_id),
+            )
+            .order_by(AuditLog.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def list_by_ticket_ids(
         self,
         ticket_ids: list[UUID],

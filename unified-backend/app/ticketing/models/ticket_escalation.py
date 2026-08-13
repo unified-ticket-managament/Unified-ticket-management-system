@@ -17,15 +17,16 @@ class TicketEscalation(Base):
     from (and never mutates) ResolutionSLA. A ticket's Resolution SLA
     keeps its own started_at/due_at/breach state exactly as if no
     escalation had ever happened; this table only tracks *who currently
-    owns following up* and *by when they must acknowledge*, advancing
-    up the TEAM_LEAD -> MANAGER -> SITE_LEAD chain (EscalationLevel) if
-    ignored. At most one non-CLOSED row exists per ticket at a time
-    (enforced by a partial unique index — see the migration), but
-    CLOSED rows are kept for history rather than deleted.
+    owns following up* and *by when they must acknowledge*, climbing
+    the ticket's own assignment history (chain_owner_ids/chain_position,
+    see escalation_rules.build_chain_owner_ids) if ignored — not a
+    fixed role ladder. At most one non-CLOSED row exists per ticket at
+    a time (enforced by a partial unique index — see the migration),
+    but CLOSED rows are kept for history rather than deleted.
 
     `owner_ids` is a JSONB list of user_id strings rather than a join
-    table: a level can resolve to more than one user (e.g. every Team
-    Lead for a still-unclaimed ticket's category), and this list is
+    table: a step can resolve to more than one user (e.g. the current
+    assignee's own assigner plus their Reporting Manager), and this list is
     wholesale-replaced on every advance/create — never queried by its
     contents, only displayed — so a join table would add a round trip
     for no real benefit over this codebase's existing JSONB usage
@@ -72,6 +73,50 @@ class TicketEscalation(Base):
     owner_ids: Mapped[list[str]] = mapped_column(
         JSONB,
         default=list,
+        nullable=False,
+    )
+
+    # Per-owner tag (OWNER_ROLE_ASSIGNEE_CHAIN / _REPORTING_MANAGER /
+    # _SITE_LEAD_FALLBACK, app/ticketing/enums/escalation_enums.py),
+    # keyed by the same user_id strings as owner_ids. The only thing
+    # this controls: whether that owner may Assign the ticket to
+    # themselves when Acknowledging (EscalationService.
+    # get_acknowledge_candidates / InteractionService.
+    # acknowledge_and_assign_escalation) — a Reporting Manager may
+    # Acknowledge + Assign to someone else, never to themselves.
+    # owner_ids membership itself (who may Acknowledge/Confirm/
+    # manually escalate at all) is unaffected by this tag.
+    owner_roles: Mapped[dict[str, str]] = mapped_column(
+        JSONB,
+        default=dict,
+        nullable=False,
+    )
+
+    # The frozen assignment chain this escalation "generation" climbs —
+    # ordered nearest-first (chain_owner_ids[0] is whoever assigned the
+    # ticket to its current agent_id; chain_owner_ids[1] is whoever
+    # assigned *them*, and so on), computed once by
+    # escalation_rules.build_chain_owner_ids and never mutated in
+    # place — see chain_position below for where ownership currently
+    # sits within it. Recomputed fresh (and chain_position reset to 0)
+    # only by advance_for_handling_sla_breach, which is a genuine new
+    # escalation generation against the ticket's now-different
+    # agent_id/assigned_by, not a further climb of this same chain.
+    chain_owner_ids: Mapped[list[str]] = mapped_column(
+        JSONB,
+        default=list,
+        nullable=False,
+    )
+
+    # Index into chain_owner_ids for the step currently active.
+    # `chain_position >= len(chain_owner_ids)` means the chain is
+    # exhausted — ownership has fallen back to the terminal Site
+    # Lead/Super Admin safety net (level=SITE_LEAD, owner_roles=
+    # SITE_LEAD_FALLBACK for each), same "re-notify rather than climb
+    # further" behavior the old role ladder's terminal SITE_LEAD level
+    # already had.
+    chain_position: Mapped[int] = mapped_column(
+        default=0,
         nullable=False,
     )
 

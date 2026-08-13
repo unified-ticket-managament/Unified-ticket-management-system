@@ -78,7 +78,10 @@ export interface ClientCreateRequest {
 export interface ClientResponse {
   client_id: string;
   name: string;
-  inbox_email: string;
+  // The client's official distribution/intake address — null when it
+  // has none configured (never inferred from a contact/employee
+  // address; see the backend Client model's own docstring).
+  inbox_email: string | null;
   account_manager_id: string;
   is_active: boolean;
   created_at: string;
@@ -146,7 +149,12 @@ export interface AssignableGroup {
 }
 
 export interface AssignableAgentsResponse {
-  me: AssignableUserSummary;
+  // null only for EscalationService.get_acknowledge_candidates' one
+  // exception: a Reporting-Manager-tagged escalation owner may not
+  // assign the ticket to themselves — every other caller of this
+  // shape (the Create Ticket / Reopen pickers) still always returns a
+  // real value.
+  me: AssignableUserSummary | null;
   groups: AssignableGroup[];
 }
 
@@ -351,6 +359,12 @@ export interface InteractionReplyRequest {
   cc?: string[];
   bcc?: string[];
   to_email?: string | null;
+  // Selects Graph's native replyAll action over reply when the
+  // message being replied to has a known Graph message id — mirrors
+  // the Mail page's own Reply/Reply All toggle. Falls back to a
+  // plain sendMail-based send when the backend has no Graph id to
+  // reply against.
+  reply_all?: boolean;
 }
 
 export interface InteractionReplyResponse {
@@ -394,6 +408,17 @@ export interface TicketResponse {
   agent_name: string | null;
   created_by_name: string | null;
   closed_by_name: string | null;
+
+  // "Assigned By" — the user who performed the assignment (initial
+  // pre-assignment at creation, a claim, or a transfer) that produced
+  // the CURRENT agent_id above. Distinct from agent_id (current
+  // assignee), created_by (who opened the ticket), and any Reporting
+  // Manager relationship. A real, persisted column on the backend's
+  // Ticket model, stamped explicitly by every assignment code path —
+  // not derived at read time. Null for a still-unclaimed ticket, or a
+  // pre-existing ticket with no derivable assignment history.
+  assigned_by?: string | null;
+  assigned_by_name?: string | null;
   related_tickets: RelatedTicketSummary[];
 
   // Escalation display fields — LEFT JOIN-sourced on the backend
@@ -619,6 +644,9 @@ export interface ReplyRequest {
   // those files are embedded in the actual outbound email, not just
   // recorded on the ticket's own timeline.
   attachment_source_interaction_id?: string | null;
+  // See InteractionReplyRequest.reply_all above — same meaning, same
+  // reason.
+  reply_all?: boolean;
 }
 
 // ==========================================================
@@ -777,8 +805,13 @@ export interface FirstResponseSLAState {
 
 // Internal escalation ownership/acknowledgment chain — entirely
 // separate from (and never reflects a restart of) the Resolution SLA
-// above. TEAM_LEAD is always the first level; SITE_LEAD is terminal.
-export type EscalationLevel = "TEAM_LEAD" | "MANAGER" | "SITE_LEAD";
+// above. Routing follows the ticket's own assignment history now, not
+// role hierarchy (see root CLAUDE.md's "SLA & Escalation" section):
+// every non-terminal step is ASSIGNMENT_CHAIN; SITE_LEAD stays a real,
+// literal terminal marker (the chain-exhausted Site Lead/Super Admin
+// safety net). TEAM_LEAD/MANAGER are retired — kept only so old rows
+// still deserialize, nothing writes them anymore.
+export type EscalationLevel = "TEAM_LEAD" | "MANAGER" | "ASSIGNMENT_CHAIN" | "SITE_LEAD";
 export type EscalationStatus = "ACTIVE" | "ACKNOWLEDGED" | "CLOSED";
 
 export interface TicketEscalationState {

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeftRight,
   CheckCircle2,
@@ -15,6 +15,10 @@ import { Button } from "@tw/components/common/Button";
 import { Modal } from "@tw/components/common/Modal";
 import { SelectInput, TextArea } from "@tw/components/common/FormField";
 import { FileDropzone } from "@tw/components/common/FileDropzone";
+import {
+  SearchableSelect,
+  type SearchableSelectOption,
+} from "@tw/components/common/SearchableSelect";
 import { EditAccessPanel } from "@tw/components/ticket/EditAccessPanel";
 import { validateFiles } from "@tw/lib/attachmentMeta";
 import { formatAssigneeLabel } from "@tw/lib/format";
@@ -191,6 +195,33 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
     SELF_ASSIGN_ROLES.has(currentUser.role);
   const hasTransferCandidates =
     canSelfAssignViaTransfer || transferGroups.some((g) => g.users.length > 0);
+  // Flattened into the single searchable combobox's option shape —
+  // "Myself" (when offered) gets an empty group so it renders with no
+  // heading, above every named role group, matching the plain,
+  // ungrouped <option> it used to be. Search/filter itself now lives
+  // inside SearchableSelect, driven by each option's `searchText`.
+  const transferOptions = useMemo<SearchableSelectOption[]>(() => {
+    const options: SearchableSelectOption[] = [];
+    if (canSelfAssignViaTransfer && transferMe) {
+      options.push({
+        value: transferMe.user_id,
+        label: `Myself (${formatAssigneeLabel(transferMe)})`,
+        searchText: `${transferMe.name} ${transferMe.employee_number ?? ""} myself`.toLowerCase(),
+        group: "",
+      });
+    }
+    for (const group of transferGroups) {
+      for (const user of group.users) {
+        options.push({
+          value: user.user_id,
+          label: formatAssigneeLabel(user),
+          searchText: `${user.name} ${user.employee_number ?? ""}`.toLowerCase(),
+          group: group.role,
+        });
+      }
+    }
+    return options;
+  }, [canSelfAssignViaTransfer, transferMe, transferGroups]);
   // Closed is now terminal for every action, including Change Status —
   // Reopen Ticket (its own dedicated, permission-gated action) is the
   // only way off CLOSED.
@@ -513,27 +544,15 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
                 {activeTicket.agent_name ?? "Unassigned"}
               </p>
             </div>
-            <SelectInput
+            <SearchableSelect
               label={isUnclaimed ? "Assign to" : "New owner"}
+              hint="Search by name or employee ID, across every role — or open the list and pick one."
+              placeholder="Search by name or employee ID…"
+              options={transferOptions}
               value={newAgentId}
-              onChange={(e) => setNewAgentId(e.target.value)}
-            >
-              {canSelfAssignViaTransfer && transferMe && (
-                <option value={transferMe.user_id}>{`Myself (${formatAssigneeLabel(transferMe)})`}</option>
-              )}
-              {transferGroups.map(
-                (group) =>
-                  group.users.length > 0 && (
-                    <optgroup key={group.role} label={group.role}>
-                      {group.users.map((user) => (
-                        <option key={user.user_id} value={user.user_id}>
-                          {formatAssigneeLabel(user)}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )
-              )}
-            </SelectInput>
+              onChange={setNewAgentId}
+              emptyMessage="No matching users found."
+            />
             <TextArea
               label="Reason"
               hint="Why is this ticket being transferred? Recorded on the audit log."

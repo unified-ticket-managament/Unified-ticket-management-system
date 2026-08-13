@@ -749,6 +749,7 @@ class TicketRepository:
         ClientUser = aliased(User)
         AgentUser = aliased(User)
         CreatedByUser = aliased(User)
+        AssignedByUser = aliased(User)
 
         # Per-viewer, not per-ticket — whether *this specific caller*
         # is a current owner of the ticket's escalation, so the
@@ -787,6 +788,8 @@ class TicketRepository:
                     Client.name.label("client_company_name"),
                     AgentUser.name.label("agent_name"),
                     CreatedByUser.name.label("created_by_name"),
+                    Ticket.assigned_by,
+                    AssignedByUser.name.label("assigned_by_name"),
                     TicketEscalation.level.label("escalation_level"),
                     TicketEscalation.status.label("escalation_status"),
                     TicketEscalation.ack_due_at.label("escalation_ack_due_at"),
@@ -801,6 +804,7 @@ class TicketRepository:
                 .outerjoin(Client, Client.client_id == Ticket.client_company_id)
                 .outerjoin(AgentUser, AgentUser.user_id == Ticket.agent_id)
                 .outerjoin(CreatedByUser, CreatedByUser.user_id == Ticket.created_by)
+                .outerjoin(AssignedByUser, AssignedByUser.user_id == Ticket.assigned_by)
                 .outerjoin(
                     TicketEscalation,
                     and_(
@@ -872,6 +876,10 @@ class TicketRepository:
         (instead of overwriting) when the guard fails, so the caller
         can turn that into a 409 rather than silently stealing the
         ticket from whoever claimed it first.
+
+        A claim is a self-assignment — the claimer performed their own
+        assignment — so `assigned_by` is stamped to the same
+        `agent_id` in the same UPDATE.
         """
 
         result = await self.db.execute(
@@ -881,7 +889,11 @@ class TicketRepository:
                 Ticket.agent_id.is_(None),
                 Ticket.current_status == TicketStatus.OPEN,
             )
-            .values(agent_id=agent_id, current_status=TicketStatus.IN_PROGRESS)
+            .values(
+                agent_id=agent_id,
+                assigned_by=agent_id,
+                current_status=TicketStatus.IN_PROGRESS,
+            )
         )
 
         if result.rowcount == 0:

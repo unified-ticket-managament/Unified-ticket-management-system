@@ -50,6 +50,12 @@ interface WorkflowContextValue {
   clients: ClientResponse[];
   categories: CategoryResponse[];
 
+  // Compose (see ComposeView.tsx) needs to tell "still loading" apart
+  // from "loaded, and genuinely empty" apart from "failed to load" —
+  // `clients` alone (an empty array in all three cases) can't do that.
+  clientsLoading: boolean;
+  clientsError: boolean;
+
   selectedEmail: OpenEmailResponse | null;
   setSelectedEmail: (email: OpenEmailResponse | null) => void;
 
@@ -99,6 +105,8 @@ const WorkflowContext = createContext<WorkflowContextValue | undefined>(
 export function WorkflowProvider({ children }: { children: ReactNode }) {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [clients, setClients] = useState<ClientResponse[]>([]);
+  const [clientsLoading, setClientsLoading] = useState(true);
+  const [clientsError, setClientsError] = useState(false);
   const [categories, setCategories] = useState<CategoryResponse[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<OpenEmailResponse | null>(
     null
@@ -130,9 +138,17 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
 
     listClients()
       .then((fetched) => {
-        if (!cancelled) setClients(fetched);
+        if (!cancelled) {
+          setClients(fetched);
+          setClientsLoading(false);
+        }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) {
+          setClientsError(true);
+          setClientsLoading(false);
+        }
+      });
 
     listCategories()
       .then((fetched) => {
@@ -155,6 +171,8 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     () => ({
       agents,
       clients,
+      clientsLoading,
+      clientsError,
       categories,
       selectedEmail,
       setSelectedEmail,
@@ -170,6 +188,8 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     [
       agents,
       clients,
+      clientsLoading,
+      clientsError,
       categories,
       selectedEmail,
       activeTicket,

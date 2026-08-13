@@ -44,6 +44,14 @@ class ReplyCreate(BaseModel):
     # exactly as before this field existed.
     attachment_source_interaction_id: UUID | None = None
 
+    # When the message being replied to arrived via Microsoft Graph,
+    # selects Graph's native replyAll action (Cc'ing everyone on the
+    # original thread) instead of reply — mirrors the Mail page's own
+    # Reply/Reply All toggle. Ignored (falls back to plain sendMail)
+    # when Graph's own message id for the original message isn't
+    # known — see build_reply_envelope's reply_to_provider_message_id.
+    reply_all: bool = False
+
 
 class InteractionReplyRequest(BaseModel):
     """
@@ -65,6 +73,9 @@ class InteractionReplyRequest(BaseModel):
 
     # See ReplyCreate.to_email above — same override, same reason.
     to_email: EmailStr | None = None
+
+    # See ReplyCreate.reply_all above — same meaning, same reason.
+    reply_all: bool = False
 
 
 class InteractionReplyResponse(ORMBase):
@@ -97,7 +108,8 @@ class PriorityChangeRequest(BaseModel):
 class TransferAgentRequest(BaseModel):
     """
     Request body for transferring full ownership of a ticket
-    from its current agent to a different active Staff member.
+    from its current agent to a different active, agent-capable
+    user (any role — see AGENT_ROLE_NAMES).
     """
 
     new_agent_id: UUID

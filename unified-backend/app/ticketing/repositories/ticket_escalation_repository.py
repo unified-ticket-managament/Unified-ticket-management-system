@@ -41,6 +41,9 @@ class TicketEscalationRepository:
         resolution_sla_id: UUID | None,
         level: EscalationLevel,
         owner_ids: set[UUID],
+        owner_roles: dict[UUID, str],
+        chain_owner_ids: list[UUID],
+        chain_position: int,
         triggered_by: str,
         triggered_by_user_id: UUID | None,
         ack_due_at: datetime,
@@ -53,6 +56,9 @@ class TicketEscalationRepository:
             level=level,
             status=EscalationStatus.ACTIVE,
             owner_ids=[str(uid) for uid in owner_ids],
+            owner_roles={str(uid): role for uid, role in owner_roles.items()},
+            chain_owner_ids=[str(uid) for uid in chain_owner_ids],
+            chain_position=chain_position,
             triggered_by=triggered_by,
             triggered_by_user_id=triggered_by_user_id,
             created_at=now,
@@ -71,6 +77,9 @@ class TicketEscalationRepository:
         *,
         new_level: EscalationLevel,
         owner_ids: set[UUID],
+        owner_roles: dict[UUID, str],
+        chain_owner_ids: list[UUID] | None = None,
+        chain_position: int,
         ack_due_at: datetime,
         now: datetime,
     ) -> TicketEscalation | None:
@@ -85,36 +94,57 @@ class TicketEscalationRepository:
         Resolution SLA reshift's gate.
 
         Guarded by a conditional UPDATE (`escalation_id = ... AND level
-        = <the level the caller observed before deciding to advance>`)
+        = <the level the caller observed before deciding to advance>
+        AND chain_position = <the chain_position the caller observed>`)
         rather than a plain ORM attribute set — mirrors
-        TicketRepository.claim's own race guard. This codebase's own
-        CLAUDE.md documents a real risk this protects against: a local
-        dev backend and the deployed Render backend can share the same
-        database, each running its own in-process scheduler, so two
-        overlapping evaluate_overdue() sweeps could both read the same
-        overdue escalation and both try to advance it. Returns None if
-        another process already advanced (or otherwise changed) this
-        escalation's level since it was read — the caller should treat
-        that as "nothing to do here" (skip the audit log / notification
-        for this one), not retry or raise.
+        TicketRepository.claim's own race guard. `chain_position` is
+        included alongside `level` (not just `level` alone, as before
+        the assignment-chain redesign) because multiple distinct steps
+        now share the same `level` value (every non-terminal chain hop
+        is ASSIGNMENT_CHAIN) — matching on `level` alone would no
+        longer prove nothing else changed the row since it was read.
+        This codebase's own CLAUDE.md documents a real risk this
+        protects against: a local dev backend and the deployed Render
+        backend can share the same database, each running its own
+        in-process scheduler, so two overlapping evaluate_overdue()
+        sweeps could both read the same overdue escalation and both
+        try to advance it. Returns None if another process already
+        advanced (or otherwise changed) this escalation since it was
+        read — the caller should treat that as "nothing to do here"
+        (skip the audit log / notification for this one), not retry or
+        raise.
+
+        `chain_owner_ids=None` (the default) leaves the existing frozen
+        chain untouched — the ordinary ack-timeout/manual-re-escalate
+        advance only ever moves `chain_position` one step further along
+        it. Passing an explicit list (advance_for_handling_sla_breach's
+        case — a genuinely new chain generation against the ticket's
+        now-different agent_id/assigned_by) replaces it outright.
         """
+
+        values: dict = {
+            "level": new_level,
+            "status": EscalationStatus.ACTIVE,
+            "owner_ids": [str(uid) for uid in owner_ids],
+            "owner_roles": {str(uid): role for uid, role in owner_roles.items()},
+            "chain_position": chain_position,
+            "level_started_at": now,
+            "ack_due_at": ack_due_at,
+            "acknowledged_at": None,
+            "acknowledged_by": None,
+            "has_advanced_past_starting_level": True,
+        }
+        if chain_owner_ids is not None:
+            values["chain_owner_ids"] = [str(uid) for uid in chain_owner_ids]
 
         result = await self.db.execute(
             update(TicketEscalation)
             .where(
                 TicketEscalation.escalation_id == escalation.escalation_id,
                 TicketEscalation.level == escalation.level,
+                TicketEscalation.chain_position == escalation.chain_position,
             )
-            .values(
-                level=new_level,
-                status=EscalationStatus.ACTIVE,
-                owner_ids=[str(uid) for uid in owner_ids],
-                level_started_at=now,
-                ack_due_at=ack_due_at,
-                acknowledged_at=None,
-                acknowledged_by=None,
-                has_advanced_past_starting_level=True,
-            )
+            .values(**values)
         )
 
         if result.rowcount == 0:
