@@ -140,6 +140,7 @@ async def get_inbox(
         user_repository=user_repository,
         ticket_repository=ticket_repository,
         read_receipt_repository=read_receipt_repository,
+        sla_service=build_sla_service(db),
     )
 
     return await service.get_inbox(
@@ -673,6 +674,7 @@ async def open_email(
         client_repository=client_repository,
         ticket_repository=ticket_repository,
         read_receipt_repository=read_receipt_repository,
+        sla_service=build_sla_service(db),
     )
 
     return await service.get_email_details(

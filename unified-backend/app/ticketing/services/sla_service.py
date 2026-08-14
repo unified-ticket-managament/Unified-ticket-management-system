@@ -601,16 +601,9 @@ class SLAService:
             escalation_handling_sla=handling_sla_state,
         )
 
-    async def get_first_response_sla_state(
-        self, *, interaction_id: UUID
-    ) -> FirstResponseSLAState | None:
-        clock = await self.first_response_sla_repository.get_by_interaction_id(
-            interaction_id
-        )
-        if clock is None:
-            return None
-
-        policy = await self._get_policy(clock.priority)
+    def _build_first_response_state(
+        self, clock: FirstResponseSLA, policy: SLAPolicy | None
+    ) -> FirstResponseSLAState:
         target_minutes = policy.first_response_target_minutes if policy is not None else 0
         at = clock.completed_at or datetime.now(timezone.utc)
 
@@ -624,6 +617,49 @@ class SLAService:
                 due_at=clock.due_at, target_minutes=target_minutes, at=at
             ),
         )
+
+    async def get_first_response_sla_state(
+        self, *, interaction_id: UUID
+    ) -> FirstResponseSLAState | None:
+        clock = await self.first_response_sla_repository.get_by_interaction_id(
+            interaction_id
+        )
+        if clock is None:
+            return None
+
+        policy = await self._get_policy(clock.priority)
+        return self._build_first_response_state(clock, policy)
+
+    async def get_first_response_sla_states_by_interaction_ids(
+        self, *, interaction_ids: list[UUID]
+    ) -> dict[UUID, FirstResponseSLAState]:
+        """
+        Batched sibling of get_first_response_sla_state — one query for
+        every clock plus one policy lookup per distinct priority
+        present, not per row (mirrors sla_sweep_service.py's own
+        fr_clients_by_id/fr_interactions_by_id batch-prefetch idiom).
+        Callers with many interactions (e.g. an inbox page) should use
+        this instead of calling the single-id method in a loop.
+        """
+
+        if not interaction_ids:
+            return {}
+
+        clocks = await self.first_response_sla_repository.list_by_interaction_ids(
+            interaction_ids
+        )
+
+        policies_by_priority: dict[TicketPriority, SLAPolicy | None] = {}
+        states: dict[UUID, FirstResponseSLAState] = {}
+
+        for clock in clocks:
+            if clock.priority not in policies_by_priority:
+                policies_by_priority[clock.priority] = await self._get_policy(clock.priority)
+            states[clock.interaction_id] = self._build_first_response_state(
+                clock, policies_by_priority[clock.priority]
+            )
+
+        return states
 
     # ---------------------------------------------------------
     # Admin policy CRUD

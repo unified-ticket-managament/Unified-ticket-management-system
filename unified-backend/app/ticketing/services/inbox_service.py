@@ -28,6 +28,7 @@ from app.ticketing.schemas.inbox import (
 )
 
 from app.ticketing.schemas.payloads import EmailPayload
+from app.ticketing.schemas.sla import FirstResponseSLAState
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
     GLOBAL_INBOX_ROLE_NAMES,
@@ -35,6 +36,7 @@ from app.ticketing.services.access_control import (
     TEAM_LEAD_ROLE_NAME,
     ensure_has_permission,
 )
+from app.ticketing.services.sla_service import SLAService
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +79,14 @@ class InboxService:
         user_repository: UserRepository | None = None,
         ticket_repository: TicketRepository | None = None,
         read_receipt_repository: MessageReadReceiptRepository | None = None,
+        sla_service: SLAService | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
         self.user_repository = user_repository
         self.ticket_repository = ticket_repository
         self.read_receipt_repository = read_receipt_repository
+        self.sla_service = sla_service
 
     async def _resolve_scope(
         self, current_user: User, *, assigned_to_me: bool = False
@@ -289,6 +293,23 @@ class InboxService:
             tickets = await self.ticket_repository.list_by_ids(ticket_ids)
             tickets_by_id = {t.ticket_id: t for t in tickets}
 
+        # Real, DB-backed First Response SLA state per row — one
+        # batched query for the whole page (mirrors tickets_by_id
+        # above), only meaningful pre-ticket (see OpenEmailService's
+        # matching field for why the clock's lifecycle ends at ticket
+        # creation) — lets the Mail UI show a row's actual completion
+        # instead of a client-side time estimate with no way to know
+        # whether it already stopped.
+        first_response_sla_by_id: dict[UUID, FirstResponseSLAState] = {}
+        if self.sla_service is not None:
+            first_response_sla_by_id = (
+                await self.sla_service.get_first_response_sla_states_by_interaction_ids(
+                    interaction_ids=[
+                        i.interaction_id for i in interactions if i.ticket_id is None
+                    ]
+                )
+            )
+
         latest_sender_names: dict[UUID, str] = {}
         if self.user_repository is not None:
             performed_by_ids = [
@@ -419,6 +440,10 @@ class InboxService:
                     ),
 
                     is_read=interaction.interaction_id in read_interaction_ids,
+
+                    first_response_sla=first_response_sla_by_id.get(
+                        interaction.interaction_id
+                    ),
 
                 )
 

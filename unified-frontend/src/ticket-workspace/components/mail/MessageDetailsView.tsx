@@ -722,6 +722,7 @@ export function MessageDetailsView({
           <SlaFirstResponseBadge
             receivedAt={email.received_at}
             enabled={!isTicketed && email.status === "PENDING"}
+            firstResponseSla={email.first_response_sla}
           />
         </div>
         <p className="mt-1.5 text-[12px] text-muted-foreground">{formatDateTime(email.received_at)}</p>

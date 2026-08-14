@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from app.ticketing.enums import InteractionStatus
 from app.ticketing.schemas.attachment import AttachmentMetadata
 from app.ticketing.schemas.interaction import InteractionResponse
+from app.ticketing.schemas.sla import FirstResponseSLAState
 
 
 class OpenEmailResponse(BaseModel):
@@ -108,3 +109,11 @@ class OpenEmailResponse(BaseModel):
     recommended_ticket_id: UUID | None = None
 
     recommended_ticket_reason: str | None = None
+
+    # The real, DB-backed First Response SLA state for this thread's
+    # root interaction — None once ticketed (that clock only exists
+    # pre-ticket) or if no clock exists at all (predates this feature).
+    # Lets the Mail UI show the clock's actual status/completion
+    # instead of a client-side time estimate with no way to know
+    # whether it already stopped.
+    first_response_sla: FirstResponseSLAState | None = None

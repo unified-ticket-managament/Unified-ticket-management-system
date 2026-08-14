@@ -202,8 +202,24 @@ export function MessageList({
   // Response clock to show — same gate SlaFirstResponseBadge's own
   // `enabled` prop already uses. A ticketed row's relevant clock is
   // Resolution SLA instead, tracked on the Tickets page, not here.
+  //
+  // Prefers the row's real, DB-backed `first_response_sla` state when
+  // present: a COMPLETED clock returns null (a stopped clock is never
+  // "at risk" of anything — matches this list's existing convention
+  // of rendering no badge at all for a healthy/non-risk row), and a
+  // still-PENDING clock classifies off its real `elapsed_fraction`
+  // instead of a client-guessed one. Only falls back to the client-
+  // computed estimate when `first_response_sla` is absent (a row
+  // returned before this field existed).
   function firstResponseTierFor(item: InboxItem): SlaTier | null {
-    if (item.ticket_id || item.status !== "PENDING" || targetMinutes == null) return null;
+    if (item.ticket_id || item.status !== "PENDING") return null;
+
+    if (item.first_response_sla) {
+      if (item.first_response_sla.status === "COMPLETED") return null;
+      return classifyTier(item.first_response_sla.elapsed_fraction);
+    }
+
+    if (targetMinutes == null) return null;
     const dueAt = computeFirstResponseDueAt(item.received_at, targetMinutes);
     return classifyTier(computeElapsedFraction({ dueAt, targetMinutes, now }));
   }

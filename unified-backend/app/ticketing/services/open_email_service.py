@@ -18,11 +18,13 @@ from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.interaction import InteractionResponse
 from app.ticketing.schemas.open_email import OpenEmailResponse
 from app.ticketing.schemas.payloads import EmailPayload
+from app.ticketing.schemas.sla import FirstResponseSLAState
 from app.ticketing.services.access_control import (
     ensure_agent_can_view_pending_interaction,
     ensure_agent_can_view_ticket,
 )
 from app.ticketing.services.attachment_service import attachments_to_metadata
+from app.ticketing.services.sla_service import SLAService
 from app.ticketing.storage.base import StorageService
 
 
@@ -76,6 +78,7 @@ class OpenEmailService:
         client_repository: ClientRepository | None = None,
         ticket_repository: TicketRepository | None = None,
         read_receipt_repository: MessageReadReceiptRepository | None = None,
+        sla_service: SLAService | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
@@ -84,6 +87,7 @@ class OpenEmailService:
         self.client_repository = client_repository
         self.ticket_repository = ticket_repository
         self.read_receipt_repository = read_receipt_repository
+        self.sla_service = sla_service
 
     async def get_email_details(
         self,
@@ -173,11 +177,13 @@ class OpenEmailService:
             claimed_by_name,
             account_manager_name,
             draft,
+            first_response_sla,
         ) = await asyncio.gather(
             self.interaction_repository.list_thread(interaction_id),
             self._fetch_claimed_by_name(interaction.claimed_by),
             self._fetch_account_manager_name(interaction.client_id),
             self._fetch_draft(interaction, current_user),
+            self._fetch_first_response_sla(interaction),
         )
 
         # Batch-fetch attachments for the root plus every reply in one
@@ -239,6 +245,7 @@ class OpenEmailService:
             ],
             recommended_ticket_id=recommended_ticket_id,
             recommended_ticket_reason=recommended_ticket_reason,
+            first_response_sla=first_response_sla,
         )
 
     async def _fetch_attachments(self, interaction_id: UUID) -> list:
@@ -317,6 +324,22 @@ class OpenEmailService:
             "bcc": draft.payload.get("bcc") or [],
             "attachments": await self._fetch_attachments(draft.interaction_id),
         }
+
+    async def _fetch_first_response_sla(
+        self, interaction
+    ) -> FirstResponseSLAState | None:
+        """
+        Only meaningful pre-ticket — a First Response clock's whole
+        lifecycle ends at ticket creation, same convention as
+        `_fetch_draft`.
+        """
+
+        if self.sla_service is None or interaction.ticket_id is not None:
+            return None
+
+        return await self.sla_service.get_first_response_sla_state(
+            interaction_id=interaction.interaction_id
+        )
 
     async def _recommend_ticket(
         self,

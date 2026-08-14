@@ -44,6 +44,19 @@ class FirstResponseSLARepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_by_interaction_ids(
+        self, interaction_ids: list[UUID]
+    ) -> list[FirstResponseSLA]:
+        if not interaction_ids:
+            return []
+
+        result = await self.db.execute(
+            select(FirstResponseSLA).where(
+                FirstResponseSLA.interaction_id.in_(interaction_ids)
+            )
+        )
+        return list(result.scalars().all())
+
     async def complete(
         self,
         clock: FirstResponseSLA,

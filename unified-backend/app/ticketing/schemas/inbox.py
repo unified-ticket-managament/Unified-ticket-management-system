@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from app.ticketing.enums import InteractionDirection, InteractionStatus, TicketPriority
+from app.ticketing.schemas.sla import FirstResponseSLAState
 
 
 class InboxItemResponse(BaseModel):
@@ -79,6 +80,11 @@ class InboxItemResponse(BaseModel):
     # available for the frontend to adopt later without another schema
     # change.
     is_read: bool = False
+
+    # The real, DB-backed First Response SLA state for this row's
+    # thread root — None once ticketed or if no clock exists. See
+    # OpenEmailResponse's matching field for why this exists.
+    first_response_sla: FirstResponseSLAState | None = None
 
 
 class InboxResponse(BaseModel):

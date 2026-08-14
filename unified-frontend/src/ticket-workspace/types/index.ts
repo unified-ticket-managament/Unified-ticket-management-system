@@ -221,6 +221,10 @@ export interface InboxItem {
   latest_message: string | null;
   latest_sender: string | null;
   latest_at: string | null;
+  // Real, DB-backed First Response SLA state for this row's thread
+  // root — null once ticketed or if no clock exists. See
+  // FirstResponseSLAState's own definition below.
+  first_response_sla?: FirstResponseSLAState | null;
 }
 
 export interface InboxResponse {
@@ -298,6 +302,9 @@ export interface OpenEmailResponse {
   replies: InteractionResponse[];
   recommended_ticket_id: string | null;
   recommended_ticket_reason: string | null;
+  // Real, DB-backed First Response SLA state for this thread's root
+  // interaction — null once ticketed or if no clock exists.
+  first_response_sla?: FirstResponseSLAState | null;
 }
 
 export interface InteractionTagsResponse {
