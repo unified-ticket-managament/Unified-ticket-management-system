@@ -4,9 +4,11 @@
 # backing the Roles page's "Assigned Users" panel and per-role counts
 # only. Deliberately NOT hierarchy-scoped: an Account Manager clicking
 # Team Lead or Staff must see the entire company-wide population of
-# that role, not their own reporting subtree (see access_control.py's
-# ROLES_PAGE_FULL_VISIBILITY_ROLE_NAMES/ensure_can_view_full_role_
-# population for the full rationale).
+# that role, not their own reporting subtree. Gated by role:view plus
+# user:view (both real, effective-permission checks — see
+# app/rbac/api/v1/roles.py's list_users_for_role) rather than a
+# hardcoded role-name allow-list, which used to unconditionally deny
+# Team Lead here regardless of what permissions it actually held.
 #
 # This route reuses two pre-existing, unmodified building blocks —
 # RoleRepository.get_by_id and UserRepository.get_by_role (already
@@ -23,10 +25,7 @@
 # after this change — this endpoint and its permission check are
 # entirely new additions; no existing function was modified.
 
-from types import SimpleNamespace
-
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 from shared_models.models import Role, User
@@ -34,31 +33,6 @@ from shared_models.models import Role, User
 from app.database.session import AsyncSessionLocal, engine
 from app.rbac.repositories.role_repository import RoleRepository
 from app.rbac.repositories.user_repository import UserRepository
-from app.rbac.services import access_control
-
-
-# --------------------------------------------------------------------
-# Pure-logic: ensure_can_view_full_role_population — no DB needed.
-# --------------------------------------------------------------------
-
-def _actor(role_name: str):
-    return SimpleNamespace(role=SimpleNamespace(name=role_name))
-
-
-@pytest.mark.parametrize("role_name", ["Super Admin", "Site Lead", "Account Manager"])
-def test_allow_listed_roles_can_view_full_population(role_name):
-    access_control.ensure_can_view_full_role_population(_actor(role_name))
-
-
-@pytest.mark.parametrize("role_name", ["Team Lead", "Staff", "Client"])
-def test_non_allow_listed_roles_are_denied(role_name):
-    # Team Lead and Client both hold `role:view` by default (see
-    # scripts/rbac_seed/seed.py) — this second, independent check is
-    # exactly what stops them from reaching full-population data
-    # despite that. Staff holds neither `role:view` nor this.
-    with pytest.raises(HTTPException) as exc_info:
-        access_control.ensure_can_view_full_role_population(_actor(role_name))
-    assert exc_info.value.status_code == 403
 
 
 # --------------------------------------------------------------------

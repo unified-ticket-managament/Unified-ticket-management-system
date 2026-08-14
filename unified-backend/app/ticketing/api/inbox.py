@@ -19,9 +19,6 @@ from app.ticketing.repositories.mail_folder_repository import MailFolderReposito
 from app.ticketing.repositories.message_read_receipt_repository import (
     MessageReadReceiptRepository,
 )
-from app.ticketing.repositories.ticket_edit_access_repository import (
-    TicketEditAccessRequestRepository,
-)
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
@@ -135,7 +132,6 @@ async def get_inbox(
     attachment_repository = AttachmentRepository(db)
     user_repository = UserRepository(db)
     ticket_repository = TicketRepository(db)
-    edit_access_repository = TicketEditAccessRequestRepository(db)
     read_receipt_repository = MessageReadReceiptRepository(db)
 
     service = InboxService(
@@ -143,7 +139,6 @@ async def get_inbox(
         attachment_repository=attachment_repository,
         user_repository=user_repository,
         ticket_repository=ticket_repository,
-        edit_access_repository=edit_access_repository,
         read_receipt_repository=read_receipt_repository,
     )
 
@@ -180,12 +175,8 @@ async def get_folder_counts(
     """
 
     repository = InteractionRepository(db)
-    edit_access_repository = TicketEditAccessRequestRepository(db)
 
-    service = InboxService(
-        repository,
-        edit_access_repository=edit_access_repository,
-    )
+    service = InboxService(repository)
 
     return await service.get_folder_counts(current_user, client_id=client_id)
 
@@ -207,12 +198,8 @@ async def get_view_counts(
     """
 
     repository = InteractionRepository(db)
-    edit_access_repository = TicketEditAccessRequestRepository(db)
 
-    service = InboxService(
-        repository,
-        edit_access_repository=edit_access_repository,
-    )
+    service = InboxService(repository)
 
     return await service.get_view_counts(current_user, client_id=client_id)
 

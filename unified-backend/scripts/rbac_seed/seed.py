@@ -31,6 +31,20 @@ DEFAULT_PERMISSIONS = [
     ("permission:override_revoke", "Revoke a previously granted permission exception"),
     ("audit:view", "View audit logs"),
     ("audit:export", "Export the audit log"),
+    # Roles-page Client tab — gates VIEWING a client company's own
+    # detail fields (organization email, account manager name/active,
+    # contact emails) via the dedicated GET /clients/{id}/details
+    # endpoint, independent of role:view/user:view. Added as a
+    # compensating control alongside widening GET /roles/{id}/users
+    # from a hardcoded role allow-list to a plain user:view check (see
+    # that route's own docstring) — that widening also opened the
+    # Roles page itself to Team Lead/Staff/Client for the first time,
+    # and this permission is what stops those roles from also seeing
+    # the page's Client-tab details, which Super Admin/Site
+    # Lead/Account Manager already saw unrestricted before. A normal,
+    # independent permission row — role:view does not imply it, and it
+    # implies nothing else in turn.
+    ("client:view", "View a client company's organization email, account manager, and contact emails"),
     # Communication capabilities (ticketing-service) — RBAC's own
     # permission records for the Communication-first workflow (every
     # client interaction starts as a Communication; only some become
@@ -169,6 +183,10 @@ DEFAULT_ROLES = {
         # Role & permission — can view and grant/revoke scoped overrides
         # for their own reports, but not edit role definitions.
         "role:view", "permission:view", "permission:override_grant", "permission:override_revoke",
+        # Roles-page Client tab — already saw this unrestricted before
+        # client:view existed; kept explicit here rather than relying
+        # on any other grant to imply it.
+        "client:view",
         # Mail/OTP Rules engine — Account Manager is one of the four
         # roles granted access when Rules moved under Mail.
         "rule:manage",
@@ -323,6 +341,16 @@ REVOKED_GRANTS = [
     ("Team Lead", "ticket:view_global_audit_log"),
     ("Team Lead", "ticket:hide_interaction"),
     ("Staff", "ticket:hide_interaction"),
+    # Found granted directly in the live dev DB with no corresponding
+    # entry in DEFAULT_ROLES["Staff"] above — drift introduced outside
+    # this seed script (e.g. a live toggle on the Roles page), not a
+    # seed change. Staff deliberately does NOT hold ticket:editother_
+    # ticket by default (every other agent role does) — that's the
+    # whole reason the ticket-scoped Permission Request workflow
+    # exists for Staff to ask for it one ticket at a time. Revoking
+    # this here restores that baseline rather than introducing a new
+    # restriction.
+    ("Staff", "ticket:editother_ticket"),
     # Found during an end-to-end RBAC verification pass: these three
     # grants existed live (on the dev database's role_permissions
     # table) despite never having been part of either role's

@@ -168,6 +168,7 @@ class TicketRepository:
         ticket_types: list[str] | None = None,
         agent_ids: list[UUID] | None = None,
         escalation_override_condition=None,
+        scoped_ticket_ids: list[UUID] | None = None,
     ) -> list:
         """
         Account Manager scoping can be supplied either way: `list_all`
@@ -221,6 +222,15 @@ class TicketRepository:
         Lead/Super Admin, or a category-less/client-less user who
         already "sees nothing") has nothing to widen either way, so
         this is a no-op for them.
+
+        `scoped_ticket_ids` is the analogous widening for a ticket-
+        scoped ticket:editother_ticket override (an approved,
+        ticket-owner-routed Permission Request): the grantee's own
+        scoped_permissions claim lists exactly which ticket ids they
+        hold it for, so this is a plain ticket_id IN (...) rather than
+        a correlated condition like the escalation one. Combined with
+        escalation_override_condition via the same OR-wrap below (both
+        can legitimately apply in the same query).
         """
 
         conditions = []
@@ -243,8 +253,17 @@ class TicketRepository:
             # Same "empty list means sees nothing" convention as above.
             conditions.append(Ticket.agent_id.in_(agent_ids))
 
-        if escalation_override_condition is not None and conditions:
-            return [or_(and_(*conditions), escalation_override_condition)]
+        override_conditions = [
+            c
+            for c in (
+                escalation_override_condition,
+                Ticket.ticket_id.in_(scoped_ticket_ids) if scoped_ticket_ids else None,
+            )
+            if c is not None
+        ]
+
+        if override_conditions and conditions:
+            return [or_(and_(*conditions), *override_conditions)]
         return conditions
 
     def _escalated_exists_condition(self):
@@ -313,6 +332,7 @@ class TicketRepository:
         sort_by: str = "created_at",
         sort_dir: str = "desc",
         include_escalated_override: bool = False,
+        scoped_ticket_ids: list[UUID] | None = None,
     ) -> tuple[list[Ticket], int]:
         """
         `limit=None` (the default) preserves this method's original,
@@ -352,6 +372,7 @@ class TicketRepository:
             escalation_override_condition=(
                 self._escalated_exists_condition() if include_escalated_override else None
             ),
+            scoped_ticket_ids=scoped_ticket_ids,
         )
 
         if agent_id is not None:
@@ -371,7 +392,18 @@ class TicketRepository:
             # with that one's.
             conditions.append(not_(self._escalated_exists_condition()))
         elif view == "mine" and assigned_to is not None:
-            conditions.append(Ticket.agent_id == assigned_to)
+            mine_condition = Ticket.agent_id == assigned_to
+            if scoped_ticket_ids:
+                # A ticket-scoped editother_ticket grant makes this
+                # ticket "mine" for the grantee too, even though
+                # agent_id still points at the real assignee — this is
+                # OR'd directly onto the tab filter itself (not just
+                # the outer visibility scope above) so the ticket is
+                # classified as "mine", not merely visible.
+                mine_condition = or_(
+                    mine_condition, Ticket.ticket_id.in_(scoped_ticket_ids)
+                )
+            conditions.append(mine_condition)
         elif view == "escalated":
             # Requires viewer_user_id to be a *current* owner of the
             # escalation, not just "this ticket is escalated at all" —
@@ -437,6 +469,7 @@ class TicketRepository:
         assigned_to: UUID,
         viewer_user_id: UUID | None = None,
         include_escalated_override: bool = False,
+        scoped_ticket_ids: list[UUID] | None = None,
     ) -> dict[str, int]:
         """
         One grouped query, three FILTERed counts — the ticket-list
@@ -470,11 +503,17 @@ class TicketRepository:
             escalation_override_condition=(
                 self._escalated_exists_condition() if include_escalated_override else None
             ),
+            scoped_ticket_ids=scoped_ticket_ids,
         )
         escalated_condition = (
             self._escalated_owner_condition(viewer_user_id)
             if viewer_user_id is not None
             else self._escalated_exists_condition()
+        )
+        mine_condition = (
+            or_(Ticket.agent_id == assigned_to, Ticket.ticket_id.in_(scoped_ticket_ids))
+            if scoped_ticket_ids
+            else Ticket.agent_id == assigned_to
         )
 
         query = select(
@@ -483,7 +522,7 @@ class TicketRepository:
                 Ticket.current_status == TicketStatus.OPEN,
                 ~self._escalated_exists_condition(),
             ),
-            func.count().filter(Ticket.agent_id == assigned_to),
+            func.count().filter(mine_condition),
             func.count(),
             func.count().filter(escalated_condition),
         ).where(*conditions)
@@ -662,6 +701,7 @@ class TicketRepository:
         sort_by: str = "created_at",
         sort_dir: str = "desc",
         include_escalated_override: bool = False,
+        scoped_ticket_ids: list[UUID] | None = None,
     ) -> TicketVisiblePage:
         """
         The ticket-list page's real query — same visibility/filter/
@@ -725,6 +765,7 @@ class TicketRepository:
                 if include_escalated_override
                 else None
             ),
+            scoped_ticket_ids=scoped_ticket_ids,
         )
 
         if view == "pool":
@@ -739,7 +780,15 @@ class TicketRepository:
             # tab's own Acknowledge & Assign flow.
             conditions.append(TicketEscalation.escalation_id.is_(None))
         elif view == "mine" and assigned_to is not None:
-            conditions.append(Ticket.agent_id == assigned_to)
+            mine_condition = Ticket.agent_id == assigned_to
+            if scoped_ticket_ids:
+                # See list_all's matching branch for why this is OR'd
+                # directly onto the tab filter rather than left to the
+                # outer visibility widening alone.
+                mine_condition = or_(
+                    mine_condition, Ticket.ticket_id.in_(scoped_ticket_ids)
+                )
+            conditions.append(mine_condition)
         elif view == "escalated":
             # Requires viewer_user_id to be a *current* owner of the
             # escalation (owner_ids), not just "this ticket has an

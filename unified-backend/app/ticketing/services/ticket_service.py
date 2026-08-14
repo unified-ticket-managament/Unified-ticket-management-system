@@ -637,6 +637,16 @@ class TicketService:
         # current-owner condition is untouched either way.
         can_view_escalated = has_permission(current_user, "ticket:view_escalated")
 
+        # A ticket-scoped ticket:editother_ticket override (an approved
+        # Permission Request routed to a ticket's owner) makes that one
+        # ticket "mine" too, on top of whatever's actually assigned to
+        # this caller — same JWT-derived claim InboxService already
+        # reads for the equivalent Mail-visibility widening.
+        scoped_permissions = getattr(current_user, "scoped_permissions", None) or {}
+        scoped_ticket_ids = [
+            UUID(tid) for tid in scoped_permissions.get("ticket:editother_ticket", [])
+        ]
+
         if limit is not None:
             account_manager_id = (
                 current_user.user_id
@@ -660,6 +670,7 @@ class TicketService:
                 sort_by=sort_by,
                 sort_dir=sort_dir,
                 include_escalated_override=can_view_escalated,
+                scoped_ticket_ids=scoped_ticket_ids,
             )
 
             rows = [
@@ -748,12 +759,17 @@ class TicketService:
             else None
         )
         can_view_escalated = has_permission(current_user, "ticket:view_escalated")
+        scoped_permissions = getattr(current_user, "scoped_permissions", None) or {}
+        scoped_ticket_ids = [
+            UUID(tid) for tid in scoped_permissions.get("ticket:editother_ticket", [])
+        ]
         counts = await self.ticket_repository.count_by_view(
             account_manager_id=account_manager_id,
             ticket_types=ticket_types,
             assigned_to=current_user.user_id,
             viewer_user_id=current_user.user_id,
             include_escalated_override=can_view_escalated,
+            scoped_ticket_ids=scoped_ticket_ids,
         )
 
         if current_user.role.name not in ESCALATION_TAB_ROLE_NAMES and not can_view_escalated:

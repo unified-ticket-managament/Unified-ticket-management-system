@@ -30,9 +30,6 @@ class NotificationType:
     # this never fires alongside PERMISSION_APPROVED for the same
     # grant.
     PERMISSION_GRANTED = "PERMISSION_GRANTED"
-    EDIT_ACCESS_REQUESTED = "EDIT_ACCESS_REQUESTED"
-    EDIT_ACCESS_APPROVED = "EDIT_ACCESS_APPROVED"
-    EDIT_ACCESS_REJECTED = "EDIT_ACCESS_REJECTED"
     SLA_HALF_ELAPSED = "SLA_HALF_ELAPSED"
     SLA_AT_RISK = "SLA_AT_RISK"
     SLA_BREACHED = "SLA_BREACHED"
@@ -59,11 +56,11 @@ class NotificationType:
 class NotificationService:
     """
     Single write path every trigger (mail intake, ticket assignment,
-    permission requests, edit access) calls through — every business
+    permission requests, escalation) calls through — every business
     service that needs to notify someone holds one of these as an
     optional constructor dependency (`notification_service:
     NotificationService | None = None`, same optionality convention as
-    e.g. InteractionService's `edit_access_repository`) so existing
+    e.g. InteractionService's `escalation_service`) so existing
     call sites that don't pass one keep working unchanged.
     """
 

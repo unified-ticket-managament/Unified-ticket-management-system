@@ -9,7 +9,6 @@ from .audit_enums import (
     AuditEntityType,
     AuditEventType,
 )
-from .edit_access_enums import EditAccessStatus
 from .sla_enums import SLAClockStatus
 from .escalation_enums import (
     CLOSED_REASON_MANUALLY_CLOSED,
@@ -31,7 +30,6 @@ __all__ = [
     "ActorRole",
     "AuditEntityType",
     "AuditEventType",
-    "EditAccessStatus",
     "SLAClockStatus",
     "EscalationLevel",
     "EscalationStatus",

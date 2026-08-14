@@ -91,9 +91,11 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
 // dashboard's "Latest Audit Logs" card still links to it), this only
 // removes the sidebar entry point.
 // "Roles" was removed from every role's sidebar (moved to a button on the
-// Users page instead — see ROLES_BUTTON_VISIBLE_ROLES in
-// app/(dashboard)/users/page.tsx, which intentionally mirrors the same
-// three roles that used to have this nav item).
+// Users page instead — see the `canViewRoles` check in
+// app/(dashboard)/users/page.tsx, which gates the button's enabled state
+// on the caller's effective role:view permission rather than a hardcoded
+// role-name allowlist; the button itself is visible to every role that
+// reaches this page, disabled otherwise).
 //
 // "Permission Requests" was removed from the sidebar for every role that
 // has Users-page access (Super Admin/Site Lead/Account Manager/Team

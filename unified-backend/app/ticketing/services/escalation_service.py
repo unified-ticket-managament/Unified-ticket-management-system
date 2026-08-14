@@ -60,11 +60,7 @@ from app.ticketing.services.escalation_rules import (
     build_chain_owner_ids,
     resolve_owners_for_chain,
 )
-from app.ticketing.services.sla_breach_notifier import (
-    build_absolute_link,
-    resolve_global_inbox_user_ids,
-    send_notification_emails,
-)
+from app.ticketing.services.sla_breach_notifier import resolve_global_inbox_user_ids
 
 
 def _to_assignable_group(role_name: str, users: list[User]) -> AssignableGroup:
@@ -292,13 +288,14 @@ class EscalationService:
                 related_entity_type="ticket",
                 related_entity_id=ticket.ticket_id,
             )
-
-        await send_notification_emails(
-            recipient_ids=recipient_ids,
-            subject=title,
-            body=f"{message}\n\nView it here: {build_absolute_link(f'/tickets/{ticket.ticket_id}')}",
-            user_repository=self.user_repository,
-        )
+        # Real outbound email (if any) is decided entirely by
+        # NotificationService.notify()'s own centralized policy
+        # (app/notifications/email_policy.py — only ESCALATION_CREATED
+        # is eligible, not ACKNOWLEDGED/ADVANCED/CLOSED). This used to
+        # also call sla_breach_notifier.send_notification_emails
+        # directly for every notification_type here, which duplicated
+        # ESCALATION_CREATED's email and ignored the policy entirely
+        # for the other three types.
 
     # ---------------------------------------------------------
     # Create — manual (ticket:escalate) and automatic (SLA breach)

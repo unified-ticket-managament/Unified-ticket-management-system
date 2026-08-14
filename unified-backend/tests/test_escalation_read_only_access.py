@@ -44,9 +44,6 @@ from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.resolution_sla_repository import ResolutionSLARepository
 from app.ticketing.repositories.sla_policy_repository import SLAPolicyRepository
-from app.ticketing.repositories.ticket_edit_access_repository import (
-    TicketEditAccessRequestRepository,
-)
 from app.ticketing.repositories.ticket_escalation_repository import (
     TicketEscalationRepository,
 )
@@ -154,7 +151,6 @@ def _build_interaction_service(session) -> InteractionService:
         ticket_repository=TicketRepository(session),
         user_repository=UserRepository(session),
         client_repository=ClientRepository(session),
-        edit_access_repository=TicketEditAccessRequestRepository(session),
         sla_service=build_sla_service(session),
         escalation_service=build_escalation_service(session),
     )

@@ -34,10 +34,8 @@ from app.ticketing.services.escalation_service import EscalationService
 from app.ticketing.services.sla_breach_notifier import (
     CLOCK_TYPE_FIRST_RESPONSE,
     NOTIFICATION_TYPE_BY_THRESHOLD,
-    build_absolute_link,
     notify_first_response_threshold,
     resolve_global_inbox_user_ids,
-    send_notification_emails,
 )
 from app.ticketing.services.sla_escalation_rules import (
     RESOLUTION_RULES_CURRENT_OWNER,
@@ -150,15 +148,17 @@ class SLASweepService:
     rather than hardcoded if/elif — who gets notified at each threshold
     is declared once, there, and this service only interprets it.
 
-    Notifications go out two ways: in-app (NotificationService, always,
-    regardless of email config) and real outbound email (EmailSender —
-    see app/core/email_sender.py — via sla_breach_notifier.py's
-    send_notification_emails, gated only on user_repository being
-    available, which it always is here). Email falls back to a
-    logging-only no-op until smtp_host is actually configured in
-    Settings — this is a separate, narrower seam from
-    OutboundDispatcher (the client-facing reply-email transport, still
-    a no-op today), not the same thing.
+    Notifications go out one way, NotificationService.notify() — every
+    call here always creates the in-app notification, and real outbound
+    email (EmailSender — see app/core/email_sender.py) is decided
+    entirely by the centralized policy in
+    app/notifications/email_policy.py, not by anything in this service.
+    This sweep used to also call sla_breach_notifier.py's
+    send_notification_emails directly for every threshold, which both
+    duplicated the policy-eligible types' email and ignored the policy
+    for everything else — removed once NotificationService's own
+    email dispatch made it redundant and, for out-of-policy types,
+    wrong.
     """
 
     def __init__(
@@ -792,7 +792,6 @@ class SLASweepService:
             interaction=interaction,
             global_inbox_ids=global_inbox_ids,
             notification_service=self.notification_service,
-            user_repository=self.user_repository,
         )
 
     # ---------------------------------------------------------
@@ -934,13 +933,6 @@ class SLASweepService:
                         related_entity_id=ticket.ticket_id,
                     )
                     sent = True
-
-                await send_notification_emails(
-                    recipient_ids=recipient_ids,
-                    subject=title,
-                    body=f"{message}\n\nView it here: {build_absolute_link(f'/tickets/{ticket.ticket_id}')}",
-                    user_repository=self.user_repository,
-                )
             else:
                 # Previously completely silent: the idempotency ledger
                 # row for this (clock, threshold, cycle) was already

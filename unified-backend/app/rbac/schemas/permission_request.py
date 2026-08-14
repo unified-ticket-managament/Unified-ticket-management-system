@@ -10,7 +10,12 @@ class PermissionRequestCreate(BaseModel):
     # actual routing target. requested_role is no longer submitted by
     # the client at all; the backend derives it from this user's own
     # role at creation time (see PermissionRequestService.create_request).
-    selected_approver_id: UUID
+    # Optional because a ticket-scoped request whose ticket already has
+    # an owner ignores this field entirely and auto-routes to that
+    # owner — only a non-ticket-scoped request, or a ticket-scoped one
+    # against an unowned ticket, actually requires it (validated in
+    # create_request, not here, since the requirement is conditional).
+    selected_approver_id: UUID | None = None
     reason: str
     scope_ticket_id: UUID | None = None
 
@@ -46,6 +51,15 @@ class PermissionRequestResponse(BaseModel):
     selected_approver_name: str | None = None
     reason: str
     scope_ticket_id: UUID | None = None
+    # Denormalized ticket context for a ticket-scoped request, so the
+    # frontend never has to make a second call to render "Ticket #123
+    # — Title — owned by X" on a request card. None for a
+    # non-ticket-scoped request, or if the ticket has since been
+    # deleted.
+    scope_ticket_number: int | None = None
+    scope_ticket_title: str | None = None
+    scope_ticket_owner_id: UUID | None = None
+    scope_ticket_owner_name: str | None = None
     status: str
     reviewed_by: UUID | None
     reviewed_by_name: str | None = None

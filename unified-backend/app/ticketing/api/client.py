@@ -9,7 +9,13 @@ from app.dependencies.auth import get_current_agent, get_current_user
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.user_repository import UserRepository
-from app.ticketing.schemas.client import ClientContactResponse, ClientCreate, ClientResponse
+from app.ticketing.schemas.client import (
+    ClientContactResponse,
+    ClientCreate,
+    ClientDetailsResponse,
+    ClientResponse,
+)
+from app.ticketing.services.access_control import ensure_can_view_client_details
 from app.ticketing.services.client_service import ClientService
 
 router = APIRouter(
@@ -60,6 +66,35 @@ async def list_clients(
     )
 
     return await service.list_all()
+
+
+@router.get(
+    "/{client_id}/details",
+    response_model=ClientDetailsResponse,
+)
+async def get_client_details(
+    client_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Aggregated client detail view (organization email, account manager
+    name/active, configured contact emails) for the Roles page's
+    Client-tab expand action — gated by client:view, unlike GET
+    /clients (list) and GET /clients/{id}/contacts, which stay ungated
+    on purpose (see ensure_can_view_client_details' own docstring for
+    the full list of shared callers that would otherwise break).
+    """
+
+    ensure_can_view_client_details(current_user)
+
+    service = ClientService(
+        client_repository=ClientRepository(db),
+        user_repository=UserRepository(db),
+        interaction_repository=InteractionRepository(db),
+    )
+
+    return await service.get_details(client_id)
 
 
 @router.get(

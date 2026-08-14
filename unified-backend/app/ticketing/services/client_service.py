@@ -7,7 +7,12 @@ from app.ticketing.enums import AuditEntityType, AuditEventType
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.user_repository import UserRepository
-from app.ticketing.schemas.client import ClientContactResponse, ClientCreate, ClientResponse
+from app.ticketing.schemas.client import (
+    ClientContactResponse,
+    ClientCreate,
+    ClientDetailsResponse,
+    ClientResponse,
+)
 from app.ticketing.schemas.payloads.email_payload import EmailPayload
 from app.ticketing.services.access_control import ACCOUNT_MANAGER_ROLE_NAME
 from app.ticketing.services.audit_log_service import AuditLogService
@@ -111,6 +116,43 @@ class ClientService:
             )
             for client in clients
         ]
+
+    async def get_details(self, client_id) -> ClientDetailsResponse:
+        """
+        Aggregated single-client detail view backing
+        GET /clients/{id}/details — the Roles page's Client-tab expand
+        action, gated by client:view. Reuses ClientRepository.get_by_id
+        plus the same name/active-manager batch-resolution list_all
+        already does, and list_contacts' own configured_only=True
+        branch — no new query logic beyond what already exists.
+        """
+
+        client = await self.client_repository.get_by_id(client_id)
+        if client is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Client not found.",
+            )
+
+        names = await self.user_repository.get_names_by_ids(
+            [client.account_manager_id]
+        )
+        active_manager_ids = await self.user_repository.get_active_account_manager_ids(
+            [client.account_manager_id]
+        )
+        contacts = await self.list_contacts(client_id, configured_only=True)
+
+        return ClientDetailsResponse(
+            client_id=client.client_id,
+            name=client.name,
+            inbox_email=client.inbox_email,
+            account_manager_id=client.account_manager_id,
+            is_active=client.is_active,
+            created_at=client.created_at,
+            account_manager_name=names.get(client.account_manager_id),
+            account_manager_active=client.account_manager_id in active_manager_ids,
+            contacts=contacts,
+        )
 
     async def list_contacts(
         self, client_id, configured_only: bool = False

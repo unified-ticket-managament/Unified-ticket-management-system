@@ -17,9 +17,6 @@ from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
-from app.ticketing.repositories.ticket_edit_access_repository import (
-    TicketEditAccessRequestRepository,
-)
 from app.ticketing.repositories.ticket_repository import (
     TicketRepository,
 )
@@ -217,7 +214,6 @@ class InteractionService:
         client_repository: ClientRepository | None = None,
         outbound_dispatcher: OutboundDispatcher | None = None,
         mail_folder_repository: MailFolderRepository | None = None,
-        edit_access_repository: TicketEditAccessRequestRepository | None = None,
         notification_service: NotificationService | None = None,
         sla_service: SLAService | None = None,
         escalation_service: EscalationService | None = None,
@@ -231,7 +227,6 @@ class InteractionService:
         self.client_repository = client_repository
         self.outbound_dispatcher = outbound_dispatcher or OutboundDispatcher()
         self.mail_folder_repository = mail_folder_repository
-        self.edit_access_repository = edit_access_repository
         self.notification_service = notification_service
         self.sla_service = sla_service
         self.escalation_service = escalation_service
@@ -924,7 +919,6 @@ class InteractionService:
         await ensure_agent_can_act_on_ticket(
             ticket,
             current_user,
-            self.edit_access_repository,
             self.escalation_service.ticket_escalation_repository
             if self.escalation_service is not None
             else None,
@@ -1123,7 +1117,6 @@ class InteractionService:
         await ensure_agent_can_act_on_ticket(
             ticket,
             current_user,
-            self.edit_access_repository,
             self.escalation_service.ticket_escalation_repository
             if self.escalation_service is not None
             else None,
@@ -1587,7 +1580,6 @@ class InteractionService:
         await ensure_agent_can_act_on_ticket(
             ticket,
             current_user,
-            self.edit_access_repository,
             self.escalation_service.ticket_escalation_repository
             if self.escalation_service is not None
             else None,
@@ -1793,7 +1785,6 @@ class InteractionService:
         await ensure_agent_can_act_on_ticket(
             ticket,
             current_user,
-            self.edit_access_repository,
             self.escalation_service.ticket_escalation_repository
             if self.escalation_service is not None
             else None,
@@ -1892,7 +1883,6 @@ class InteractionService:
         await ensure_agent_can_act_on_ticket(
             ticket,
             current_user,
-            self.edit_access_repository,
             self.escalation_service.ticket_escalation_repository
             if self.escalation_service is not None
             else None,

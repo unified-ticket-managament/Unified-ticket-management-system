@@ -289,6 +289,7 @@ class PermissionRequestService:
                 detail="You already have this permission.",
             )
 
+        ticket = None
         if request.scope_ticket_id is not None:
             ticket = await self.ticket_repository.get_by_id(request.scope_ticket_id)
             if ticket is None:
@@ -296,27 +297,65 @@ class PermissionRequestService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Ticket not found.",
                 )
-            if ticket.agent_id is None or not await self._is_teammate(
-                current_user, ticket.agent_id
-            ):
+
+            # A ticket's own owner already acts on it via
+            # ticket:editown_ticket (ensure_agent_can_act_on_ticket) —
+            # never editother_ticket — so there's never a legitimate
+            # reason for an owner to request this permission against
+            # their own ticket, and no one else it could sensibly
+            # route to.
+            if ticket.agent_id == current_user.user_id:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="You can only request access to a teammate's ticket.",
+                    detail="You already have full access to your own ticket; no request is needed.",
                 )
 
-        eligible_roles = await self.list_eligible_approver_roles(request.permission_id)
-        candidates = await self._resolve_approver_candidates(
-            current_user.user_id, eligible_roles
-        )
-        candidates_by_id = {u.user_id: (u, role_name) for u, role_name in candidates}
-
-        if request.selected_approver_id not in candidates_by_id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="The selected user cannot approve this request.",
+            # Eligibility for a ticket-scoped request is category-based,
+            # not org-hierarchy-based: team lead/reporting-manager/
+            # account-manager relationships deliberately play no part
+            # here (a prior "must share the same Team Lead" rule wrongly
+            # rejected staff who legitimately report straight to an
+            # Account Manager with no Team Lead in between — a real,
+            # intentional org shape, not bad data). Applies regardless
+            # of whether the ticket currently has an owner, since
+            # category is a property of the ticket itself.
+            requester = await self.user_repository.get_by_id(current_user.user_id)
+            requester_category_name = (
+                requester.category.category_name.value
+                if requester is not None and requester.category is not None
+                else None
             )
+            if requester_category_name is None or ticket.ticket_type != requester_category_name:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="You can only request access to a ticket in your own category.",
+                )
 
-        selected_approver, approver_role_name = candidates_by_id[request.selected_approver_id]
+        if ticket is not None and ticket.agent_id is not None:
+            # Ticket has a current owner — that owner is the reviewer,
+            # full stop. The client's own selected_approver_id is never
+            # even inspected here, so a request payload can't be used
+            # to smuggle in a different reviewer for an owned ticket.
+            owner = await self.user_repository.get_by_id(ticket.agent_id)
+            selected_approver, approver_role_name = owner, owner.role.name
+        else:
+            # Either a non-ticket-scoped request, or a ticket-scoped
+            # one against a currently-unassigned ticket — both fall
+            # back to the pre-existing manual "Request To" picker,
+            # unchanged.
+            eligible_roles = await self.list_eligible_approver_roles(request.permission_id)
+            candidates = await self._resolve_approver_candidates(
+                current_user.user_id, eligible_roles
+            )
+            candidates_by_id = {u.user_id: (u, role_name) for u, role_name in candidates}
+
+            if request.selected_approver_id not in candidates_by_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="The selected user cannot approve this request.",
+                )
+
+            selected_approver, approver_role_name = candidates_by_id[request.selected_approver_id]
 
         existing = (
             await self.permission_request_repository.get_pending_by_requester_permission_and_scope(
@@ -454,6 +493,59 @@ class PermissionRequestService:
         return [await self._to_response(r, current_user) for r in visible]
 
     # --------------------------------------------------
+    # Reassignment resync
+    # --------------------------------------------------
+
+    async def resync_ticket_scoped_reviewers(
+        self,
+        ticket_id: UUID,
+        new_owner_id: UUID,
+    ) -> None:
+        """
+        Called by app.ticketing (transfer_agent/claim_ticket) right
+        after a ticket's agent_id actually changes, so a still-PENDING
+        ticket-scoped request keeps routing to whoever currently owns
+        the ticket rather than going stale against its prior owner.
+        Repoints the existing row's selected_approver_id in place —
+        never creates a new request — so list_pending_for_review/
+        approve/reject need no changes at all, since they already just
+        match on that one column.
+
+        A request whose own requester is the new owner is deliberately
+        left pointed at its prior reviewer rather than repointed to
+        the requester themselves — a requester must never become their
+        own reviewer. That one request is simply frozen until the
+        requester revokes/cancels it manually; not auto-resolved.
+        """
+
+        requests = await self.permission_request_repository.list_pending_by_scope_ticket(
+            ticket_id
+        )
+
+        for permission_request in requests:
+            if permission_request.requester_id == new_owner_id:
+                continue
+            if permission_request.selected_approver_id == new_owner_id:
+                continue
+
+            permission_request.selected_approver_id = new_owner_id
+            await self.permission_request_repository.db.flush()
+
+            if self.notification_service is not None:
+                requester = await self.user_repository.get_by_id(
+                    permission_request.requester_id
+                )
+                await self.notification_service.notify(
+                    new_owner_id,
+                    NotificationType.PERMISSION_REQUESTED,
+                    title=f"{requester.name if requester is not None else 'Someone'} requested a permission",
+                    message=f"{permission_request.permission.permission_name}",
+                    link="/permission-requests",
+                    related_entity_type="permission_request",
+                    related_entity_id=permission_request.request_id,
+                )
+
+    # --------------------------------------------------
     # Approve
     # --------------------------------------------------
 
@@ -503,6 +595,17 @@ class PermissionRequestService:
             # below — grant()'s own PERMISSION_GRANTED would otherwise
             # fire a second, duplicate notification for this same event.
             notify=False,
+            # A ticket-scoped request's reviewer is the ticket's own
+            # owner (any role — often Staff, who never holds the
+            # general permission:override_grant authority) — the
+            # selected_approver_id check just above is already the
+            # right, narrower authorization for this one grant, so
+            # skip grant()'s own general-purpose authority check here.
+            # Non-ticket-scoped requests are unaffected: their reviewer
+            # is always drawn from the eligible-approver list, which
+            # already only ever contains people who'd pass that check
+            # anyway.
+            require_management_authority=permission_request.scope_ticket_id is None,
         )
 
         permission_request = await self.permission_request_repository.approve(
@@ -689,6 +792,11 @@ class PermissionRequestService:
                 # notification below — revoke()'s own would otherwise
                 # duplicate it for this same event.
                 notify=False,
+                # Same reasoning as approve()'s matching call: _can_revoke
+                # just above already independently authorizes this actor
+                # (the original approver — for a ticket-scoped grant,
+                # the ticket's owner, often Staff — or Super Admin).
+                require_management_authority=scope_ticket_id is None,
             )
 
         permission_request = await self.permission_request_repository.revoke(
@@ -766,6 +874,25 @@ class PermissionRequestService:
             else None
         )
 
+        scope_ticket_number = None
+        scope_ticket_title = None
+        scope_ticket_owner_id = None
+        scope_ticket_owner_name = None
+        if (
+            permission_request.scope_ticket_id is not None
+            and self.ticket_repository is not None
+        ):
+            ticket = await self.ticket_repository.get_by_id(
+                permission_request.scope_ticket_id
+            )
+            if ticket is not None:
+                scope_ticket_number = ticket.ticket_number
+                scope_ticket_title = ticket.title
+                scope_ticket_owner_id = ticket.agent_id
+                if ticket.agent_id is not None:
+                    owner = await self.user_repository.get_by_id(ticket.agent_id)
+                    scope_ticket_owner_name = owner.name if owner is not None else None
+
         return PermissionRequestResponse(
             request_id=permission_request.request_id,
             requester_id=permission_request.requester_id,
@@ -779,6 +906,10 @@ class PermissionRequestService:
             ),
             reason=permission_request.reason,
             scope_ticket_id=permission_request.scope_ticket_id,
+            scope_ticket_number=scope_ticket_number,
+            scope_ticket_title=scope_ticket_title,
+            scope_ticket_owner_id=scope_ticket_owner_id,
+            scope_ticket_owner_name=scope_ticket_owner_name,
             status=permission_request.status,
             reviewed_by=permission_request.reviewed_by,
             reviewed_by_name=reviewer.name if reviewer is not None else None,

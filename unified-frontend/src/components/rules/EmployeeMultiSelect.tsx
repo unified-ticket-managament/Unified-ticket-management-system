@@ -6,13 +6,10 @@ import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
-import { userService } from "@/services";
+import { listInternalNoteRecipients } from "@tw/api/interaction";
+import type { InternalNoteRecipientCandidate } from "@tw/types";
 
-interface EmployeeSummary {
-  user_id: string;
-  name: string;
-  email: string;
-}
+type EmployeeSummary = InternalNoteRecipientCandidate;
 
 interface EmployeeMultiSelectProps {
   selectedIds: string[];
@@ -20,9 +17,13 @@ interface EmployeeMultiSelectProps {
 }
 
 // The "Forward To" picker — searchable, checkbox-selectable, selected
-// employees shown as chips. Fetches every active employee once
-// (mirrors how the Reporting Managers page sources its own Account
-// Manager picker: fetch userService.list() and filter client-side).
+// employees shown as chips. Fetches every active employee once via
+// GET /tickets/internal-notes/recipients (listInternalNoteRecipients)
+// — the same deliberately unscoped, any-role endpoint the Internal
+// Note "To" picker uses, and for the same reason: RBAC's own
+// GET /api/v1/users is hierarchy-scoped (Account Manager/Team Lead
+// only get their own reporting subtree back), which silently starved
+// this picker's search of most of the company regardless of query.
 //
 // Renders the list as an always-visible, bounded-height box (same
 // structure as ClientPicker) rather than an absolutely-positioned
@@ -37,17 +38,9 @@ export function EmployeeMultiSelect({ selectedIds, onChange }: EmployeeMultiSele
   const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
-    // page_size is capped at 100 server-side (Query(..., le=100) on
-    // GET /api/v1/users) — 200 here silently 422'd, which the old
-    // catch-and-reset-to-[] swallowed into what looked like an
-    // indefinite "Loading employees…" (that message was wrongly
-    // inferred from employees.length === 0, which is also true right
-    // after a failed fetch — see isLoading/loadError below, which
-    // replace that inference with real state).
-    userService
-      .list({ page: 1, page_size: 100 })
-      .then((data: { users: EmployeeSummary[] }) => {
-        setEmployees(data.users ?? []);
+    listInternalNoteRecipients()
+      .then((recipients) => {
+        setEmployees(recipients);
         setLoadError(false);
       })
       .catch(() => setLoadError(true))

@@ -6,6 +6,7 @@ import { AxiosError } from "axios";
 import { motion } from "framer-motion";
 import {
   Briefcase,
+  Building2,
   ClipboardList,
   KeyRound,
   Loader2,
@@ -46,6 +47,7 @@ export const GROUP_LABELS: Record<string, string> = {
   dashboard: "Dashboard",
   ticket: "Ticket Management",
   communication: "Mail",
+  client: "Clients",
 };
 
 export const GROUP_ICONS: Record<string, typeof Shield> = {
@@ -56,6 +58,7 @@ export const GROUP_ICONS: Record<string, typeof Shield> = {
   dashboard: Briefcase,
   ticket: Ticket,
   communication: Mail,
+  client: Building2,
 };
 
 export function groupLabel(key: string) {

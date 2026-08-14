@@ -3,8 +3,6 @@
 import logging
 from uuid import UUID
 
-from app.core.config import get_settings
-from app.core.email_sender import get_email_sender
 from app.notifications.service import NotificationService, NotificationType
 from app.ticketing.models.client import Client
 from app.ticketing.models.first_response_sla import FirstResponseSLA
@@ -90,42 +88,6 @@ async def resolve_global_inbox_user_ids(user_repository: UserRepository) -> set[
     return recipients
 
 
-async def send_notification_emails(
-    *,
-    recipient_ids: set[UUID],
-    subject: str,
-    body: str,
-    user_repository: UserRepository,
-) -> None:
-    """
-    Sends the same real outbound email to every resolved recipient —
-    one shared "resolve emails, then dispatch" step used by both First
-    Response and Resolution SLA breach notifications, instead of two
-    copies. get_email_sender() itself falls back to logging-only until
-    smtp_host is configured (see app/core/email_sender.py), and
-    EmailSender.send already swallows/logs its own failures, so a bad
-    address or transport outage here can never block the SLA
-    bookkeeping or business action that triggered it.
-    """
-
-    if not recipient_ids:
-        return
-
-    emails_by_id = await user_repository.get_emails_by_ids(list(recipient_ids))
-    email_sender = get_email_sender()
-    for email in emails_by_id.values():
-        await email_sender.send(to_email=email, subject=subject, body=body)
-
-
-def build_absolute_link(relative_path: str) -> str:
-    base = get_settings().app_frontend_url
-    if base:
-        return f"{base.rstrip('/')}{relative_path}"
-    # No frontend URL configured — still useful as plain text, just
-    # not a clickable link inside the email client.
-    return f"(open the app and go to {relative_path})"
-
-
 async def notify_first_response_threshold(
     *,
     clock: FirstResponseSLA,
@@ -133,7 +95,6 @@ async def notify_first_response_threshold(
     client: Client | None,
     global_inbox_ids: set[UUID],
     notification_service: NotificationService | None,
-    user_repository: UserRepository | None = None,
     interaction: Interaction | None = None,
 ) -> bool:
     """
@@ -141,12 +102,14 @@ async def notify_first_response_threshold(
     -newly-crossed threshold (the idempotency check — try_record_many
     against SLABreachNotification — must have already happened by the
     time this is called; there is no idempotency check in here) and
-    notifies them, in-app and (if `user_repository` is given) by real
-    email too. Returns whether the in-app notification was sent (email
-    delivery doesn't affect this return value — it's a side effect,
-    not this function's core contract, and every existing caller's
-    `notifications_sent` counting already depends on this meaning
-    exactly "in-app notification created").
+    creates the in-app notification for them. Real outbound email (if
+    any) is handled entirely by NotificationService.notify() itself,
+    gated by the centralized policy in app/notifications/email_policy.py
+    — this function no longer sends a second, ungated email directly,
+    since none of these SLA thresholds are in that policy's eligible
+    set. Returns whether the in-app notification was sent — every
+    existing caller's `notifications_sent` counting depends on this
+    meaning exactly "in-app notification created".
 
     `interaction` is passed in already-loaded (batch-prefetched by the
     sweep, or a single fetch at the one-off completion-time call site)
@@ -200,13 +163,5 @@ async def notify_first_response_threshold(
             related_entity_id=clock.interaction_id,
         )
         sent = True
-
-    if user_repository is not None:
-        await send_notification_emails(
-            recipient_ids=recipient_ids,
-            subject=title,
-            body=f"{message}\n\nView it here: {build_absolute_link(inbox_link)}",
-            user_repository=user_repository,
-        )
 
     return sent

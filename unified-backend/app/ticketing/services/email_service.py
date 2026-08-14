@@ -536,6 +536,8 @@ class EmailService:
         # the way notification emails are.
         # ---------------------------------------
 
+        otp_recognized = False
+
         if self.rule_engine_service is not None:
             rule_context = RuleEmailContext(
                 from_email=email.from_email,
@@ -543,9 +545,29 @@ class EmailService:
                 body=email.body,
                 client_id=client.client_id if client is not None else None,
             )
-            await self.rule_engine_service.evaluate_and_execute_for_email(
+            otp_recognized = await self.rule_engine_service.evaluate_and_execute_for_email(
                 interaction=created,
                 context=rule_context,
+            )
+
+        # ---------------------------------------
+        # Response SLA: an OTP email needs no human first response —
+        # stop the clock the instant an OTP Rule recognizes it,
+        # regardless of whether the rule's forward_to action's send
+        # itself later succeeds or fails. Same completion function
+        # every human-triage path already uses (reply/archive/attach/
+        # create-ticket) — see SLAService.complete_first_response_clock.
+        # The root interaction id, not this reply's own id, since
+        # FirstResponseSLA is always keyed by the thread root.
+        # ---------------------------------------
+
+        if otp_recognized and self.sla_service is not None:
+            root_interaction_id = (
+                parent_interaction_id if parent_interaction_id is not None else created.interaction_id
+            )
+            await self.sla_service.complete_first_response_clock(
+                interaction_id=root_interaction_id,
+                completion_reason="OTP_RECOGNIZED",
             )
 
         # ---------------------------------------

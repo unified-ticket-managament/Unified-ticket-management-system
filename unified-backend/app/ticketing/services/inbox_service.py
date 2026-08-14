@@ -15,9 +15,6 @@ from app.ticketing.repositories.interaction_repository import (
 from app.ticketing.repositories.message_read_receipt_repository import (
     MessageReadReceiptRepository,
 )
-from app.ticketing.repositories.ticket_edit_access_repository import (
-    TicketEditAccessRequestRepository,
-)
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 
@@ -61,10 +58,11 @@ class InboxService:
       matching ensure_agent_can_view_ticket's own safe-failure
       convention.
     - Staff: only threads whose ticket is currently assigned to them,
-      plus any ticket they hold an approved, not-yet-expired edit-
-      access grant on — same "ticketed only" restriction as Team
-      Lead, scoped by agent_id (or an edit-access grant) instead of
-      category.
+      plus any ticket they hold a ticket-scoped ticket:editother_ticket
+      override on (granted via the RBAC Permission Request workflow —
+      see access_control.has_permission_for_ticket) — same "ticketed
+      only" restriction as Team Lead, scoped by agent_id (or a scoped
+      override) instead of category.
 
     Because a reply is stored once on the shared thread row (never
     duplicated per viewer), this same scoped query automatically
@@ -78,14 +76,12 @@ class InboxService:
         attachment_repository: AttachmentRepository | None = None,
         user_repository: UserRepository | None = None,
         ticket_repository: TicketRepository | None = None,
-        edit_access_repository: TicketEditAccessRequestRepository | None = None,
         read_receipt_repository: MessageReadReceiptRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
         self.user_repository = user_repository
         self.ticket_repository = ticket_repository
-        self.edit_access_repository = edit_access_repository
         self.read_receipt_repository = read_receipt_repository
 
     async def _resolve_scope(
@@ -130,16 +126,23 @@ class InboxService:
             )
         elif role_name == STAFF_ROLE_NAME:
             assigned_agent_id = current_user.user_id
-            # An approved edit-access grant is exactly what lets this
-            # Staff member act on a ticket they aren't assigned to
-            # (ensure_agent_can_act_on_ticket) — without this, the
-            # ticket's mail thread would never surface in their own
-            # inbox even after approval, only reachable by navigating
-            # to the ticket directly.
-            if self.edit_access_repository is not None:
-                extra_ticket_ids = await self.edit_access_repository.list_active_ticket_ids_for_user(
-                    current_user.user_id
-                )
+            # A ticket-scoped ticket:editother_ticket override is
+            # exactly what lets this Staff member act on a ticket they
+            # aren't assigned to (ensure_agent_can_act_on_ticket, via
+            # has_permission_for_ticket) — without this, the ticket's
+            # mail thread would never surface in their own inbox even
+            # after the override is granted, only reachable by
+            # navigating to the ticket directly. Sourced from the same
+            # JWT-derived `scoped_permissions` claim
+            # has_permission_for_ticket already reads (see that
+            # function's own docstring) — a permission name -> list of
+            # ticket id strings mapping, threaded onto `current_user`
+            # as a transient attribute the same way `.permissions`
+            # already is.
+            scoped_permissions = getattr(current_user, "scoped_permissions", None) or {}
+            extra_ticket_ids = [
+                UUID(tid) for tid in scoped_permissions.get("ticket:editother_ticket", [])
+            ]
         else:
             # Shouldn't happen — get_current_agent already blocks
             # Viewer, and every other AGENT_ROLE_NAMES member is

@@ -115,17 +115,21 @@ export default function RoleDetailsPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0">
               <CardTitle className="text-base">Permissions</CardTitle>
-              {canManagePermissions && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="gap-1.5"
-                  onClick={() => setPermissionsDialogOpen(true)}
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                  Permissions
-                </Button>
-              )}
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                disabled={!canManagePermissions}
+                title={
+                  canManagePermissions
+                    ? undefined
+                    : "You do not have permission to manage permissions."
+                }
+                onClick={() => setPermissionsDialogOpen(true)}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+                Permissions
+              </Button>
             </CardHeader>
             <CardContent>
               {permissionsQuery.isLoading ? (

@@ -15,10 +15,7 @@ from app.rbac.schemas.role import (
     RoleUpdate,
 )
 from app.rbac.schemas.user import UserResponse
-from app.rbac.services.access_control import (
-    ensure_can_view_full_role_population,
-    ensure_has_permission,
-)
+from app.rbac.services.access_control import ensure_has_permission
 from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.role_service import RoleService
 
@@ -167,10 +164,22 @@ async def list_users_for_role(
     hierarchy scoping (the Users page, the Organization Chart,
     permission-override grant/revoke authority) is untouched by this
     route and keeps reading from its own existing code path.
+
+    Gated by role:view plus user:view — this used to also require a
+    hardcoded {Super Admin, Site Lead, Account Manager} role-name
+    allow-list (ensure_can_view_full_role_population), which meant a
+    Team Lead granted role:view was still unconditionally denied here
+    regardless of what permissions they actually held. Replaced with a
+    plain user:view check, reusing the existing effective-permission
+    system instead of a second, permission-blind gate. user:view is
+    granted to every role by default (scripts/rbac_seed/seed.py), so
+    this is a deliberate widening — see client:view (app.ticketing's
+    access_control) for the compensating control added alongside it for
+    the Roles page's separate Client tab.
     """
 
     ensure_has_permission(current_user, "role:view")
-    ensure_can_view_full_role_population(current_user)
+    ensure_has_permission(current_user, "user:view")
 
     role = await RoleRepository(db).get_by_id(role_id)
     if role is None:

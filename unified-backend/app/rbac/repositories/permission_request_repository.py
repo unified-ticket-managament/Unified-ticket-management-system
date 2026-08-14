@@ -109,6 +109,30 @@ class PermissionRequestRepository(BaseRepository):
 
         return list(result.scalars().all())
 
+    async def list_pending_by_scope_ticket(
+        self,
+        scope_ticket_id: UUID,
+    ) -> list[PermissionRequest]:
+        """
+        Every still-PENDING request scoped to this one ticket,
+        regardless of who it's currently addressed to — used to keep
+        selected_approver_id in sync with the ticket's actual current
+        owner when it's reassigned while a request is still open (see
+        PermissionRequestService.resync_ticket_scoped_reviewers).
+        """
+
+        result = await self.db.execute(
+            select(PermissionRequest)
+            .options(selectinload(PermissionRequest.permission))
+            .where(
+                PermissionRequest.status == PermissionRequestStatus.PENDING,
+                PermissionRequest.scope_ticket_id == scope_ticket_id,
+            )
+            .order_by(PermissionRequest.created_at.asc())
+        )
+
+        return list(result.scalars().all())
+
     async def list_history(self) -> list[PermissionRequest]:
         """
         Every request that has left PENDING — APPROVED, REJECTED, or

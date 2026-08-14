@@ -10,7 +10,6 @@ import type {
   AgentSummary,
   CategoryResponse,
   ClientResponse,
-  EditAccessRequestResponse,
   InteractionResponse,
   OpenEmailResponse,
   ThreadResponse,
@@ -65,15 +64,6 @@ interface WorkflowContextValue {
   timeline: InteractionResponse[];
   setTimeline: (items: InteractionResponse[]) => void;
 
-  // The active ticket's Edit Access requests — used to be fetched
-  // independently by both TicketActions (to check whether the
-  // current user holds an active approved grant) and EditAccessPanel
-  // (to render/manage the list), one GET /tickets/{id}/edit-access
-  // each on every ticket mount. Fetched once here instead, alongside
-  // activeTicket/timeline.
-  editAccessRequests: EditAccessRequestResponse[];
-  setEditAccessRequests: (requests: EditAccessRequestResponse[]) => void;
-
   // The Interactions list's row-details drawer state, lifted up here
   // (rather than InteractionsPage's own local useState) so it survives
   // the Expand -> FullInteractionPage -> Minimize round trip. That
@@ -115,9 +105,6 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     null
   );
   const [timeline, setTimeline] = useState<InteractionResponse[]>([]);
-  const [editAccessRequests, setEditAccessRequests] = useState<
-    EditAccessRequestResponse[]
-  >([]);
   const [interactionDrawer, setInteractionDrawer] = useState<
     WorkflowContextValue["interactionDrawer"]
   >({ open: false, row: null, email: null, thread: null, scrollY: 0 });
@@ -180,8 +167,6 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
       setActiveTicket,
       timeline,
       setTimeline,
-      editAccessRequests,
-      setEditAccessRequests,
       interactionDrawer,
       setInteractionDrawer,
     }),
@@ -194,7 +179,6 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
       selectedEmail,
       activeTicket,
       timeline,
-      editAccessRequests,
       interactionDrawer,
     ]
   );

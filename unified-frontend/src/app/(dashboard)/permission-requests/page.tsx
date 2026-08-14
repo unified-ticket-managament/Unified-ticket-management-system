@@ -67,7 +67,13 @@ function RequestCard({ request, footer }: { request: PermissionRequest; footer?:
 
         {request.scope_ticket_id && (
           <p className="text-xs text-muted-foreground">
-            Scoped to one specific ticket only — not this person's other tickets.
+            Ticket{" "}
+            {request.scope_ticket_number != null
+              ? `TKT-${request.scope_ticket_number}`
+              : "#" + request.scope_ticket_id.slice(0, 8)}
+            {request.scope_ticket_title && `: ${request.scope_ticket_title}`}
+            {" — owned by "}
+            {request.scope_ticket_owner_name ?? "Unassigned"}
           </p>
         )}
 
@@ -185,7 +191,11 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
     mutationFn: () =>
       permissionRequestService.create({
         permission_id: permissionId,
-        selected_approver_id: approverId,
+        // Ticket-scoped requests auto-route to the ticket's current
+        // owner server-side — the client never sends an approver for
+        // this path at all, rather than sending a value the backend
+        // would just ignore.
+        selected_approver_id: needsTicketScope ? undefined : approverId,
         reason: reason.trim(),
         scope_ticket_id: needsTicketScope ? ticketId : undefined,
       }),
@@ -208,9 +218,8 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
   const ticketOptions = ticketOptionsQuery.data ?? [];
   const canSubmit =
     !!permissionId &&
-    !!approverId &&
     reason.trim().length > 0 &&
-    (!needsTicketScope || (!!staffId && !!ticketId));
+    (needsTicketScope ? !!staffId && !!ticketId : !!approverId);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -252,43 +261,45 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
             )}
           </div>
 
-          <div className="space-y-2">
-            <Label>Request To</Label>
-            <Select value={approverId} onValueChange={setApproverId} disabled={!permissionId}>
-              <SelectTrigger>
-                <SelectValue
-                  placeholder={
-                    !permissionId
-                      ? "Select a permission first"
-                      : approversQuery.isLoading
-                        ? "Loading approvers..."
-                        : approversQuery.isError
-                          ? "Failed to load approvers — try again"
-                          : eligibleApprovers.length === 0
-                            ? "No one can currently grant this"
-                            : "Select a specific approver"
-                  }
-                />
-              </SelectTrigger>
-              <SelectContent>
-                {eligibleApprovers.map((approver) => (
-                  <SelectItem key={approver.user_id} value={approver.user_id}>
-                    {approver.name}
-                    {approver.is_on_leave ? " (Leave)" : ""} — {approver.role_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              Only this exact person is notified and can review the request.
-            </p>
-            {approversQuery.isError && (
-              <p className="text-xs text-destructive">
-                Couldn't reach the server. Confirm the backend is running the latest code and
-                try again.
+          {!needsTicketScope && (
+            <div className="space-y-2">
+              <Label>Request To</Label>
+              <Select value={approverId} onValueChange={setApproverId} disabled={!permissionId}>
+                <SelectTrigger>
+                  <SelectValue
+                    placeholder={
+                      !permissionId
+                        ? "Select a permission first"
+                        : approversQuery.isLoading
+                          ? "Loading approvers..."
+                          : approversQuery.isError
+                            ? "Failed to load approvers — try again"
+                            : eligibleApprovers.length === 0
+                              ? "No one can currently grant this"
+                              : "Select a specific approver"
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {eligibleApprovers.map((approver) => (
+                    <SelectItem key={approver.user_id} value={approver.user_id}>
+                      {approver.name}
+                      {approver.is_on_leave ? " (Leave)" : ""} — {approver.role_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Only this exact person is notified and can review the request.
               </p>
-            )}
-          </div>
+              {approversQuery.isError && (
+                <p className="text-xs text-destructive">
+                  Couldn't reach the server. Confirm the backend is running the latest code and
+                  try again.
+                </p>
+              )}
+            </div>
+          )}
 
           {needsTicketScope && (
             <>
@@ -351,6 +362,20 @@ function NewRequestDialog({ open, onOpenChange }: { open: boolean; onOpenChange:
                   Access is granted for this one ticket only, not this teammate's other tickets.
                 </p>
               </div>
+
+              {staffId && (
+                <div className="space-y-2">
+                  <Label>Reviewer</Label>
+                  <p className="text-sm">
+                    {staffOptions.find((s) => s.user_id === staffId)?.name ?? "—"}{" "}
+                    <span className="text-muted-foreground">(ticket owner)</span>
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    The ticket's current owner automatically reviews this request — no need to
+                    pick one.
+                  </p>
+                </div>
+              )}
             </>
           )}
 

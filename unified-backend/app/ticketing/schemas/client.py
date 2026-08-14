@@ -60,3 +60,20 @@ class ClientContactResponse(BaseModel):
 
     email: str
     name: str | None = None
+
+
+class ClientDetailsResponse(ClientResponse):
+    """
+    Response for GET /clients/{client_id}/details — the Roles page's
+    Client-tab expand action, gated by client:view (see
+    access_control.ensure_can_view_client_details). Adds this client's
+    configured contact emails (the same rows
+    ClientService.list_contacts(..., configured_only=True) already
+    returns for the pre-existing, ungated GET /clients/{id}/contacts
+    route) on top of every field ClientResponse already carries, so
+    the Roles page needs exactly one gated call instead of reading
+    organization-email/account-manager fields off the already-fetched,
+    ungated listClients() array plus a second contacts call.
+    """
+
+    contacts: list[ClientContactResponse] = []

@@ -117,6 +117,10 @@ export interface PermissionRequest {
   selected_approver_name: string | null;
   reason: string;
   scope_ticket_id: string | null;
+  scope_ticket_number: number | null;
+  scope_ticket_title: string | null;
+  scope_ticket_owner_id: string | null;
+  scope_ticket_owner_name: string | null;
   status: PermissionRequestStatus;
   reviewed_by: string | null;
   reviewed_by_name: string | null;

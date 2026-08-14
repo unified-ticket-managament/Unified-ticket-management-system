@@ -267,7 +267,6 @@ class SLAService:
                             interaction=interaction,
                             global_inbox_ids=global_inbox_ids,
                             notification_service=self.notification_service,
-                            user_repository=self.user_repository,
                         )
 
         await self.first_response_sla_repository.complete(

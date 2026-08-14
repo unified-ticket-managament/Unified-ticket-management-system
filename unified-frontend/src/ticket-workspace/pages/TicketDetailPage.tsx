@@ -9,14 +9,13 @@ import { TicketPropertiesCard } from "@tw/components/ticket/TicketPropertiesCard
 import { TicketActivityPanel, type ActivityTab } from "@tw/components/ticket/TicketActivityPanel";
 import { SlaCard } from "@tw/components/sla/SlaCard";
 import { useApiAction } from "@tw/hooks/useApiAction";
-import { getTicket, listEditAccessRequests } from "@tw/api/ticket";
+import { getTicket } from "@tw/api/ticket";
 import { getTicketTimeline } from "@tw/api/interaction";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 
 export function TicketDetailPage() {
   const { ticketId } = useParams<{ ticketId: string }>();
-  const { activeTicket, setActiveTicket, setTimeline, setEditAccessRequests } =
-    useWorkflowContext();
+  const { activeTicket, setActiveTicket, setTimeline } = useWorkflowContext();
   const [activityTab, setActivityTab] = useState<ActivityTab>("timeline");
   // Bumped after any refresh so the Audit Log tab refetches
   // immediately instead of waiting for its own poll interval — only
@@ -34,11 +33,9 @@ export function TicketDetailPage() {
   // one requested.
   const timelineRequestIdRef = useRef(0);
   const ticketRequestIdRef = useRef(0);
-  const editAccessRequestIdRef = useRef(0);
 
   const { run: runGetTicket, isLoading: isLoadingTicket } = useApiAction(getTicket);
   const { run: runGetTimeline } = useApiAction(getTicketTimeline);
-  const { run: runListEditAccess } = useApiAction(listEditAccessRequests);
 
   const refreshTimeline = useCallback(async () => {
     if (!ticketId) return;
@@ -52,31 +49,16 @@ export function TicketDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticketId, runGetTimeline, setTimeline]);
 
-  // Shared by TicketActions (reads the list to check for an active
-  // approved grant) and EditAccessPanel (renders/manages it, and
-  // calls this again after approve/reject/request) — one fetch here
-  // instead of each component fetching its own copy independently.
-  const refreshEditAccessRequests = useCallback(async () => {
-    if (!ticketId) return;
-    const requestId = ++editAccessRequestIdRef.current;
-    const result = await runListEditAccess(ticketId);
-    if (requestId !== editAccessRequestIdRef.current) return;
-    if (result) setEditAccessRequests(result);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticketId, runListEditAccess, setEditAccessRequests]);
-
   const refreshAll = useCallback(async () => {
     if (!ticketId) return;
     const requestId = ++ticketRequestIdRef.current;
     // Independent, not awaited together — the ticket's own fields
     // (header, status/priority, actions) render the moment its fetch
-    // resolves, instead of waiting on the timeline/edit-access
-    // requests too. Both of those run in parallel on their own
-    // schedule (each has its own request-id guard) and update their
-    // own state whenever they finish, without holding up first paint
-    // of everything else.
+    // resolves, instead of waiting on the timeline too. That runs in
+    // parallel on its own schedule (its own request-id guard) and
+    // updates its own state whenever it finishes, without holding up
+    // first paint of everything else.
     refreshTimeline();
-    refreshEditAccessRequests();
     const ticket = await runGetTicket(ticketId);
     if (requestId !== ticketRequestIdRef.current) return;
     // Explicitly clear on failure (e.g. transferred away from the

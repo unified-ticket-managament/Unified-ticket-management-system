@@ -59,7 +59,7 @@ import { canManageRoles, getCreatableRoleNames, ROLE_NAMES } from "@/lib/role-ac
 import { permissionService, roleService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 import { Permission, Role, User } from "@/types";
-import { listClients, listConfiguredClientContacts } from "@tw/api/clients";
+import { getClientDetails, listClients } from "@tw/api/clients";
 import type { ClientResponse } from "@tw/types";
 
 // Master list is deliberately narrower than the full role catalog — only
@@ -105,47 +105,71 @@ function prettifyAction(permissionName: string): string {
     .join(" ");
 }
 
-// Contact emails come from `client_contact` (via the existing
-// GET /clients/{id}/contacts?configured_only=true endpoint — see
-// unified-backend's ClientService.list_contacts docstring), fetched
-// lazily on first expand and cached per client_id thereafter.
-function ClientContactsList({ clientId }: { clientId: string }) {
-  const contactsQuery = useQuery({
-    queryKey: ["client-contacts-configured", clientId],
-    queryFn: () => listConfiguredClientContacts(clientId),
+// Organization email, account manager, and contact emails all come
+// from the dedicated GET /clients/{id}/details endpoint (gated by
+// client:view) — NOT from the already-fetched, ungated listClients()
+// array this page also uses for the collapsed row/count. Fetched
+// lazily on first expand, cached per client_id thereafter. Only
+// rendered at all when the caller holds client:view — see the
+// expanded-panel render site below.
+function ClientDetailsPanel({ clientId }: { clientId: string }) {
+  const detailsQuery = useQuery({
+    queryKey: ["client-details", clientId],
+    queryFn: () => getClientDetails(clientId),
   });
 
-  if (contactsQuery.isLoading) {
+  if (detailsQuery.isLoading) {
     return (
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Loading contacts...
+        Loading client details...
       </div>
     );
   }
 
-  if (contactsQuery.isError) {
+  if (detailsQuery.isError) {
     return (
       <p className="text-sm text-destructive">
-        {getApiErrorMessage(contactsQuery.error, "Failed to load contact emails.")}
+        {getApiErrorMessage(detailsQuery.error, "Failed to load client details.")}
       </p>
     );
   }
 
-  const contacts = contactsQuery.data ?? [];
-
-  if (contacts.length === 0) {
-    return <p className="text-sm text-muted-foreground">No contact emails on file.</p>;
-  }
+  const details = detailsQuery.data;
+  if (!details) return null;
 
   return (
-    <ul className="space-y-1">
-      {contacts.map((contact) => (
-        <li key={contact.email} className="text-sm text-muted-foreground">
-          • {contact.email}
-        </li>
-      ))}
-    </ul>
+    <>
+      <div>
+        <p className="text-xs font-medium text-muted-foreground">Organization Email</p>
+        <p className="text-sm">{details.inbox_email ?? "—"}</p>
+      </div>
+      <div>
+        <p className="text-xs font-medium text-muted-foreground">Account Manager</p>
+        <p className="text-sm">
+          {details.account_manager_name ?? "Unassigned"}
+          {!details.account_manager_active && (
+            <span className="ml-2 text-xs text-destructive">
+              (no longer an active Account Manager)
+            </span>
+          )}
+        </p>
+      </div>
+      <div>
+        <p className="text-xs font-medium text-muted-foreground">Contact Emails</p>
+        {details.contacts.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No contact emails on file.</p>
+        ) : (
+          <ul className="space-y-1">
+            {details.contacts.map((contact) => (
+              <li key={contact.email} className="text-sm text-muted-foreground">
+                • {contact.email}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -163,6 +187,20 @@ export default function RolesPage() {
   // Site Lead (who holds this permission by default) and over-granted
   // Account Manager (who the RBAC matrix doc keeps override-only).
   const canManagePermissions = hasPermission("permission:update");
+  // Gates the entire Client tab's list content (client names/status —
+  // not just the expand action's organization email/account
+  // manager/contact emails) — a compensating control added alongside
+  // widening GET /roles/{id}/users to user:view (see that route's own
+  // docstring), which opened this page to Team Lead/Staff for the
+  // first time. The expand action's own data (fetched via
+  // ClientDetailsPanel below) is separately, additionally gated
+  // server-side by the same client:view check on
+  // GET /clients/{id}/details — this flag only controls what this
+  // page renders from the already-fetched, ungated listClients()
+  // array, which stays ungated on purpose (see that fetch's own
+  // comment for why: Mail Compose/filter/Rules picker/Create Dummy
+  // Mail all depend on it staying unrestricted).
+  const canViewClientDetails = hasPermission("client:view");
 
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -206,9 +244,9 @@ export default function RolesPage() {
   // call (see root CLAUDE.md's Roles-page-visibility note): an Account
   // Manager clicking Team Lead/Staff must see every Team Lead/Staff,
   // not just their own reporting subtree. One query per role via
-  // GET /roles/{role_id}/users (server-side gated to Super Admin/Site
-  // Lead/Account Manager regardless of who calls it) — cheap at this
-  // table's real size, and each result caches independently by
+  // GET /roles/{role_id}/users (gated by role:view + user:view — a
+  // real permission check, not a hardcoded role allow-list) — cheap at
+  // this table's real size, and each result caches independently by
   // role_id. This intentionally does NOT touch the Users page's own
   // "users-table" query/cache key at all.
   const nonClientRoles = useMemo(
@@ -231,8 +269,17 @@ export default function RolesPage() {
     return map;
   }, [nonClientRoles, roleUsersResults]);
 
-  const roleUsersLoading = roleUsersResults.some((result) => result.isLoading);
-  const roleUsersError = roleUsersResults.find((result) => result.isError)?.error;
+  // Per-role loading flag, purely for the sidebar card counts (see the
+  // card render below) — kept separate from the selected-role-scoped
+  // loading/error state right after it, which is what the "Assigned
+  // Users" panel actually reads.
+  const roleUsersLoadingMap = useMemo(() => {
+    const map = new Map<string, boolean>();
+    nonClientRoles.forEach((role, index) => {
+      map.set(role.role_id, roleUsersResults[index]?.isLoading ?? false);
+    });
+    return map;
+  }, [nonClientRoles, roleUsersResults]);
 
   const userCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -244,6 +291,23 @@ export default function RolesPage() {
     () => (selectedRole ? roleUsersMap.get(selectedRole.role_id) ?? [] : []),
     [roleUsersMap, selectedRole]
   );
+
+  // Scoped to whichever role is currently selected — NOT a blanket
+  // "did any of the five per-role queries fail" flag. The previous
+  // version used `.find(result => result.isError)` across all five
+  // results, so a failure fetching (say) Super Admin's population
+  // would show an error under the "Assigned Users" panel even while
+  // viewing Staff, whose own query had succeeded.
+  const selectedRoleIndex = useMemo(
+    () => (selectedRole ? nonClientRoles.findIndex((r) => r.role_id === selectedRole.role_id) : -1),
+    [nonClientRoles, selectedRole]
+  );
+  const selectedRoleUsersResult =
+    selectedRoleIndex >= 0 ? roleUsersResults[selectedRoleIndex] : undefined;
+  const selectedRoleUsersLoading = selectedRoleUsersResult?.isLoading ?? false;
+  const selectedRoleUsersError = selectedRoleUsersResult?.isError
+    ? selectedRoleUsersResult.error
+    : undefined;
 
   const clients: ClientResponse[] = clientsQuery.data ?? [];
   const isClientRole = selectedRole?.name === ROLE_NAMES.CLIENT;
@@ -363,9 +427,9 @@ export default function RolesPage() {
         />
       ) : (
         <>
-        <div className="grid gap-6 lg:grid-cols-[240px_1fr_1fr] lg:items-start">
+        <div className="grid gap-6 lg:grid-cols-[240px_1fr_1fr]">
           {/* Roles List */}
-          <div className="space-y-2">
+          <div className="space-y-2 lg:h-[560px] lg:overflow-y-auto lg:pr-1">
             {orderedRoles.map((role) => {
               const isSelected = selectedRole?.role_id === role.role_id;
               // Client is sourced from `clients`, never `users` — its
@@ -380,6 +444,13 @@ export default function RolesPage() {
                 : count === 1
                   ? "user"
                   : "users";
+              // Only ever true for a non-Client role's own query — the
+              // Client tab's count comes from clientsQuery instead,
+              // which has its own separate loading state handled
+              // elsewhere. Showing a spinner here (rather than "0
+              // users") avoids the count flashing 0 -> real number
+              // while that role's query is still in flight.
+              const isCountLoading = !isClient && (roleUsersLoadingMap.get(role.role_id) ?? false);
 
               return (
                 <Card
@@ -402,9 +473,15 @@ export default function RolesPage() {
                       </div>
                       <div className="min-w-0">
                         <p className="truncate text-sm font-semibold">{role.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {count} {countLabel}
-                        </p>
+                        {isCountLoading ? (
+                          <p className="flex items-center gap-1 text-xs text-muted-foreground">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          </p>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">
+                            {count} {countLabel}
+                          </p>
+                        )}
                       </div>
                     </div>
 
@@ -448,9 +525,11 @@ export default function RolesPage() {
 
           {/* Role Information | Permissions — side by side with the Roles
               List on desktop; each stacks in normal document order below
-              the `lg` breakpoint. Both are plain-height cards (no scroll
-              of their own) — only Assigned Users below gets a bounded,
-              independently-scrolling area. */}
+              the `lg` breakpoint. On desktop both are fixed-height cards
+              matching the Roles List's own height, with their own
+              independently-scrolling body (header/button stay fixed) —
+              the same bounded-scroll idea Assigned Users/Clients below
+              already use, applied to this row instead. */}
           {!selectedRole ? (
             <div className="lg:col-span-2">
               <EmptyState
@@ -460,11 +539,11 @@ export default function RolesPage() {
             </div>
           ) : (
             <>
-              <Card>
+              <Card className="flex flex-col lg:h-[560px]">
                 <CardHeader>
                   <CardTitle className="text-base">Role Information</CardTitle>
                 </CardHeader>
-                <CardContent className="grid gap-4 sm:grid-cols-2">
+                <CardContent className="grid gap-4 sm:grid-cols-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
                   <div className="sm:col-span-2">
                     <p className="text-xs text-muted-foreground">Role Name</p>
                     <p className="mt-1 font-semibold">{selectedRole.name}</p>
@@ -491,7 +570,13 @@ export default function RolesPage() {
                       ) : (
                         <UsersIcon className="h-3 w-3" />
                       )}
-                      {isClientRole ? clients.length : assignedUsers.length}
+                      {isClientRole ? (
+                        clients.length
+                      ) : selectedRoleUsersLoading ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        assignedUsers.length
+                      )}
                     </Badge>
                   </div>
                   <div>
@@ -504,22 +589,26 @@ export default function RolesPage() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card className="flex flex-col lg:h-[560px]">
                 <CardHeader className="flex flex-row items-center justify-between space-y-0">
                   <CardTitle className="text-base">Permissions</CardTitle>
-                  {canManagePermissions && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="gap-1.5"
-                      onClick={() => setPermissionsDialogOpen(true)}
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                      Manage Permissions
-                    </Button>
-                  )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5"
+                    disabled={!canManagePermissions}
+                    title={
+                      canManagePermissions
+                        ? undefined
+                        : "You do not have permission to manage permissions."
+                    }
+                    onClick={() => setPermissionsDialogOpen(true)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                    Manage Permissions
+                  </Button>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
                   {permissionsQuery.isLoading ? (
                     <WorkflowLoader loading size={40} />
                   ) : permissionGroups.length === 0 ? (
@@ -570,10 +659,10 @@ export default function RolesPage() {
               <CardTitle className="text-base">Assigned Users</CardTitle>
             </CardHeader>
             <CardContent className="max-h-[420px] space-y-1 overflow-y-auto">
-              {roleUsersLoading ? (
+              {selectedRoleUsersLoading ? (
                 <WorkflowLoader loading size={40} />
-              ) : roleUsersError ? (
-                <ErrorState message={getApiErrorMessage(roleUsersError, "Failed to load users for this role.")} />
+              ) : selectedRoleUsersError ? (
+                <ErrorState message={getApiErrorMessage(selectedRoleUsersError, "Failed to load users for this role.")} />
               ) : assignedUsers.length === 0 ? (
                 <EmptyState title="No users assigned" description="Users with this role will appear here." />
               ) : (
@@ -632,6 +721,18 @@ export default function RolesPage() {
                 <ErrorState
                   message={getApiErrorMessage(clientsQuery.error, "Failed to load clients.")}
                 />
+              ) : !canViewClientDetails ? (
+                // Without client:view, the entire roster is hidden — not
+                // just the expand action's org email/account manager/
+                // contact emails (see ClientDetailsPanel below). A row
+                // never renders at all in this branch, so the two
+                // per-row canViewClientDetails checks that used to live
+                // inside the .map() below were removed as dead code.
+                <div className="p-4">
+                  <p className="text-sm text-muted-foreground">
+                    You do not have permission to view client details.
+                  </p>
+                </div>
               ) : clients.length === 0 ? (
                 <EmptyState
                   title="No clients yet"
@@ -689,31 +790,7 @@ export default function RolesPage() {
 
                         {isExpanded && (
                           <div className="space-y-3 border-t border-border bg-muted/30 p-4 pl-11">
-                            <div>
-                              <p className="text-xs font-medium text-muted-foreground">
-                                Organization Email
-                              </p>
-                              <p className="text-sm">{client.inbox_email ?? "—"}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs font-medium text-muted-foreground">
-                                Account Manager
-                              </p>
-                              <p className="text-sm">
-                                {client.account_manager_name ?? "Unassigned"}
-                                {!client.account_manager_active && (
-                                  <span className="ml-2 text-xs text-destructive">
-                                    (no longer an active Account Manager)
-                                  </span>
-                                )}
-                              </p>
-                            </div>
-                            <div>
-                              <p className="text-xs font-medium text-muted-foreground">
-                                Contact Emails
-                              </p>
-                              <ClientContactsList clientId={client.client_id} />
-                            </div>
+                            <ClientDetailsPanel clientId={client.client_id} />
                           </div>
                         )}
                       </div>

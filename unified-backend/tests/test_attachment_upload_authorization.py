@@ -69,14 +69,12 @@ from shared_models.models import Role, User
 
 from app.database.session import AsyncSessionLocal, engine
 from app.ticketing.enums import (
-    EditAccessStatus,
     EscalationLevel,
     EscalationStatus,
     TicketPriority,
 )
 from app.ticketing.models.client import Client
 from app.ticketing.models.ticket import Ticket
-from app.ticketing.models.ticket_edit_access_request import TicketEditAccessRequest
 from app.ticketing.models.ticket_escalation import TicketEscalation
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.repositories.client_repository import ClientRepository
@@ -84,9 +82,6 @@ from app.ticketing.repositories.escalation_handling_sla_repository import (
     EscalationHandlingSlaRepository,
 )
 from app.ticketing.repositories.interaction_repository import InteractionRepository
-from app.ticketing.repositories.ticket_edit_access_repository import (
-    TicketEditAccessRequestRepository,
-)
 from app.ticketing.repositories.ticket_escalation_repository import (
     TicketEscalationRepository,
 )
@@ -216,7 +211,7 @@ async def _make_ticket(session, *, account_manager_id, ticket_type, agent_id=Non
     return client, ticket
 
 
-def _build_service(session, *, with_edit_access=True) -> AttachmentService:
+def _build_service(session) -> AttachmentService:
     return AttachmentService(
         attachment_repository=AttachmentRepository(session),
         interaction_repository=InteractionRepository(session),
@@ -225,9 +220,6 @@ def _build_service(session, *, with_edit_access=True) -> AttachmentService:
         client_repository=ClientRepository(session),
         escalation_repository=TicketEscalationRepository(session),
         escalation_handling_sla_repository=EscalationHandlingSlaRepository(session),
-        edit_access_repository=(
-            TicketEditAccessRequestRepository(session) if with_edit_access else None
-        ),
     )
 
 
@@ -351,90 +343,7 @@ async def test_team_lead_can_upload_to_unassigned_or_other_agents_ticket(db_sess
 
 
 # ---------------------------------------------------------------
-# 5. The NEW fix: a non-assigned Staff member with an active,
-#    approved, per-ticket edit-access grant can now upload — matching
-#    every other InteractionService mutating action's existing
-#    edit-access bypass, which AttachmentService never had before this
-#    session.
-# ---------------------------------------------------------------
-
-
-async def test_non_assigned_staff_with_active_edit_access_grant_can_upload(db_session):
-    team_lead, [staff_a, staff_b] = await _find_team_lead_with_staff(db_session, 2)
-    staff_b.permissions = ["ticket:upload_attachment"]
-    _client, ticket = await _make_ticket(
-        db_session,
-        account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
-        agent_id=staff_a.user_id,
-    )
-
-    grant = TicketEditAccessRequest(
-        request_id=uuid.uuid4(),
-        ticket_id=ticket.ticket_id,
-        requested_by=staff_b.user_id,
-        reason="Covering for staff_a while out of office",
-        status=EditAccessStatus.APPROVED,
-        reviewed_by=team_lead.user_id,
-        reviewed_at=datetime.now(timezone.utc),
-        expires_at=datetime.now(timezone.utc) + timedelta(days=1),
-    )
-    db_session.add(grant)
-    await db_session.flush()
-
-    service = _build_service(db_session)
-    response = await service.upload_attachment(
-        ticket_id=ticket.ticket_id,
-        files=[_make_file(filename="edit-access-upload.pdf")],
-        current_user=staff_b,
-    )
-    assert len(response.attachments) == 1
-
-
-# ---------------------------------------------------------------
-# 6. Backward compatibility: a caller that constructs AttachmentService
-#    without edit_access_repository (the pre-fix shape) must keep
-#    degrading safely to "skip that bypass", not crash — same
-#    optional-parameter convention as escalation_repository/
-#    escalation_handling_sla_repository already use.
-# ---------------------------------------------------------------
-
-
-async def test_edit_access_grant_is_ignored_when_repository_not_supplied(db_session):
-    team_lead, [staff_a, staff_b] = await _find_team_lead_with_staff(db_session, 2)
-    staff_b.permissions = ["ticket:upload_attachment"]
-    _client, ticket = await _make_ticket(
-        db_session,
-        account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
-        agent_id=staff_a.user_id,
-    )
-
-    grant = TicketEditAccessRequest(
-        request_id=uuid.uuid4(),
-        ticket_id=ticket.ticket_id,
-        requested_by=staff_b.user_id,
-        reason="Covering for staff_a while out of office",
-        status=EditAccessStatus.APPROVED,
-        reviewed_by=team_lead.user_id,
-        reviewed_at=datetime.now(timezone.utc),
-        expires_at=None,
-    )
-    db_session.add(grant)
-    await db_session.flush()
-
-    service = _build_service(db_session, with_edit_access=False)
-    with pytest.raises(HTTPException) as exc_info:
-        await service.upload_attachment(
-            ticket_id=ticket.ticket_id,
-            files=[_make_file()],
-            current_user=staff_b,
-        )
-    assert exc_info.value.status_code == 403
-
-
-# ---------------------------------------------------------------
-# 7. A closed ticket still blocks upload for everyone, including the
+# 5. A closed ticket still blocks upload for everyone, including the
 #    assigned agent — ensure_ticket_not_closed is unaffected by this
 #    fix.
 # ---------------------------------------------------------------
@@ -463,7 +372,7 @@ async def test_closed_ticket_blocks_upload_even_for_assigned_agent(db_session):
 
 
 # ---------------------------------------------------------------
-# 8. An escalated ticket awaiting acceptance freezes upload for
+# 6. An escalated ticket awaiting acceptance freezes upload for
 #    *everyone*, including the assigned agent and supervisors alike —
 #    ensure_ticket_not_frozen_by_escalation is unaffected by this fix,
 #    and this is the one case that must reject even a supervisor.
@@ -516,7 +425,7 @@ async def test_escalated_ticket_awaiting_acceptance_blocks_upload_for_everyone(d
 
 
 # ---------------------------------------------------------------
-# 9. Persistence and visibility: a successfully uploaded attachment
+# 7. Persistence and visibility: a successfully uploaded attachment
 #    actually persists and is visible via the same
 #    InteractionService.get_ticket_attachments path the Attachments
 #    tab reads from — not just a 200 response with no real row behind
@@ -558,7 +467,7 @@ async def test_uploaded_attachment_persists_and_is_visible_afterward(db_session)
 
 
 # ---------------------------------------------------------------
-# 10. A direct guard against the third live-data bug found this
+# 8. A direct guard against the third live-data bug found this
 #     session recurring silently: the Staff role must never hold
 #     ticket:editother_ticket in the connected database's own
 #     role_permissions table — scripts/rbac_seed/seed.py's DEFAULT_ROLES

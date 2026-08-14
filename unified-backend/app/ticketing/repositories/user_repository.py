@@ -92,31 +92,15 @@ class UserRepository:
         )
         return dict(result.all())
 
-    async def get_emails_by_ids(self, user_ids: list[UUID]) -> dict[UUID, str]:
-        """
-        Batch-resolves user_id -> email address — used to send real
-        outbound notification email (SLA breach escalations) to a
-        resolved recipient set without a lookup per recipient. Kept as
-        its own method rather than widening get_names_by_ids' existing
-        (user_id, name) shape, which other callers already rely on.
-        """
-
-        if not user_ids:
-            return {}
-
-        result = await self.db.execute(
-            select(User.user_id, User.email).where(User.user_id.in_(user_ids))
-        )
-        return dict(result.all())
-
     async def get_active_emails_by_ids(self, user_ids: list[UUID]) -> dict[UUID, str]:
         """
-        Same shape as get_emails_by_ids, but excludes deactivated users
-        — used by the notification-email feature, which (unlike SLA
-        breach escalation's own recipient resolution, already scoped
-        to active users via its role-based queries) can be handed a
+        Batch-resolves user_id -> email address for active users only —
+        used by the centralized notification-email feature
+        (app/notifications/email_notifier.py), which can be handed a
         recipient set sourced from an arbitrary notify() call and must
-        not email someone who's been deactivated.
+        not email someone who's been deactivated. Kept as its own
+        method rather than widening get_names_by_ids' existing
+        (user_id, name) shape, which other callers already rely on.
         """
 
         if not user_ids:

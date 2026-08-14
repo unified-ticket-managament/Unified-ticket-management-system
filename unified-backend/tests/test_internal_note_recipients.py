@@ -34,9 +34,6 @@ from app.ticketing.models.client import Client
 from app.ticketing.models.ticket import Ticket
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import InteractionRepository
-from app.ticketing.repositories.ticket_edit_access_repository import (
-    TicketEditAccessRequestRepository,
-)
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.note import InternalNoteCreate
@@ -61,7 +58,6 @@ def _build_interaction_service(session) -> InteractionService:
         ticket_repository=TicketRepository(session),
         user_repository=UserRepository(session),
         client_repository=ClientRepository(session),
-        edit_access_repository=TicketEditAccessRequestRepository(session),
         notification_service=NotificationService(NotificationRepository(session)),
     )
 

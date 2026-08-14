@@ -415,7 +415,11 @@ export const permissionRequestService = {
 
   create: async (data: {
     permission_id: string;
-    selected_approver_id: string;
+    // Optional: a ticket-scoped request against a ticket that already
+    // has an owner auto-routes to that owner server-side and ignores
+    // this field entirely — only a non-ticket-scoped request, or one
+    // against a currently-unassigned ticket, actually requires it.
+    selected_approver_id?: string | null;
     reason: string;
     scope_ticket_id?: string | null;
   }): Promise<PermissionRequest> => {

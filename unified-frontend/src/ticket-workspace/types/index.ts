@@ -96,6 +96,12 @@ export interface ClientContact {
   name: string | null;
 }
 
+// GET /clients/{client_id}/details — gated by client:view. Used only
+// by the Roles page's Client-tab expand action.
+export interface ClientDetailsResponse extends ClientResponse {
+  contacts: ClientContact[];
+}
+
 // ==========================================================
 // Attachments
 // ==========================================================
@@ -483,39 +489,6 @@ export interface UnrelateTicketResponse {
   message: string;
 }
 
-// ==========================================================
-// Edit Access — request/approve/reject
-// ==========================================================
-
-export type EditAccessStatus = "PENDING" | "APPROVED" | "REJECTED";
-
-export interface EditAccessRequestCreate {
-  reason: string;
-}
-
-export interface EditAccessApproveRequest {
-  expires_at?: string | null;
-  review_note?: string | null;
-}
-
-export interface EditAccessRejectRequest {
-  review_note?: string | null;
-}
-
-export interface EditAccessRequestResponse {
-  request_id: string;
-  ticket_id: string;
-  requested_by: string;
-  requested_by_name: string | null;
-  reason: string;
-  status: EditAccessStatus;
-  reviewed_by: string | null;
-  reviewed_by_name: string | null;
-  reviewed_at: string | null;
-  review_note: string | null;
-  expires_at: string | null;
-  created_at: string;
-}
 
 export interface TransferAgentRequest {
   new_agent_id: string;

@@ -98,6 +98,11 @@ class _FakeQueryResult:
 
 
 class _FakeTicketQueryDB:
+    """Row must be the 4-tuple load_ticket_context's real query
+    returns: (ticket, client, agent_user, assigned_by_user) — the
+    latter two None whenever the ticket is unassigned or its assigner
+    can't be resolved."""
+
     def __init__(self, row):
         self._row = row
 
@@ -113,12 +118,18 @@ class _FakeEnumValue:
 @dataclass
 class _FakeTicketRow:
     ticket_id: uuid.UUID
+    title: str
     current_priority: _FakeEnumValue
     current_status: _FakeEnumValue
 
 
 @dataclass
 class _FakeClientRow:
+    name: str
+
+
+@dataclass
+class _FakeAssignedUser:
     name: str
 
 
@@ -160,14 +171,19 @@ def test_email_eligible_types_match_policy():
     assert EMAIL_ELIGIBLE_NOTIFICATION_TYPES == {
         NotificationType.TICKET_ASSIGNED,
         NotificationType.ESCALATION_CREATED,
-        NotificationType.SLA_BREACHED,
         NotificationType.CLIENT_REPLY,
-        NotificationType.EDIT_ACCESS_APPROVED,
-        NotificationType.EDIT_ACCESS_REJECTED,
     }
     assert not is_email_eligible(NotificationType.TICKET_STATUS_CHANGED)
     assert not is_email_eligible(NotificationType.TICKET_RESOLVED)
-    assert not is_email_eligible(NotificationType.EDIT_ACCESS_REQUESTED)
+    # SLA Breached is explicitly out of the email-eligible scope — stays
+    # in-app-only, same as every other SLA/escalation-ladder type.
+    assert not is_email_eligible(NotificationType.SLA_BREACHED)
+    assert not is_email_eligible(NotificationType.SLA_HALF_ELAPSED)
+    assert not is_email_eligible(NotificationType.SLA_AT_RISK)
+    assert not is_email_eligible(NotificationType.SLA_ESCALATED)
+    assert not is_email_eligible(NotificationType.ESCALATION_ACKNOWLEDGED)
+    assert not is_email_eligible(NotificationType.ESCALATION_ADVANCED)
+    assert not is_email_eligible(NotificationType.ESCALATION_CLOSED)
 
 
 # ---------------------------------------
@@ -180,10 +196,7 @@ def test_email_eligible_types_match_policy():
     [
         pytest.param(NotificationType.TICKET_ASSIGNED, id="ticket_assigned"),
         pytest.param(NotificationType.ESCALATION_CREATED, id="ticket_escalated"),
-        pytest.param(NotificationType.SLA_BREACHED, id="sla_breached"),
         pytest.param(NotificationType.CLIENT_REPLY, id="client_reply_received"),
-        pytest.param(NotificationType.EDIT_ACCESS_APPROVED, id="edit_access_approved"),
-        pytest.param(NotificationType.EDIT_ACCESS_REJECTED, id="edit_access_rejected"),
     ],
 )
 async def test_business_critical_type_sends_email(monkeypatch, notification_type):
@@ -203,12 +216,25 @@ async def test_business_critical_type_sends_email(monkeypatch, notification_type
     assert fake_sender.sent[0]["subject"] == notification.title
 
 
-async def test_non_critical_notification_does_not_send_email(monkeypatch):
+@pytest.mark.parametrize(
+    "notification_type",
+    [
+        pytest.param(NotificationType.TICKET_STATUS_CHANGED, id="ticket_status_changed"),
+        pytest.param(NotificationType.SLA_BREACHED, id="sla_breached"),
+        pytest.param(NotificationType.SLA_HALF_ELAPSED, id="sla_half_elapsed"),
+        pytest.param(NotificationType.SLA_AT_RISK, id="sla_at_risk"),
+        pytest.param(NotificationType.SLA_ESCALATED, id="sla_escalated"),
+        pytest.param(NotificationType.ESCALATION_ACKNOWLEDGED, id="escalation_acknowledged"),
+        pytest.param(NotificationType.ESCALATION_ADVANCED, id="escalation_advanced"),
+        pytest.param(NotificationType.ESCALATION_CLOSED, id="escalation_closed"),
+    ],
+)
+async def test_non_critical_notification_does_not_send_email(monkeypatch, notification_type):
     fake_sender = _FakeEmailSender()
     monkeypatch.setattr(email_notifier, "get_email_sender", lambda: fake_sender)
 
     user_id = uuid.uuid4()
-    notification = _make_notification(NotificationType.TICKET_STATUS_CHANGED, user_id=user_id)
+    notification = _make_notification(notification_type, user_id=user_id)
     user_repo = _FakeUserRepository({user_id: "agent@company.com"})
 
     await email_notifier.dispatch_notification_emails(
@@ -368,20 +394,45 @@ async def test_load_ticket_context_resolves_priority_status_client():
     ticket_id = uuid.uuid4()
     ticket = _FakeTicketRow(
         ticket_id=ticket_id,
+        title="Testing mail",
         current_priority=_FakeEnumValue("HIGH"),
         current_status=_FakeEnumValue("OPEN"),
     )
     client = _FakeClientRow(name="Acme Corp")
-    db = _FakeTicketQueryDB((ticket, client))
+    agent_user = _FakeAssignedUser(name="Raju")
+    assigned_by_user = _FakeAssignedUser(name="Kamaleshwaran")
+    db = _FakeTicketQueryDB((ticket, client, agent_user, assigned_by_user))
 
     context = await load_ticket_context(
         db, related_entity_type="ticket", related_entity_id=ticket_id
     )
 
     assert context.ticket_id == ticket_id
+    assert context.title == "Testing mail"
     assert context.priority == "HIGH"
     assert context.status == "OPEN"
     assert context.client_name == "Acme Corp"
+    assert context.assigned_to_name == "Raju"
+    assert context.assigned_by_name == "Kamaleshwaran"
+
+
+async def test_load_ticket_context_handles_unassigned_ticket_with_no_client():
+    ticket_id = uuid.uuid4()
+    ticket = _FakeTicketRow(
+        ticket_id=ticket_id,
+        title="Untitled work",
+        current_priority=_FakeEnumValue("LOW"),
+        current_status=_FakeEnumValue("OPEN"),
+    )
+    db = _FakeTicketQueryDB((ticket, None, None, None))
+
+    context = await load_ticket_context(
+        db, related_entity_type="ticket", related_entity_id=ticket_id
+    )
+
+    assert context.client_name is None
+    assert context.assigned_to_name is None
+    assert context.assigned_by_name is None
 
 
 async def test_load_ticket_context_returns_none_for_non_ticket_entity():
@@ -400,11 +451,16 @@ def test_build_notification_email_escapes_html():
         message="hello & <b>world</b>",
     )
 
-    _, _, html_body = build_notification_email(notification, ticket_context=None)
+    _, text_body, html_body = build_notification_email(notification, ticket_context=None)
 
     assert "<script>" not in html_body
     assert "&lt;script&gt;" in html_body
-    assert "Not applicable" in html_body  # no ticket context → placeholders, not blanks
+    # No ticket context → no ticket-shaped fields at all, and never a
+    # placeholder string in either body.
+    for placeholder in ("Not applicable", "N/A", "Unknown", "null", "undefined"):
+        assert placeholder not in html_body
+        assert placeholder not in text_body
+    assert "Timestamp" in text_body
 
 
 async def test_html_email_rendering_includes_all_required_fields(monkeypatch):
@@ -423,11 +479,14 @@ async def test_html_email_rendering_includes_all_required_fields(monkeypatch):
     user_repo = _FakeUserRepository({user_id: "agent@company.com"})
     ticket = _FakeTicketRow(
         ticket_id=ticket_id,
+        title="Fix the widget",
         current_priority=_FakeEnumValue("CRITICAL"),
         current_status=_FakeEnumValue("IN_PROGRESS"),
     )
     client = _FakeClientRow(name="Acme Corp")
-    db = _FakeTicketQueryDB((ticket, client))
+    agent_user = _FakeAssignedUser(name="Raju")
+    assigned_by_user = _FakeAssignedUser(name="Kamaleshwaran")
+    db = _FakeTicketQueryDB((ticket, client, agent_user, assigned_by_user))
 
     await email_notifier.dispatch_notification_emails([notification], db=db, user_repository=user_repo)
 
@@ -438,10 +497,54 @@ async def test_html_email_rendering_includes_all_required_fields(monkeypatch):
     for expected in (
         "A ticket was assigned to you",
         "Fix the widget",
-        str(ticket_id),
         "Acme Corp",
         "CRITICAL",
         "IN_PROGRESS",
+        "Assigned to",
+        "Raju",
+        "Assigned by",
+        "Kamaleshwaran",
+        "Assigned at",
     ):
         assert expected in html_body
         assert expected in text_body
+
+    # The internal ticket UUID is never user-facing content.
+    assert str(ticket_id) not in html_body
+    assert str(ticket_id) not in text_body
+
+
+async def test_escalation_created_email_has_no_assignment_fields(monkeypatch):
+    fake_sender = _FakeEmailSender()
+    monkeypatch.setattr(email_notifier, "get_email_sender", lambda: fake_sender)
+
+    ticket_id = uuid.uuid4()
+    notification = _make_notification(
+        NotificationType.ESCALATION_CREATED,
+        title="Ticket Escalated: Fix the widget",
+        message="This ticket has been escalated.",
+        related_entity_type="ticket",
+        related_entity_id=ticket_id,
+    )
+    user_id = notification.user_id
+    user_repo = _FakeUserRepository({user_id: "lead@company.com"})
+    ticket = _FakeTicketRow(
+        ticket_id=ticket_id,
+        title="Fix the widget",
+        current_priority=_FakeEnumValue("HIGH"),
+        current_status=_FakeEnumValue("OPEN"),
+    )
+    client = _FakeClientRow(name="Acme Corp")
+    agent_user = _FakeAssignedUser(name="Raju")
+    db = _FakeTicketQueryDB((ticket, client, agent_user, None))
+
+    await email_notifier.dispatch_notification_emails([notification], db=db, user_repository=user_repo)
+
+    text_body = fake_sender.sent[0]["body"]
+    html_body = fake_sender.sent[0]["html_body"]
+
+    assert "Ticket" in text_body
+    assert "Timestamp" in text_body
+    for absent in ("Assigned to", "Assigned by", "Assigned at"):
+        assert absent not in text_body
+        assert absent not in html_body

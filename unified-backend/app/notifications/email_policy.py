@@ -18,10 +18,12 @@ EMAIL_ELIGIBLE_NOTIFICATION_TYPES = frozenset(
         # and only the former matches the "Ticket Escalated" business
         # event this policy is scoped to.
         NotificationType.ESCALATION_CREATED,
-        NotificationType.SLA_BREACHED,
+        # SLA_BREACHED is deliberately NOT email-eligible — the
+        # business policy this frozenset encodes covers exactly 5
+        # event types, SLA Breached excluded by explicit product
+        # decision (SLA breach notifications stay in-app-only, same
+        # as SLA_HALF_ELAPSED/SLA_AT_RISK/SLA_ESCALATED).
         NotificationType.CLIENT_REPLY,
-        NotificationType.EDIT_ACCESS_APPROVED,
-        NotificationType.EDIT_ACCESS_REJECTED,
     }
 )
 

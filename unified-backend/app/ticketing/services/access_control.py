@@ -182,6 +182,18 @@ def ensure_agent_can_view_ticket(
     if current_user.role.name not in CATEGORY_SCOPED_ROLE_NAMES:
         return
 
+    # A ticket-scoped ticket:editother_ticket override (granted via an
+    # approved RBAC Permission Request — see PermissionRequestService/
+    # PermissionOverrideService.grant) authorizes a Team Lead/Staff
+    # member to view and act on exactly this one ticket regardless of
+    # their own category — the whole point of that grant is crossing
+    # category/ownership boundaries for one specific ticket, so the
+    # category gate below must not re-block it. Mirrors the existing
+    # has_permission_for_ticket check ensure_agent_can_act_on_ticket
+    # already runs for the *action* side of this same scenario.
+    if has_permission_for_ticket(current_user, "ticket:editother_ticket", ticket.ticket_id):
+        return
+
     user_category_name = (
         current_user.category.category_name.value
         if current_user.category is not None
@@ -266,7 +278,6 @@ async def ensure_ticket_not_frozen_by_escalation(
 async def ensure_agent_can_act_on_ticket(
     ticket: Ticket,
     current_user: User,
-    edit_access_repository=None,
     escalation_repository=None,
     escalation_handling_sla_repository=None,
 ) -> None:
@@ -310,8 +321,7 @@ async def ensure_agent_can_act_on_ticket(
     still ACTIVE i.e. never acknowledged at all) so existing callers
     that haven't been updated to pass it keep their prior behavior
     rather than becoming newly, incorrectly frozen forever.
-    `escalation_repository` is optional, same convention as
-    `edit_access_repository` below — callers that don't pass one
+    `escalation_repository` is optional — callers that don't pass one
     simply skip this check entirely. Acknowledge/claim_ticket/
     transfer_agent/confirm_assignment — the only ways this freeze ever
     lifts — all have their own, separate authorization (owner_ids
@@ -330,15 +340,7 @@ async def ensure_agent_can_act_on_ticket(
     and rbac-service's scope_ticket_id on UserPermissionOverride —
     this is how a Staff member gets approved to work exactly one
     teammate's ticket, via the Permission Request workflow, without
-    touching every other ticket in scope). A third, unrelated way to
-    act on a ticket you're not assigned to is a ticketing-native,
-    per-ticket edit-access grant (see
-    TicketEditAccessRequestRepository.has_active_grant) requested and
-    reviewed via the edit-access endpoints — a separate mechanism from
-    the rbac-service permission-request one above, deliberately left
-    untouched. `edit_access_repository` is optional so callers that
-    don't pass one simply skip that check (still get the two
-    permission-based bypasses, which need no repository).
+    touching every other ticket in scope).
 
     Deliberately NOT applied to claim_ticket (picking up an unclaimed
     ticket is how you become its assigned agent in the first place)
@@ -360,11 +362,6 @@ async def ensure_agent_can_act_on_ticket(
             return
     elif has_permission_for_ticket(
         current_user, "ticket:editother_ticket", ticket.ticket_id
-    ):
-        return
-
-    if edit_access_repository is not None and await edit_access_repository.has_active_grant(
-        ticket.ticket_id, current_user.user_id
     ):
         return
 
@@ -537,27 +534,6 @@ def ensure_has_permission(current_user: User, permission_name: str) -> None:
         )
 
 
-def ensure_can_review_edit_access(
-    ticket: Ticket,
-    current_user: User,
-) -> None:
-    """
-    Gates approving/rejecting a per-ticket edit-access request:
-    reviewer must be able to see the ticket at all (the same category
-    gate every other ticket action uses) and must hold
-    ticket:editother_ticket themselves — the same permission that lets
-    someone bypass ensure_agent_can_act_on_ticket's non-owner check,
-    so only someone who could already act on any other ticket in scope
-    can decide to let someone else in too. Deliberately the unscoped
-    check (has_permission, not has_permission_for_ticket) — a Staff
-    member holding a one-ticket-scoped grant on ticket A can't use
-    that to start reviewing edit-access requests on ticket B.
-    """
-
-    ensure_agent_can_view_ticket(ticket, current_user)
-    ensure_has_permission(current_user, "ticket:editother_ticket")
-
-
 # Roles that bypass ticket:close_ticket/ticket:reopen unconditionally,
 # per the approved RBAC permission matrix — deliberately narrower than
 # SUPERVISOR_ROLE_NAMES. Unlike ticket:transfer/ticket:assign (where
@@ -646,6 +622,32 @@ def ensure_can_manage_sla_policies(current_user: User) -> None:
     """
 
     ensure_has_permission(current_user, "sla:manage_policies")
+
+
+def ensure_can_view_client_details(current_user: User) -> None:
+    """
+    Gates GET /clients/{client_id}/details — the Roles page's Client-
+    tab expand action ONLY. Deliberately NOT applied to GET /clients
+    (list) or GET /clients/{id}/contacts, which stay ungated: both are
+    shared by Mail Compose's client dropdown, the Mail filter dropdown,
+    the Rules engine's client picker, "Create Dummy Mail", and (the
+    contacts route specifically) the Create/Edit User dialog's own
+    Client-role contact-email prefill (user-form-dialog.tsx) — none of
+    which client:view is meant to touch, and gating either shared
+    route would break all of them.
+
+    This exists as a compensating control alongside RBAC's own
+    GET /roles/{role_id}/users widening from a hardcoded role
+    allow-list to a plain user:view check (see
+    app.rbac.api.v1.roles.list_users_for_role) — that widening also
+    opened the Roles page itself to Team Lead/Staff/Client for the
+    first time, and this permission is what stops those roles from
+    also seeing this page's Client-tab organization email/account
+    manager/contact details, which Super Admin/Site Lead/Account
+    Manager already saw unrestricted before.
+    """
+
+    ensure_has_permission(current_user, "client:view")
 
 
 def ensure_can_reassign_ticket(current_user: User) -> None:

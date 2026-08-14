@@ -6,6 +6,8 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+import httpx
+
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,79 @@ class LoggingEmailSender(EmailSender):
             html_body is not None,
         )
         return False
+
+
+class GraphEmailSender(EmailSender):
+    """
+    Real transport via Microsoft Graph's sendMail API, using the same
+    app-only (client-credentials) Graph identity already configured for
+    client-facing mail (app/ticketing/services/graph_auth.py /
+    graph_client.py) — reused here rather than duplicated: this class
+    is handed an already-built GraphAuthClient (get_email_sender()
+    obtains it via build_graph_auth_client(), the same cached MSAL
+    singleton the client-mail feature uses, so token acquisition/reuse
+    behavior is identical).
+
+    Deliberately does not go through GraphMailProviderClient/
+    OutboundEnvelope (graph_client.py) — that abstraction is built
+    around ticket-reply threading and attachments, always sends
+    contentType "Text", and raising GraphAPIError on failure. A
+    notification email is a simpler shape (no threading, optionally
+    HTML) and needs the same never-raise/return-bool contract every
+    other EmailSender implementation here already has, so this builds
+    its own minimal sendMail request instead of forcing that fit.
+    """
+
+    def __init__(self, *, auth_client, mailbox_address: str, api_base_url: str):
+        self._auth_client = auth_client
+        self._mailbox_address = mailbox_address
+        self._api_base_url = api_base_url.rstrip("/")
+
+    async def send(
+        self, *, to_email: str, subject: str, body: str, html_body: str | None = None
+    ) -> bool:
+        content_type = "HTML" if html_body is not None else "Text"
+        content = html_body if html_body is not None else body
+
+        message = {
+            "subject": subject,
+            "body": {"contentType": content_type, "content": content},
+            "toRecipients": [{"emailAddress": {"address": to_email}}],
+        }
+
+        url = f"{self._api_base_url}/users/{self._mailbox_address}/sendMail"
+
+        try:
+            token = await self._auth_client.get_token()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"message": message, "saveToSentItems": True},
+                )
+
+            if response.status_code != 202:
+                logger.error(
+                    "Graph sendMail failed for notification email: status=%s to=%s "
+                    "subject=%r body=%s",
+                    response.status_code,
+                    to_email,
+                    subject,
+                    response.text,
+                )
+                return False
+
+            return True
+        except Exception:
+            # Never let a notification-email failure propagate into the
+            # business action it's attached to — same convention
+            # SMTPEmailSender.send already established below.
+            logger.exception(
+                "Failed to send notification email via Graph to=%s subject=%r",
+                to_email,
+                subject,
+            )
+            return False
 
 
 class SMTPEmailSender(EmailSender):
@@ -124,9 +199,38 @@ def get_email_sender() -> EmailSender:
     this function or flip settings without needing to clear a cache,
     matching how get_settings() itself is the only thing actually
     memoized in this codebase.
+
+    Prefers Microsoft Graph (the ticketing@... mailbox already
+    configured for client-facing mail) whenever graph_tenant_id/
+    graph_client_id/graph_client_secret/graph_mailbox_address are all
+    set — the same identity, reused rather than a second email
+    service. Falls back to SMTP if only smtp_host is configured, then
+    to logging-only if neither transport is configured. Imports
+    build_graph_auth_client lazily (function-local, not module-level)
+    to keep app/core from depending on app/ticketing/services at
+    import time — the same deferred-import precedent
+    app/ticketing/services/mail_provider.py's own
+    get_mail_provider_client() already sets, just in the opposite
+    direction.
     """
 
     settings = get_settings()
+
+    if (
+        settings.graph_tenant_id
+        and settings.graph_client_id
+        and settings.graph_client_secret
+        and settings.graph_mailbox_address
+    ):
+        from app.ticketing.services.graph_auth import build_graph_auth_client
+
+        auth_client = build_graph_auth_client(settings)
+        if auth_client is not None:
+            return GraphEmailSender(
+                auth_client=auth_client,
+                mailbox_address=settings.graph_mailbox_address,
+                api_base_url=settings.graph_api_base_url,
+            )
 
     if not settings.smtp_host:
         return LoggingEmailSender()

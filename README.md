@@ -103,6 +103,9 @@ alembic upgrade head
 
 ## Run the Backend
 
+netstat -ano | findstr :8000
+taskkill /PID 23040 /F
+
 ```bash
 uvicorn app.main:app --reload
 ```

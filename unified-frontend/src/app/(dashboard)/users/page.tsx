@@ -75,21 +75,23 @@ const USERS_PAGE_ALLOWED_ROLES: string[] = [
   ROLE_NAMES.STAFF,
 ];
 
-// Same three roles that used to see "Roles" as its own sidebar item (see
-// NAV_ITEMS_BY_ROLE in lib/role-access.ts) — the entry point moved to this
-// button, but who can reach it is unchanged.
-const ROLES_BUTTON_VISIBLE_ROLES: string[] = [
-  ROLE_NAMES.SUPER_ADMIN,
-  ROLE_NAMES.SITE_LEAD,
-  ROLE_NAMES.ACCOUNT_MANAGER,
-];
-
 export default function UsersPage() {
   const { toast } = useToast();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
+  const hasPermission = useAuthStore((s) => s.hasPermission);
   const canDelete = canDeleteRecords(currentUser?.role);
+  // Visible to every role that reaches this page (see
+  // USERS_PAGE_ALLOWED_ROLES above); enabled/disabled purely by the
+  // caller's effective role:view permission — the same permission the
+  // backend already requires on GET /roles and GET /roles/{id}. This
+  // used to be a hardcoded three-role allowlist (Super Admin/Site
+  // Lead/Account Manager) that hid the button entirely for everyone
+  // else; it's now permission-driven so Team Lead/Staff can also reach
+  // Roles once granted role:view (via role default or a personal
+  // override), with no role-name special-casing.
+  const canViewRoles = hasPermission("role:view");
 
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
@@ -446,12 +448,22 @@ export default function UsersPage() {
                 Permission Requests
               </Link>
             </Button>
-            {currentUser && ROLES_BUTTON_VISIBLE_ROLES.includes(currentUser.role) && (
+            {canViewRoles ? (
               <Button variant="outline" className="gap-2" asChild>
                 <Link href="/roles">
                   <Shield className="h-4 w-4" />
                   Roles
                 </Link>
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                className="gap-2"
+                disabled
+                title="You do not have permission to view roles."
+              >
+                <Shield className="h-4 w-4" />
+                Roles
               </Button>
             )}
             <PermissionGuard permission="user:create">

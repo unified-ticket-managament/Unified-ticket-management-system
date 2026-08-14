@@ -117,6 +117,7 @@ class PermissionOverrideService:
         target_user_id: UUID,
         request: GrantOverrideRequest,
         notify: bool = True,
+        require_management_authority: bool = True,
     ) -> PermissionOverrideResponse:
         """
         `notify=False` is used by PermissionRequestService.approve(),
@@ -128,6 +129,22 @@ class PermissionOverrideService:
         caller (e.g. a direct grant via the Users > Permission
         Overrides admin screen, which has no separate notification of
         its own) keeps the default and gets notified here.
+
+        `require_management_authority=False` is used by
+        PermissionRequestService.approve() for a ticket-scoped request:
+        the reviewer there is the ticket's own current owner (any
+        role — commonly Staff, who never holds permission:override_grant
+        and would otherwise always 403 here), not someone with general
+        override-granting authority. That request's own approve() has
+        already independently verified `actor.user_id ==
+        permission_request.selected_approver_id` before ever reaching
+        this call — a narrower, already-sufficient authorization for
+        granting just this one ticket-scoped permission — so re-running
+        the general-purpose ensure_can_manage_overrides check here would
+        only ever reject a legitimately-authorized ticket owner, never
+        catch anything real. Every other caller (the Users > Permission
+        Overrides admin screen, and approve() for a non-ticket-scoped
+        request) keeps the default and is still fully gated by it.
         """
 
         target = await self.user_repository.get_by_id(target_user_id)
@@ -148,7 +165,8 @@ class PermissionOverrideService:
                 detail="Permission not found.",
             )
 
-        await self.ensure_can_manage_overrides(actor, target)
+        if require_management_authority:
+            await self.ensure_can_manage_overrides(actor, target)
 
         role_permission_names, _, _ = (
             await self.permission_resolver.get_effective_permissions(target)
@@ -263,6 +281,7 @@ class PermissionOverrideService:
         target_user_id: UUID,
         override_id: UUID,
         notify: bool = True,
+        require_management_authority: bool = True,
     ) -> None:
         """
         `notify=False` is used by PermissionRequestService.revoke(),
@@ -273,6 +292,15 @@ class PermissionOverrideService:
         Users > Permission Overrides admin screen (previously silent —
         this was the real, confirmed gap) keeps the default and gets
         notified here.
+
+        `require_management_authority=False` mirrors grant()'s own
+        parameter of the same name and exists for the same reason: a
+        ticket-scoped grant's original approver (the ticket's owner —
+        any role, often Staff) is who PermissionRequestService.revoke()
+        lets revoke it, verified independently via `_can_revoke` before
+        this is ever called — re-running the general-purpose
+        ensure_can_manage_overrides check here would only reject that
+        already-legitimate actor.
         """
 
         target = await self.user_repository.get_by_id(target_user_id)
@@ -299,7 +327,8 @@ class PermissionOverrideService:
                 detail="This permission override has already been revoked.",
             )
 
-        await self.ensure_can_manage_overrides(actor, target)
+        if require_management_authority:
+            await self.ensure_can_manage_overrides(actor, target)
 
         permission_name = override.permission.permission_name
 

@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService, NotificationType
-from app.ticketing.enums.rule_enums import RuleActionType
+from app.ticketing.enums.rule_enums import RuleActionType, RuleCategory
 from app.ticketing.models.interaction import Interaction
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
@@ -59,8 +59,16 @@ class RuleEngineService:
         *,
         interaction: Interaction,
         context: RuleEmailContext,
-    ) -> None:
+    ) -> bool:
+        """
+        Returns whether an OTP Rule recognized this email (matched),
+        regardless of whether its forward_to action's send later
+        succeeds or fails — EmailService uses this to stop the
+        interaction's Response SLA clock on recognition alone.
+        """
+
         rules = await self.rule_repository.list_enabled_ordered()
+        otp_recognized = False
 
         for rule in rules:
             try:
@@ -76,6 +84,9 @@ class RuleEngineService:
 
             if not rule_matches(conditions, exceptions, context):
                 continue
+
+            if rule.category == RuleCategory.OTP_RULE:
+                otp_recognized = True
 
             logger.info(
                 "Rule %r (%s) matched interaction %s",
@@ -106,7 +117,9 @@ class RuleEngineService:
                     "halting rule evaluation for this email.",
                     rule.name,
                 )
-                return
+                return otp_recognized
+
+        return otp_recognized
 
     async def _execute_action(self, action: RuleActionItem, *, interaction: Interaction) -> None:
         if action.type == RuleActionType.CREATE_FOLDER:

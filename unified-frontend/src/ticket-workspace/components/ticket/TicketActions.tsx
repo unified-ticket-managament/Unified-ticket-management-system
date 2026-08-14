@@ -19,7 +19,7 @@ import {
   SearchableSelect,
   type SearchableSelectOption,
 } from "@tw/components/common/SearchableSelect";
-import { EditAccessPanel } from "@tw/components/ticket/EditAccessPanel";
+import { RequestTicketAccessDialog } from "@tw/components/ticket/RequestTicketAccessDialog";
 import { validateFiles } from "@tw/lib/attachmentMeta";
 import { formatAssigneeLabel } from "@tw/lib/format";
 import { useApiAction } from "@tw/hooks/useApiAction";
@@ -70,7 +70,7 @@ type ActiveModal =
   | "priority"
   | "transfer"
   | "attachment"
-  | "editAccess"
+  | "requestTicketAccess"
   | "close"
   | "reopen"
   | null;
@@ -86,11 +86,7 @@ interface TicketActionsProps {
 // permission check, and API call below is unchanged from before; only
 // the trigger markup moved.
 export function TicketActions({ onActionComplete }: TicketActionsProps) {
-  // editAccessRequests is fetched once per ticket by TicketDetailPage
-  // and shared via context with EditAccessPanel — see that context
-  // field's own comment for why this used to be a separate
-  // GET /tickets/{id}/edit-access call from each component.
-  const { activeTicket, editAccessRequests } = useWorkflowContext();
+  const { activeTicket } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const [modal, setModal] = useState<ActiveModal>(null);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
@@ -248,12 +244,6 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
     (currentUser?.scoped_permissions?.["ticket:editother_ticket"] ?? []).includes(
       activeTicket.ticket_id
     );
-  const hasActiveEditAccessGrant = editAccessRequests.some(
-    (r) =>
-      r.requested_by === currentUser?.user_id &&
-      r.status === "APPROVED" &&
-      (!r.expires_at || new Date(r.expires_at) > new Date())
-  );
   // A ticket whose escalation hasn't yet been *accepted* (acknowledged
   // AND assigned — see EscalationService._complete_acceptance) is
   // frozen for **everyone**, supervisors included — mirrors the
@@ -269,8 +259,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   // instant it escalated to them, before ever clicking Acknowledge — a
   // real, confirmed bug, not a hypothetical one.
   const isFrozenByEscalation = !!activeTicket.escalation_pending_acceptance;
-  const canActOnTicket =
-    !isFrozenByEscalation && (isOwnTicket || hasEditOther || hasActiveEditAccessGrant);
+  const canActOnTicket = !isFrozenByEscalation && (isOwnTicket || hasEditOther);
   const noAccessTitle = isFrozenByEscalation
     ? "This ticket has been escalated and is awaiting acknowledgment and assignment — it cannot be worked until a supervisor acknowledges and assigns it"
     : canActOnTicket
@@ -431,16 +420,18 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
                   {isUnclaimed ? "Assign to Staff" : "Transfer Ticket"}
                 </button>
               )}
-              <button
-                type="button"
-                className={menuItemClass}
-                disabled={isTicketClosed}
-                title={isTicketClosed ? "This ticket is closed" : undefined}
-                onClick={() => openMoreItem("editAccess")}
-              >
-                <ShieldCheck size={14} className="text-muted" />
-                Edit Access
-              </button>
+              {!isOwnTicket && !hasEditOther && (
+                <button
+                  type="button"
+                  className={menuItemClass}
+                  disabled={isTicketClosed}
+                  title={isTicketClosed ? "This ticket is closed" : undefined}
+                  onClick={() => openMoreItem("requestTicketAccess")}
+                >
+                  <ShieldCheck size={14} className="text-muted" />
+                  Request Ticket Access
+                </button>
+              )}
               {!isTicketClosed && (!isStaff || canClose) && (
                 <button
                   type="button"
@@ -609,8 +600,20 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
         <FileDropzone label="Files" files={uploadFiles} onFilesChange={setUploadFiles} />
       </Modal>
 
-      <Modal open={modal === "editAccess"} title="Edit Access" onClose={closeModal}>
-        <EditAccessPanel embedded onRequestsChanged={onActionComplete} />
+      <Modal
+        open={modal === "requestTicketAccess"}
+        title="Request Ticket Access"
+        onClose={closeModal}
+      >
+        <RequestTicketAccessDialog
+          ticketId={activeTicket.ticket_id}
+          ticketOwnerName={activeTicket.agent_name}
+          onClose={closeModal}
+          onSubmitted={() => {
+            closeModal();
+            onActionComplete();
+          }}
+        />
       </Modal>
 
       <Modal

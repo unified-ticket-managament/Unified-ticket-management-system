@@ -54,7 +54,7 @@ import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { formatAssigneeLabel, formatDateTime, formatTicketNumber } from "@tw/lib/format";
-import { buildForwardHtml, linkifyPlainText } from "@tw/lib/richText";
+import { buildForwardHtml, renderThreadedMessageHtml } from "@tw/lib/richText";
 import { showUndoSendToast } from "@tw/lib/undoSend";
 import type {
   AssignableAgentsResponse,
@@ -175,7 +175,13 @@ function replyBubble(reply: InteractionResponse): BubbleData {
 }
 
 function Bubble({ data }: { data: BubbleData }) {
-  const { ref, isExpanded, isOverflowing, toggle, clampClassName } = useCollapsibleMessage([data.body]);
+  // Render once and reuse for both the overflow measurement and the
+  // render itself, so "Show More" reflects the rendered length rather
+  // than the raw stored body (which may include Outlook's own quoted
+  // reply-history headers — see renderThreadedMessageHtml's own
+  // comment for how those are shown vs. dropped).
+  const renderedBody = renderThreadedMessageHtml(data.body, { name: data.senderName, email: data.senderEmail });
+  const { ref, isExpanded, isOverflowing, toggle, clampClassName } = useCollapsibleMessage([renderedBody]);
 
   return (
     <div className="flex gap-3">
@@ -202,7 +208,7 @@ function Bubble({ data }: { data: BubbleData }) {
             "mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90 [&_a]:break-all [&_a]:underline",
             clampClassName
           )}
-          dangerouslySetInnerHTML={{ __html: linkifyPlainText(data.body) }}
+          dangerouslySetInnerHTML={{ __html: renderedBody }}
         />
         {isOverflowing && <ShowMoreToggle isExpanded={isExpanded} onToggle={toggle} />}
         {data.attachments && data.attachments.length > 0 && (

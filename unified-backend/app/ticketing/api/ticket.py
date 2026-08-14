@@ -1,9 +1,20 @@
+import logging
 from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import User
+
+# Reused directly rather than re-implemented — this merged app has
+# both domains in one process now (see the rbac router's own
+# ticket_repository import for the reverse direction of this same
+# pattern). Only used to keep a pending ticket-scoped Permission
+# Request's reviewer in sync when the ticket is reassigned/claimed —
+# see resync_ticket_scoped_reviewers's own docstring.
+from app.rbac.api.v1.permission_requests import get_permission_request_service
+
+logger = logging.getLogger(__name__)
 
 from app.ticketing.enums import (
     AuditEntityType,
@@ -35,9 +46,6 @@ from app.ticketing.repositories.escalation_handling_sla_repository import (
 from app.ticketing.repositories.ticket_escalation_repository import (
     TicketEscalationRepository,
 )
-from app.ticketing.repositories.ticket_edit_access_repository import (
-    TicketEditAccessRequestRepository,
-)
 from app.ticketing.repositories.ticket_relation_repository import TicketRelationRepository
 from app.ticketing.repositories.ticket_repository import (
     TicketRepository,
@@ -53,12 +61,6 @@ from app.ticketing.schemas.attachment import (
     TicketAttachmentItem,
 )
 from app.ticketing.schemas.audit_log import AuditLogResponse, TicketAuditLogResponse
-from app.ticketing.schemas.edit_access import (
-    EditAccessApproveRequest,
-    EditAccessRejectRequest,
-    EditAccessRequestCreate,
-    EditAccessRequestResponse,
-)
 from app.ticketing.schemas.interaction import (
     HideInteractionRequest,
     HideInteractionResponse,
@@ -95,7 +97,6 @@ from app.ticketing.schemas.ticket_from_interaction import (
 
 from app.ticketing.services.assignment_service import AssignmentService
 from app.ticketing.services.attachment_service import AttachmentService
-from app.ticketing.services.edit_access_service import EditAccessService
 from app.ticketing.services.escalation_service import build_escalation_service
 from app.ticketing.services.inbox_ticket_service import InboxTicketService
 from app.ticketing.services.interaction_service import InteractionService
@@ -107,6 +108,30 @@ router = APIRouter(
     prefix="/tickets",
     tags=["Tickets"],
 )
+
+
+async def _resync_permission_request_reviewers(
+    db: AsyncSession,
+    ticket_id: UUID,
+    new_owner_id: UUID,
+) -> None:
+    """
+    Keeps a still-PENDING ticket-scoped Permission Request's reviewer
+    pointed at whoever actually owns the ticket right now — called
+    after claim_ticket/transfer_agent actually changes agent_id.
+    Deliberately best-effort (never raises past this point): a problem
+    here must never fail the ticket claim/transfer itself, which has
+    already succeeded by the time this runs, matching this codebase's
+    existing never-raise convention for post-action side effects (see
+    NotificationService._dispatch_emails).
+    """
+
+    try:
+        await get_permission_request_service(db).resync_ticket_scoped_reviewers(
+            ticket_id, new_owner_id
+        )
+    except Exception:
+        logger.warning("PERMISSION_REQUEST_REVIEWER_RESYNC_FAILED", exc_info=True)
 
 
 # =========================================================
@@ -169,7 +194,6 @@ async def attach_interaction_to_ticket(
     interaction_repository = InteractionRepository(db)
     client_repository = ClientRepository(db)
     user_repository = UserRepository(db)
-    edit_access_repository = TicketEditAccessRequestRepository(db)
     notification_service = NotificationService(NotificationRepository(db))
 
     # Only exercised if the target ticket turns out to be CLOSED (see
@@ -182,7 +206,6 @@ async def attach_interaction_to_ticket(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
-        edit_access_repository=edit_access_repository,
         client_repository=client_repository,
         notification_service=notification_service,
         sla_service=build_sla_service(db, notification_service=notification_service),
@@ -327,18 +350,16 @@ async def add_internal_note(
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
-    edit_access_repository = TicketEditAccessRequestRepository(db)
     client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
-        edit_access_repository=edit_access_repository,
         escalation_service=build_escalation_service(db),
         client_repository=client_repository,
-        # Pre-existing gap, unrelated to the escalation/edit-access
-        # wiring above: this route never constructed a
+        # Pre-existing gap, unrelated to the escalation wiring above:
+        # this route never constructed a
         # NotificationService at all, so INTERNAL_NOTE_ADDED never
         # actually fired (bell, System Mail, or otherwise) despite
         # add_internal_note's own notify() call — `self.notification_
@@ -408,14 +429,12 @@ async def reply_to_client(
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
     client_repository = ClientRepository(db)
-    edit_access_repository = TicketEditAccessRequestRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
         client_repository=client_repository,
-        edit_access_repository=edit_access_repository,
         escalation_service=build_escalation_service(db),
         attachment_repository=AttachmentRepository(db),
         storage_service=get_storage_service(),
@@ -462,10 +481,14 @@ async def claim_ticket(
         escalation_service=build_escalation_service(db),
     )
 
-    return await service.claim_ticket(
+    result = await service.claim_ticket(
         ticket_id=ticket_id,
         current_user=current_user,
     )
+
+    await _resync_permission_request_reviewers(db, ticket_id, current_user.user_id)
+
+    return result
 
 
 # =========================================================
@@ -491,14 +514,12 @@ async def change_ticket_status(
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
-    edit_access_repository = TicketEditAccessRequestRepository(db)
     client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
-        edit_access_repository=edit_access_repository,
         sla_service=build_sla_service(db),
         escalation_service=build_escalation_service(db),
         client_repository=client_repository,
@@ -587,7 +608,6 @@ async def upload_ticket_attachment(
         client_repository=client_repository,
         escalation_repository=TicketEscalationRepository(db),
         escalation_handling_sla_repository=EscalationHandlingSlaRepository(db),
-        edit_access_repository=TicketEditAccessRequestRepository(db),
     )
 
     return await service.upload_attachment(
@@ -708,11 +728,15 @@ async def transfer_ticket_agent(
         ),
     )
 
-    return await service.transfer_agent(
+    result = await service.transfer_agent(
         ticket_id=ticket_id,
         request=request,
         current_user=current_user,
     )
+
+    await _resync_permission_request_reviewers(db, ticket_id, request.new_agent_id)
+
+    return result
 
 
 # =========================================================
@@ -738,14 +762,12 @@ async def close_ticket(
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
-    edit_access_repository = TicketEditAccessRequestRepository(db)
     client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
-        edit_access_repository=edit_access_repository,
         sla_service=build_sla_service(db),
         escalation_service=build_escalation_service(db),
         client_repository=client_repository,
@@ -780,14 +802,12 @@ async def reopen_ticket(
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
     user_repository = UserRepository(db)
-    edit_access_repository = TicketEditAccessRequestRepository(db)
     client_repository = ClientRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
         ticket_repository=ticket_repository,
         user_repository=user_repository,
-        edit_access_repository=edit_access_repository,
         sla_service=build_sla_service(db),
         escalation_service=build_escalation_service(db),
         client_repository=client_repository,
@@ -1284,111 +1304,3 @@ async def get_ticket(
     )
 
     return await service.get_by_id(ticket_id, current_user=current_user)
-
-
-# =========================================================
-# Edit Access — Request / Approve / Reject
-# =========================================================
-
-
-def _get_edit_access_service(db: AsyncSession) -> EditAccessService:
-    return EditAccessService(
-        ticket_repository=TicketRepository(db),
-        user_repository=UserRepository(db),
-        interaction_repository=InteractionRepository(db),
-        edit_access_repository=TicketEditAccessRequestRepository(db),
-        notification_service=NotificationService(NotificationRepository(db)),
-    )
-
-
-@router.post(
-    "/{ticket_id}/edit-access/request",
-    response_model=EditAccessRequestResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def request_edit_access(
-    ticket_id: UUID,
-    request: EditAccessRequestCreate,
-    current_user: User = Depends(get_current_agent),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Asks to work a ticket you're not the assigned agent on and don't
-    already hold ticket:editother_ticket for. Reviewed by anyone who does.
-    """
-
-    service = _get_edit_access_service(db)
-
-    return await service.request_access(
-        ticket_id=ticket_id,
-        request=request,
-        current_user=current_user,
-    )
-
-
-@router.get(
-    "/{ticket_id}/edit-access",
-    response_model=list[EditAccessRequestResponse],
-    status_code=status.HTTP_200_OK,
-)
-async def list_edit_access_requests(
-    ticket_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Returns every edit-access request on this ticket, newest first."""
-
-    service = _get_edit_access_service(db)
-
-    return await service.list_for_ticket(ticket_id, current_user=current_user)
-
-
-@router.post(
-    "/{ticket_id}/edit-access/{request_id}/approve",
-    response_model=EditAccessRequestResponse,
-    status_code=status.HTTP_200_OK,
-)
-async def approve_edit_access(
-    ticket_id: UUID,
-    request_id: UUID,
-    request: EditAccessApproveRequest,
-    current_user: User = Depends(get_current_agent),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Approves a pending edit-access request. Requires ticket:editother_ticket
-    yourself — the same permission this grants the requester.
-    """
-
-    service = _get_edit_access_service(db)
-
-    return await service.approve(
-        ticket_id=ticket_id,
-        request_id=request_id,
-        request=request,
-        current_user=current_user,
-    )
-
-
-@router.post(
-    "/{ticket_id}/edit-access/{request_id}/reject",
-    response_model=EditAccessRequestResponse,
-    status_code=status.HTTP_200_OK,
-)
-async def reject_edit_access(
-    ticket_id: UUID,
-    request_id: UUID,
-    request: EditAccessRejectRequest,
-    current_user: User = Depends(get_current_agent),
-    db: AsyncSession = Depends(get_db),
-):
-    """Rejects a pending edit-access request."""
-
-    service = _get_edit_access_service(db)
-
-    return await service.reject(
-        ticket_id=ticket_id,
-        request_id=request_id,
-        request=request,
-        current_user=current_user,
-    )
