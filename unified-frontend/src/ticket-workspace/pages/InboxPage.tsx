@@ -263,7 +263,12 @@ export function InboxPage() {
               hasMore={mail.folderRowsHasMore}
               onLoadMore={mail.loadMoreFolderRows}
             />
-          ) : mail.activeView === "system" ? (
+          ) : mail.activeView === "system" || mail.selectedSystemNotification ? (
+            // The `||` half covers an OTP-forward row opened from the
+            // regular Inbox tab (see otpNotificationToInboxItem/
+            // openThread in useMailInbox.ts) — activeView stays
+            // "pending" there, so this branch must not be gated on
+            // activeView alone the way it used to be.
             mail.selectedSystemNotification ? (
               <SystemMailDetailsView
                 notification={mail.selectedSystemNotification}

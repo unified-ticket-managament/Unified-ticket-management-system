@@ -37,12 +37,15 @@ import type {
 
 // Every notification_type the "System" folder shows — internal,
 // system-generated notices (SLA breach ladder + the escalation
-// ownership workflow + an OTP Rule's "Forward To" firing) plus
-// Internal Note delivery, deliberately excluding MAIL_RECEIVED/
-// CLIENT_REPLY (those are real client mail, already shown in the
-// regular Inbox) and the unrelated PERMISSION_*/EDIT_ACCESS_*/
-// TICKET_ASSIGNED types (a different notification concern, still only
-// surfaced via the topbar bell for now).
+// ownership workflow) plus Internal Note delivery, deliberately
+// excluding MAIL_RECEIVED/CLIENT_REPLY (those are real client mail,
+// already shown in the regular Inbox) and the unrelated
+// PERMISSION_*/EDIT_ACCESS_*/TICKET_ASSIGNED types (a different
+// notification concern, still only surfaced via the topbar bell for
+// now). OTP_FORWARDED is deliberately excluded too, as of this
+// destination change — it's merged into the regular Inbox instead
+// (see otpForwardNotifications/otpNotificationToInboxItem below), not
+// shown here anymore.
 export const SYSTEM_NOTIFICATION_TYPES = [
   "SLA_HALF_ELAPSED",
   "SLA_AT_RISK",
@@ -52,7 +55,6 @@ export const SYSTEM_NOTIFICATION_TYPES = [
   "ESCALATION_ACKNOWLEDGED",
   "ESCALATION_ADVANCED",
   "ESCALATION_CLOSED",
-  "OTP_FORWARDED",
   "INTERNAL_NOTE_ADDED",
 ];
 
@@ -149,6 +151,47 @@ function draftItemToInboxItem(item: DraftItem): InboxItem {
   };
 }
 
+// Marks a synthetic Inbox row as backed by an OTP_FORWARDED
+// Notification, not a real Interaction — openThread below checks this
+// prefix to route the click to the notification detail view instead
+// of GET /inbox/{id}, which has no row to return for it.
+const OTP_FORWARD_ID_PREFIX = "otp-forward:";
+
+// Adapts an OTP-forward Notification (already private to exactly the
+// employee(s) an OTP Rule's "Forward To" action targeted — see
+// NotificationType.OTP_FORWARDED) into an InboxItem, so it renders
+// inline in this recipient's own regular Inbox list instead of the
+// System folder. Same reasoning as sentItemToInboxItem/
+// draftItemToInboxItem above: no real Interaction backs this row, so
+// several fields are placeholders — subject/latest_message carry the
+// real forwarded subject/body untouched.
+function otpNotificationToInboxItem(notification: NotificationItem): InboxItem {
+  return {
+    interaction_id: `${OTP_FORWARD_ID_PREFIX}${notification.notification_id}`,
+    client_id: null,
+    client_name: "OTP Forward",
+    from_email: null,
+    to_email: null,
+    subject: notification.title,
+    message_id: null,
+    received_at: notification.created_at,
+    status: "PENDING",
+    direction: "INBOUND",
+    ticket_id: null,
+    ticket_priority: null,
+    ticket_category: null,
+    has_attachments: false,
+    claimed_by: null,
+    claimed_by_name: null,
+    tags: [],
+    folder_id: null,
+    reply_count: 0,
+    latest_message: notification.message,
+    latest_sender: null,
+    latest_at: null,
+  };
+}
+
 export type TimeFilterKey = "ALL" | "1H" | "TODAY" | "24H" | "1W";
 
 export const TIME_FILTERS: Array<{ key: TimeFilterKey; label: string }> = [
@@ -205,7 +248,14 @@ type BaseTabKey = "pending" | "replied" | "ticketed" | "archived" | "all";
 // specifically sent, which is what the "Replied" sidebar folder
 // actually displays. The two coexist deliberately; don't collapse
 // them into one key.
-type LoadKey = BaseTabKey | "sent" | "repliedMine" | "drafts" | "system" | "mineTicketed";
+type LoadKey =
+  | BaseTabKey
+  | "sent"
+  | "repliedMine"
+  | "drafts"
+  | "system"
+  | "mineTicketed"
+  | "otpForwards";
 
 // Maps a view the agent is looking at to the underlying fetch(es) it
 // actually needs — "unassigned"/"mine" are client-derived slices of
@@ -224,7 +274,7 @@ type LoadKey = BaseTabKey | "sent" | "repliedMine" | "drafts" | "system" | "mine
 function baseKeysForView(view: MailViewKey): LoadKey[] {
   switch (view) {
     case "pending":
-      return ["pending", "replied", "ticketed"];
+      return ["pending", "replied", "ticketed", "otpForwards"];
     case "unassigned":
       return ["pending"];
     case "mine":
@@ -294,6 +344,11 @@ export function useMailInbox() {
   const [selectedSystemNotification, setSelectedSystemNotification] =
     useState<NotificationItem | null>(null);
   const [isSystemLoading, setIsSystemLoading] = useState(false);
+  // OTP_FORWARDED notifications — kept as raw NotificationItems (not
+  // just their InboxItem-adapted form) so openThread can look one back
+  // up by id when a synthetic Inbox row is clicked. See
+  // otpNotificationToInboxItem/OTP_FORWARD_ID_PREFIX above.
+  const [otpForwardNotifications, setOtpForwardNotifications] = useState<NotificationItem[]>([]);
   // The server's own filtered total per base tab (from GET /inbox's
   // `total`) — lets `hasMore` below tell "there's another batch to
   // load" apart from "this tab just happens to have exactly
@@ -636,6 +691,11 @@ export function useMailInbox() {
     }
   }, []);
 
+  const fetchOtpForwards = useCallback(async () => {
+    const result = await getNotifications({ types: ["OTP_FORWARDED"], limit: 100 });
+    setOtpForwardNotifications(result.items);
+  }, []);
+
   const fetchKey = useCallback(
     (key: LoadKey) => {
       if (key === "sent") return fetchSent();
@@ -643,9 +703,18 @@ export function useMailInbox() {
       if (key === "drafts") return fetchDrafts();
       if (key === "system") return fetchSystemMail();
       if (key === "mineTicketed") return fetchMyTicketedClaims();
+      if (key === "otpForwards") return fetchOtpForwards();
       return fetchBaseTab(key);
     },
-    [fetchBaseTab, fetchSent, fetchReplied, fetchDrafts, fetchSystemMail, fetchMyTicketedClaims]
+    [
+      fetchBaseTab,
+      fetchSent,
+      fetchReplied,
+      fetchDrafts,
+      fetchSystemMail,
+      fetchMyTicketedClaims,
+      fetchOtpForwards,
+    ]
   );
 
   // Fetches only whichever of `keys` haven't been loaded yet — used
@@ -835,6 +904,26 @@ export function useMailInbox() {
   // loaded) become a redundant no-op — neither is needed.
 
   async function openThread(interactionId: string) {
+    // A synthetic OTP-forward row (see otpNotificationToInboxItem) has
+    // no real Interaction behind it — GET /inbox/{id} would 404 for
+    // it. Route straight to the same notification detail view the
+    // System folder already uses instead.
+    if (interactionId.startsWith(OTP_FORWARD_ID_PREFIX)) {
+      const notificationId = interactionId.slice(OTP_FORWARD_ID_PREFIX.length);
+      const notification = otpForwardNotifications.find(
+        (n) => n.notification_id === notificationId
+      );
+      if (notification) {
+        setSelectedSystemNotification(notification);
+        setOpenedIds((prev) => {
+          const next = new Set(prev);
+          next.add(interactionId);
+          return next;
+        });
+      }
+      return;
+    }
+
     const requestId = ++openThreadRequestIdRef.current;
     setOpeningId(interactionId);
     const result = await runOpen(interactionId);
@@ -1016,16 +1105,25 @@ export function useMailInbox() {
   // ticketed are three independently-fetched arrays, so an item whose
   // state flips between fetches could otherwise land in more than
   // one), sorted newest first.
+  // OTP_FORWARDED notifications addressed to this user, adapted into
+  // InboxItem rows and merged into the Inbox below — see
+  // otpNotificationToInboxItem's own comment for why this list (not
+  // the System folder) is where they now render.
+  const otpForwardItems = useMemo(
+    () => otpForwardNotifications.map(otpNotificationToInboxItem),
+    [otpForwardNotifications]
+  );
+
   const inboxAll = useMemo(
     () =>
       Array.from(
         new Map(
-          [...rowsByTab.pending, ...rowsByTab.replied, ...rowsByTab.ticketed].map(
+          [...rowsByTab.pending, ...rowsByTab.replied, ...rowsByTab.ticketed, ...otpForwardItems].map(
             (item) => [item.interaction_id, item]
           )
         ).values()
       ).sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime()),
-    [rowsByTab.pending, rowsByTab.replied, rowsByTab.ticketed]
+    [rowsByTab.pending, rowsByTab.replied, rowsByTab.ticketed, otpForwardItems]
   );
 
   const rowsByView: Record<MailViewKey, InboxItem[]> = {
@@ -1067,7 +1165,8 @@ export function useMailInbox() {
       // total (tabTotals), not just currently-loaded row count — correct
       // even before "Load more" has pulled every row. Archived is
       // deliberately excluded, matching inboxAll's own exclusion above.
-      pending: tabTotals.pending + tabTotals.replied + tabTotals.ticketed,
+      pending:
+        tabTotals.pending + tabTotals.replied + tabTotals.ticketed + otpForwardItems.length,
       unassigned: unassigned.length,
       mine: mine.length,
       sent: sentItems.length,
@@ -1078,7 +1177,17 @@ export function useMailInbox() {
       drafts: draftItems.length,
       system: systemNotifications.filter((n) => !n.is_read).length,
     }),
-    [baseViewCounts, tabTotals, unassigned, mine, sentItems, repliedItems, draftItems, systemNotifications]
+    [
+      baseViewCounts,
+      tabTotals,
+      unassigned,
+      mine,
+      sentItems,
+      repliedItems,
+      draftItems,
+      systemNotifications,
+      otpForwardItems,
+    ]
   );
 
   // Only re-runs applyFilters when the active view's underlying data
@@ -1104,7 +1213,8 @@ export function useMailInbox() {
       key === "repliedMine" ||
       key === "drafts" ||
       key === "system" ||
-      key === "mineTicketed"
+      key === "mineTicketed" ||
+      key === "otpForwards"
     )
       return false;
     return rowsByTab[key].length < tabTotals[key];
@@ -1122,6 +1232,7 @@ export function useMailInbox() {
         key !== "drafts" &&
         key !== "system" &&
         key !== "mineTicketed" &&
+        key !== "otpForwards" &&
         rowsByTab[key].length < tabTotals[key]
     );
     if (keys.length === 0) return;
