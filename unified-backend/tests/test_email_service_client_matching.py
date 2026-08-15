@@ -201,6 +201,61 @@ async def test_receive_email_falls_back_to_site_lead_for_unknown_sender(monkeypa
     assert recipient_ids == {site_lead_id}
 
 
+async def test_receive_email_mail_received_notification_links_to_specific_message(monkeypatch):
+    """
+    Regression test for a real navigation bug: MAIL_RECEIVED notifications
+    used to hardcode link="/inbox" even though the triggering interaction's
+    id was already available, so clicking one always opened the generic
+    inbox instead of the specific message — unlike every other mail-shaped
+    notification (e.g. sla_breach_notifier's first-response threshold
+    notifications), which already link f"/inbox?interaction_id={id}".
+    MAIL_RECEIVED must match that same pattern.
+
+    Uses the legacy (non-shared-mailbox) to_email match, same as
+    test_receive_email_legacy_to_email_matching_still_works_off_shared_mailbox
+    above, since that path only calls the fake client repository's
+    already-implemented get_active_by_inbox_email — this test is about
+    the notification link, not client-matching, so it deliberately
+    avoids the shared-mailbox get_active_by_any_email path.
+    """
+
+    account_manager_id = uuid4()
+    site_lead_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="Metro Family Care",
+        inbox_email="metro@probeps.com",
+        account_manager_id=account_manager_id,
+    )
+
+    monkeypatch.setattr(
+        "app.ticketing.services.email_service.get_settings",
+        lambda: _settings(),
+    )
+
+    interaction_repository = _FakeInteractionRepository()
+    notification_service = _FakeNotificationService()
+
+    service = EmailService(
+        interaction_repository=interaction_repository,
+        client_repository=_FakeClientRepository({"metro@probeps.com": client}),
+        attachment_service=None,
+        user_repository=_FakeUserRepository({"Site Lead": [_FakeUser(site_lead_id)]}),
+        notification_service=notification_service,
+    )
+
+    await service.receive_email(
+        _email_request(to_email="metro@probeps.com", from_email="someone@example.com")
+    )
+
+    assert len(interaction_repository.created) == 1
+    assert len(notification_service.calls) == 1
+    _, notification_type, kwargs = notification_service.calls[0]
+    assert notification_type == "MAIL_RECEIVED"
+    created_interaction_id = kwargs["related_entity_id"]
+    assert kwargs["link"] == f"/inbox?interaction_id={created_interaction_id}"
+
+
 async def test_receive_email_legacy_to_email_matching_still_works_off_shared_mailbox(monkeypatch):
     """
     An address other than the configured Graph shared mailbox (e.g. a

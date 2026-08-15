@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from uuid import UUID
 
 from sqlalchemy import func, select, update
@@ -27,7 +28,10 @@ class NotificationRepository:
         limit: int = 50,
         offset: int = 0,
     ) -> list[Notification]:
-        query = select(Notification).where(Notification.user_id == user_id)
+        query = select(Notification).where(
+            Notification.user_id == user_id,
+            Notification.dismissed_at.is_(None),
+        )
 
         if unread_only:
             query = query.where(Notification.is_read.is_(False))
@@ -59,7 +63,8 @@ class NotificationRepository:
         notification_types: list[str] | None = None,
     ) -> int:
         query = select(func.count()).select_from(Notification).where(
-            Notification.user_id == user_id
+            Notification.user_id == user_id,
+            Notification.dismissed_at.is_(None),
         )
 
         if unread_only:
@@ -87,4 +92,11 @@ class NotificationRepository:
             update(Notification)
             .where(Notification.user_id == user_id, Notification.is_read.is_(False))
             .values(is_read=True)
+        )
+
+    async def dismiss_all(self, user_id: UUID) -> None:
+        await self.db.execute(
+            update(Notification)
+            .where(Notification.user_id == user_id, Notification.dismissed_at.is_(None))
+            .values(dismissed_at=datetime.now(timezone.utc))
         )

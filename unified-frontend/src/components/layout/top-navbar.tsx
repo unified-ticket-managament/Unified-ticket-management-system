@@ -21,6 +21,7 @@ import { useTranslation } from "@/hooks/use-translation";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import {
+  dismissAllNotifications,
   getNotifications,
   getNotificationStreamUrl,
   markAllNotificationsRead,
@@ -273,9 +274,14 @@ export function TopNavbar() {
     setNotifications((prev) => prev.filter((n) => n.notification_id !== notificationId));
   };
 
-  const clearAllNotifications = () => {
+  const clearAllNotifications = async () => {
     notifications.forEach((n) => dismissedIdsRef.current.add(n.notification_id));
     setNotifications([]);
+    try {
+      await dismissAllNotifications();
+    } catch {
+      // ignore — the next SSE event or manual refresh reconciles either way
+    }
   };
 
   return (

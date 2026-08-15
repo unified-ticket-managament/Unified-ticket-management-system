@@ -189,3 +189,22 @@ async def mark_all_notifications_read(
     await repository.mark_all_read(current_user.user_id)
 
     return MarkReadResponse(message="All notifications marked as read.")
+
+
+@router.post("/clear-all", response_model=MarkReadResponse)
+async def clear_all_notifications(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    "Clear All" — a soft delete (Notification.dismissed_at), never a
+    hard delete: the row is still the historical record of what was
+    sent, it just stops being returned by list_for_user/count_for_user
+    (and therefore by GET /notifications) from this point on. Distinct
+    from mark_all_read: dismissing doesn't imply the notification was
+    ever read, and marking read doesn't imply it was cleared.
+    """
+    repository = NotificationRepository(db)
+    await repository.dismiss_all(current_user.user_id)
+
+    return MarkReadResponse(message="All notifications cleared.")

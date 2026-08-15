@@ -51,6 +51,15 @@ export async function markAllNotificationsRead(): Promise<void> {
   await api.post("/notifications/read-all", null, { baseURL: API_ROOT });
 }
 
+// Backs "Clear All" — a real, persistent soft-delete server-side
+// (Notification.dismissed_at), not just the client-only session hide
+// this used to be. Named to avoid colliding with top-navbar.tsx's own
+// local `clearAllNotifications` handler, which still owns the
+// optimistic local-hide behavior and calls this in addition.
+export async function dismissAllNotifications(): Promise<void> {
+  await api.post("/notifications/clear-all", null, { baseURL: API_ROOT });
+}
+
 // The browser's native EventSource API cannot set an Authorization
 // header, so the SSE endpoint takes the access token as a query param
 // instead (see unified-backend's get_current_user_sse) — this is the

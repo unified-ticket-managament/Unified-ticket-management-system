@@ -471,7 +471,7 @@ class EmailService:
                     NotificationType.MAIL_RECEIVED,
                     title=f"New mail from {mail_source_label}",
                     message=email.subject or "(no subject)",
-                    link="/inbox",
+                    link=f"/inbox?interaction_id={created.interaction_id}",
                     related_entity_type="interaction",
                     related_entity_id=created.interaction_id,
                 )

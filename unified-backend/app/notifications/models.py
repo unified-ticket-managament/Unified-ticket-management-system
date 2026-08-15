@@ -89,3 +89,13 @@ class Notification(Base):
         nullable=False,
         index=True,
     )
+
+    # Soft-delete for "Clear All" — same convention as
+    # user_permission_overrides.revoked_at: never hard-delete a
+    # Notification row (it's still the historical record of what was
+    # sent), just stop returning it from list_for_user/count_for_user
+    # once the user has cleared it.
+    dismissed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
