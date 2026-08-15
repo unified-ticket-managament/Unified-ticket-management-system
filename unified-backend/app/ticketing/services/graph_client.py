@@ -11,13 +11,14 @@
 # get_mail_provider_client() is the single place that decides whether
 # this class or MockMailProviderClient backs the rest of the app.
 
+import html
 import logging
 from datetime import datetime
 
 import httpx
 
 from app.core.config import Settings
-from app.ticketing.schemas.mail_integration import IncomingMailPayload
+from app.ticketing.schemas.mail_integration import GraphAttachmentPayload, IncomingMailPayload
 from app.ticketing.schemas.payloads import OutboundEnvelope
 from app.ticketing.services.graph_auth import GraphAuthClient
 from app.ticketing.services.mail_provider import MailProviderClient, MailProviderSendResult
@@ -26,11 +27,15 @@ logger = logging.getLogger(__name__)
 
 # Fields requested on every message fetch — matches IncomingMailPayload's
 # own fields one-for-one, plus internetMessageHeaders (only returned when
-# explicitly selected) for In-Reply-To/References threading.
+# explicitly selected) for In-Reply-To/References threading, plus
+# hasAttachments so callers can skip the extra attachments call for the
+# common no-attachment case.
 MESSAGE_SELECT_FIELDS = (
     "id,internetMessageId,subject,from,toRecipients,ccRecipients,body,"
-    "conversationId,receivedDateTime,internetMessageHeaders"
+    "conversationId,receivedDateTime,internetMessageHeaders,hasAttachments"
 )
+
+ATTACHMENT_SELECT_FIELDS = "name,contentType,size,isInline,contentBytes"
 
 
 class GraphAPIError(Exception):
@@ -91,6 +96,22 @@ def _build_send_mail_message(envelope: OutboundEnvelope) -> dict:
     return message
 
 
+def _plain_text_to_html_comment(text: str) -> str:
+    """
+    Graph's reply/replyAll `comment` parameter has no content-type
+    option (unlike sendMail's `message.body.contentType`) — Microsoft's
+    own docs confirm Graph always composes the resulting reply body as
+    HTML from it. A bare `\\n` has no meaning in HTML, so a plain-text
+    comment (e.g. a multi-line signature) rendered exactly as typed
+    would collapse to one visual line for the recipient. Escape first
+    so literal &/</> in the agent's own text can't be misinterpreted
+    once composited into HTML, then convert the now-significant
+    newlines to <br> so real line breaks survive.
+    """
+
+    return html.escape(text).replace("\n", "<br>")
+
+
 def _build_reply_action_body(envelope: OutboundEnvelope) -> dict:
     """
     Builds the request body for Graph's reply/replyAll message action
@@ -114,7 +135,7 @@ def _build_reply_action_body(envelope: OutboundEnvelope) -> dict:
     if envelope.attachments:
         message["attachments"] = _build_graph_attachments(envelope.attachments)
 
-    return {"comment": envelope.body, "message": message}
+    return {"comment": _plain_text_to_html_comment(envelope.body), "message": message}
 
 
 class GraphMailProviderClient(MailProviderClient):
@@ -301,15 +322,54 @@ class GraphMailProviderClient(MailProviderClient):
 
         return [IncomingMailPayload.model_validate(item) for item in items]
 
+    async def fetch_message_attachments(
+        self, message_id: str
+    ) -> list[GraphAttachmentPayload]:
+        """
+        Fetches every attachment on a given message — a second Graph
+        call, deliberately only made when the caller already knows
+        (via IncomingMailPayload.hasAttachments) there's something to
+        fetch. Returns the raw, unfiltered list; deciding which of
+        these are real, storable files (as opposed to inline signature
+        images) is mail_mapping_service.build_upload_files_from_graph_
+        attachments's job, not this transport method's.
+        """
+
+        url = (
+            f"{self._api_base_url}/users/{self._mailbox_address}/messages/{message_id}"
+            f"/attachments?$select={ATTACHMENT_SELECT_FIELDS}"
+        )
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, headers=await self._authorized_headers())
+
+        if response.status_code != 200:
+            logger.error(
+                "Graph attachments fetch failed: status=%s message_id=%s body=%s",
+                response.status_code,
+                message_id,
+                response.text,
+            )
+            raise GraphAPIError(response.status_code, response.text)
+
+        data = response.json()
+        return [
+            GraphAttachmentPayload.model_validate(item) for item in data.get("value", [])
+        ]
+
 
 def build_graph_mail_provider_client(
-    settings: Settings, auth_client: GraphAuthClient | None
+    settings: Settings,
+    auth_client: GraphAuthClient | None,
+    mailbox_address: str | None = None,
 ) -> GraphMailProviderClient | None:
-    if auth_client is None or not settings.graph_mailbox_address:
+    resolved_mailbox_address = mailbox_address or settings.graph_mailbox_address
+
+    if auth_client is None or not resolved_mailbox_address:
         return None
 
     return GraphMailProviderClient(
         auth_client=auth_client,
-        mailbox_address=settings.graph_mailbox_address,
+        mailbox_address=resolved_mailbox_address,
         api_base_url=settings.graph_api_base_url,
     )

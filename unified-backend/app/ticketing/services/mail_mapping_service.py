@@ -8,10 +8,19 @@
 # provider-shape translation only; it deliberately does not
 # duplicate any of that Interaction-construction logic.
 
+import base64
+import logging
+
 from bs4 import BeautifulSoup
 
 from app.ticketing.schemas.email import EmailRequest
-from app.ticketing.schemas.mail_integration import IncomingMailPayload
+from app.ticketing.schemas.mail_integration import GraphAttachmentPayload, IncomingMailPayload
+from app.ticketing.utils.constants import MAX_ATTACHMENT_FILES, MAX_ATTACHMENT_SIZE_BYTES
+from app.ticketing.utils.validators import sanitize_filename, validate_attachment_type
+
+logger = logging.getLogger(__name__)
+
+GRAPH_FILE_ATTACHMENT_ODATA_TYPE = "#microsoft.graph.fileAttachment"
 
 
 def _extract_header(
@@ -86,3 +95,118 @@ def map_external_email_to_interaction(payload: IncomingMailPayload) -> EmailRequ
         conversation_id=payload.conversationId,
         provider_message_id=payload.id,
     )
+
+
+class _GraphAttachmentUploadFile:
+    """
+    A minimal stand-in for fastapi.UploadFile, matching the exact
+    interface AttachmentService.validate_and_store_files actually
+    reads (`.filename`, `.content_type`, `await .read()`) — same
+    convention as the test suite's own FakeUploadFile
+    (tests/test_attachment_upload_authorization.py). Building a real
+    Starlette UploadFile here would mean depending on that class's
+    exact constructor shape for no benefit, since nothing downstream
+    needs anything beyond these three members.
+    """
+
+    def __init__(self, filename: str, content: bytes, content_type: str | None):
+        self.filename = filename
+        self.content_type = content_type
+        self._content = content
+
+    async def read(self) -> bytes:
+        return self._content
+
+
+def build_upload_files_from_graph_attachments(
+    attachments: list[GraphAttachmentPayload],
+) -> list[_GraphAttachmentUploadFile]:
+    """
+    Maps Graph's raw attachment list (GraphMailProviderClient.
+    fetch_message_attachments) into the UploadFile-shaped objects
+    AttachmentService.validate_and_store_files already knows how to
+    store — the same choke point every other attachment upload path
+    (ticket upload, the pre-existing `files` param on
+    EmailService.receive_email) already goes through, so this
+    function's only job is building that input, never re-implementing
+    validation/storage itself.
+
+    Filters out:
+    - anything that isn't a real `#microsoft.graph.fileAttachment`
+      (e.g. a forwarded message attached as an item) or has no actual
+      content (contentBytes) — nothing to store.
+    - `isInline` attachments — typically embedded signature/logo
+      images, not something a user is trying to send as a file.
+
+    Defensively pre-validates size/type against AttachmentService's
+    own existing limits and drops (logging) anything that would fail
+    those checks, rather than letting a single bad attachment raise
+    HTTPException mid-EmailService.receive_email and silently fail to
+    store the entire email — there's no live HTTP caller for
+    Graph-sourced mail to see that exception. Also caps the result at
+    MAX_ATTACHMENT_FILES for the same reason (that check would
+    otherwise raise for the whole batch instead of just trimming it).
+    """
+
+    files: list[_GraphAttachmentUploadFile] = []
+    dropped = 0
+
+    for attachment in attachments:
+        if (
+            attachment.odata_type != GRAPH_FILE_ATTACHMENT_ODATA_TYPE
+            or attachment.isInline
+            or not attachment.contentBytes
+        ):
+            continue
+
+        if len(files) >= MAX_ATTACHMENT_FILES:
+            dropped += 1
+            continue
+
+        filename = sanitize_filename(attachment.name or "attachment")
+
+        try:
+            validate_attachment_type(filename, attachment.contentType)
+        except ValueError as exc:
+            logger.warning(
+                "Dropping Graph attachment %r — %s", filename, exc
+            )
+            dropped += 1
+            continue
+
+        try:
+            content = base64.b64decode(attachment.contentBytes)
+        except (ValueError, TypeError):
+            logger.warning(
+                "Dropping Graph attachment %r — undecodable contentBytes", filename
+            )
+            dropped += 1
+            continue
+
+        if len(content) > MAX_ATTACHMENT_SIZE_BYTES:
+            logger.warning(
+                "Dropping Graph attachment %r — %d bytes exceeds the %d byte limit",
+                filename,
+                len(content),
+                MAX_ATTACHMENT_SIZE_BYTES,
+            )
+            dropped += 1
+            continue
+
+        files.append(
+            _GraphAttachmentUploadFile(
+                filename=filename,
+                content=content,
+                content_type=attachment.contentType,
+            )
+        )
+
+    if dropped:
+        logger.warning(
+            "Graph attachment mapping: stored %d, dropped %d (unsupported type, "
+            "oversized, inline, or non-file attachment)",
+            len(files),
+            dropped,
+        )
+
+    return files

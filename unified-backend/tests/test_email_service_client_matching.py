@@ -58,6 +58,14 @@ class _FakeClientRepository:
     async def get_active_by_inbox_email(self, email_address):
         return self._clients_by_email.get(email_address.strip().lower())
 
+    async def get_active_by_any_email(self, email_address):
+        # The real repository tries inbox_email first, then falls back
+        # to ClientContact — this fake has no separate contacts
+        # concept, so it reuses the same lookup, which is sufficient
+        # for every test in this file (none exercise the
+        # contacts-fallback branch specifically).
+        return await self.get_active_by_inbox_email(email_address)
+
 
 class _FakeInteractionRepository:
     def __init__(self):
@@ -291,3 +299,45 @@ async def test_receive_email_legacy_to_email_matching_still_works_off_shared_mai
 
     assert response.client_id == str(client.client_id)
     assert response.client_name == "Metro Family Care"
+
+
+async def test_receive_email_matches_client_by_dedicated_mailbox_arrival(monkeypatch):
+    """
+    The multi-mailbox Graph feature's actual client-identification
+    contract: an email arriving at a client's own dedicated,
+    Graph-pollable mailbox (e.g. familyfirst@probeps.com — a real
+    onboarded client mailbox, not the legacy shared one) resolves that
+    client by `to_email` regardless of who sent it, exactly like
+    test_receive_email_legacy_to_email_matching_still_works_off_shared_mailbox
+    above exercises for the pre-existing "legacy dedicated inbox"
+    case — same code path, named explicitly for this feature so a
+    regression here is easy to find.
+    """
+
+    account_manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="FamilyFirst",
+        inbox_email="familyfirst@probeps.com",
+        account_manager_id=account_manager_id,
+    )
+
+    monkeypatch.setattr(
+        "app.ticketing.services.email_service.get_settings",
+        lambda: _settings(),
+    )
+
+    interaction_repository = _FakeInteractionRepository()
+
+    service = EmailService(
+        interaction_repository=interaction_repository,
+        client_repository=_FakeClientRepository({"familyfirst@probeps.com": client}),
+        attachment_service=None,
+    )
+
+    response = await service.receive_email(
+        _email_request(to_email="familyfirst@probeps.com", from_email="customer@example.com")
+    )
+
+    assert response.client_id == str(client.client_id)
+    assert response.client_name == "FamilyFirst"

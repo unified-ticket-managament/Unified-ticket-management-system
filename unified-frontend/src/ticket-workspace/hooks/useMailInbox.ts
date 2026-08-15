@@ -4,6 +4,7 @@ import { useDebouncedValue } from "@tw/hooks/useDebouncedValue";
 import {
   composeEmail as composeEmailRequest,
   discardDraft,
+  forwardToInternalUser as forwardToInternalUserRequest,
   getDrafts,
   getFolderCounts,
   getInbox,
@@ -17,6 +18,7 @@ import {
   updateInteractionTags,
   uploadDraftAttachment as uploadDraftAttachmentRequest,
   type ComposeEmailPayload,
+  type ForwardToInternalUserPayload,
 } from "@tw/api/inbox";
 import { deleteAttachment } from "@tw/api/interaction";
 import { listMailFolders } from "@tw/api/mailFolder";
@@ -192,6 +194,42 @@ function otpNotificationToInboxItem(notification: NotificationItem): InboxItem {
   };
 }
 
+// Adapts a MAIL_FORWARDED Notification (addressed to exactly the
+// internal user a manager's Mail > Forward action targeted — see
+// InteractionService.forward_to_internal_user) into an InboxItem, so
+// it renders inline in this recipient's own regular Inbox list, same
+// destination as OTP_FORWARDED above. Unlike that adapter, a real
+// Interaction backs this one — its id IS
+// notification.related_entity_id — so no synthetic id/prefix is
+// needed: opening this row goes through the normal openThread(id)
+// path, a genuine GET /inbox/{id} fetch, same as any other row.
+function mailForwardedNotificationToInboxItem(notification: NotificationItem): InboxItem {
+  return {
+    interaction_id: notification.related_entity_id ?? notification.notification_id,
+    client_id: null,
+    client_name: "Forwarded",
+    from_email: null,
+    to_email: null,
+    subject: notification.title,
+    message_id: null,
+    received_at: notification.created_at,
+    status: "PENDING",
+    direction: "INBOUND",
+    ticket_id: null,
+    ticket_priority: null,
+    ticket_category: null,
+    has_attachments: false,
+    claimed_by: null,
+    claimed_by_name: null,
+    tags: [],
+    folder_id: null,
+    reply_count: 0,
+    latest_message: notification.message,
+    latest_sender: null,
+    latest_at: null,
+  };
+}
+
 export type TimeFilterKey = "ALL" | "1H" | "TODAY" | "24H" | "1W";
 
 export const TIME_FILTERS: Array<{ key: TimeFilterKey; label: string }> = [
@@ -255,7 +293,8 @@ type LoadKey =
   | "drafts"
   | "system"
   | "mineTicketed"
-  | "otpForwards";
+  | "otpForwards"
+  | "mailForwards";
 
 // Maps a view the agent is looking at to the underlying fetch(es) it
 // actually needs — "unassigned"/"mine" are client-derived slices of
@@ -274,7 +313,7 @@ type LoadKey =
 function baseKeysForView(view: MailViewKey): LoadKey[] {
   switch (view) {
     case "pending":
-      return ["pending", "replied", "ticketed", "otpForwards"];
+      return ["pending", "replied", "ticketed", "otpForwards", "mailForwards"];
     case "unassigned":
       return ["pending"];
     case "mine":
@@ -349,6 +388,11 @@ export function useMailInbox() {
   // up by id when a synthetic Inbox row is clicked. See
   // otpNotificationToInboxItem/OTP_FORWARD_ID_PREFIX above.
   const [otpForwardNotifications, setOtpForwardNotifications] = useState<NotificationItem[]>([]);
+  // MAIL_FORWARDED notifications — a manager's Mail > Forward action
+  // addressed to this user (see mailForwardedNotificationToInboxItem
+  // above). Unlike OTP forwards, no lookup-by-id is needed here since
+  // each one's InboxItem already carries the real interaction_id.
+  const [mailForwardNotifications, setMailForwardNotifications] = useState<NotificationItem[]>([]);
   // The server's own filtered total per base tab (from GET /inbox's
   // `total`) — lets `hasMore` below tell "there's another batch to
   // load" apart from "this tab just happens to have exactly
@@ -484,6 +528,7 @@ export function useMailInbox() {
   // send is now genuinely still cancelable for a few seconds rather
   // than already delivered the instant this call resolves.
   const { run: runCompose, isLoading: isComposing } = useApiAction(composeEmailRequest);
+  const { run: runForward, isLoading: isForwarding } = useApiAction(forwardToInternalUserRequest);
 
   // Fetches one base tab's actual row data — the thing that used to
   // happen eagerly for every tab on every load/refresh, regardless of
@@ -696,6 +741,11 @@ export function useMailInbox() {
     setOtpForwardNotifications(result.items);
   }, []);
 
+  const fetchMailForwards = useCallback(async () => {
+    const result = await getNotifications({ types: ["MAIL_FORWARDED"], limit: 100 });
+    setMailForwardNotifications(result.items);
+  }, []);
+
   const fetchKey = useCallback(
     (key: LoadKey) => {
       if (key === "sent") return fetchSent();
@@ -704,6 +754,7 @@ export function useMailInbox() {
       if (key === "system") return fetchSystemMail();
       if (key === "mineTicketed") return fetchMyTicketedClaims();
       if (key === "otpForwards") return fetchOtpForwards();
+      if (key === "mailForwards") return fetchMailForwards();
       return fetchBaseTab(key);
     },
     [
@@ -714,6 +765,7 @@ export function useMailInbox() {
       fetchSystemMail,
       fetchMyTicketedClaims,
       fetchOtpForwards,
+      fetchMailForwards,
     ]
   );
 
@@ -1054,6 +1106,15 @@ export function useMailInbox() {
     return result;
   }
 
+  async function forwardToInternalUser(payload: ForwardToInternalUserPayload) {
+    const result = await runForward(payload);
+    if (result) {
+      showUndoSendToast(pushToast, result.interaction_id, "Message forwarded.");
+      await refreshAfterMutation(["sent"]);
+    }
+    return result;
+  }
+
   const now = useMemo(() => new Date(), [rowsByTab, sentItems, draftItems, timeFilter]);
   const debouncedSearch = useDebouncedValue(search, 300);
   const term = debouncedSearch.trim().toLowerCase();
@@ -1114,16 +1175,28 @@ export function useMailInbox() {
     [otpForwardNotifications]
   );
 
+  // MAIL_FORWARDED notifications addressed to this user, adapted the
+  // same way and merged into the same Inbox list — see
+  // mailForwardedNotificationToInboxItem's own comment above.
+  const mailForwardItems = useMemo(
+    () => mailForwardNotifications.map(mailForwardedNotificationToInboxItem),
+    [mailForwardNotifications]
+  );
+
   const inboxAll = useMemo(
     () =>
       Array.from(
         new Map(
-          [...rowsByTab.pending, ...rowsByTab.replied, ...rowsByTab.ticketed, ...otpForwardItems].map(
-            (item) => [item.interaction_id, item]
-          )
+          [
+            ...rowsByTab.pending,
+            ...rowsByTab.replied,
+            ...rowsByTab.ticketed,
+            ...otpForwardItems,
+            ...mailForwardItems,
+          ].map((item) => [item.interaction_id, item])
         ).values()
       ).sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime()),
-    [rowsByTab.pending, rowsByTab.replied, rowsByTab.ticketed, otpForwardItems]
+    [rowsByTab.pending, rowsByTab.replied, rowsByTab.ticketed, otpForwardItems, mailForwardItems]
   );
 
   const rowsByView: Record<MailViewKey, InboxItem[]> = {
@@ -1166,7 +1239,11 @@ export function useMailInbox() {
       // even before "Load more" has pulled every row. Archived is
       // deliberately excluded, matching inboxAll's own exclusion above.
       pending:
-        tabTotals.pending + tabTotals.replied + tabTotals.ticketed + otpForwardItems.length,
+        tabTotals.pending +
+        tabTotals.replied +
+        tabTotals.ticketed +
+        otpForwardItems.length +
+        mailForwardItems.length,
       unassigned: unassigned.length,
       mine: mine.length,
       sent: sentItems.length,
@@ -1187,6 +1264,7 @@ export function useMailInbox() {
       draftItems,
       systemNotifications,
       otpForwardItems,
+      mailForwardItems,
     ]
   );
 
@@ -1214,7 +1292,8 @@ export function useMailInbox() {
       key === "drafts" ||
       key === "system" ||
       key === "mineTicketed" ||
-      key === "otpForwards"
+      key === "otpForwards" ||
+      key === "mailForwards"
     )
       return false;
     return rowsByTab[key].length < tabTotals[key];
@@ -1233,6 +1312,7 @@ export function useMailInbox() {
         key !== "system" &&
         key !== "mineTicketed" &&
         key !== "otpForwards" &&
+        key !== "mailForwards" &&
         rowsByTab[key].length < tabTotals[key]
     );
     if (keys.length === 0) return;
@@ -1310,6 +1390,8 @@ export function useMailInbox() {
     removeDraftAttachment,
     composeEmail,
     isComposing,
+    forwardToInternalUser,
+    isForwarding,
     systemNotifications,
     isSystemLoading,
     selectedSystemNotification,

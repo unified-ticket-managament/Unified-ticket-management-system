@@ -143,6 +143,25 @@ class ClientRepository:
         )
         return dict(result.all())
 
+    async def list_active_inbox_emails(self) -> list[str]:
+        """
+        Every non-null inbox_email among active clients — the full
+        candidate set the Graph poller attempts each tick, alongside
+        the one configured shared mailbox (see graph_mail_poller.py's
+        _resolve_mailboxes_to_poll). Deliberately unfiltered beyond
+        is_active/non-null: whether a given address is actually a
+        Graph-accessible mailbox yet is discovered by the poller
+        itself (a per-mailbox Graph error is caught and logged there),
+        not decided here.
+        """
+
+        result = await self.db.execute(
+            select(Client.inbox_email).where(
+                Client.is_active.is_(True), Client.inbox_email.isnot(None)
+            )
+        )
+        return [row[0] for row in result.all()]
+
     async def list_client_ids_by_account_manager(
         self, account_manager_id: UUID
     ) -> list[UUID]:

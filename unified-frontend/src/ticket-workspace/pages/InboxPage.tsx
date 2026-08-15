@@ -140,14 +140,33 @@ export function InboxPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  function handleForward(values: { clientId: string | null; toEmail: string; subject: string; bodyHtml: string }) {
+  function handleForward(values: {
+    clientId: string | null;
+    toEmail: string;
+    subject: string;
+    bodyHtml: string;
+    interactionId: string;
+  }) {
     openCompose({
       clientId: values.clientId ?? undefined,
       toEmail: values.toEmail,
       subject: values.subject,
       bodyHtml: values.bodyHtml,
       mode: "forward",
+      interactionId: values.interactionId,
     });
+  }
+
+  async function handleForwardSend(payload: {
+    interactionId: string;
+    clientId: string;
+    recipientUserId: string;
+    subject: string;
+    message: string;
+  }) {
+    const result = await mail.forwardToInternalUser(payload);
+    if (result) closeCompose();
+    return result;
   }
 
   async function handleComposeSend(payload: {
@@ -207,8 +226,9 @@ export function InboxPage() {
               clientsLoading={mail.clientsLoading}
               clientsError={mail.clientsError}
               initialValues={composeInitialValues}
-              isSending={mail.isComposing}
+              isSending={mail.isComposing || mail.isForwarding}
               onSend={handleComposeSend}
+              onForwardSend={handleForwardSend}
               onDiscard={closeCompose}
               onBack={handleComposeBack}
             />

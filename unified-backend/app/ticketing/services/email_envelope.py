@@ -2,6 +2,8 @@
 
 from uuid import uuid4
 
+from shared_models.models import User
+
 from app.ticketing.schemas.payloads import EmailPayload, OutboundEnvelope
 
 
@@ -19,6 +21,54 @@ def _reply_subject(original_subject: str) -> str:
 def _new_message_id(from_email: str) -> str:
     domain = from_email.split("@", 1)[-1] or "probeps.com"
     return f"<{uuid4().hex}@{domain}>"
+
+
+def build_agent_signature(current_user: User) -> str:
+    """
+    The one shared signature block appended to every human-composed
+    outbound message (Compose/Forward via compose_email, Reply via
+    add_reply/add_interaction_reply, and transitively Draft-Send via
+    add_interaction_reply) — identifies the employee who wrote the
+    message, never the mailbox it's sent from (that's resolved
+    separately, per-message, and can vary between a Compose/Reply on
+    the shared inbox vs. a client-specific one — see
+    outbound_dispatcher.py). Baking a specific address in here would
+    go stale the moment a client's mailbox differs from whatever was
+    true when this function was last read.
+
+    Every field beyond `name` is nullable on the User model (Profile
+    module fields) and rendered only when actually set. `designation`
+    (the real-world job title) is preferred over `role.name` (the
+    RBAC role) when present, since it's the more accurate "what this
+    person's title is" answer — falls back to role.name, then to
+    nothing, exactly like the original single-caller version of this
+    function already guarded for a possibly-None role.
+
+    Note: on an RBAC-cache-hit request, the transient User
+    reconstructed from JWT claims only carries name/role — designation/
+    phone_number/department read back as None for the remainder of
+    that cache TTL window even if the real row has them set (see
+    app/dependencies/auth.py's _build_transient_user). An already-
+    accepted staleness tradeoff, not a bug to work around here.
+    """
+
+    divider = "-" * 40
+
+    title = current_user.designation or (
+        current_user.role.name if current_user.role is not None else None
+    )
+
+    lines = [divider, "Regards,", current_user.name]
+    if title:
+        lines.append(title)
+    lines.append("Probe Practice Solutions")
+    if current_user.department:
+        lines.append(current_user.department)
+    if current_user.phone_number:
+        lines.append(current_user.phone_number)
+    lines.append(divider)
+
+    return "\n".join(lines)
 
 
 def _merge_cc(account_manager_email: str | None, extra_cc: list[str] | None) -> list[str]:

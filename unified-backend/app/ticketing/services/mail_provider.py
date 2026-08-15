@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from app.core.config import Settings, get_settings
 from app.ticketing.schemas.mail_integration import (
+    GraphAttachmentPayload,
     GraphEmailAddress,
     GraphItemBody,
     GraphRecipient,
@@ -58,6 +59,12 @@ class MailProviderClient(ABC):
 
     @abstractmethod
     async def list_new_messages(self, since: datetime) -> list[IncomingMailPayload]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def fetch_message_attachments(
+        self, message_id: str
+    ) -> list[GraphAttachmentPayload]:
         raise NotImplementedError
 
 
@@ -122,14 +129,33 @@ class MockMailProviderClient(MailProviderClient):
         # time someone actually watches the logs during local testing.
         return []
 
+    async def fetch_message_attachments(
+        self, message_id: str
+    ) -> list[GraphAttachmentPayload]:
+        logger.debug("mock provider fetch_message_attachments: message_id=%s (returning none)", message_id)
 
-def get_mail_provider_client(settings: Settings | None = None) -> MailProviderClient:
+        # Same "never fabricate data" convention as list_new_messages.
+        return []
+
+
+def get_mail_provider_client(
+    settings: Settings | None = None,
+    mailbox_address: str | None = None,
+) -> MailProviderClient:
     """
     Dependency-injection swap point. Returns a real GraphMailProviderClient
     once graph_tenant_id/graph_client_id/graph_client_secret/
     graph_mailbox_address are all set (see config.py) — MockMailProviderClient
     otherwise. No caller needs to change when real credentials are added;
     only Settings/.env does.
+
+    `mailbox_address`, when given, overrides settings.graph_mailbox_address
+    for this one client — the seam that lets a single Graph app
+    identity (see graph_auth.py, tenant-wide/mailbox-agnostic) operate
+    against any mailbox the caller resolves (the legacy shared mailbox,
+    or a client-specific one — see graph_mail_poller.py and
+    outbound_dispatcher.py). Omitted, this returns the same
+    shared-mailbox client every caller has always gotten.
 
     Imports graph_client/graph_auth lazily (function-local, not
     module-level) to avoid a circular import: graph_client.py imports
@@ -142,7 +168,9 @@ def get_mail_provider_client(settings: Settings | None = None) -> MailProviderCl
     from app.ticketing.services.graph_client import build_graph_mail_provider_client
 
     auth_client = build_graph_auth_client(settings)
-    graph_client = build_graph_mail_provider_client(settings, auth_client)
+    graph_client = build_graph_mail_provider_client(
+        settings, auth_client, mailbox_address=mailbox_address
+    )
 
     if graph_client is not None:
         return graph_client

@@ -40,7 +40,14 @@ class OutboundDispatcher:
     async def dispatch(
         self, interaction_id: UUID, envelope: OutboundEnvelope
     ) -> MailProviderSendResult:
-        mail_provider_client = get_mail_provider_client()
+        # mailbox_address=envelope.from_email targets the mailbox this
+        # message actually arrived at (for a reply) or was resolved to
+        # send from (for compose) — previously ignored, so every send
+        # went out via the one globally-configured shared mailbox
+        # regardless of what the envelope said. See client_repository.
+        # list_active_inbox_emails / graph_mail_poller.py for how a
+        # client-specific mailbox gets discovered in the first place.
+        mail_provider_client = get_mail_provider_client(mailbox_address=envelope.from_email)
 
         try:
             result = await mail_provider_client.send_email(envelope)

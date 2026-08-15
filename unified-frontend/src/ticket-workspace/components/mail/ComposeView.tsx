@@ -18,12 +18,12 @@ import {
 import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
-import { listRbacRoles, listRbacUsers, type RbacUserSummary } from "@tw/api/rbacUsers";
+import { listInternalNoteRecipients } from "@tw/api/interaction";
 import { listClientContacts } from "@tw/api/clients";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { htmlToPlainText } from "@tw/lib/richText";
-import type { ClientContact, ClientResponse } from "@tw/types";
+import type { ClientContact, ClientResponse, InternalNoteRecipientCandidate } from "@tw/types";
 
 const LOCAL_DRAFT_KEY = "utms-mail-compose-draft";
 
@@ -54,6 +54,10 @@ export interface ComposeInitialValues {
   // org-user picker, since forwarding a message is an internal hand-
   // off, never a new outbound message to a client.
   mode?: "forward";
+  // The original interaction being forwarded (forward mode only) —
+  // needed so the backend can preserve the original-message/ticket
+  // relationship on the resulting communication.
+  interactionId?: string;
 }
 
 interface LocalDraft {
@@ -100,6 +104,19 @@ interface ComposeViewProps {
     bcc: string[];
     files: File[];
   }) => Promise<unknown>;
+  // Forward mode's own Send path — distinct from onSend since
+  // forwarding addresses an internal organization user (by user_id,
+  // resolved server-side to their real email) rather than an
+  // external client contact, and creates a different kind of
+  // communication (see InteractionService.forward_to_internal_user).
+  // Only required when initialValues.mode === "forward".
+  onForwardSend?: (payload: {
+    interactionId: string;
+    clientId: string;
+    recipientUserId: string;
+    subject: string;
+    message: string;
+  }) => Promise<unknown>;
   onDiscard: () => void;
   // Only rendered (as a "← Back" control) when this view is in
   // Forward mode — Discard already covers "abandon and return to the
@@ -142,6 +159,7 @@ export function ComposeView({
   initialValues,
   isSending,
   onSend,
+  onForwardSend,
   onDiscard,
   onBack,
 }: ComposeViewProps) {
@@ -212,30 +230,34 @@ export function ComposeView({
   // by role. Fetched only in Forward mode (Compose's own client
   // picker needs none of this). Grouped once, right at fetch time, so
   // rendering never has to re-derive a user's role name.
+  //
+  // Sourced from listInternalNoteRecipients() (GET /tickets/internal-
+  // notes/recipients) — the same unscoped, company-wide "every active
+  // user + role_name" endpoint the Internal Note "To" picker and the
+  // Rules "Forward To" picker were both already fixed to use, for the
+  // identical reason: listRbacUsers()/listRbacRoles() (RBAC's own
+  // hierarchy-scoped GET /api/v1/users + role:view-gated GET
+  // /api/v1/roles) silently under-populates or empties out entirely
+  // for Account Manager/Team Lead/Staff senders.
   const [internalRecipientGroups, setInternalRecipientGroups] = useState<
-    Record<string, RbacUserSummary[]>
+    Record<string, InternalNoteRecipientCandidate[]>
   >({});
-  const [allInternalUsers, setAllInternalUsers] = useState<RbacUserSummary[]>([]);
+  const [allInternalUsers, setAllInternalUsers] = useState<InternalNoteRecipientCandidate[]>([]);
   const [toUserId, setToUserId] = useState("");
 
   useEffect(() => {
     if (!isForward) return;
     let cancelled = false;
-    Promise.all([listRbacUsers(), listRbacRoles()])
-      .then(([users, roles]) => {
+    listInternalNoteRecipients()
+      .then((candidates) => {
         if (cancelled) return;
-        const roleNameById = new Map(roles.map((r) => [r.role_id, r.name]));
-        const eligible = users.filter(
-          (u) =>
-            u.is_active &&
-            u.user_id !== currentUser?.user_id &&
-            INTERNAL_RECIPIENT_ROLE_ORDER.includes(roleNameById.get(u.role_id) ?? "")
+        const eligible = candidates.filter(
+          (u) => u.user_id !== currentUser?.user_id && INTERNAL_RECIPIENT_ROLE_ORDER.includes(u.role_name)
         );
-        const groups: Record<string, RbacUserSummary[]> = {};
+        const groups: Record<string, InternalNoteRecipientCandidate[]> = {};
         for (const roleName of INTERNAL_RECIPIENT_ROLE_ORDER) groups[roleName] = [];
         for (const user of eligible) {
-          const roleName = roleNameById.get(user.role_id);
-          if (roleName) groups[roleName].push(user);
+          groups[user.role_name].push(user);
         }
         setAllInternalUsers(eligible);
         setInternalRecipientGroups(groups);
@@ -340,10 +362,13 @@ export function ComposeView({
 
   function handleFromChange(newClientId: string) {
     setClientId(newClientId);
-    // Recipients are specific to whichever client this message is
-    // filed under — switching "From" clears them rather than leaving
-    // a stale contact address associated with the wrong client.
-    setToEmail("");
+    // Compose mode's recipient suggestions are specific to whichever
+    // client this message is filed under — switching "From" clears
+    // them rather than leaving a stale contact address associated
+    // with the wrong client. Forward mode's recipient is an internal
+    // user, unrelated to which client mailbox is sending, so it's
+    // left untouched there.
+    if (!isForward) setToEmail("");
   }
 
   function handleSelectContactSuggestion(contact: ClientContact) {
@@ -375,6 +400,22 @@ export function ComposeView({
 
   async function handleSend() {
     if (!canSend) return;
+
+    if (isForward) {
+      if (!onForwardSend || !initialValues?.interactionId || !toUserId) return;
+      const result = await onForwardSend({
+        interactionId: initialValues.interactionId,
+        clientId,
+        recipientUserId: toUserId,
+        subject: subject.trim(),
+        message: htmlToPlainText(bodyHtml),
+      });
+      if (result) {
+        clearLocalDraft();
+      }
+      return;
+    }
+
     // onSend/POST /inbox/compose still take one primary `to_email`
     // (see ComposeEmailRequest on the backend, deliberately
     // unchanged) — "To" supporting several entries is a UI-level
@@ -438,34 +479,33 @@ export function ComposeView({
           <div className="flex flex-col gap-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">From</label>
-              {isForward ? (
-                <div className="flex h-9 items-center rounded-md border border-border bg-muted/30 px-3 text-sm text-muted-foreground">
-                  Ticketing Support &lt;ticketing@probeps.com&gt;
-                </div>
-              ) : (
-                // Every outbound message still actually dispatches
-                // from the one shared support mailbox (unchanged,
-                // backend-enforced) — this picks which authorized
-                // client the message is filed under, sourced from the
-                // same composableClients scoping (Account Manager:
-                // own clients only; else: unrestricted) already used
-                // elsewhere in this component, never a hardcoded
-                // list. Selecting one populates the "To" field's
-                // contact suggestions below.
-                <Select value={clientId} onValueChange={handleFromChange}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a client" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {composableClients.map((client) => (
-                      <SelectItem key={client.client_id} value={client.client_id}>
-                        {client.name}
-                        {client.inbox_email ? ` · ${client.inbox_email}` : " · (no distribution email configured)"}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
+              {/* The actual sending mailbox for BOTH Compose and
+                  Forward — whichever client is picked here, the
+                  outbound send goes out from that client's own
+                  configured mailbox (falling back to the shared
+                  mailbox for a client with none configured), enforced
+                  server-side regardless of what's selected here (see
+                  ensure_can_compose_for_client). Sourced from the same
+                  composableClients scoping (Account Manager: own
+                  clients only; else: unrestricted) already used
+                  elsewhere in this component, never a hardcoded list.
+                  In Compose mode, selecting one also populates the
+                  "To" field's contact suggestions below; Forward mode
+                  doesn't use client-contact suggestions since its "To"
+                  is always an internal user. */}
+              <Select value={clientId} onValueChange={handleFromChange}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a client" />
+                </SelectTrigger>
+                <SelectContent>
+                  {composableClients.map((client) => (
+                    <SelectItem key={client.client_id} value={client.client_id}>
+                      {client.name}
+                      {client.inbox_email ? ` · ${client.inbox_email}` : " · (no distribution email configured)"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <div>

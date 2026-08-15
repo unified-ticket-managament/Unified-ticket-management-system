@@ -52,7 +52,10 @@ from app.ticketing.schemas.mail_integration import (
 )
 from app.ticketing.services.attachment_service import AttachmentService
 from app.ticketing.services.email_service import EmailService
-from app.ticketing.services.mail_mapping_service import map_external_email_to_interaction
+from app.ticketing.services.mail_mapping_service import (
+    build_upload_files_from_graph_attachments,
+    map_external_email_to_interaction,
+)
 from app.ticketing.services.mail_provider import MailProviderClient, get_mail_provider_client
 from app.ticketing.services.outgoing_mail_service import OutgoingMailService
 from app.ticketing.services.rule_engine_service import build_rule_engine_service
@@ -182,10 +185,21 @@ async def _process_graph_notification(
 
     email_request = map_external_email_to_interaction(payload)
 
+    files = None
+    if payload.hasAttachments and payload.id:
+        try:
+            attachments = await mail_provider_client.fetch_message_attachments(payload.id)
+            files = build_upload_files_from_graph_attachments(attachments)
+        except Exception:
+            logger.exception(
+                "Failed to fetch attachments for Graph message %s — storing without them",
+                payload.id,
+            )
+
     async with AsyncSessionLocal() as db:
         try:
             service = _build_email_service(db)
-            await service.receive_email(email_request)
+            await service.receive_email(email_request, files=files)
             await db.commit()
         except ValueError as exc:
             # "Email already processed." (redelivery) and "Unknown inbox

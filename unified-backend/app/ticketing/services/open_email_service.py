@@ -139,7 +139,7 @@ class OpenEmailService:
                 ensure_agent_can_view_ticket(ticket, current_user)
         elif current_user is not None:
             await ensure_agent_can_view_pending_interaction(
-                interaction, current_user, self.client_repository
+                interaction, current_user, self.client_repository, view_only=True
             )
 
         # Records that this user has now opened this thread — the

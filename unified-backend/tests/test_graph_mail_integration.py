@@ -8,6 +8,7 @@
 from app.core.config import Settings
 from app.ticketing.api.mail_integration import _client_state_matches
 from app.ticketing.schemas.mail_integration import (
+    GraphAttachmentPayload,
     GraphEmailAddress,
     GraphItemBody,
     GraphRecipient,
@@ -29,6 +30,7 @@ from app.ticketing.services.email_service import is_configured_graph_mailbox
 from app.ticketing.services.graph_mail_poller import is_ready_to_poll
 from app.ticketing.services.mail_mapping_service import (
     _html_to_plain_text,
+    build_upload_files_from_graph_attachments,
     map_external_email_to_interaction,
 )
 
@@ -172,6 +174,58 @@ def test_build_graph_mail_provider_client_none_without_mailbox(monkeypatch):
     assert build_graph_mail_provider_client(settings, auth_client) is None
 
 
+def test_build_graph_mail_provider_client_honors_explicit_mailbox_override(monkeypatch):
+    """
+    The multi-mailbox seam: an explicit mailbox_address must win over
+    settings.graph_mailbox_address — this is what lets the same Graph
+    identity (one auth_client) operate against a client-specific
+    mailbox (the poller enumerating active clients' inbox_email, or
+    outbound_dispatcher targeting a reply's own arrival mailbox)
+    without needing a second configured identity.
+    """
+
+    monkeypatch.setattr(
+        "app.ticketing.services.graph_auth.msal.ConfidentialClientApplication",
+        lambda **kwargs: object(),
+    )
+    _cached_graph_auth_client.cache_clear()
+
+    settings = _base_settings(
+        graph_tenant_id="tenant-id-c",
+        graph_client_id="client-id",
+        graph_client_secret="client-secret",
+        graph_mailbox_address="ticketing@probeps.com",
+    )
+    auth_client = build_graph_auth_client(settings)
+
+    client = build_graph_mail_provider_client(
+        settings, auth_client, mailbox_address="familyfirst@probeps.com"
+    )
+
+    assert client is not None
+    assert client._mailbox_address == "familyfirst@probeps.com"
+
+
+def test_get_mail_provider_client_threads_mailbox_override(monkeypatch):
+    monkeypatch.setattr(
+        "app.ticketing.services.graph_auth.msal.ConfidentialClientApplication",
+        lambda **kwargs: object(),
+    )
+    _cached_graph_auth_client.cache_clear()
+
+    settings = _base_settings(
+        graph_tenant_id="tenant-id-d",
+        graph_client_id="client-id",
+        graph_client_secret="client-secret",
+        graph_mailbox_address="ticketing@probeps.com",
+    )
+
+    client = get_mail_provider_client(settings, mailbox_address="familyfirst@probeps.com")
+
+    assert client.__class__.__name__ == "GraphMailProviderClient"
+    assert client._mailbox_address == "familyfirst@probeps.com"
+
+
 # ---------------------------------------------------------
 # Subscription-configuration gate (graph_subscription_service.py)
 # ---------------------------------------------------------
@@ -310,7 +364,9 @@ def test_build_reply_action_body_uses_comment_for_agent_text():
     reply/replyAll action's own body-of-the-request uses `comment` —
     Graph prepends this above the quoted original message and handles
     the quoting/threading itself, which is what keeps the send inside
-    the original Outlook/Gmail conversation.
+    the original Outlook/Gmail conversation. A plain, single-line body
+    with no special characters passes through the HTML conversion
+    (see the next test) unchanged, so this still holds for that case.
     """
 
     envelope = _envelope(reply_to_provider_message_id="AAMkAG-native-id")
@@ -319,6 +375,31 @@ def test_build_reply_action_body_uses_comment_for_agent_text():
 
     assert body["comment"] == envelope.body
     assert "body" not in body["message"]
+
+
+def test_build_reply_action_body_converts_newlines_to_br_for_html_rendering():
+    """
+    Regression test for a real, live-confirmed bug: Graph's reply/
+    replyAll `comment` parameter is always composed into an HTML body
+    (confirmed against Microsoft's own Graph API docs — comment has no
+    content-type option, unlike sendMail's message.body.contentType).
+    A bare "\\n" has no meaning in HTML, so a multi-line signature sent
+    as-is collapsed to one visual line for the recipient. `comment`
+    must carry real <br> tags instead, and any literal HTML-special
+    character in the agent's own text must be escaped first so it
+    can't be misinterpreted once composited into HTML.
+    """
+
+    envelope = _envelope(
+        reply_to_provider_message_id="AAMkAG-native-id",
+        body="Regards,\nJane Doe\nAccount Manager & Co. <Probe>",
+    )
+
+    body = _build_reply_action_body(envelope)
+
+    assert body["comment"] == (
+        "Regards,<br>Jane Doe<br>Account Manager &amp; Co. &lt;Probe&gt;"
+    )
 
 
 def test_build_reply_action_body_overrides_recipients_explicitly():
@@ -460,6 +541,138 @@ async def test_send_email_dispatches_to_send_mail_when_no_reply_target(monkeypat
 
 async def _fake_headers() -> dict:
     return {"Authorization": "Bearer test-token"}
+
+
+async def test_fetch_message_attachments_builds_url_and_parses_response(monkeypatch):
+    import app.ticketing.services.graph_client as graph_client_module
+
+    captured: dict = {}
+
+    class _FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "value": [
+                    {
+                        "@odata.type": "#microsoft.graph.fileAttachment",
+                        "name": "invoice.pdf",
+                        "contentType": "application/pdf",
+                        "size": 1234,
+                        "isInline": False,
+                        "contentBytes": "aGVsbG8=",
+                    }
+                ]
+            }
+
+    class _FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def get(self, url, headers=None):
+            captured["url"] = url
+            return _FakeResponse()
+
+    monkeypatch.setattr(graph_client_module.httpx, "AsyncClient", lambda timeout=30.0: _FakeAsyncClient())
+
+    client = graph_client_module.GraphMailProviderClient(
+        auth_client=None,
+        mailbox_address="familyfirst@probeps.com",
+        api_base_url="https://graph.microsoft.com/v1.0",
+    )
+    monkeypatch.setattr(client, "_authorized_headers", lambda: _fake_headers())
+
+    attachments = await client.fetch_message_attachments("msg-id-123")
+
+    assert captured["url"].endswith(
+        "/users/familyfirst@probeps.com/messages/msg-id-123/attachments"
+        "?$select=name,contentType,size,isInline,contentBytes"
+    )
+    assert len(attachments) == 1
+    assert attachments[0].name == "invoice.pdf"
+    assert attachments[0].odata_type == "#microsoft.graph.fileAttachment"
+    assert attachments[0].contentBytes == "aGVsbG8="
+
+
+# ---------------------------------------------------------
+# Graph attachment -> UploadFile mapping (mail_mapping_service.py)
+# ---------------------------------------------------------
+
+
+def _graph_attachment(**overrides) -> GraphAttachmentPayload:
+    base = dict(
+        odata_type="#microsoft.graph.fileAttachment",
+        name="invoice.pdf",
+        contentType="application/pdf",
+        size=8,
+        isInline=False,
+        contentBytes="aGVsbG8=",  # base64("hello")
+    )
+    base.update(overrides)
+    return GraphAttachmentPayload(**base)
+
+
+def test_build_upload_files_from_graph_attachments_maps_real_file_attachment():
+    files = build_upload_files_from_graph_attachments([_graph_attachment()])
+
+    assert len(files) == 1
+    assert files[0].filename == "invoice.pdf"
+    assert files[0].content_type == "application/pdf"
+
+
+async def test_build_upload_files_from_graph_attachments_content_readable():
+    files = build_upload_files_from_graph_attachments([_graph_attachment()])
+
+    content = await files[0].read()
+    assert content == b"hello"
+
+
+def test_build_upload_files_from_graph_attachments_drops_inline_attachments():
+    """
+    Inline attachments are typically embedded signature/logo images,
+    not something a user is trying to send as a real file.
+    """
+
+    files = build_upload_files_from_graph_attachments([_graph_attachment(isInline=True)])
+
+    assert files == []
+
+
+def test_build_upload_files_from_graph_attachments_drops_non_file_attachments():
+    files = build_upload_files_from_graph_attachments(
+        [_graph_attachment(odata_type="#microsoft.graph.itemAttachment")]
+    )
+
+    assert files == []
+
+
+def test_build_upload_files_from_graph_attachments_drops_missing_content():
+    files = build_upload_files_from_graph_attachments([_graph_attachment(contentBytes=None)])
+
+    assert files == []
+
+
+def test_build_upload_files_from_graph_attachments_drops_unsupported_type():
+    files = build_upload_files_from_graph_attachments(
+        [_graph_attachment(name="malware.exe", contentType="application/x-msdownload")]
+    )
+
+    assert files == []
+
+
+def test_build_upload_files_from_graph_attachments_caps_at_max_files():
+    from app.ticketing.utils.constants import MAX_ATTACHMENT_FILES
+
+    attachments = [
+        _graph_attachment(name=f"file{i}.pdf") for i in range(MAX_ATTACHMENT_FILES + 3)
+    ]
+
+    files = build_upload_files_from_graph_attachments(attachments)
+
+    assert len(files) == MAX_ATTACHMENT_FILES
 
 
 # ---------------------------------------------------------

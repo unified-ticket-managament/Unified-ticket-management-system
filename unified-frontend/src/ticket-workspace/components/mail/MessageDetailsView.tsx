@@ -241,7 +241,7 @@ interface MessageDetailsViewProps {
   // InboxPage.tsx, wired to mail.openThread(interactionId).
   onRefreshMessage: (interactionId: string) => void;
   isRefreshingMessage?: boolean;
-  onForward: (values: { clientId: string | null; toEmail: string; subject: string; bodyHtml: string }) => void;
+  onForward: (values: { clientId: string | null; toEmail: string; subject: string; bodyHtml: string; interactionId: string }) => void;
   onSaveDraft: (
     interactionId: string,
     message: string,
@@ -605,6 +605,7 @@ export function MessageDetailsView({
       toEmail: "",
       subject: email.subject.toLowerCase().startsWith("fwd:") ? email.subject : `Fwd: ${email.subject}`,
       bodyHtml,
+      interactionId: email.interaction_id,
     });
   }
 

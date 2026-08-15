@@ -648,6 +648,17 @@ export interface ComposeEmailResponse {
   message: string;
 }
 
+// POST /inbox/{interaction_id}/forward — forwarding an existing
+// client email to an internal organization user, distinct from
+// ComposeEmailResponse (which addresses an external client contact).
+export interface ForwardToInternalUserResponse {
+  interaction_id: string;
+  recipient_user_id: string;
+  recipient_email: string;
+  dispatch_status: string;
+  created_at: string;
+}
+
 export interface StatusChangeRequest {
   new_status: TicketStatus;
 }

@@ -21,7 +21,7 @@ class NotificationType:
     PERMISSION_APPROVED = "PERMISSION_APPROVED"
     PERMISSION_REJECTED = "PERMISSION_REJECTED"
     PERMISSION_REVOKED = "PERMISSION_REVOKED"
-    # A permission override granted directly (e.g. via the Users >
+    # A permission override     granted directly (e.g. via the Users >
     # Permission Overrides admin screen) rather than through an
     # approved Permission Request — kept distinct from
     # PERMISSION_APPROVED so a recipient can tell "an admin proactively
@@ -51,6 +51,14 @@ class NotificationType:
     # that would send a second, notification-shaped email on top of
     # the real forwarded one.
     OTP_FORWARDED = "OTP_FORWARDED"
+    # A manager forwarded an existing client email to a specific
+    # internal organization user (Mail > Forward, addressed to an
+    # employee rather than an external contact — see InteractionService
+    # .forward_to_internal_user). Deliberately not added to
+    # SYSTEM_NOTIFICATION_TYPES (unified-frontend's useMailInbox.ts) —
+    # merged into the recipient's own regular Inbox instead, same
+    # convention OTP_FORWARDED already established.
+    MAIL_FORWARDED = "MAIL_FORWARDED"
 
 
 class NotificationService:

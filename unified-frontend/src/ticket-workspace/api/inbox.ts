@@ -5,6 +5,7 @@ import type {
   DraftDeleteResponse,
   DraftListResponse,
   DraftSaveResponse,
+  ForwardToInternalUserResponse,
   InboxResponse,
   InboxScope,
   InboxView,
@@ -264,6 +265,34 @@ export async function composeEmail(
   const { data } = await apiClient.post<ComposeEmailResponse>(
     "/inbox/compose",
     formData
+  );
+  return data;
+}
+
+export interface ForwardToInternalUserPayload {
+  interactionId: string;
+  clientId: string;
+  recipientUserId: string;
+  subject: string;
+  message: string;
+}
+
+// POST /inbox/{interaction_id}/forward — forward an existing client
+// email to an internal organization user. Plain JSON (unlike
+// composeEmail above): no new file uploads here, only attachments
+// already stored against the original interaction are carried over
+// server-side.
+export async function forwardToInternalUser(
+  payload: ForwardToInternalUserPayload
+): Promise<ForwardToInternalUserResponse> {
+  const { data } = await apiClient.post<ForwardToInternalUserResponse>(
+    `/inbox/${payload.interactionId}/forward`,
+    {
+      client_id: payload.clientId,
+      recipient_user_id: payload.recipientUserId,
+      subject: payload.subject,
+      message: payload.message,
+    }
   );
   return data;
 }

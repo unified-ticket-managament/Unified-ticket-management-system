@@ -85,7 +85,11 @@ from app.ticketing.services.audit_to_interaction import (
     synthesize_interaction_from_audit,
 )
 from app.ticketing.services.assignment_service import STAFF_ROLE_NAME
-from app.ticketing.services.email_envelope import build_compose_envelope, build_reply_envelope
+from app.ticketing.services.email_envelope import (
+    build_agent_signature,
+    build_compose_envelope,
+    build_reply_envelope,
+)
 from app.ticketing.services.email_service import resolve_shared_mailbox_address
 from app.ticketing.services.escalation_service import EscalationService, _to_assignable_group
 from app.ticketing.services.interaction_summary import trim_payload_for_list
@@ -114,6 +118,10 @@ from app.ticketing.models.interaction import Interaction
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.schemas.attachment import AttachmentMetadata, TicketAttachmentItem
 from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
+from app.ticketing.schemas.forward import (
+    ForwardToInternalUserRequest,
+    ForwardToInternalUserResponse,
+)
 from app.ticketing.schemas.payloads import EmailPayload, EnvelopeAttachment, OutboundEnvelope
 from app.ticketing.services.attachment_service import (
     AttachmentService,
@@ -122,34 +130,6 @@ from app.ticketing.services.attachment_service import (
 )
 from app.ticketing.services.undo_send import compute_send_after, schedule_delayed_send
 from app.ticketing.storage.base import StorageService
-
-
-def _build_compose_signature(current_user: User) -> str:
-    """
-    Compose-only signature block (see compose_email) — the shared
-    mailbox's From address gives a client no way to tell which agent
-    actually wrote a brand-new message, unlike Reply/Forward, where
-    the message threads onto a conversation the client already knows
-    is handled by "the team". Deliberately not used by add_reply/
-    add_interaction_reply/send_draft — those stay exactly as they
-    were.
-    """
-
-    divider = "-" * 40
-    role_name = current_user.role.name if current_user.role is not None else ""
-
-    lines = [divider, "Regards,", current_user.name]
-    if role_name:
-        lines.append(role_name)
-    lines.extend(
-        [
-            "Probe Practice Solutions",
-            "Sent via Ticketing Support",
-            "ticketing@probeps.com",
-            divider,
-        ]
-    )
-    return "\n".join(lines)
 
 
 def _to_response(
@@ -1173,12 +1153,18 @@ class InteractionService:
             am_email = await self._resolve_account_manager_email(client) if client is not None else None
             reply_from_email = inbound_payload.to_email
 
+            # Signed body — what actually gets sent and stored — so a
+            # client sees which agent actually wrote the reply, same
+            # principle compose_email already established for a
+            # brand-new message.
+            signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
+
             if reply_from_email:
                 envelope = build_reply_envelope(
                     from_email=reply_from_email,
                     inbound_payload=inbound_payload,
                     inbound_message_id=latest_email.message_id,
-                    body=request.message,
+                    body=signed_message,
                     agent_name=current_user.name,
                     account_manager_email=am_email,
                     cc=request.cc,
@@ -1188,7 +1174,7 @@ class InteractionService:
                     reply_all=request.reply_all,
                 )
 
-        payload: dict[str, Any] = {"message": request.message}
+        payload: dict[str, Any] = {"message": signed_message if envelope is not None else request.message}
         if envelope is not None:
             payload["envelope"] = envelope.model_dump()
             payload["dispatch_status"] = "PENDING_SEND"
@@ -1335,13 +1321,18 @@ class InteractionService:
         am_email = await self._resolve_account_manager_email(client) if client is not None else None
         reply_from_email = inbound_payload.to_email
 
+        # Signed body — what actually gets sent and stored — same
+        # principle compose_email already established for a brand-new
+        # message, now shared across every reply path too.
+        signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
+
         envelope = None
         if reply_from_email:
             envelope = build_reply_envelope(
                 from_email=reply_from_email,
                 inbound_payload=inbound_payload,
                 inbound_message_id=root.message_id,
-                body=request.message,
+                body=signed_message,
                 agent_name=current_user.name,
                 account_manager_email=am_email,
                 cc=request.cc,
@@ -1351,7 +1342,7 @@ class InteractionService:
                 reply_all=request.reply_all,
             )
 
-        payload: dict[str, Any] = {"message": request.message}
+        payload: dict[str, Any] = {"message": signed_message if envelope is not None else request.message}
         if envelope is not None:
             payload["envelope"] = envelope.model_dump()
             payload["dispatch_status"] = "PENDING_SEND"
@@ -1471,7 +1462,17 @@ class InteractionService:
         )
 
         am_email = await self._resolve_account_manager_email(client)
-        shared_mailbox_address = resolve_shared_mailbox_address(get_settings())
+        # The selected client's own configured mailbox, when it has
+        # one — falls back to the shared mailbox for a client still on
+        # it, same shared-vs-dedicated split email_service.py already
+        # applies on the inbound side. Previously this always used the
+        # shared mailbox regardless of which client was selected —
+        # a real, reported bug (e.g. selecting FFJ still sent from the
+        # generic address) — the outbound dispatcher (see
+        # outbound_dispatcher.py) already targets whatever mailbox
+        # this envelope's from_email says, so resolving it correctly
+        # here is the only fix needed.
+        mailbox_address = client.inbox_email or resolve_shared_mailbox_address(get_settings())
 
         # Signed body — what actually gets sent and stored — so a
         # client reading a brand-new Compose message (never a Reply,
@@ -1479,10 +1480,10 @@ class InteractionService:
         # is "the team") can tell which agent wrote it. Ticket history
         # then reflects exactly what was sent, same principle as
         # attachments (see _attach_outbound_files).
-        signed_message = f"{request.message}\n\n{_build_compose_signature(current_user)}"
+        signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
 
         envelope = build_compose_envelope(
-            from_email=shared_mailbox_address,
+            from_email=mailbox_address,
             to_email=request.to_email,
             subject=request.subject,
             body=signed_message,
@@ -1496,7 +1497,7 @@ class InteractionService:
             client_id=client.client_id,
             client_name=client.name,
             to_email=request.to_email,
-            from_email=shared_mailbox_address,
+            from_email=mailbox_address,
             from_name=current_user.name,
             subject=request.subject,
             body=signed_message,
@@ -1550,6 +1551,178 @@ class InteractionService:
         return ComposeEmailResponse(
             interaction_id=interaction.interaction_id,
             client_id=client.client_id,
+            created_at=interaction.created_at,
+        )
+
+    # ---------------------------------------------------------
+    # Forward — an existing client email, to an internal org user
+    # ---------------------------------------------------------
+
+    async def forward_to_internal_user(
+        self,
+        interaction_id: UUID,
+        request: ForwardToInternalUserRequest,
+        current_user: User,
+    ) -> ForwardToInternalUserResponse:
+        """
+        Forwards an existing client email/interaction to an internal
+        organization user — distinct from compose_email, which always
+        addresses an external client contact and creates a brand-new
+        client conversation thread. Here the recipient is one of
+        this platform's own employees, so the communication is
+        delivered via the existing Notification mechanism (see
+        NotificationType.MAIL_FORWARDED) so it appears in that
+        employee's own dashboard Inbox, rather than becoming a new
+        client-facing thread nobody's dashboard would surface.
+
+        Both the sending mailbox (client_id) and the recipient are
+        independently re-validated here, server-side — never trusted
+        just because the frontend submitted them:
+        - client_id must be a real, active Client this current_user is
+          actually authorized to compose for (ensure_can_compose_for_client
+          — the exact same rule Compose already enforces).
+        - recipient_user_id must resolve to a real, active internal
+          agent (a role in AGENT_ROLE_NAMES) — never a Client/Viewer
+          account, and never just whatever email string was posted.
+        """
+
+        original = await self.interaction_repository.get_by_id(interaction_id)
+
+        if original is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        # Same view-authorization split add_reply/add_interaction_reply
+        # already use: a ticketed original is gated by ordinary ticket
+        # visibility; a not-yet-ticketed one by the pending-interaction
+        # check every other pending-inbox action already goes through.
+        if original.ticket_id is not None:
+            ticket = await self._get_ticket_or_404(original.ticket_id)
+            ensure_agent_can_view_ticket(ticket, current_user)
+            await ensure_account_manager_owns_ticket_client(
+                ticket, current_user, self.client_repository
+            )
+        else:
+            await self._ensure_can_act_on_pending_interaction(original, current_user)
+
+        ensure_has_permission(current_user, "communication:reply_external")
+
+        if self.client_repository is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Client lookup is not available.",
+            )
+
+        client = await self.client_repository.get_by_id(request.client_id)
+
+        if client is None or not client.is_active:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Client not found.",
+            )
+
+        # The real, server-side "is this manager authorized to send
+        # from this client's mailbox" check — the frontend's own From
+        # dropdown is never trusted on its own.
+        ensure_can_compose_for_client(client, current_user)
+
+        recipient = await self.user_repository.get_by_id(request.recipient_user_id)
+
+        if (
+            recipient is None
+            or not recipient.is_active
+            or recipient.role is None
+            or recipient.role.name not in AGENT_ROLE_NAMES
+        ):
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Invalid internal recipient.",
+            )
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        mailbox_address = client.inbox_email or resolve_shared_mailbox_address(
+            get_settings()
+        )
+
+        signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
+
+        envelope = build_compose_envelope(
+            from_email=mailbox_address,
+            to_email=recipient.email,
+            subject=request.subject,
+            body=signed_message,
+            agent_name=current_user.name,
+        )
+
+        interaction = await self.interaction_repository.create(
+            InteractionCreate(
+                ticket_id=original.ticket_id,
+                interaction_type="FORWARD",
+                direction=InteractionDirection.OUTBOUND,
+                status=InteractionStatus.ASSIGNED,
+                performed_by=actor_id,
+                payload={
+                    "message": signed_message,
+                    "envelope": envelope.model_dump(),
+                    "dispatch_status": "PENDING_SEND",
+                    "recipient_user_id": str(recipient.user_id),
+                    "recipient_name": recipient.name,
+                    "forwarded_interaction_id": str(original.interaction_id),
+                },
+                is_visible=True,
+                message_id=envelope.message_id,
+                client_id=client.client_id,
+                parent_interaction_id=original.interaction_id,
+                subject=request.subject,
+            )
+        )
+
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=interaction.interaction_id,
+            # Reuses REPLY_ADDED rather than adding a new AuditEventType
+            # member — same reasoning compose_email already documents
+            # (that enum is a native Postgres ENUM; a Forward is, audit-
+            # wise, the same kind of event as any other outbound send).
+            event_type=AuditEventType.REPLY_ADDED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            new_values={
+                "forwarded_interaction_id": original.interaction_id,
+                "recipient_user_id": recipient.user_id,
+                "client_id": client.client_id,
+            },
+        )
+
+        envelope = await self._merge_existing_attachments_into_envelope(
+            interaction, envelope, interaction_id
+        )
+
+        await self._schedule_delayed_send(interaction, envelope)
+
+        if self.notification_service is not None:
+            await self.notification_service.notify(
+                [recipient.user_id],
+                NotificationType.MAIL_FORWARDED,
+                title=request.subject,
+                message=signed_message,
+                link=f"/inbox?interaction_id={interaction.interaction_id}",
+                related_entity_type="interaction",
+                related_entity_id=interaction.interaction_id,
+            )
+
+        return ForwardToInternalUserResponse(
+            interaction_id=interaction.interaction_id,
+            recipient_user_id=recipient.user_id,
+            recipient_email=recipient.email,
+            dispatch_status="PENDING_SEND",
             created_at=interaction.created_at,
         )
 

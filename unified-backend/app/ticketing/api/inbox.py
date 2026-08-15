@@ -22,6 +22,10 @@ from app.ticketing.repositories.message_read_receipt_repository import (
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
+from app.ticketing.schemas.forward import (
+    ForwardToInternalUserRequest,
+    ForwardToInternalUserResponse,
+)
 from app.ticketing.schemas.inbox import DraftListResponse, InboxResponse, SentResponse
 from app.ticketing.schemas.interaction import (
     DraftDeleteResponse,
@@ -339,6 +343,56 @@ async def compose_email(
         composed.attachments = await attachments_to_metadata(stored, storage_service)
 
     return composed
+
+
+# ---------------------------------------------------------
+# Forward — an existing client email, to an internal org user
+# ---------------------------------------------------------
+
+
+@router.post(
+    "/{interaction_id}/forward",
+    response_model=ForwardToInternalUserResponse,
+    status_code=201,
+)
+async def forward_to_internal_user(
+    interaction_id: UUID,
+    request: ForwardToInternalUserRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Forwards an existing client email/interaction to an internal
+    organization user — see InteractionService.forward_to_internal_user
+    for the full authorization/delivery mechanics. Plain JSON body
+    (unlike /compose): no new file uploads here, only existing
+    attachments already stored against `interaction_id` are carried
+    over.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+    attachment_repository = AttachmentRepository(db)
+    storage_service = get_storage_service()
+    notification_service = NotificationService(NotificationRepository(db))
+
+    interaction_service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+        attachment_repository=attachment_repository,
+        storage_service=storage_service,
+        notification_service=notification_service,
+    )
+
+    return await interaction_service.forward_to_internal_user(
+        interaction_id=interaction_id,
+        request=request,
+        current_user=current_user,
+    )
 
 
 # ---------------------------------------------------------

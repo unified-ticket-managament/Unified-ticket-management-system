@@ -114,6 +114,38 @@ class IncomingMailPayload(BaseModel):
         description="Only present when fetched with $select=internetMessageHeaders.",
     )
 
+    hasAttachments: bool = Field(
+        default=False,
+        description=(
+            "Whether Graph reports any attachments on this message — "
+            "callers use this to skip the extra attachments call for "
+            "the common no-attachment case."
+        ),
+    )
+
+
+class GraphAttachmentPayload(BaseModel):
+    """
+    Mirrors one entry of Graph's `attachments` resource
+    (`/messages/{id}/attachments`). Only `#microsoft.graph.fileAttachment`
+    entries carry real, storable file content (`contentBytes`) —
+    other attachment types (e.g. `itemAttachment`, a forwarded message)
+    are out of scope and filtered out downstream, not here (see
+    mail_mapping_service.build_upload_files_from_graph_attachments).
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    odata_type: str | None = Field(default=None, alias="@odata.type")
+    name: str = Field(default="attachment")
+    contentType: str | None = None
+    size: int | None = None
+    isInline: bool = False
+    contentBytes: str | None = Field(
+        default=None,
+        description="Base64-encoded file content — only present on a fileAttachment.",
+    )
+
 
 # ---------------------------------------------------------
 # Real Graph change-notification envelope — what Graph actually posts

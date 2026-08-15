@@ -1,137 +1,139 @@
 # Unified Ticket Management System (UTMS)
 
-A combined RBAC (authentication, users, roles, permissions) and support-ticketing platform — one product, built by merging what were originally two independent systems.
+A combined **RBAC** (authentication, users, roles, permissions) and **support-ticketing** platform, served as one product from one backend and one frontend.
+
+It gives an organization:
+
+- Role-based login and access control (Super Admin, Site Lead, Account Manager, Team Lead, Staff, Client) with per-user permission overrides.
+- A shared support-ticket workspace (Mail/Inbox, Tickets, SLA & escalation tracking, Reports) embedded directly into the same app users log into.
+- SLA and escalation automation (First Response / Resolution clocks, breach notifications, auto-escalation) running in-process, no external scheduler required.
+- Real-time in-app notifications (Server-Sent Events) and outbound email for business-critical events.
+- Optional Microsoft Graph mailbox integration for receiving/sending ticket-related email.
+
+---
 
 ## Architecture at a glance
 
-| Directory | What it is | Runs on |
-|---|---|--|
-| `unified-frontend/` | The shell application — login, RBAC (Users/Roles/Audit Logs/Settings), and an embedded copy of the ticket workspace (Mail, Tickets, Reports, per-role dashboards). Next.js 16. **This is the primary, currently-maintained frontend.** | `:3000` |
-| `unified-backend/` | A single FastAPI process serving both the RBAC API (`/api/v1/...`) and the Ticketing API (unprefixed — `/tickets`, `/inbox`, ...). RBAC is the sole issuer of JWTs; Ticketing verifies them. | `:8000` |
-| `ticketing-service/` | The standalone Vite/React ticket-workspace app this product started from, with its own login flow. Still runs independently, but `unified-frontend`'s embedded copy has since pulled ahead (see its own `CLAUDE.md`'s "Mail v2" section) and is not kept in sync automatically. Optional — only needed if you're testing this app directly. | `:5173` |
-| `shared_models/` | The one real copy of the `User`/`Role` SQLAlchemy models, installed as a local editable package by `unified-backend`. | — |
+Two processes make up the whole product:
 
-Both API domains share **one physical PostgreSQL database** (Neon) but keep independent Alembic migration histories (`unified-backend/alembic_rbac/`, `unified-backend/alembic_ticketing/`).
-# Clone Repository
+| Component | What it is | Tech | Default port |
+|---|---|---|---|
+| [`unified-backend/`](unified-backend) | One FastAPI app serving the RBAC API (`/api/v1/...`) and the Ticketing API (unprefixed — `/tickets`, `/inbox`, `/agents`, ...). RBAC issues JWTs; Ticketing verifies them against the same secret. | FastAPI, SQLAlchemy (async), Alembic, PostgreSQL | `:8000` |
+| [`unified-frontend/`](unified-frontend) | The web app — login, RBAC administration (Users/Roles/Permissions/Audit Logs), per-role dashboards, and the embedded ticket workspace (Mail, Tickets, Reports, SLA). | Next.js 16, React 18 | `:3000` |
+| [`shared_models/`](shared_models) | The single source of truth for the `User`/`Role` SQLAlchemy models, installed by the backend as a local editable package. | SQLAlchemy | — |
 
-```bash
-git clone <repository-url>
-```
+Both API domains share **one PostgreSQL database** (hosted on [Neon](https://neon.tech)) but keep independent Alembic migration histories (`unified-backend/alembic_rbac/`, `unified-backend/alembic_ticketing/`), since they were originally two separate services merged into one process.
 
-Example
-
-```bash
-git clone https://github.com/unified-ticket-managament/Phase_1.git
-```
-
-Move into the project
-
-```bash
-cd Phase_1
-```
+> **Note:** this repo previously also contained a standalone, independently-deployable ticket-workspace frontend under `ticketing-service/`. It is not part of the current build or deployment — `unified-frontend`'s embedded ticket workspace is the maintained, up-to-date experience. Only `unified-backend/`, `unified-frontend/`, and `shared_models/` are needed to run or deploy the product.
 
 ---
 
-# Backend Setup
+## Tech stack
 
-## Create Virtual Environment
+**Backend** — FastAPI · SQLAlchemy 2 (async, `asyncpg`) · Alembic · Pydantic v2 · PostgreSQL (Neon) · JWT (`python-jose`) · APScheduler (in-process SLA sweep) · Supabase Storage / S3-compatible storage for attachments · Microsoft Graph API (optional mail integration) · SMTP (optional outbound email)
 
-Windows
+**Frontend** — Next.js 16 · React 18 · TypeScript · TanStack Query · React Hook Form + Zod · Radix UI · Tailwind
+
+**Infra** — Render.com (web services), Neon (Postgres), Supabase (object storage)
+
+---
+
+## Prerequisites
+
+- **Python** 3.12+
+- **Node.js** 20+ and npm
+- A **PostgreSQL** database (a free [Neon](https://neon.tech) project works well — both an async and a sync connection string are needed, see below)
+- (Optional) A **Supabase** project or S3-compatible endpoint, if you want attachment uploads to work
+- (Optional) A **Microsoft Entra ID (Azure AD)** app registration, if you want real Graph mailbox integration instead of the built-in mock mail provider
+
+---
+
+## Getting started (local development)
+
+### 1. Clone the repository
 
 ```bash
+git clone https://github.com/unified-ticket-managament/Unified-ticket-management-system.git
+cd Unified-ticket-management-system
+```
+
+### 2. Backend setup
+
+```bash
+cd unified-backend
 python -m venv .venv
+
+# Windows
 .venv\Scripts\activate
-```
-
-Linux / macOS
-
-```bash
-python3 -m venv .venv
+# Linux / macOS
 source .venv/bin/activate
-```
 
-## Install Dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
-## Configure Environment Variables
-
-Create a `.env` file inside the `backend/` folder.
-
-Example
+Create `unified-backend/.env`:
 
 ```env
-APP_NAME=Ticket Management System
+APP_NAME=Unified Backend
 APP_ENV=development
-DEBUG=True
+DEBUG=true
 
-DATABASE_URL=<your_async_database_url>
+# Async connection string (asyncpg) — the app's own runtime connection
+DATABASE_URL=postgresql+asyncpg://user:password@host/dbname
 
-ALEMBIC_DATABASE_URL=<your_psycopg2_database_url>
+# Sync connection string (psycopg2) — used only by the ticketing Alembic chain
+ALEMBIC_DATABASE_URL=postgresql+psycopg2://user:password@host/dbname
 
-LOG_LEVEL=INFO
+# Must be identical across both migration chains and every process reading it —
+# generate with: python -c "import secrets; print(secrets.token_urlsafe(64))"
+JWT_SECRET_KEY=<generate-a-random-secret>
+JWT_ALGORITHM=HS256
 
-CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+# Any random string — protects the manual SLA-sweep trigger endpoint
+SLA_SWEEP_SHARED_SECRET=<generate-a-random-secret>
 
-# Object storage for attachments — STORAGE_BACKEND=supabase (default) or "s3"
+CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+
+# Attachment storage — "supabase" (default) or "s3"
 STORAGE_BACKEND=supabase
 STORAGE_BUCKET=communication-attachments
-STORAGE_URL_EXPIRY_SECONDS=3600
-
-# Required when STORAGE_BACKEND=supabase
-SUPABASE_URL=<your_supabase_project_url>
-SUPABASE_SERVICE_ROLE_KEY=<your_supabase_service_role_key>
-
-# Required when STORAGE_BACKEND=s3 (e.g. local MinIO, see below)
-STORAGE_ENDPOINT_URL=http://localhost:9000
-STORAGE_ACCESS_KEY=<key>
-STORAGE_SECRET_KEY=<secret>
-STORAGE_REGION=us-east-1
-STORAGE_USE_SSL=False
+SUPABASE_URL=<your-supabase-project-url>
+SUPABASE_SERVICE_ROLE_KEY=<your-supabase-service-role-key>
 ```
 
-See `backend/.env.example` for the full, always-current list.
+See [`unified-backend/app/core/config.py`](unified-backend/app/core/config.py)'s `Settings` class for the full, always-current list of environment variables — including the optional SMTP and Microsoft Graph mail settings, both of which safely no-op/mock when left unset.
 
-## Run Database Migrations
+Run both independent migration chains, then start the API:
 
 ```bash
-cd backend
-alembic upgrade head
+alembic -c alembic_rbac/alembic.ini upgrade head
+alembic -c alembic_ticketing/alembic.ini upgrade head
+
+uvicorn app.main:app --reload --port 8000
 ```
 
-## Run the Backend
-
-netstat -ano | findstr :8000
-taskkill /PID 23040 /F
+Or use the bundled script, which does all three steps in order (Git Bash / WSL / macOS / Linux):
 
 ```bash
-uvicorn app.main:app --reload
+bash scripts/start.sh
 ```
 
-Runs on port 8000, not uvicorn's default 8000, since the RBAC service's own backend
-(`rbac-service/backend`) already defaults to 8000 and both are commonly run at the same time.
+The API is now available at `http://localhost:8000` — interactive docs at `/docs`, ReDoc at `/redoc`, health check at `/health`.
 
-Server runs at `http://127.0.0.1:8000`
+### 3. Frontend setup
 
-Swagger UI: `http://127.0.0.1:8000/docs`
-
-ReDoc: `http://127.0.0.1:8000/redoc`
-
----
-
-# Frontend Setup
+In a separate terminal:
 
 ```bash
-cd frontend
+cd unified-frontend
 npm install
 ```
 
-Create a `.env` file (copy `.env.example`):
+Create `unified-frontend/.env.local`:
 
 ```env
-VITE_API_BASE_URL=http://localhost:3000
+NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+NEXT_PUBLIC_TICKETING_API_URL=http://localhost:8000
 ```
 
 Then run:
@@ -140,53 +142,53 @@ Then run:
 npm run dev
 ```
 
-App runs at `http://localhost:5173` and talks to the backend at
-`VITE_API_BASE_URL` (see `src/api/client.ts`) — make sure the backend from
-the previous section is running first.
+The app is now available at `http://localhost:3000`. `NEXT_PUBLIC_*` variables are baked in at build/start time — restart `npm run dev` after changing `.env.local`.
 
-Other scripts:
+### 4. Log in
 
-```bash
-npm run build     # tsc -b && vite build — type-checks then produces dist/
-npm run preview    # preview the production build locally
-```
+Seed data (via `unified-backend/scripts/rbac_seed/` and `scripts/ticketing_seed/`, run automatically by the migrations above) provisions a default Super Admin account — check those seed scripts for current credentials.
 
+---
 
-## Quick start (local development)
-
-Two processes cover normal end-to-end testing:
+## Running tests
 
 ```bash
-# Terminal 1 — backend (runs both Alembic chains, then starts uvicorn)
 cd unified-backend
-bash scripts/start.sh          # http://127.0.0.1:8000, docs at /docs
-
-# Terminal 2 — frontend
-cd unified-frontend
-npm install
-npm run dev                    # http://localhost:3000
+pytest
 ```
 
-`unified-backend/.env` needs `DATABASE_URL`, `ALEMBIC_DATABASE_URL`, `JWT_SECRET_KEY`, `JWT_ALGORITHM`, plus the Supabase storage variables — see `unified-backend/app/core/config.py`'s `Settings` for the full list. `unified-frontend/.env.local` needs `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_TICKETING_API_URL` (both pointed at the backend above — see that project's own `CLAUDE.md` Known Issues if ticket/mail requests network-error while everything else works).
+Pure-logic tests run safely together. A handful of database-touching test files are known to hang if run in the same pytest process as each other (a pre-existing `pytest-asyncio` event-loop issue) — run those files individually if you hit that.
 
-Only start `ticketing-service/frontend` (`npm install && npm run dev`, port 5173) if you specifically need to exercise the standalone app rather than the embedded copy.
+---
+
+## Deploying to production
+
+This repo deploys as a [Render Blueprint](https://render.com/docs/blueprint-spec) defined in [`render.yaml`](render.yaml) — two Render Web Services:
+
+- **`unified-backend`** (Python, rootDir `unified-backend`) — runs both Alembic chains then `uvicorn`, per `scripts/start.sh`.
+- **`unified-frontend`** (Node, rootDir `unified-frontend`) — `npm ci && npm run build`, then `npm run start`.
+
+Both point at the same production Neon database and Supabase storage project used in development.
+
+See **[`DEPLOYMENT.md`](DEPLOYMENT.md)** for the full step-by-step runbook (generating the shared JWT secret, filling in Render's environment variables, and the first-deploy CORS/API-URL circular-dependency sequence).
+
+> Rotating `JWT_SECRET_KEY` in production immediately invalidates every issued token (forces a global logout) — treat it as a deliberate, scheduled action, not a routine config change.
+
+---
+
+## Repository layout
+
+```
+unified-backend/     FastAPI app — app/rbac/ (auth, users, roles) + app/ticketing/ (tickets, mail, SLA) + app/notifications/
+unified-frontend/     Next.js app — shell (auth, RBAC admin) + embedded ticket workspace
+shared_models/        Shared SQLAlchemy models (User, Role, ...) — single source of truth
+render.yaml           Render.com deployment blueprint
+DEPLOYMENT.md         Step-by-step Render deployment runbook
+CLAUDE.md             Deep technical reference: architecture history, cross-service auth, feature-by-feature design notes
+```
 
 ## Where to look next
 
-- **`CLAUDE.md`** (this directory) — the deep technical reference: repo history, the backend/frontend consolidations, cross-service auth, and pointers into each service's own `CLAUDE.md`. Written for AI-assisted development, but equally useful for a human getting oriented.
-- **`unified-frontend/CLAUDE.md`**, **`ticketing-service/CLAUDE.md`** — architecture, conventions, and known issues specific to each service.
-- **`DEPLOYMENT.md`** — the Render.com deployment runbook (Neon setup, environment variables, the CORS/API-URL first-deploy sequence).
-- **`render.yaml`** — the actual Render Blueprint: one `unified-backend` Web Service, one `rbac-frontend` Web Service (`unified-frontend`'s deployed name), one `ticketing-frontend` static site.
-
-## Repo layout
-
-```
-unified-backend/       # FastAPI — app/rbac/ + app/ticketing/ + app/notifications/
-unified-frontend/       # Next.js — the shell app + embedded ticket workspace
-ticketing-service/
-└── frontend/           # Standalone Vite ticket-workspace app (optional)
-shared_models/          # Shared SQLAlchemy models (User, Role, ...)
-render.yaml             # Render.com deployment blueprint
-DEPLOYMENT.md           # Deployment runbook
-CLAUDE.md               # Deep technical reference
-```
+- **[`CLAUDE.md`](CLAUDE.md)** — the deep technical reference: how the RBAC and Ticketing services were merged, cross-service authentication, the permission-caching model, and a dated log of every major feature built on top (SLA & escalation, notifications, organization structure, etc.). Written for AI-assisted development, but equally useful for a human getting oriented on *why* the system is built the way it is.
+- **[`unified-frontend/CLAUDE.md`](unified-frontend/CLAUDE.md)** — frontend-specific architecture, conventions, and known issues.
+- **[`DEPLOYMENT.md`](DEPLOYMENT.md)** / **[`render.yaml`](render.yaml)** — production deployment.

@@ -40,7 +40,7 @@ class _StubFailingClient:
 async def test_dispatch_returns_result_on_success(monkeypatch):
     monkeypatch.setattr(
         "app.ticketing.services.outbound_dispatcher.get_mail_provider_client",
-        lambda: _StubSucceedingClient(),
+        lambda mailbox_address=None: _StubSucceedingClient(),
     )
 
     dispatcher = OutboundDispatcher()
@@ -54,7 +54,7 @@ async def test_dispatch_returns_result_on_success(monkeypatch):
 async def test_dispatch_raises_outbound_dispatch_error_on_failure(monkeypatch):
     monkeypatch.setattr(
         "app.ticketing.services.outbound_dispatcher.get_mail_provider_client",
-        lambda: _StubFailingClient(),
+        lambda mailbox_address=None: _StubFailingClient(),
     )
 
     dispatcher = OutboundDispatcher()
@@ -63,3 +63,38 @@ async def test_dispatch_raises_outbound_dispatch_error_on_failure(monkeypatch):
         await dispatcher.dispatch(uuid4(), _envelope())
 
     assert "something broke" in str(exc_info.value)
+
+
+async def test_dispatch_targets_the_envelopes_own_mailbox(monkeypatch):
+    """
+    The core multi-mailbox reply fix: dispatch() must resolve the
+    mail provider client for the mailbox the envelope actually says
+    it's sending from, not whatever the globally-configured shared
+    mailbox happens to be — this is what makes a reply on a
+    client-specific mailbox (e.g. familyfirst@probeps.com) actually
+    go out through that same mailbox instead of always through
+    ticketing@probeps.com.
+    """
+
+    captured_mailbox_addresses = []
+
+    def _spy(mailbox_address=None):
+        captured_mailbox_addresses.append(mailbox_address)
+        return _StubSucceedingClient()
+
+    monkeypatch.setattr(
+        "app.ticketing.services.outbound_dispatcher.get_mail_provider_client", _spy
+    )
+
+    envelope = OutboundEnvelope(
+        from_email="familyfirst@probeps.com",
+        to_email="patient@example.com",
+        subject="Re: Test",
+        message_id="<id@example.com>",
+        body="Hello.",
+    )
+
+    dispatcher = OutboundDispatcher()
+    await dispatcher.dispatch(uuid4(), envelope)
+
+    assert captured_mailbox_addresses == ["familyfirst@probeps.com"]

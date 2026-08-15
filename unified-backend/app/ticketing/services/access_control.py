@@ -414,6 +414,8 @@ async def ensure_agent_can_view_pending_interaction(
     interaction,
     current_user: User,
     client_repository,
+    *,
+    view_only: bool = False,
 ) -> None:
     """
     Gates a still-pending (pre-ticket) Mail item the same way
@@ -425,10 +427,33 @@ async def ensure_agent_can_view_pending_interaction(
 
     Shared by InteractionService (claim/archive/snooze/tags/folder/
     drafts) and OpenEmailService (opening the thread itself) so
-    "can act on it" and "can see it" stay the same rule.
+    "can act on it" and "can see it" stay the same rule — except for
+    the `view_only` escape hatch below, which deliberately only
+    applies to the "can see it" side.
+
+    `view_only=True` (passed only by OpenEmailService.get_email_details,
+    never by any of InteractionService's action call sites) additionally
+    admits anyone holding `communication:view_all` — the same permission
+    InboxService.get_inbox already gates the list view on for Super
+    Admin/Site Lead/Account Manager. Without this, a manager forwarding
+    a still-pending mail item to an internal user (
+    InteractionService.forward_to_internal_user, delivered via a
+    MAIL_FORWARDED Notification rather than the normal scoped inbox
+    query) handed that recipient a link to an item this function would
+    otherwise always 403 for them on — Staff/Team Lead were never in
+    scope here at all, and granting the permission through RBAC's
+    Manage-Permissions editor had no effect, since this check was
+    purely role/ownership-based with no permission read anywhere in it.
+    This intentionally does not widen the *action* call sites (claim/
+    archive/snooze/tags/folder/drafts/forward/reply) — holding
+    communication:view_all lets a role open and read a pending item
+    it was sent, not act on someone else's.
     """
 
     if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
+        return
+
+    if view_only and has_permission(current_user, "communication:view_all"):
         return
 
     client = (
