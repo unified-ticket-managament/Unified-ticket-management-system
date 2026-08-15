@@ -1,0 +1,42 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            cd /opt/utms
+            git fetch origin
+            git merge --ff-only origin/main
+
+            cd unified-backend
+            source .venv/bin/activate
+            pip install -r requirements.txt
+            alembic -c alembic_rbac/alembic.ini upgrade head
+            alembic -c alembic_ticketing/alembic.ini upgrade head
+
+            cd ../unified-frontend
+            npm ci
+            npm run build
+
+            sudo systemctl restart unified-backend
+            sudo systemctl restart unified-frontend
+
+            sleep 5
+            curl -sf http://127.0.0.1:8001/health || (echo "Backend health check failed" && exit 1)
