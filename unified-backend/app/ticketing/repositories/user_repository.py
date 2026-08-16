@@ -4,9 +4,10 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 from shared_models.models import Category, Role, User
 from shared_models.models.category import CategoryName
+from shared_models.models.user_category import user_categories
 
 STAFF_ROLE_NAME = "Staff"
 ACCOUNT_MANAGER_ROLE_NAME = "Account Manager"
@@ -43,7 +44,11 @@ class UserRepository:
         # drove the real ~10s Interactions-tab load, not query cost.
         result = await self.db.execute(
             select(User)
-            .options(joinedload(User.role), joinedload(User.category))
+            .options(
+                joinedload(User.role),
+                joinedload(User.category),
+                selectinload(User.categories),
+            )
             .where(User.user_id == user_id)
         )
         return result.unique().scalar_one_or_none()
@@ -214,13 +219,15 @@ class UserRepository:
         result = await self.db.execute(
             select(User)
             .join(Role, Role.role_id == User.role_id)
-            .join(Category, Category.category_id == User.category_id)
+            .join(user_categories, user_categories.c.user_id == User.user_id)
+            .join(Category, Category.category_id == user_categories.c.category_id)
             .where(
                 func.lower(Role.name) == role_name.lower(),
                 User.is_active.is_(True),
                 Category.category_name == category_name,
             )
             .order_by(User.user_id)
+            .distinct()
         )
         return list(result.scalars().all())
 
@@ -313,13 +320,15 @@ class UserRepository:
         result = await self.db.execute(
             select(User)
             .join(Role, Role.role_id == User.role_id)
-            .join(Category, Category.category_id == User.category_id)
+            .join(user_categories, user_categories.c.user_id == User.user_id)
+            .join(Category, Category.category_id == user_categories.c.category_id)
             .where(
                 func.lower(Role.name) == STAFF_ROLE_NAME.lower(),
                 User.is_active.is_(True),
                 Category.category_name == category_name,
             )
             .order_by(User.user_id)
+            .distinct()
         )
         return list(result.scalars().all())
 

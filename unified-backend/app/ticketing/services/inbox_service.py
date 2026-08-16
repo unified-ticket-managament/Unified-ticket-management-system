@@ -90,10 +90,10 @@ class InboxService:
 
     async def _resolve_scope(
         self, current_user: User, *, assigned_to_me: bool = False
-    ) -> tuple[UUID | None, str | None, UUID | None, list[UUID] | None]:
+    ) -> tuple[UUID | None, list[str] | None, UUID | None, list[UUID] | None]:
         """
         Resolves the same role-based scoping tuple
-        (account_manager_id, ticket_type, assigned_agent_id,
+        (account_manager_id, ticket_types, assigned_agent_id,
         extra_ticket_ids) `get_inbox` and `get_folder_counts` both
         need, so the two can never drift into applying different
         visibility rules for the same user.
@@ -103,7 +103,7 @@ class InboxService:
         replacing it) — backs the Mail page's "My Claims" ticketed
         section for roles other than Staff, whose own scope already
         always means this. See `list_inbox`: `account_manager_id`/
-        `ticket_type`/`assigned_agent_id` are independent, ANDed
+        `ticket_types`/`assigned_agent_id` are independent, ANDed
         conditions, so this correctly narrows within the caller's
         existing scope rather than widening it.
         """
@@ -111,7 +111,7 @@ class InboxService:
         role_name = current_user.role.name
 
         account_manager_id: UUID | None = None
-        ticket_type: str | None = None
+        ticket_types: list[str] | None = None
         assigned_agent_id: UUID | None = None
         extra_ticket_ids: list[UUID] | None = None
 
@@ -123,11 +123,16 @@ class InboxService:
         elif role_name == ACCOUNT_MANAGER_ROLE_NAME:
             account_manager_id = current_user.user_id
         elif role_name == TEAM_LEAD_ROLE_NAME:
-            ticket_type = (
-                current_user.category.category_name.value
-                if current_user.category is not None
-                else "__no_category__"
-            )
+            # A Team Lead may belong to more than one category — the
+            # shared pool now spans all of them, not just one (see
+            # root CLAUDE.md's multi-category-users section). The
+            # "__no_category__" sentinel (guaranteed to match no real
+            # Ticket.ticket_type) preserves the original "sees nothing"
+            # convention for a Team Lead with zero categories assigned.
+            ticket_types = [
+                c.category_name.value
+                for c in (getattr(current_user, "categories", None) or [])
+            ] or ["__no_category__"]
         elif role_name == STAFF_ROLE_NAME:
             assigned_agent_id = current_user.user_id
             # A ticket-scoped ticket:editother_ticket override is
@@ -157,7 +162,7 @@ class InboxService:
         if assigned_to_me:
             assigned_agent_id = current_user.user_id
 
-        return account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids
+        return account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids
 
     async def get_inbox(
         self,
@@ -228,7 +233,7 @@ class InboxService:
                     detail="Invalid pagination cursor.",
                 ) from exc
 
-        account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids = (
+        account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids = (
             await self._resolve_scope(current_user, assigned_to_me=assigned_to_me)
         )
 
@@ -237,7 +242,7 @@ class InboxService:
             client_id=client_id,
             view=view,
             folder_id=folder_id,
-            ticket_type=ticket_type,
+            ticket_types=ticket_types,
             assigned_agent_id=assigned_agent_id,
             extra_ticket_ids=extra_ticket_ids,
             search=search,
@@ -487,14 +492,14 @@ class InboxService:
         lookups) purely to display a number.
         """
 
-        account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids = (
+        account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids = (
             await self._resolve_scope(current_user)
         )
 
         return await self.interaction_repository.count_by_folder(
             account_manager_id=account_manager_id,
             client_id=client_id,
-            ticket_type=ticket_type,
+            ticket_types=ticket_types,
             assigned_agent_id=assigned_agent_id,
             extra_ticket_ids=extra_ticket_ids,
         )
@@ -512,14 +517,14 @@ class InboxService:
         once the agent actually opens it.
         """
 
-        account_manager_id, ticket_type, assigned_agent_id, extra_ticket_ids = (
+        account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids = (
             await self._resolve_scope(current_user)
         )
 
         return await self.interaction_repository.count_by_view(
             account_manager_id=account_manager_id,
             client_id=client_id,
-            ticket_type=ticket_type,
+            ticket_types=ticket_types,
             assigned_agent_id=assigned_agent_id,
             extra_ticket_ids=extra_ticket_ids,
         )

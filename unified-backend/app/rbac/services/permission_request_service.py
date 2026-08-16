@@ -320,12 +320,12 @@ class PermissionRequestService:
             # of whether the ticket currently has an owner, since
             # category is a property of the ticket itself.
             requester = await self.user_repository.get_by_id(current_user.user_id)
-            requester_category_name = (
-                requester.category.category_name.value
-                if requester is not None and requester.category is not None
-                else None
+            requester_category_names = (
+                {c.category_name.value for c in requester.categories}
+                if requester is not None
+                else set()
             )
-            if requester_category_name is None or ticket.ticket_type != requester_category_name:
+            if ticket.ticket_type not in requester_category_names:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="You can only request access to a ticket in your own category.",

@@ -5,6 +5,10 @@
 # test_sla_sweep_auth.py's shape: exercise the auth-adjacent logic
 # directly rather than spinning up the full app.
 
+import logging
+
+import pytest
+
 from app.core.config import Settings
 from app.ticketing.api.mail_integration import _client_state_matches
 from app.ticketing.schemas.mail_integration import (
@@ -33,6 +37,7 @@ from app.ticketing.services.mail_mapping_service import (
     build_upload_files_from_graph_attachments,
     map_external_email_to_interaction,
 )
+from app.ticketing.utils.validators import validate_attachment_type
 
 
 def _base_settings(**overrides) -> Settings:
@@ -589,8 +594,8 @@ async def test_fetch_message_attachments_builds_url_and_parses_response(monkeypa
 
     assert captured["url"].endswith(
         "/users/familyfirst@probeps.com/messages/msg-id-123/attachments"
-        "?$select=name,contentType,size,isInline,contentBytes"
     )
+    assert "$select" not in captured["url"]
     assert len(attachments) == 1
     assert attachments[0].name == "invoice.pdf"
     assert attachments[0].odata_type == "#microsoft.graph.fileAttachment"
@@ -604,7 +609,11 @@ async def test_fetch_message_attachments_builds_url_and_parses_response(monkeypa
 
 def _graph_attachment(**overrides) -> GraphAttachmentPayload:
     base = dict(
-        odata_type="#microsoft.graph.fileAttachment",
+        # Real Graph responses omit @odata.type entirely once a
+        # $select list is specified without naming it — None is the
+        # realistic default, not the exact-match string a fully
+        # cooperative Graph response would carry.
+        odata_type=None,
         name="invoice.pdf",
         contentType="application/pdf",
         size=8,
@@ -630,29 +639,67 @@ async def test_build_upload_files_from_graph_attachments_content_readable():
     assert content == b"hello"
 
 
-def test_build_upload_files_from_graph_attachments_drops_inline_attachments():
+def test_build_upload_files_from_graph_attachments_drops_inline_attachments(caplog):
     """
     Inline attachments are typically embedded signature/logo images,
     not something a user is trying to send as a real file.
     """
 
-    files = build_upload_files_from_graph_attachments([_graph_attachment(isInline=True)])
+    with caplog.at_level(logging.WARNING):
+        files = build_upload_files_from_graph_attachments([_graph_attachment(isInline=True)])
 
     assert files == []
+    assert "inline attachment" in caplog.text
 
 
-def test_build_upload_files_from_graph_attachments_drops_non_file_attachments():
+def test_build_upload_files_from_graph_attachments_drops_non_file_attachments(caplog):
+    """
+    An @odata.type that's explicitly present but not fileAttachment
+    (e.g. a forwarded message attached as an item, or a reference
+    attachment) must still be excluded — only a genuinely absent/None
+    @odata.type is tolerated (see the accepts_real_graph_response_
+    without_odata_type test below for that case).
+    """
+
+    with caplog.at_level(logging.WARNING):
+        files = build_upload_files_from_graph_attachments(
+            [_graph_attachment(odata_type="#microsoft.graph.itemAttachment")]
+        )
+
+    assert files == []
+    assert "#microsoft.graph.itemAttachment" in caplog.text
+
+
+def test_build_upload_files_from_graph_attachments_drops_missing_content(caplog):
+    with caplog.at_level(logging.WARNING):
+        files = build_upload_files_from_graph_attachments([_graph_attachment(contentBytes=None)])
+
+    assert files == []
+    assert "no contentBytes" in caplog.text
+
+
+def test_build_upload_files_from_graph_attachments_accepts_real_graph_response_without_odata_type():
+    """
+    Regression test for the primary silent-drop bug: real Graph
+    attachment responses omit @odata.type entirely (parses to None),
+    which must no longer be treated as "not a file attachment."
+    """
+
     files = build_upload_files_from_graph_attachments(
-        [_graph_attachment(odata_type="#microsoft.graph.itemAttachment")]
+        [_graph_attachment(odata_type=None, isInline=False, contentBytes="aGVsbG8=")]
     )
 
-    assert files == []
+    assert len(files) == 1
+    assert files[0].filename == "invoice.pdf"
 
 
-def test_build_upload_files_from_graph_attachments_drops_missing_content():
-    files = build_upload_files_from_graph_attachments([_graph_attachment(contentBytes=None)])
+def test_build_upload_files_from_graph_attachments_accepts_generic_content_type():
+    files = build_upload_files_from_graph_attachments(
+        [_graph_attachment(contentType="application/octet-stream")]
+    )
 
-    assert files == []
+    assert len(files) == 1
+    assert files[0].filename == "invoice.pdf"
 
 
 def test_build_upload_files_from_graph_attachments_drops_unsupported_type():
@@ -673,6 +720,29 @@ def test_build_upload_files_from_graph_attachments_caps_at_max_files():
     files = build_upload_files_from_graph_attachments(attachments)
 
     assert len(files) == MAX_ATTACHMENT_FILES
+
+
+# ---------------------------------------------------------
+# validate_attachment_type (validators.py) — extension is the real
+# gate, declared content_type is advisory only
+# ---------------------------------------------------------
+
+
+def test_validate_attachment_type_tolerates_generic_content_type():
+    extension = validate_attachment_type("invoice.pdf", "application/octet-stream")
+
+    assert extension == "pdf"
+
+
+def test_validate_attachment_type_tolerates_mismatched_content_type():
+    extension = validate_attachment_type("photo.png", "application/octet-stream")
+
+    assert extension == "png"
+
+
+def test_validate_attachment_type_still_rejects_unsupported_extension():
+    with pytest.raises(ValueError):
+        validate_attachment_type("malware.exe", "application/octet-stream")
 
 
 # ---------------------------------------------------------

@@ -194,13 +194,11 @@ def ensure_agent_can_view_ticket(
     if has_permission_for_ticket(current_user, "ticket:editother_ticket", ticket.ticket_id):
         return
 
-    user_category_name = (
-        current_user.category.category_name.value
-        if current_user.category is not None
-        else None
-    )
+    user_category_names = {
+        c.category_name.value for c in getattr(current_user, "categories", None) or []
+    }
 
-    if user_category_name is None or ticket.ticket_type != user_category_name:
+    if ticket.ticket_type not in user_category_names:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have access to this ticket.",

@@ -21,6 +21,12 @@ import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { showUndoSendToast } from "@tw/lib/undoSend";
 import type { ClientContact } from "@tw/types";
+// Cross-alias imports, same deliberate exception MessageDetailsView.tsx
+// already documents: useAuthContext() only re-exposes the store's
+// last-set snapshot read-only, and there is no @tw/-side equivalent
+// for a live /auth/me refetch + store sync.
+import { authService } from "@/services";
+import { useAuthStore } from "@/store/auth-store";
 
 export type ComposerMode = "reply" | "note";
 
@@ -68,6 +74,7 @@ export function TicketComposer({
   const { activeTicket, timeline } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const { pushToast } = useToast();
+  const setUser = useAuthStore((s) => s.setUser);
   const [activeMode, setActiveMode] = useState<ComposerMode>(mode);
   const [message, setMessage] = useState("");
   const [noteSubject, setNoteSubject] = useState("");
@@ -136,6 +143,20 @@ export function TicketComposer({
       .catch(() => setToRoleGroups({}));
   }, [activeMode]);
 
+  // currentUser.permissions above is a render-time snapshot of
+  // whatever useAuthStore held at login/last full page load — a
+  // permission granted to the user's role afterward (e.g. via the
+  // Roles page) never reaches it, since neither the axios 401/refresh
+  // interceptor nor any polling re-syncs the store mid-session (see
+  // MessageDetailsView.tsx's identical belt-and-suspenders comment for
+  // the Reply path). Re-fetching here means switching to the Internal
+  // Note tab always reflects the user's actual, current
+  // communication:reply_internal grant rather than a stale one.
+  useEffect(() => {
+    if (activeMode !== "note") return;
+    authService.me().then(setUser).catch(() => {});
+  }, [activeMode, setUser]);
+
   // Envelope preview — derived from the latest inbound email on this
   // ticket's timeline, so the agent sees exactly where a reply will
   // go before sending it. Trust-building UI, not the source of truth
@@ -191,16 +212,15 @@ export function TicketComposer({
   const isLoading = isReply ? isReplyLoading : isNoteLoading;
   const isTicketClosed = activeTicket.current_status === "CLOSED";
 
-  // Mirrors the backend's own gate exactly: `add_reply`/`add_internal_note`
-  // (interaction_service.py) both require `ticket:reply` plus their own
-  // direction-specific communication permission. Checked here so the
-  // composer never even opens for a user who'd just get a 403 on Send —
-  // the backend call remains the real security boundary regardless.
+  // ticket:reply and communication:reply_internal are independent UI gates —
+  // one governs only the Reply interface, the other only the Internal Note
+  // interface. The backend's own add_reply/add_internal_note enforcement
+  // (interaction_service.py) is stricter (it requires both together) and
+  // remains the real security boundary; this check only controls whether
+  // the tab's compose UI is enabled here.
   const permissions = currentUser?.permissions ?? [];
-  const canReply =
-    permissions.includes("ticket:reply") && permissions.includes("communication:reply_external");
-  const canAddNote =
-    permissions.includes("ticket:reply") && permissions.includes("communication:reply_internal");
+  const canReply = permissions.includes("ticket:reply");
+  const canAddNote = permissions.includes("communication:reply_internal");
   const hasComposePermission = isReply ? canReply : canAddNote;
 
   async function handleSend() {

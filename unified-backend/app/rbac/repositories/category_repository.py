@@ -44,6 +44,22 @@ class CategoryRepository(BaseRepository):
 
         return result.scalar_one_or_none()
 
+    async def get_by_ids(self, category_ids: list[UUID]) -> list[Category]:
+        """
+        Batch lookup backing UserService.set_user_categories's
+        existence validation for a submitted `category_ids` list — one
+        round trip regardless of how many ids are passed.
+        """
+
+        if not category_ids:
+            return []
+
+        result = await self.db.execute(
+            select(Category).where(Category.category_id.in_(category_ids))
+        )
+
+        return list(result.scalars().all())
+
     async def get_all(
         self,
         page: int = 1,

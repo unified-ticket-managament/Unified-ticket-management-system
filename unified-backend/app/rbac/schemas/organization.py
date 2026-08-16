@@ -14,6 +14,12 @@ class OrganizationNode(BaseModel):
     email: str
     role: str
     department: str | None = None
+    # Every category this node's user belongs to (many-to-many, via
+    # `user_categories`) — additive alongside `department` above, which
+    # stays a single joined/first-category string for back-compat with
+    # any consumer not yet updated to read this plural field. For a
+    # 0-or-1-category user these render identically to `department`.
+    departments: list[str] = []
     is_active: bool
     # How this node relates to its rendered parent in the chart:
     # "reports_to" (the real manager_id/teamlead_id reporting line),

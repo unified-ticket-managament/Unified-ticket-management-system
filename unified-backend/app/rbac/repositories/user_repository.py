@@ -1,10 +1,11 @@
 from uuid import UUID
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
 from shared_models.models import Role, User
+from shared_models.models.user_category import user_categories
 
 from .base import BaseRepository
 
@@ -37,9 +38,17 @@ class UserRepository(BaseRepository):
         # many-to-one from User's side, so no row-fanout risk. login/
         # refresh_token now need `.category` too (to embed its name in
         # the JWT — see AuthService), not just `.role` as before.
+        # `categories` (the new many-to-many collection) is loaded via
+        # a separate selectinload — a collection relationship can't
+        # safely share the same joinedload round trip as the two
+        # scalar ones above without row fanout.
         result = await self.db.execute(
             select(User)
-            .options(joinedload(User.role), joinedload(User.category))
+            .options(
+                joinedload(User.role),
+                joinedload(User.category),
+                selectinload(User.categories),
+            )
             .where(User.user_id == user_id)
         )
 
@@ -48,7 +57,11 @@ class UserRepository(BaseRepository):
     async def get_by_email(self, email: str) -> User | None:
         result = await self.db.execute(
             select(User)
-            .options(joinedload(User.role), joinedload(User.category))
+            .options(
+                joinedload(User.role),
+                joinedload(User.category),
+                selectinload(User.categories),
+            )
             .where(User.email == email)
         )
 
@@ -60,6 +73,7 @@ class UserRepository(BaseRepository):
         page_size: int = 10,
         search: str | None = None,
         category_id: UUID | None = None,
+        category_ids: list[UUID] | None = None,
         visible_user_ids: set[UUID] | None = None,
     ) -> tuple[list[User], int]:
         """
@@ -75,14 +89,25 @@ class UserRepository(BaseRepository):
         `None` means unrestricted (Super Admin/Site Lead). An empty
         set correctly yields zero rows via `User.user_id.in_(())`
         rather than being mistaken for "no filter."
+
+        `category_id` (legacy singular) and `category_ids` (new,
+        multi-category-aware) are both accepted and merged into one
+        any-match filter — a user matching ANY of the requested
+        categories is included, exactly once (JOIN against
+        `user_categories` + `.distinct()`, never a per-matched-category
+        duplicate row).
         """
+
+        merged_category_ids: list[UUID] = list(category_ids or [])
+        if category_id is not None and category_id not in merged_category_ids:
+            merged_category_ids.append(category_id)
 
         query = (
             select(User)
-            .options(selectinload(User.role))
+            .options(selectinload(User.role), selectinload(User.categories))
         )
 
-        count_query = select(func.count()).select_from(User)
+        count_query = select(func.count(func.distinct(User.user_id))).select_from(User)
 
         if search:
             pattern = f"%{search}%"
@@ -96,9 +121,15 @@ class UserRepository(BaseRepository):
             query = query.where(search_filter)
             count_query = count_query.where(search_filter)
 
-        if category_id is not None:
-            query = query.where(User.category_id == category_id)
-            count_query = count_query.where(User.category_id == category_id)
+        if merged_category_ids:
+            query = (
+                query.join(user_categories, user_categories.c.user_id == User.user_id)
+                .where(user_categories.c.category_id.in_(merged_category_ids))
+                .distinct()
+            )
+            count_query = count_query.join(
+                user_categories, user_categories.c.user_id == User.user_id
+            ).where(user_categories.c.category_id.in_(merged_category_ids))
 
         if visible_user_ids is not None:
             query = query.where(User.user_id.in_(visible_user_ids))
@@ -115,7 +146,7 @@ class UserRepository(BaseRepository):
             .limit(page_size)
         )
 
-        users = result.scalars().all()
+        users = result.unique().scalars().all()
 
         return list(users), total
 
@@ -178,7 +209,11 @@ class UserRepository(BaseRepository):
 
         result = await self.db.execute(
             select(User)
-            .options(selectinload(User.role), selectinload(User.category))
+            .options(
+                selectinload(User.role),
+                selectinload(User.category),
+                selectinload(User.categories),
+            )
             .where(User.role_id == role_id, User.is_active.is_(True))
             .order_by(User.name)
         )
@@ -214,7 +249,11 @@ class UserRepository(BaseRepository):
 
         result = await self.db.execute(
             select(User)
-            .options(selectinload(User.role), selectinload(User.category))
+            .options(
+                selectinload(User.role),
+                selectinload(User.category),
+                selectinload(User.categories),
+            )
             .where(
                 User.manager_id == manager_id,
                 User.role_id == role_id,
@@ -232,7 +271,11 @@ class UserRepository(BaseRepository):
 
         result = await self.db.execute(
             select(User)
-            .options(selectinload(User.role), selectinload(User.category))
+            .options(
+                selectinload(User.role),
+                selectinload(User.category),
+                selectinload(User.categories),
+            )
             .where(User.teamlead_id == teamlead_id, User.is_active.is_(True))
             .order_by(User.name)
         )
@@ -257,7 +300,11 @@ class UserRepository(BaseRepository):
 
         result = await self.db.execute(
             select(User)
-            .options(selectinload(User.role), selectinload(User.category))
+            .options(
+                selectinload(User.role),
+                selectinload(User.category),
+                selectinload(User.categories),
+            )
             .where(
                 User.reporting_manager_id == user_id,
                 User.is_active.is_(True),
@@ -280,6 +327,69 @@ class UserRepository(BaseRepository):
         )
 
         return list(result.scalars().all())
+
+    async def list_active_ids_by_categories(
+        self,
+        category_ids: list[UUID],
+    ) -> set[UUID]:
+        """
+        Every active user in ANY of the given categories, via the
+        many-to-many `user_categories` join (not the legacy singular
+        `category_id` column) — a user tagged with one of these
+        categories only through `categories`/`user_categories` is
+        still included. Used by
+        OrganizationService.get_reporting_scope_user_ids to widen the
+        Users page's visibility scope by Reporting Manager category
+        assignment.
+        """
+
+        if not category_ids:
+            return set()
+
+        result = await self.db.execute(
+            select(User.user_id)
+            .join(user_categories, user_categories.c.user_id == User.user_id)
+            .where(
+                user_categories.c.category_id.in_(category_ids),
+                User.is_active.is_(True),
+            )
+            .distinct()
+        )
+
+        return set(result.scalars().all())
+
+    async def replace_categories(
+        self,
+        user_id: UUID,
+        category_ids: list[UUID],
+        assigned_by: UUID | None = None,
+    ) -> None:
+        """
+        Full-replace the `user_categories` row set for one user —
+        deletes every existing row for them, then inserts the new set
+        — in the same transaction/session as the caller's other User
+        mutations (no separate commit here). Duplicate ids in
+        `category_ids` are collapsed before insert. See
+        UserService.set_user_categories, the sole caller.
+        """
+
+        await self.db.execute(
+            delete(user_categories).where(user_categories.c.user_id == user_id)
+        )
+
+        deduped_ids = list(dict.fromkeys(category_ids))
+        if deduped_ids:
+            await self.db.execute(
+                insert(user_categories),
+                [
+                    {
+                        "user_id": user_id,
+                        "category_id": category_id,
+                        "assigned_by": assigned_by,
+                    }
+                    for category_id in deduped_ids
+                ],
+            )
 
     async def activate(
         self,

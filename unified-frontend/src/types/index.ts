@@ -47,7 +47,20 @@ export interface User {
   // manager_id/teamlead_id above, which keep their existing meaning.
   // Unrestricted by role; see unified-backend's OrganizationService.
   reporting_manager_id: string | null;
+  // Legacy "primary category" — kept in sync with the first entry of
+  // category_ids below, never a separate source of truth. Prefer
+  // category_ids for display/filtering; this stays for back-compat.
   category_id: string | null;
+  // Full category membership (many-to-many) — a user (most commonly
+  // a Team Lead) may belong to more than one. Optional for back-compat
+  // with any cached response predating this field.
+  category_ids?: string[];
+  // Computed, read-only: does this user hold at least one active
+  // Reporting Manager (reporting_manager_teams) assignment for any
+  // category — not a Role/permission, just an HR responsibility
+  // layered on the Account Manager role. Optional for back-compat
+  // with any cached response predating this field.
+  is_reporting_manager?: boolean;
   is_active: boolean;
   // Display-only Leave indicator — see shared_models.models.User.
   // is_on_leave's own docstring. Never narrows/filters a user picker;
@@ -185,6 +198,9 @@ export interface UserForm {
   teamlead_id?: string | null;
   reporting_manager_id?: string | null;
   category_id?: string | null;
+  // Full category selection — takes precedence over category_id when
+  // present (see unified-backend's UserService._resolve_category_ids).
+  category_ids?: string[];
   // Internal roles only (Super Admin/Site Lead/Account Manager/Team
   // Lead/Staff) — required server-side per role, see
   // unified-backend/app/rbac/services/user_service.py's
@@ -230,6 +246,11 @@ export interface OrganizationNode {
   email: string;
   role: string;
   department: string | null;
+  // Every category this node's user belongs to (many-to-many) —
+  // additive alongside `department` above, which stays a single
+  // joined/first-category string for back-compat. Optional for
+  // back-compat with any cached response predating this field.
+  departments?: string[];
   is_active: boolean;
   // "reports_to" (the real manager_id/teamlead_id line),
   // "reporting_manager" (a dynamic Reporting Manager branch), or

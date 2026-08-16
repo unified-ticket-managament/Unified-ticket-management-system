@@ -62,13 +62,41 @@ export function OrgChartNodeCard({
   const name = truncateToWidth(node.name, 13, NODE_WIDTH - 20);
   const email = truncateToWidth(node.email, 10.5, NODE_WIDTH - 20);
 
-  const deptInfo = getDepartmentInfo(node.department);
-  const deptLabel = truncateToWidth(node.department ?? deptInfo.label, 10, NODE_WIDTH - 40);
-  const deptTextWidth = approxTextWidth(deptLabel, 10);
+  // Every category this node's user belongs to — `departments`
+  // (plural, multi-category-aware) if present, else the legacy
+  // singular `department` wrapped in a one-element array (back-compat
+  // with any stale cached response predating the plural field). A
+  // genuinely category-less user (both empty/null) still gets exactly
+  // one entry, `null`, so the existing "Leadership" fallback chip
+  // keeps rendering exactly as before this change. Capped to 2 entries
+  // with no "+N more" indicator, mirroring the `reporting_manager_for`
+  // pill row's own existing precedent for a variable-length array in
+  // this same card — no new UI idiom.
+  const departmentEntries: (string | null)[] = node.departments?.length
+    ? node.departments
+    : node.department
+      ? [node.department]
+      : [null];
   const DEPT_DOT_R = 3;
   const DEPT_DOT_GAP = 5;
-  const deptChipWidth = DEPT_DOT_R * 2 + DEPT_DOT_GAP + deptTextWidth;
-  const deptStartX = -deptChipWidth / 2;
+  // Keyed by display label so the render loop below can look color
+  // back up without re-deriving it from the (already-resolved-to-a-
+  // label) pill text — `getDepartmentInfo` needs the original,
+  // possibly-`null` value to tell "Leadership" apart from an unknown
+  // category string, which the resolved label text alone can't do.
+  const deptColorByLabel = new Map(
+    departmentEntries.slice(0, 2).map((dept) => [
+      truncateToWidth(dept ?? getDepartmentInfo(dept).label, 10, NODE_WIDTH - 40),
+      getDepartmentInfo(dept),
+    ])
+  );
+  const deptRow = layoutPillRow(
+    departmentEntries.slice(0, 2).map((dept) => {
+      const label = truncateToWidth(dept ?? getDepartmentInfo(dept).label, 10, NODE_WIDTH - 40);
+      return { text: label, width: DEPT_DOT_R * 2 + DEPT_DOT_GAP + approxTextWidth(label, 10) };
+    }),
+    10
+  );
 
   const badgeRow = layoutPillRow(
     [layoutPill(node.role, 10, 8), layoutPill(node.is_active ? "Active" : "Inactive", 10, 8)],
@@ -210,18 +238,33 @@ export function OrgChartNodeCard({
         );
       })}
 
-      {/* Department chip: colored dot + label */}
+      {/* Department chip(s): colored dot + label, one per category this
+          user belongs to (a Team Lead may now belong to more than
+          one — see root CLAUDE.md's multi-category-users section) */}
       <g transform={`translate(0,${DEPT_Y})`}>
-        <circle cx={deptStartX + DEPT_DOT_R} cy={-3.5} r={DEPT_DOT_R} className={deptInfo.fillClass} />
-        <text
-          x={deptStartX + DEPT_DOT_R * 2 + DEPT_DOT_GAP}
-          y={0}
-          textAnchor="start"
-          className="fill-muted-foreground"
-          style={{ fontSize: 10 }}
-        >
-          {deptLabel}
-        </text>
+        {deptRow.map(({ pill, centerX }) => {
+          const chipStartX = centerX - pill.width / 2;
+          const fillClass = deptColorByLabel.get(pill.text)?.fillClass ?? "fill-dept-other";
+          return (
+            <g key={pill.text}>
+              <circle
+                cx={chipStartX + DEPT_DOT_R}
+                cy={-3.5}
+                r={DEPT_DOT_R}
+                className={fillClass}
+              />
+              <text
+                x={chipStartX + DEPT_DOT_R * 2 + DEPT_DOT_GAP}
+                y={0}
+                textAnchor="start"
+                className="fill-muted-foreground"
+                style={{ fontSize: 10 }}
+              >
+                {pill.text}
+              </text>
+            </g>
+          );
+        })}
       </g>
 
       {/* Reporting-Manager-for pills */}

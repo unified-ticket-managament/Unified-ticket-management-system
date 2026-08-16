@@ -229,6 +229,127 @@ class OrganizationService:
         return subordinate_ids
 
     # --------------------------------------------------
+    # Users-page reporting-manager visibility scope (SEPARATE from
+    # get_subordinate_user_ids above — see this module's own docstring
+    # and UserService.list_users' `include_reporting_scope` flag)
+    # --------------------------------------------------
+
+    async def get_reporting_scope_user_ids(
+        self,
+        current_user: User,
+    ) -> set[UUID] | None:
+        """
+        Users-page-only visibility scope (see
+        UserService.list_users' `include_reporting_scope` flag).
+
+        Primary source: `reporting_manager_id` — the SAME dedicated
+        column the Organization Chart itself is built on
+        (`get_direct_reports`/`_build_literal_subtree`, see this
+        module's own docstring), walked recursively/downward from the
+        caller here as a flat set instead of a tree. This is the real,
+        already-existing, independently-maintained "who reports to me"
+        relationship in this system — confirmed against live data as
+        the correct answer for both a single-category Account Manager
+        (13 Staff + 1 Team Lead, all via `reporting_manager_id`,
+        matching `manager_id` exactly) and a dual-category Team Lead
+        (23 reports spanning Payment Posting, Quality, AR, IV, and
+        Coding — categories her own `manager_id`/`teamlead_id`-based
+        reports alone never captured, since several of those reports
+        have no `teamlead_id` set to anyone at all yet). Earlier
+        attempts to approximate this via `manager_id`/`teamlead_id`
+        alone, or via widening by the caller's own category tags, were
+        both superseded — the latter was actively wrong, pulling in
+        unrelated same-category people with no real reporting
+        relationship to the caller at all.
+
+        Seeded from the same baseline the non-widened path already
+        uses (get_subordinate_user_ids for Account Manager/Team Lead —
+        preserving its "the manager never sees themselves" semantics —
+        or self-only for everyone else) purely as a safety net for a
+        user whose `reporting_manager_id` hasn't been backfilled/set
+        yet but whose real `manager_id`/`teamlead_id` already is.
+
+        A second, still-real edge — `reporting_manager_teams` category
+        membership — is also checked at every node reached (not just
+        the original caller), so an Account Manager holding that
+        separate, explicit HR "Reporting Manager for this whole
+        category" assignment is still honored on top of the
+        reporting_manager_id tree.
+
+        Both edges are keyed purely on real data at each node — never
+        on role name — so this generalizes to any manager/hierarchy
+        depth automatically, with no code change. `visited` guards
+        against cycles/duplicates and bounds the traversal.
+
+        Does not call anything that changes get_subordinate_user_ids'
+        own behavior; permission-override grant scoping
+        (PermissionOverrideService/PermissionRequestService) keeps
+        using that narrower method directly, untouched.
+        """
+
+        role_name = current_user.role.name if current_user.role is not None else None
+
+        if role_name in ("Super Admin", "Site Lead"):
+            return None
+
+        if role_name in ("Account Manager", "Team Lead"):
+            scope = set(await self.get_subordinate_user_ids(current_user))
+        else:
+            scope = {current_user.user_id}
+
+        visited = set(scope) | {current_user.user_id}
+        queue = list(visited)
+
+        while queue:
+            node_id = queue.pop()
+
+            direct_reports = await self.user_repository.get_direct_reports(node_id)
+            for report in direct_reports:
+                if report.user_id not in visited:
+                    visited.add(report.user_id)
+                    scope.add(report.user_id)
+                    queue.append(report.user_id)
+
+            if self.reporting_manager_repository is not None:
+                rm_category_ids = (
+                    await self.reporting_manager_repository.list_category_ids_by_account_manager(
+                        node_id
+                    )
+                )
+                if rm_category_ids:
+                    category_member_ids = await self.user_repository.list_active_ids_by_categories(
+                        rm_category_ids
+                    )
+                    for member_id in category_member_ids:
+                        if member_id not in visited:
+                            visited.add(member_id)
+                            scope.add(member_id)
+                            queue.append(member_id)
+
+        return scope
+
+    async def get_reporting_manager_user_ids(
+        self,
+        user_ids: list[UUID],
+    ) -> set[UUID]:
+        """
+        Among `user_ids`, which hold at least one active
+        reporting_manager_teams assignment (any category) — i.e. are a
+        Reporting Manager at all. This is an HR responsibility layered
+        on top of the Account Manager role, not a Role/permission of
+        its own — deliberately not creating either just to answer this
+        question. Backs the Users page's "Reporting Manager" option in
+        its Role filter dropdown.
+        """
+
+        if self.reporting_manager_repository is None or not user_ids:
+            return set()
+
+        return await self.reporting_manager_repository.list_account_manager_ids_among(
+            user_ids
+        )
+
+    # --------------------------------------------------
     # Helpers
     # --------------------------------------------------
 
@@ -250,10 +371,19 @@ class OrganizationService:
         children: list[OrganizationNode] | None = None,
     ) -> OrganizationNode:
 
+        # `departments` (plural, the new multi-category-aware field)
+        # is the real source; `department` (singular, pre-existing) is
+        # derived from it for back-compat — for a 0-or-1-category user
+        # this renders byte-identical to before this change.
+        departments = sorted(c.category_name.value for c in user.categories)
         department = (
-            user.category.category_name.value
-            if user.category is not None
-            else None
+            ", ".join(departments)
+            if departments
+            else (
+                user.category.category_name.value
+                if user.category is not None
+                else None
+            )
         )
 
         return OrganizationNode(
@@ -262,6 +392,7 @@ class OrganizationService:
             email=user.email,
             role=user.role.name,
             department=department,
+            departments=departments,
             is_active=user.is_active,
             children=children or [],
         )

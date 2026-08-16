@@ -72,10 +72,12 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
     () => roles.find((r) => r.role_id === user?.role_id)?.name ?? "Unassigned",
     [roles, user]
   );
-  const categoryName = useMemo(
-    () => categories.find((c) => c.category_id === user?.category_id)?.category_name ?? null,
-    [categories, user]
-  );
+  const categoryNames = useMemo(() => {
+    const ids = user?.category_ids ?? (user?.category_id ? [user.category_id] : []);
+    return ids
+      .map((id) => categories.find((c) => c.category_id === id)?.category_name)
+      .filter((name): name is string => !!name);
+  }, [categories, user]);
   const managerName = useMemo(
     () => allUsers.find((u) => u.user_id === user?.manager_id)?.name ?? "—",
     [allUsers, user]
@@ -143,11 +145,15 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
                   </Badge>
                 </dd>
               </div>
-              {categoryName && (
+              {categoryNames.length > 0 && (
                 <div>
-                  <dt className="text-xs text-muted-foreground">Category</dt>
-                  <dd className="mt-1">
-                    <Badge variant="outline">{categoryName}</Badge>
+                  <dt className="text-xs text-muted-foreground">Categories</dt>
+                  <dd className="mt-1 flex flex-wrap gap-1">
+                    {categoryNames.map((name) => (
+                      <Badge key={name} variant="outline">
+                        {name}
+                      </Badge>
+                    ))}
                   </dd>
                 </div>
               )}

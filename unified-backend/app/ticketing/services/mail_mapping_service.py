@@ -131,12 +131,18 @@ def build_upload_files_from_graph_attachments(
     function's only job is building that input, never re-implementing
     validation/storage itself.
 
-    Filters out:
-    - anything that isn't a real `#microsoft.graph.fileAttachment`
-      (e.g. a forwarded message attached as an item) or has no actual
-      content (contentBytes) — nothing to store.
+    Filters out (each logged individually, and counted in the
+    `dropped` summary below):
     - `isInline` attachments — typically embedded signature/logo
       images, not something a user is trying to send as a file.
+    - anything with an `@odata.type` that's explicitly present but
+      not `#microsoft.graph.fileAttachment` (e.g. a forwarded message
+      attached as an item, or a reference attachment) — a genuinely
+      absent/None `@odata.type` is tolerated rather than treated as
+      disqualifying, since Graph only reliably returns that property
+      when it's named in the request's own `$select` list.
+    - anything with no actual content (contentBytes) — nothing to
+      store.
 
     Defensively pre-validates size/type against AttachmentService's
     own existing limits and drops (logging) anything that would fail
@@ -152,11 +158,32 @@ def build_upload_files_from_graph_attachments(
     dropped = 0
 
     for attachment in attachments:
+        display_name = attachment.name or "attachment"
+
+        if attachment.isInline:
+            logger.warning(
+                "Dropping Graph attachment %r — inline attachment", display_name
+            )
+            dropped += 1
+            continue
+
         if (
-            attachment.odata_type != GRAPH_FILE_ATTACHMENT_ODATA_TYPE
-            or attachment.isInline
-            or not attachment.contentBytes
+            attachment.odata_type is not None
+            and attachment.odata_type != GRAPH_FILE_ATTACHMENT_ODATA_TYPE
         ):
+            logger.warning(
+                "Dropping Graph attachment %r — not a file attachment (@odata.type=%s)",
+                display_name,
+                attachment.odata_type,
+            )
+            dropped += 1
+            continue
+
+        if not attachment.contentBytes:
+            logger.warning(
+                "Dropping Graph attachment %r — no contentBytes", display_name
+            )
+            dropped += 1
             continue
 
         if len(files) >= MAX_ATTACHMENT_FILES:

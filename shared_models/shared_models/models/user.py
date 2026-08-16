@@ -8,6 +8,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from shared_models.database import Base
 from shared_models.mixins import TimestampMixin
+from shared_models.models.user_category import user_categories
 
 if TYPE_CHECKING:
     from .category import Category
@@ -232,4 +233,22 @@ class User(TimestampMixin, Base):
     category: Mapped["Category | None"] = relationship(
         "Category",
         back_populates="users",
+    )
+
+    # Many-to-many category membership — a user (most commonly a Team
+    # Lead) may belong to several work-specialization categories at
+    # once. Additive alongside `category_id`/`category` above, which
+    # stay in place as a "legacy primary category" (kept in sync by
+    # UserService.set_user_categories, never derived automatically by
+    # the ORM) for any consumer not yet updated to read this
+    # collection. See root CLAUDE.md's multi-category-users section.
+    categories: Mapped[list["Category"]] = relationship(
+        "Category",
+        secondary=user_categories,
+        # `user_categories` has two FKs into `users` (`user_id` and
+        # `assigned_by`) — explicit join conditions needed since
+        # SQLAlchemy can't infer which one backs this relationship.
+        primaryjoin="User.user_id == user_categories.c.user_id",
+        secondaryjoin="Category.category_id == user_categories.c.category_id",
+        back_populates="assigned_users",
     )

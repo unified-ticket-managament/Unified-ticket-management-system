@@ -239,8 +239,10 @@ class InteractionRepository:
           matches no rows, with no special-case needed.
           `ticket_types` (Team Lead/Staff category scoping) costs
           nothing extra either way — it was already resolved with no
-          DB call, from `current_user.category`, which
-          `UserRepository.get_by_id` eager-loads at auth time.
+          DB call, from `current_user.categories` (a Team Lead may
+          belong to more than one — see root CLAUDE.md's multi-
+          category-users section), which `UserRepository.get_by_id`
+          eager-loads at auth time.
         - `ticket_title`/`client_company_name`/`performed_by_name` are
           resolved via LEFT/INNER JOINs directly in this query instead
           of a separate name-lookup round trip afterward — every
@@ -413,7 +415,7 @@ class InteractionRepository:
         client_id: UUID | None = None,
         view: str = "pending",
         folder_id: UUID | None = None,
-        ticket_type: str | None = None,
+        ticket_types: list[str] | None = None,
         assigned_agent_id: UUID | None = None,
         extra_ticket_ids: list[UUID] | None = None,
         *,
@@ -432,7 +434,7 @@ class InteractionRepository:
 
         - `account_manager_id` set: only mail belonging to clients
           that AM owns (a join against `clients`). None (and
-          `ticket_type`/`assigned_agent_id` also None) means "every
+          `ticket_types`/`assigned_agent_id` also None) means "every
           client" — the Site Lead/Super Admin global inbox.
         - `client_id` set: further narrows to one client (the
           per-client filter on the inbox UI).
@@ -440,12 +442,14 @@ class InteractionRepository:
           orthogonal to `view` (a folder can hold items in any
           status), so this composes with any of the views below
           rather than being its own view.
-        - `ticket_type` set: Team Lead scoping — only threads whose
-          ticket is filed under this work-specialization category.
-          Implemented as an INNER join against `tickets`, so this
-          also implicitly restricts to ticketed threads only (a
-          Team Lead never sees a still-pending, pre-ticket item —
-          see the role propagation rules in InboxService.get_inbox).
+        - `ticket_types` set: Team Lead scoping — only threads whose
+          ticket is filed under one of these work-specialization
+          categories (a Team Lead may belong to more than one — see
+          root CLAUDE.md's multi-category-users section). Implemented
+          as an INNER join against `tickets`, so this also implicitly
+          restricts to ticketed threads only (a Team Lead never sees a
+          still-pending, pre-ticket item — see the role propagation
+          rules in InboxService.get_inbox).
         - `assigned_agent_id` set: Staff scoping — only threads whose
           ticket is currently assigned to (claimed by) this agent, or
           (if `extra_ticket_ids` is also given) one this Staff member
@@ -478,7 +482,7 @@ class InteractionRepository:
         this query's own sort column.
 
         `category_filter`/`priority_filter` are the user-facing Mail
-        UI filters (distinct from `ticket_type`, which is Team Lead's
+        UI filters (distinct from `ticket_types`, which is Team Lead's
         own fixed role scoping) — previously applied client-side over
         whatever page happened to be loaded, which meant "show me
         every HIGH-priority thread" could silently miss matches
@@ -486,7 +490,7 @@ class InteractionRepository:
         ticketed threads (priority/category don't exist before a
         thread becomes a ticket), so either one triggers the same
         INNER JOIN against `tickets` already used for
-        `ticket_type`/`assigned_agent_id` scoping.
+        `ticket_types`/`assigned_agent_id` scoping.
         """
 
         query = select(Interaction)
@@ -501,7 +505,7 @@ class InteractionRepository:
             query = query.where(Interaction.client_id == client_id)
 
         needs_ticket_join = (
-            ticket_type is not None
+            ticket_types is not None
             or assigned_agent_id is not None
             or category_filter is not None
             or priority_filter is not None
@@ -509,8 +513,8 @@ class InteractionRepository:
         if needs_ticket_join:
             query = query.join(Ticket, Ticket.ticket_id == Interaction.ticket_id)
 
-        if ticket_type is not None:
-            query = query.where(Ticket.ticket_type == ticket_type)
+        if ticket_types is not None:
+            query = query.where(Ticket.ticket_type.in_(ticket_types))
 
         if assigned_agent_id is not None:
             # A ticket escalated to this user (Team Lead/Account
@@ -613,7 +617,7 @@ class InteractionRepository:
         self,
         account_manager_id: UUID | None = None,
         client_id: UUID | None = None,
-        ticket_type: str | None = None,
+        ticket_types: list[str] | None = None,
         assigned_agent_id: UUID | None = None,
         extra_ticket_ids: list[UUID] | None = None,
     ) -> dict[UUID, int]:
@@ -636,11 +640,11 @@ class InteractionRepository:
         if client_id is not None:
             query = query.where(Interaction.client_id == client_id)
 
-        if ticket_type is not None or assigned_agent_id is not None:
+        if ticket_types is not None or assigned_agent_id is not None:
             query = query.join(Ticket, Ticket.ticket_id == Interaction.ticket_id)
 
-        if ticket_type is not None:
-            query = query.where(Ticket.ticket_type == ticket_type)
+        if ticket_types is not None:
+            query = query.where(Ticket.ticket_type.in_(ticket_types))
 
         if assigned_agent_id is not None:
             if extra_ticket_ids:
@@ -668,7 +672,7 @@ class InteractionRepository:
         self,
         account_manager_id: UUID | None = None,
         client_id: UUID | None = None,
-        ticket_type: str | None = None,
+        ticket_types: list[str] | None = None,
         assigned_agent_id: UUID | None = None,
         extra_ticket_ids: list[UUID] | None = None,
     ) -> dict[str, int]:
@@ -714,11 +718,11 @@ class InteractionRepository:
         if client_id is not None:
             query = query.where(Interaction.client_id == client_id)
 
-        if ticket_type is not None or assigned_agent_id is not None:
+        if ticket_types is not None or assigned_agent_id is not None:
             query = query.join(Ticket, Ticket.ticket_id == Interaction.ticket_id)
 
-        if ticket_type is not None:
-            query = query.where(Ticket.ticket_type == ticket_type)
+        if ticket_types is not None:
+            query = query.where(Ticket.ticket_type.in_(ticket_types))
 
         if assigned_agent_id is not None:
             if extra_ticket_ids:

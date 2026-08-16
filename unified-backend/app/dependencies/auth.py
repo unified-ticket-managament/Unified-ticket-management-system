@@ -1,4 +1,4 @@
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import Depends, HTTPException, Query, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -71,6 +71,28 @@ def _build_transient_user(payload: dict) -> User:
         )
     else:
         user.category = None
+
+    # Full multi-category membership (see app/auth/jwt.py's
+    # create_access_token) — a list of lightweight, never-persisted
+    # Category-like objects exposing `.category_name`, which is all
+    # ensure_agent_can_view_ticket/inbox-scope/permission-request
+    # eligibility ever read off an item in this collection (never
+    # `.category_id`, so the synthetic random id below is safe). Falls
+    # back to `[user.category]` for a token minted before this claim
+    # existed, matching that token's own (correct, at mint time)
+    # single-category behavior rather than wrongly degrading to "no
+    # categories, sees nothing."
+    categories_claim = payload.get("categories")
+    if categories_claim:
+        user.categories = [
+            Category(category_id=uuid4(), category_name=CategoryName(name))
+            for name in categories_claim
+        ]
+    elif user.category is not None:
+        user.categories = [user.category]
+    else:
+        user.categories = []
+
     return user
 
 

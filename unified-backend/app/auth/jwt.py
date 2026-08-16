@@ -33,6 +33,7 @@ class JWTManager:
         role_id: UUID | None = None,
         category_id: UUID | None = None,
         category: str | None = None,
+        categories: list[str] | None = None,
         permission_version: int | None = None,
         expires_delta: timedelta | None = None,
     ) -> str:
@@ -80,6 +81,14 @@ class JWTManager:
             payload["category_id"] = str(category_id)
         if category is not None:
             payload["category"] = category
+        # Full multi-category membership — additive alongside the
+        # singular `category_id`/`category` claims above, which stay
+        # populated with the "legacy primary category" for any
+        # consumer not yet reading this plural claim. See
+        # app/dependencies/auth.py's `_build_transient_user` for the
+        # cache-hit reconstruction that reads this back.
+        if categories is not None:
+            payload["categories"] = categories
         if permission_version is not None:
             payload["permission_version"] = permission_version
 

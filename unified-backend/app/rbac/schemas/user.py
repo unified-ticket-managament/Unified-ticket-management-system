@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 # -----------------------------
@@ -21,8 +21,18 @@ class UserBase(BaseModel):
     reporting_manager_id: UUID | None = None
     # Work-specialization category — required for Staff/Team Lead,
     # enforced in UserService.create_user (not here, since the
-    # requirement depends on which role_id was chosen).
+    # requirement depends on which role_id was chosen). Kept as a
+    # "legacy primary category" — see `category_ids` below, the new
+    # multi-category-aware field. Both may be sent together as long as
+    # they agree (`category_id == category_ids[0]`); see
+    # UserService._resolve_category_ids.
     category_id: UUID | None = None
+
+    # Full set of categories this user belongs to (many-to-many, via
+    # the `user_categories` join table) — a user (most commonly a Team
+    # Lead) may belong to more than one. Additive alongside
+    # `category_id` above, never a replacement for it.
+    category_ids: list[UUID] = Field(default_factory=list)
     is_active: bool = True
     # Display-only Leave indicator (see shared_models.models.User.
     # is_on_leave's own docstring) — never an authorization/eligibility
@@ -110,6 +120,18 @@ class UserResponse(UserBase):
     user_id: UUID
     created_at: datetime
     updated_at: datetime
+
+    # Computed, read-only: does this user hold at least one active
+    # reporting_manager_teams assignment (any category) — i.e. are
+    # they a Reporting Manager at all. This is an HR responsibility
+    # layered on top of the Account Manager role, not a Role/
+    # permission of its own — see OrganizationService.
+    # get_reporting_manager_user_ids, the sole computer of this field.
+    # Backs the Users page's "Reporting Manager" option in its Role
+    # filter dropdown. Deliberately on UserResponse only, not
+    # UserBase — UserCreate/UserUpdate also extend UserBase and this
+    # must never be a client-settable field.
+    is_reporting_manager: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

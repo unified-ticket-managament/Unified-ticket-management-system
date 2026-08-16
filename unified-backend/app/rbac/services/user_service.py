@@ -118,9 +118,14 @@ class UserService:
                 detail="Email already exists.",
             )
 
-        # Staff/Team Lead must belong to a work-specialization
-        # category; every other role leaves it unset.
-        if role.name in CATEGORY_REQUIRED_ROLE_NAMES and user_data.category_id is None:
+        # Staff/Team Lead must belong to at least one work-
+        # specialization category; every other role leaves it unset.
+        # `category_ids` (new, multi-category-aware) and the legacy
+        # singular `category_id` are merged into one list — see
+        # _resolve_category_ids's own docstring for the conflict rule.
+        category_ids = self._resolve_category_ids(user_data.category_id, user_data.category_ids)
+
+        if role.name in CATEGORY_REQUIRED_ROLE_NAMES and not category_ids:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Category is required for Staff and Team Lead users.",
@@ -149,16 +154,12 @@ class UserService:
                     detail="Reporting Manager is required.",
                 )
 
-        if user_data.category_id is not None:
-
-            category = await self.category_repository.get_by_id(
-                user_data.category_id
-            )
-
-            if category is None:
+        if category_ids:
+            found_categories = await self.category_repository.get_by_ids(category_ids)
+            if len(found_categories) != len(set(category_ids)):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Category not found.",
+                    detail="One or more categories were not found.",
                 )
 
         # Validate manager/team-lead — see _validate_manager_and_teamlead's
@@ -169,7 +170,7 @@ class UserService:
             role.name,
             user_data.manager_id,
             user_data.teamlead_id,
-            user_data.category_id,
+            category_ids,
         )
         await self._validate_reporting_manager_id(user_data.reporting_manager_id)
 
@@ -183,7 +184,7 @@ class UserService:
             manager_id=user_data.manager_id,
             teamlead_id=user_data.teamlead_id,
             reporting_manager_id=user_data.reporting_manager_id,
-            category_id=user_data.category_id,
+            category_id=category_ids[0] if category_ids else None,
             is_active=user_data.is_active,
             # Required (validated above) for every internal role — see
             # DESIGNATION_REQUIRED_ROLE_NAMES. Previously never
@@ -195,6 +196,11 @@ class UserService:
         )
 
         user = await self.user_repository.create(user)
+
+        if category_ids:
+            user = await self.set_user_categories(user.user_id, category_ids, actor)
+        else:
+            user.category_ids = []
 
         await self.audit_log_service.create_log(
             AuditLogCreate(
@@ -265,6 +271,7 @@ class UserService:
             "teamlead_id": None,
             "reporting_manager_id": None,
             "category_id": None,
+            "category_ids": [],
             "is_active": client.is_active,
             "date_of_birth": None,
             "alternate_email": None,
@@ -407,7 +414,7 @@ class UserService:
                     detail="Cannot change an existing Client user's role. Create a new user instead.",
                 )
 
-        unsupported_fields = update_data.keys() & {"category_id", "teamlead_id"}
+        unsupported_fields = update_data.keys() & {"category_id", "category_ids", "teamlead_id"}
         if unsupported_fields:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -488,12 +495,95 @@ class UserService:
     # Reporting-line validation
     # --------------------------------------------------
 
+    @staticmethod
+    def _resolve_category_ids(
+        category_id: UUID | None,
+        category_ids: list[UUID] | None,
+    ) -> list[UUID]:
+        """
+        Normalizes the legacy singular `category_id` and the new
+        plural `category_ids` into one list. Both may be sent
+        together (e.g. an older client still populating category_id
+        alongside a newer one sending category_ids) as long as they
+        agree that `category_id == category_ids[0]` — a genuine
+        conflict (category_id=X but category_ids=[Y, Z]) is rejected
+        with a clear 400 rather than silently preferring one.
+        """
+
+        ids = list(category_ids) if category_ids else []
+
+        if category_id is not None:
+            if ids:
+                if ids[0] != category_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="category_id must match the first entry of category_ids.",
+                    )
+            else:
+                ids = [category_id]
+
+        return ids
+
+    async def set_user_categories(
+        self,
+        user_id: UUID,
+        category_ids: list[UUID],
+        actor: User | None = None,
+    ) -> User:
+        """
+        Full-replace a user's category-membership set (the
+        many-to-many `user_categories` join table), keeping
+        `users.category_id` in sync as a "legacy primary category" —
+        the first id in `category_ids`, or None if the list is empty.
+        There's no separate "mark as primary" UI; whichever category
+        the caller submits first simply wins.
+
+        Unconditionally bumps `permission_version`, even when the
+        scalar `category_id` happens to stay the same (e.g. adding a
+        2nd category without changing the first) — update_user's own
+        `_RBAC_RELEVANT_FIELDS` diff-based bump would otherwise miss
+        exactly that case, since it only compares the scalar field.
+        Same pattern as activate_user/deactivate_user's own
+        unconditional bumps.
+        """
+
+        user = await self.user_repository.get_by_id(user_id)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found.",
+            )
+
+        if category_ids:
+            found_categories = await self.category_repository.get_by_ids(category_ids)
+            if len(found_categories) != len(set(category_ids)):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="One or more categories were not found.",
+                )
+
+        await self.user_repository.replace_categories(
+            user_id,
+            category_ids,
+            assigned_by=actor.user_id if actor else None,
+        )
+
+        user.category_id = category_ids[0] if category_ids else None
+        user.permission_version += 1
+
+        user = await self.user_repository.update(user)
+        # Known-correct list already in hand — set directly rather
+        # than re-reading `.categories` after update()'s own refresh(),
+        # which may or may not still have it loaded.
+        user.category_ids = category_ids
+        return user
+
     async def _validate_manager_and_teamlead(
         self,
         role_name: str,
         manager_id: UUID | None,
         teamlead_id: UUID | None,
-        category_id: UUID | None,
+        category_ids: list[UUID] | None,
     ) -> None:
         """
         Enforces the Organization Structure's reporting shape (see root
@@ -550,20 +640,27 @@ class UserService:
                 )
 
             # Every Staff member belongs to exactly one Team Lead, and
-            # a Team Lead owns exactly one business category — so the
-            # Staff member's own category must match theirs. A Team
-            # Lead with no category assigned yet (shouldn't normally
-            # happen — category is required for that role — but could
-            # exist on old data) doesn't block this, since there's
-            # nothing to mismatch against.
+            # a Team Lead may now own several business categories — so
+            # every category assigned to the Staff member must be
+            # among the Team Lead's own categories (a subset check, not
+            # exact-set equality: a Team Lead can legitimately cover
+            # more categories than one Staff member needs, e.g. a
+            # multi-category Team Lead like Yashodha covering both
+            # Payment Posting and Quality can still take on Staff who
+            # only work one of the two). A Team Lead with no category
+            # assigned yet (shouldn't normally happen — category is
+            # required for that role — but could exist on old data)
+            # doesn't block this, since there's nothing to mismatch
+            # against.
+            teamlead_category_ids = {c.category_id for c in teamlead.categories}
             if (
-                category_id is not None
-                and teamlead.category_id is not None
-                and teamlead.category_id != category_id
+                category_ids
+                and teamlead_category_ids
+                and not set(category_ids).issubset(teamlead_category_ids)
             ):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="The assigned Team Lead's category must match this user's own category.",
+                    detail="The assigned Team Lead's categories must include this user's own categories.",
                 )
 
     async def _validate_reporting_manager_id(
@@ -625,6 +722,28 @@ class UserService:
             detail="User not found.",
         )
 
+    @staticmethod
+    def _attach_category_ids_from_loaded(user: User) -> User:
+        """
+        Sets the transient, non-persisted `category_ids` attribute
+        that `UserResponse.category_ids` reads via `from_attributes`
+        (the ORM relationship is named `categories`, a list of
+        `Category` objects — a different name/shape, so it never
+        auto-populates the response field on its own). Same "bolt a
+        transient attribute onto the User instance" pattern already
+        used for `.permissions`/`.scoped_permissions` elsewhere in
+        this codebase.
+
+        Only call this where `.categories` is known to already be
+        eager-loaded (selectinload) on `user` — never on a path where
+        it might still be an unloaded relationship, which would
+        trigger a synchronous lazy-load and crash with MissingGreenlet
+        in this async context.
+        """
+
+        user.category_ids = [c.category_id for c in user.categories]
+        return user
+
     async def get_user(
         self,
         user_id: UUID,
@@ -633,7 +752,7 @@ class UserService:
         user, client = await self._resolve_user_or_client(user_id)
 
         if user is not None:
-            return user
+            return self._attach_category_ids_from_loaded(user)
 
         return self._client_to_user_response(client, await self._resolve_client_role_id())
 
@@ -660,7 +779,9 @@ class UserService:
         page_size: int = 10,
         search: str | None = None,
         category_id: UUID | None = None,
+        category_ids: list[UUID] | None = None,
         current_user: User | None = None,
+        include_reporting_scope: bool = False,
     ):
         """
         Returns the Users-management listing — real application users
@@ -691,12 +812,26 @@ class UserService:
         `current_user=None` (no authenticated caller resolved) is
         treated as the safest default — see-nothing — rather than
         unrestricted; every real caller of this method always has one.
+
+        `include_reporting_scope`, when True, widens the Account
+        Manager/Team Lead/Staff branches above with
+        OrganizationService.get_reporting_scope_user_ids instead of
+        the narrower baseline — used only by the Users-management
+        page's own request (`GET /users?include_reporting_scope=true`).
+        Defaults to False so every other existing caller of this
+        method (Audit Logs, the User Detail Drawer, the Roles page,
+        the Reporting Managers admin page, the dashboard user list) is
+        completely unaffected.
         """
 
         visible_user_ids: set[UUID] | None = None
 
         if current_user is None:
             visible_user_ids = set()
+        elif include_reporting_scope:
+            visible_user_ids = await self.organization_service.get_reporting_scope_user_ids(
+                current_user
+            )
         else:
             role_name = current_user.role.name if current_user.role is not None else None
 
@@ -714,8 +849,17 @@ class UserService:
             page_size,
             search,
             category_id,
+            category_ids,
             visible_user_ids,
         )
+
+        reporting_manager_ids = await self.organization_service.get_reporting_manager_user_ids(
+            [user.user_id for user in users]
+        )
+
+        for user in users:
+            self._attach_category_ids_from_loaded(user)
+            user.is_reporting_manager = user.user_id in reporting_manager_ids
 
         return users, total
 
@@ -738,6 +882,21 @@ class UserService:
         update_data = user_data.model_dump(
             exclude_unset=True
         )
+
+        # `category_ids` has no ORM column of its own (it's a
+        # many-to-many collection, not a scalar field) — pulled out
+        # up front so the generic setattr/old_values/audit-log loops
+        # below never touch it directly. Applied at the very end via
+        # set_user_categories instead, which also keeps the legacy
+        # scalar `category_id` column in sync.
+        category_ids_update = update_data.pop("category_ids", None)
+
+        # Snapshotted now, while `.categories` is known-loaded (from
+        # _resolve_user_or_client's get_by_id) — used as the response's
+        # `category_ids` if this update doesn't touch categories at
+        # all, so nothing later needs to re-read the relationship after
+        # user_repository.update()'s own flush/refresh.
+        existing_category_ids_snapshot = [c.category_id for c in user.categories]
 
         # Email validation
         if "email" in update_data:
@@ -800,16 +959,30 @@ class UserService:
         # category_id alone must still be checked against an existing
         # teamlead_id. Falls back to the user's current value for
         # anything not present in this particular update.
-        if update_data.keys() & {"role_id", "category_id", "manager_id", "teamlead_id"}:
+        category_fields_touched = (
+            category_ids_update is not None or "category_id" in update_data
+        )
+
+        if category_fields_touched or update_data.keys() & {
+            "role_id", "manager_id", "teamlead_id",
+        }:
             effective_manager_id = update_data.get("manager_id", user.manager_id)
             effective_teamlead_id = update_data.get("teamlead_id", user.teamlead_id)
-            effective_category_id = update_data.get("category_id", user.category_id)
+
+            if category_fields_touched:
+                effective_category_ids = self._resolve_category_ids(
+                    update_data.get("category_id"), category_ids_update,
+                )
+            else:
+                effective_category_ids = [c.category_id for c in user.categories] or (
+                    [user.category_id] if user.category_id else []
+                )
 
             await self._validate_manager_and_teamlead(
                 final_role_name,
                 effective_manager_id,
                 effective_teamlead_id,
-                effective_category_id,
+                effective_category_ids,
             )
 
         # Designation/Personal Email/Reporting Manager required-ness —
@@ -877,6 +1050,25 @@ class UserService:
             user.permission_version += 1
 
         user = await self.user_repository.update(user)
+
+        # Keep the many-to-many `user_categories` join table in sync
+        # with whatever category information was actually submitted —
+        # the new plural `category_ids` if present, else the legacy
+        # singular `category_id` alone (so an old caller that only
+        # ever sends `category_id` still keeps the join table
+        # consistent). Neither present means categories weren't
+        # touched by this update at all.
+        if category_ids_update is not None:
+            user = await self.set_user_categories(user.user_id, category_ids_update, actor)
+        elif "category_id" in update_data:
+            legacy_category_id = update_data["category_id"]
+            user = await self.set_user_categories(
+                user.user_id,
+                [legacy_category_id] if legacy_category_id is not None else [],
+                actor,
+            )
+        else:
+            user.category_ids = existing_category_ids_snapshot
 
         if update_data:
             await self.audit_log_service.create_log(
@@ -999,11 +1191,19 @@ class UserService:
                 client, await self._resolve_client_role_id()
             )
 
+        # Snapshotted before activate()'s own flush/refresh — read
+        # while `.categories` is known-loaded (from _resolve_user_or_
+        # client's get_by_id), rather than re-reading the relationship
+        # afterward and risking an async lazy-load if refresh() has
+        # expired it.
+        category_ids_snapshot = [c.category_id for c in user.categories]
+
         user.permission_version += 1
 
         user = await self.user_repository.activate(
             user
         )
+        user.category_ids = category_ids_snapshot
 
         await self.audit_log_service.create_log(
             AuditLogCreate(
@@ -1046,11 +1246,14 @@ class UserService:
                 client, await self._resolve_client_role_id()
             )
 
+        category_ids_snapshot = [c.category_id for c in user.categories]
+
         user.permission_version += 1
 
         user = await self.user_repository.deactivate(
             user
         )
+        user.category_ids = category_ids_snapshot
 
         await self.audit_log_service.create_log(
             AuditLogCreate(

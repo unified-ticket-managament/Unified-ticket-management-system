@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from shared_models.database import Base
+from shared_models.models.user_category import user_categories
 
 if TYPE_CHECKING:
     from .user import User
@@ -76,4 +77,18 @@ class Category(Base):
     users: Mapped[list["User"]] = relationship(
         "User",
         back_populates="category",
+    )
+
+    # Reverse side of User.categories (many-to-many) — named
+    # `assigned_users`, not `users`, so it never collides with the
+    # scalar-FK relationship above (which still backs the legacy
+    # singular `category_id`/`category`).
+    assigned_users: Mapped[list["User"]] = relationship(
+        "User",
+        secondary=user_categories,
+        # See User.categories' matching comment — `user_categories` has
+        # two FKs into `users`, so the join conditions must be explicit.
+        primaryjoin="Category.category_id == user_categories.c.category_id",
+        secondaryjoin="User.user_id == user_categories.c.user_id",
+        back_populates="categories",
     )

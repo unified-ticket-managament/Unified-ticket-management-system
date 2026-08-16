@@ -135,14 +135,34 @@ async def list_users(
     ),
     category_id: UUID | None = Query(
         default=None,
-        description="Filter to users belonging to this work-specialization category.",
+        description="Filter to users belonging to this work-specialization category (legacy singular — see category_ids).",
+    ),
+    category_ids: list[UUID] | None = Query(
+        default=None,
+        description=(
+            "Filter to users belonging to ANY of these work-specialization "
+            "categories (repeat the param for multiple, e.g. "
+            "?category_ids=a&category_ids=b) — a user matching more than one "
+            "requested category still appears exactly once."
+        ),
+    ),
+    include_reporting_scope: bool = Query(
+        default=False,
+        description=(
+            "Widen the caller's visibility to include every user reachable "
+            "through their own Reporting Manager category assignments, on "
+            "top of their existing reporting-hierarchy scope. Used by the "
+            "Users-management page only — every other caller keeps the "
+            "narrower default."
+        ),
     ),
     service: UserService = Depends(get_user_service),
     current_user=Depends(get_current_active_user),
 ):
     """
-    Returns paginated list of users, optionally filtered by category
-    (e.g. to find every Staff/Team Lead who works a given category).
+    Returns paginated list of users, optionally filtered by one or
+    more categories (e.g. to find every Staff/Team Lead who works a
+    given category).
     """
 
     ensure_has_permission(current_user, "user:view")
@@ -152,7 +172,9 @@ async def list_users(
         page_size=page_size,
         search=search,
         category_id=category_id,
+        category_ids=category_ids,
         current_user=current_user,
+        include_reporting_scope=include_reporting_scope,
     )
 
     return UserListResponse(

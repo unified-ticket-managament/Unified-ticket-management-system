@@ -41,6 +41,7 @@ import { PageHeader } from "@/components/layout/dashboard-shell";
 import { Breadcrumbs } from "@/components/shared/breadcrumbs";
 import { DataTable, DataTablePagination } from "@/components/shared/data-table";
 import { AccessDenied, ErrorState } from "@/components/shared/stats";
+import { CategoryMultiSelect } from "@/components/users/CategoryMultiSelect";
 import { UserDetailDrawer } from "@/components/users/user-detail-drawer";
 import { UserFormDialog } from "@/components/users/user-form-dialog";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -65,7 +66,12 @@ import { PermissionGuard } from "@/components/auth/PermissionGuard";
 import { useAuthStore } from "@/store/auth-store";
 import { Category, Role, User } from "@/types";
 
-type UserRow = User & { roleName: string; categoryName: string };
+type UserRow = User & { roleName: string; categoryNames: string[] };
+
+// Not a real role_id — a synthetic value for the Role filter's
+// "Reporting Manager" option (see the filter's own comment below).
+// Never collides with a real role_id UUID.
+const REPORTING_MANAGER_FILTER_VALUE = "__reporting_manager__";
 
 const USERS_PAGE_ALLOWED_ROLES: string[] = [
   ROLE_NAMES.SUPER_ADMIN,
@@ -95,7 +101,7 @@ export default function UsersPage() {
 
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
-  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [categoryFilters, setCategoryFilters] = useState<string[]>([]);
   const [statusFilter, setStatusFilter] = useState("all");
   const [sorting, setSorting] = useState<SortingState>([{ id: "created_at", desc: true }]);
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
@@ -106,8 +112,16 @@ export default function UsersPage() {
   const [viewingUser, setViewingUser] = useState<User | null>(null);
 
   const usersQuery = useQuery({
-    queryKey: ["users-table"],
-    queryFn: () => userService.list({ page: 1, page_size: 100 }),
+    // Distinct from the plain ["users-table"] key shared by Audit Logs
+    // and the User Detail Drawer — this page's own fetch requests a
+    // widened, reporting-scope-aware result those pages don't want,
+    // so it must not share their cache entry. Existing
+    // invalidateQueries({queryKey: ["users-table"]}) calls elsewhere
+    // (e.g. UserFormDialog's onSuccess) still correctly invalidate
+    // this nested key too, via TanStack Query's default prefix match.
+    queryKey: ["users-table", "reporting-scope"],
+    queryFn: () =>
+      userService.list({ page: 1, page_size: 100, include_reporting_scope: true }),
   });
 
   const rolesQuery = useQuery({
@@ -145,37 +159,42 @@ export default function UsersPage() {
 
   const rows: UserRow[] = useMemo(() => {
     const users: User[] = usersQuery.data?.users ?? [];
-    return users.map((user) => ({
-      ...user,
-      roleName: roleMap.get(user.role_id) ?? "Unassigned",
-      categoryName: user.category_id ? categoryMap.get(user.category_id) ?? "Unknown" : "—",
-    }));
+    return users.map((user) => {
+      const categoryIds = user.category_ids ?? (user.category_id ? [user.category_id] : []);
+      return {
+        ...user,
+        roleName: roleMap.get(user.role_id) ?? "Unassigned",
+        categoryNames: categoryIds.map((id) => categoryMap.get(id) ?? "Unknown"),
+      };
+    });
   }, [usersQuery.data, roleMap, categoryMap]);
 
-  // Reporting-hierarchy visibility: each role only sees the slice of the
-  // org it's responsible for, derived from the manager_id/teamlead_id each
-  // user already carries — no backend changes needed.
+  // Server-side scoping (UserService.list_users' include_reporting_scope
+  // path) is now authoritative for who appears in `rows` at all — the
+  // only client-side narrowing left is Super Admin/Site Lead hiding
+  // peer Super Admin rows, a display preference unrelated to
+  // visibility scoping. Re-applying the old narrow manager_id/
+  // teamlead_id checks here would clip the backend's now-widened
+  // (Reporting-Manager-aware) scope right back down.
   const hierarchyRows = useMemo(() => {
     if (!currentUser) return [];
-    switch (currentUser.role) {
-      case ROLE_NAMES.SUPER_ADMIN:
-      case ROLE_NAMES.SITE_LEAD:
-        return rows.filter((user) => user.roleName !== ROLE_NAMES.SUPER_ADMIN);
-      case ROLE_NAMES.ACCOUNT_MANAGER:
-        return rows.filter((user) => user.manager_id === currentUser.user_id);
-      case ROLE_NAMES.TEAM_LEAD:
-        return rows.filter((user) => user.teamlead_id === currentUser.user_id);
-      case ROLE_NAMES.STAFF:
-        return rows.filter((user) => user.user_id === currentUser.user_id);
-      default:
-        return [];
+    if (currentUser.role === ROLE_NAMES.SUPER_ADMIN || currentUser.role === ROLE_NAMES.SITE_LEAD) {
+      return rows.filter((user) => user.roleName !== ROLE_NAMES.SUPER_ADMIN);
     }
+    return rows;
   }, [rows, currentUser]);
 
   const filteredRows = useMemo(() => {
     return hierarchyRows.filter((user) => {
-      if (roleFilter !== "all" && user.role_id !== roleFilter) return false;
-      if (categoryFilter !== "all" && user.category_id !== categoryFilter) return false;
+      if (roleFilter === REPORTING_MANAGER_FILTER_VALUE) {
+        if (!user.is_reporting_manager) return false;
+      } else if (roleFilter !== "all" && user.role_id !== roleFilter) {
+        return false;
+      }
+      if (categoryFilters.length > 0) {
+        const userCategoryIds = user.category_ids ?? (user.category_id ? [user.category_id] : []);
+        if (!userCategoryIds.some((id) => categoryFilters.includes(id))) return false;
+      }
       if (statusFilter === "active" && !user.is_active) return false;
       if (statusFilter === "inactive" && user.is_active) return false;
 
@@ -190,7 +209,7 @@ export default function UsersPage() {
 
       return true;
     });
-  }, [hierarchyRows, search, roleFilter, categoryFilter, statusFilter]);
+  }, [hierarchyRows, search, roleFilter, categoryFilters, statusFilter]);
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => userService.delete(id),
@@ -233,7 +252,7 @@ export default function UsersPage() {
         user.name,
         user.email,
         user.roleName,
-        user.categoryName,
+        user.categoryNames.join("; ") || "—",
         user.is_active ? "Active" : "Inactive",
         user.created_at,
       ]
@@ -310,11 +329,20 @@ export default function UsersPage() {
         cell: ({ row }) => <Badge variant="secondary">{row.original.roleName}</Badge>,
       },
       {
-        accessorKey: "categoryName",
-        header: "Category",
-        cell: ({ row }) => (
-          <span className="text-muted-foreground">{row.original.categoryName}</span>
-        ),
+        accessorKey: "categoryNames",
+        header: "Categories",
+        cell: ({ row }) =>
+          row.original.categoryNames.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {row.original.categoryNames.map((name) => (
+                <Badge key={name} variant="secondary">
+                  {name}
+                </Badge>
+              ))}
+            </div>
+          ) : (
+            <Badge variant="outline">—</Badge>
+          ),
       },
       {
         accessorKey: "is_active",
@@ -500,27 +528,28 @@ export default function UsersPage() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Roles</SelectItem>
-              {dedupedRoles.map((role: Role) => (
-                <SelectItem key={role.role_id} value={role.role_id}>
-                  {role.name}
-                </SelectItem>
-              ))}
+              {dedupedRoles
+                .filter((role: Role) => role.name !== ROLE_NAMES.CLIENT)
+                .map((role: Role) => (
+                  <SelectItem key={role.role_id} value={role.role_id}>
+                    {role.name}
+                  </SelectItem>
+                ))}
+              {/* Not a real Role — a synthetic option filtering to users
+                  who hold a Reporting Manager (reporting_manager_teams)
+                  assignment, via the is_reporting_manager flag backend
+                  now computes. See REPORTING_MANAGER_FILTER_VALUE above. */}
+              <SelectItem value={REPORTING_MANAGER_FILTER_VALUE}>Reporting Manager</SelectItem>
             </SelectContent>
           </Select>
 
-          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-            <SelectTrigger className="w-full sm:w-44">
-              <SelectValue placeholder="Category" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Category</SelectItem>
-              {(categoriesQuery.data?.categories ?? []).map((category: Category) => (
-                <SelectItem key={category.category_id} value={category.category_id}>
-                  {category.category_name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <CategoryMultiSelect
+            categories={categoriesQuery.data?.categories ?? []}
+            selectedIds={categoryFilters}
+            onChange={setCategoryFilters}
+            placeholder="Category"
+            className="w-full sm:w-52"
+          />
 
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-full sm:w-40">

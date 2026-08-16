@@ -141,6 +141,7 @@ class AuthService:
             role_id=user.role_id,
             category_id=user.category_id,
             category=user.category.category_name.value if user.category else None,
+            categories=[c.category_name.value for c in user.categories],
             permission_version=user.permission_version,
         )
 
@@ -228,6 +229,7 @@ class AuthService:
             role_id=user.role_id,
             category_id=user.category_id,
             category=user.category.category_name.value if user.category else None,
+            categories=[c.category_name.value for c in user.categories],
             permission_version=user.permission_version,
         )
 

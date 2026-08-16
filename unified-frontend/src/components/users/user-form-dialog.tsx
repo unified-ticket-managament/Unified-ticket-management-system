@@ -8,6 +8,7 @@ import { useFieldArray, useForm } from "react-hook-form";
 import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
+import { CategoryMultiSelect } from "@/components/users/CategoryMultiSelect";
 import {
   Dialog,
   DialogContent,
@@ -63,7 +64,10 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
       // is enforced in the superRefine below instead, since it
       // depends on which role is selected).
       reporting_manager_id: z.string().optional(),
-      category_id: z.string().optional(),
+      // Full multi-category selection — the field this form actually
+      // writes now. Legacy `category_id` is no longer submitted by
+      // this form (the backend derives it from the first entry here).
+      category_ids: z.array(z.string()).optional(),
       designation: z.string().optional(),
       alternate_email: z
         .union([z.string().email("Enter a valid email"), z.literal("")])
@@ -96,8 +100,12 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
         });
       }
 
-      if (needsCategory && !data.category_id) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["category_id"], message: "Select a category" });
+      if (needsCategory && (!data.category_ids || data.category_ids.length === 0)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["category_ids"],
+          message: "Select at least one category",
+        });
       }
 
       if (selectedRoleName === ROLE_NAMES.STAFF) {
@@ -256,7 +264,7 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
       manager_id: "",
       teamlead_id: "",
       reporting_manager_id: "",
-      category_id: "",
+      category_ids: [],
       designation: "",
       alternate_email: "",
       contact_emails: [{ value: "" }],
@@ -276,7 +284,7 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
         manager_id: user?.manager_id ?? "",
         teamlead_id: user?.teamlead_id ?? "",
         reporting_manager_id: user?.reporting_manager_id ?? "",
-        category_id: user?.category_id ?? "",
+        category_ids: user?.category_ids ?? (user?.category_id ? [user.category_id] : []),
         designation: user?.designation ?? "",
         alternate_email: user?.alternate_email ?? "",
         contact_emails: [{ value: "" }],
@@ -290,7 +298,7 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
   const managerId = watch("manager_id");
   const teamleadId = watch("teamlead_id");
   const reportingManagerId = watch("reporting_manager_id");
-  const categoryId = watch("category_id");
+  const categoryIds = watch("category_ids") ?? [];
 
   const roleName = roleMap.get(roleId);
   const showStaffHierarchy = roleName === ROLE_NAMES.STAFF;
@@ -363,7 +371,7 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
     if (!showHierarchyFields) {
       setValue("manager_id", "");
       setValue("teamlead_id", "");
-      setValue("category_id", "");
+      setValue("category_ids", []);
       return;
     }
 
@@ -387,7 +395,7 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
           : selectedRoleName === ROLE_NAMES.TEAM_LEAD || selectedRoleName === ROLE_NAMES.CLIENT
             ? { manager_id: values.manager_id || null }
             : {}),
-        ...(needsCategory ? { category_id: values.category_id || null } : {}),
+        ...(needsCategory ? { category_ids: values.category_ids ?? [] } : {}),
       };
 
       // Unconditional, unrestricted by role — independent of
@@ -600,26 +608,15 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
 
           {showCategoryField && (
             <div className="space-y-2">
-              <Label>Work Category</Label>
-              <Select
-                value={categoryId || ""}
-                onValueChange={(value) => setValue("category_id", value, { shouldValidate: true })}
-              >
-                <SelectTrigger>
-                  <SelectValue
-                    placeholder={categoriesQuery.isLoading ? "Loading categories..." : "Select a category"}
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {categories.map((category) => (
-                    <SelectItem key={category.category_id} value={category.category_id}>
-                      {category.category_name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {errors.category_id && (
-                <p className="text-sm text-destructive">{errors.category_id.message}</p>
+              <Label>Work Categories</Label>
+              <CategoryMultiSelect
+                categories={categories}
+                selectedIds={categoryIds}
+                onChange={(ids) => setValue("category_ids", ids, { shouldValidate: true })}
+                placeholder={categoriesQuery.isLoading ? "Loading categories..." : "Select categories"}
+              />
+              {errors.category_ids && (
+                <p className="text-sm text-destructive">{errors.category_ids.message}</p>
               )}
             </div>
           )}

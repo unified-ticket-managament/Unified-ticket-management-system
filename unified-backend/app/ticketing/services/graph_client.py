@@ -35,9 +35,6 @@ MESSAGE_SELECT_FIELDS = (
     "conversationId,receivedDateTime,internetMessageHeaders,hasAttachments"
 )
 
-ATTACHMENT_SELECT_FIELDS = "name,contentType,size,isInline,contentBytes"
-
-
 class GraphAPIError(Exception):
     """Raised when Graph returns a non-2xx response to a mail send/fetch
     call, after authentication already succeeded."""
@@ -333,11 +330,22 @@ class GraphMailProviderClient(MailProviderClient):
         these are real, storable files (as opposed to inline signature
         images) is mail_mapping_service.build_upload_files_from_graph_
         attachments's job, not this transport method's.
+
+        Deliberately no `$select` here: `attachments` is a polymorphic
+        collection (fileAttachment/itemAttachment/referenceAttachment)
+        and `contentBytes` only exists on the derived fileAttachment
+        type — Graph's OData parser 400s ("Could not find a property
+        named 'contentBytes' on type 'microsoft.graph.attachment'")
+        the instant it's named in a $select here, confirmed live
+        against a real message with a real attachment. Omitting
+        `$select` returns the full representation instead (including
+        `@odata.type` and `contentBytes` for a real fileAttachment),
+        which is what this method actually needs.
         """
 
         url = (
             f"{self._api_base_url}/users/{self._mailbox_address}/messages/{message_id}"
-            f"/attachments?$select={ATTACHMENT_SELECT_FIELDS}"
+            f"/attachments"
         )
 
         async with httpx.AsyncClient(timeout=30.0) as client:

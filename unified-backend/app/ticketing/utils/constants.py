@@ -1,7 +1,7 @@
 # constants.py
 
 MAX_ATTACHMENT_FILES = 10
-MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024  # 25MB
+MAX_ATTACHMENT_SIZE_BYTES = 30 * 1024 * 1024  # 30MB
 
 ATTACHMENT_MIME_BY_EXTENSION: dict[str, set[str]] = {
     "pdf": {"application/pdf"},

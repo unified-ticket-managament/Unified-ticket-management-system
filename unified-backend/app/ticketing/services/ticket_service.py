@@ -253,18 +253,17 @@ class TicketService:
         None = unrestricted (Account Manager, Site Lead, Super Admin —
         Account Manager is scoped separately, above). A list (possibly
         empty) restricts to tickets whose ticket_type is in it — each
-        Team Lead/Staff sees only their own work-specialization
-        category's shared pool. No DB lookup needed: current_user.category
-        is already eager-loaded by UserRepository.get_by_id.
+        Team Lead/Staff sees the shared pool of every category they
+        belong to (a Team Lead may now belong to more than one — see
+        root CLAUDE.md's multi-category-users section). No DB lookup
+        needed: current_user.categories is already eager-loaded by
+        UserRepository.get_by_id.
         """
 
         if current_user.role.name not in CATEGORY_SCOPED_ROLE_NAMES:
             return None
 
-        if current_user.category is None:
-            return []
-
-        return [current_user.category.category_name.value]
+        return [c.category_name.value for c in getattr(current_user, "categories", None) or []]
 
     # ---------------------------------------------------------
     # Team Lead / Staff Audit Log Scoping
@@ -1316,7 +1315,7 @@ class TicketService:
         and `ticket_types` below cost zero DB round trips to compute:
         the former is a plain role-name comparison against the
         already-loaded `current_user`, the latter reads
-        `current_user.category`, eager-loaded at auth time — neither
+        `current_user.categories`, eager-loaded at auth time — neither
         this method nor list_visible_page ever calls
         _resolve_owned_client_ids (which itself issues a real query)
         for this path anymore.

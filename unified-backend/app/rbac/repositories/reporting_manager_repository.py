@@ -110,6 +110,26 @@ class ReportingManagerRepository(BaseRepository):
         )
         return list(result.scalars().all())
 
+    async def list_account_manager_ids_among(
+        self, user_ids: list[UUID]
+    ) -> set[UUID]:
+        """
+        Which of `user_ids` appear as `account_manager_id` in at least
+        one reporting_manager_teams row — batched, one query
+        regardless of how many candidate ids are passed. Used to flag
+        "is this user a Reporting Manager at all" on the Users page.
+        """
+
+        if not user_ids:
+            return set()
+
+        result = await self.db.execute(
+            select(ReportingManagerTeam.account_manager_id).where(
+                ReportingManagerTeam.account_manager_id.in_(user_ids)
+            )
+        )
+        return set(result.scalars().all())
+
     async def delete(self, mapping: ReportingManagerTeam) -> None:
         await self.db.delete(mapping)
         await self.db.flush()
