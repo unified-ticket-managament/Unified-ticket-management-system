@@ -10,22 +10,35 @@ export const api = axios.create({
 
 let refreshPromise: Promise<string | null> | null = null;
 
-const getStoredTokens = () => {
-  if (typeof window === "undefined") return { access: null, refresh: null };
-  return {
-    access: localStorage.getItem("access_token"),
-    refresh: localStorage.getItem("refresh_token"),
-  };
-};
+// Tokens are cached in-memory per tab, seeded once from localStorage at
+// module load, rather than re-read from localStorage on every request.
+// localStorage is shared across every tab of the same browser origin —
+// reading it fresh per-request meant a login in one tab silently
+// reassigned an already-open tab's identity on its very next request
+// (including a real write, e.g. an Internal Note's sender), without any
+// reload. Seeding once at load still lets a freshly opened tab pick up
+// whatever's currently logged in; only an already-open tab's mid-session
+// identity is now stable until that tab's own login/refresh/logout.
+let cachedTokens: { access: string | null; refresh: string | null } =
+  typeof window === "undefined"
+    ? { access: null, refresh: null }
+    : {
+        access: localStorage.getItem("access_token"),
+        refresh: localStorage.getItem("refresh_token"),
+      };
+
+export const getStoredTokens = () => cachedTokens;
 
 export const setTokens = (accessToken: string, refreshToken: string) => {
   localStorage.setItem("access_token", accessToken);
   localStorage.setItem("refresh_token", refreshToken);
+  cachedTokens = { access: accessToken, refresh: refreshToken };
 };
 
 export const clearTokens = () => {
   localStorage.removeItem("access_token");
   localStorage.removeItem("refresh_token");
+  cachedTokens = { access: null, refresh: null };
 };
 
 api.interceptors.request.use((config: InternalAxiosRequestConfig) => {

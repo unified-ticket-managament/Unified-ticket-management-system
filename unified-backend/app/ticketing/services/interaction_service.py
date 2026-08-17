@@ -907,7 +907,6 @@ class InteractionService:
         await ensure_account_manager_owns_ticket_client(
             ticket, current_user, self.client_repository
         )
-        ensure_has_permission(current_user, "ticket:reply")
         ensure_has_permission(current_user, "communication:reply_internal")
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(

@@ -1,5 +1,5 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from "axios";
-import rbacApi, { clearTokens, setTokens } from "@/lib/api";
+import rbacApi, { clearTokens, getStoredTokens, setTokens } from "@/lib/api";
 
 // ==========================================================
 // Axios instance pointed at the Ticketing routes, which since the
@@ -8,7 +8,9 @@ import rbacApi, { clearTokens, setTokens } from "@/lib/api";
 // instead of under /api/v1 (see unified-backend/app/main.py). Kept as
 // a separate axios instance (rather than reusing `rbacApi`) because
 // the base URL and interceptor behavior still differ; both share the
-// same localStorage tokens since they're the same origin/app.
+// same in-memory token cache (see @/lib/api's getStoredTokens/setTokens/
+// clearTokens) since they're the same origin/app and must never diverge
+// on which identity is currently authenticated in this tab.
 // `rbacApi` is reused only for the actual refresh call below.
 // ==========================================================
 
@@ -21,14 +23,6 @@ export const apiClient = axios.create({
     "Content-Type": "application/json",
   },
 });
-
-const getStoredTokens = () => {
-  if (typeof window === "undefined") return { access: null, refresh: null };
-  return {
-    access: localStorage.getItem("access_token"),
-    refresh: localStorage.getItem("refresh_token"),
-  };
-};
 
 apiClient.interceptors.request.use((config: InternalAxiosRequestConfig) => {
   const { access } = getStoredTokens();

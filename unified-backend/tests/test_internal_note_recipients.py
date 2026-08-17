@@ -414,3 +414,63 @@ async def test_sender_still_needs_permission_to_add_note(db_session):
             staff,
         )
     assert exc_info.value.status_code == 403
+
+
+# ---------------------------------------------------------------
+# Regression: Reply Internal (communication:reply_internal) must be
+# independent of ticket:reply (the client-facing Reply permission) —
+# see add_internal_note, which used to (incorrectly) require both.
+#
+# Sender is Account Manager here, not Staff/Team Lead — deliberately,
+# to isolate this permission check from a separate, pre-existing,
+# unrelated issue: ensure_agent_can_view_ticket's category-scoped
+# branch (access_control.py) lazy-loads current_user.categories,
+# which MissingGreenlet-crashes for every Staff/Team Lead sender in
+# this test file today (confirmed pre-existing — reproduces
+# identically on this file's Staff-sender tests with none of this
+# section's changes applied). Account Manager/Site Lead/Super Admin
+# senders return before that branch (role not in
+# CATEGORY_SCOPED_ROLE_NAMES), so they exercise the ticket:reply /
+# communication:reply_internal check cleanly without tripping over
+# that unrelated bug.
+# ---------------------------------------------------------------
+
+
+async def test_reply_internal_permission_alone_is_sufficient(db_session):
+    account_manager = await _get_user_by_role(db_session, "Account Manager")
+    staff = await _get_user_by_role(db_session, "Staff")
+    _client, ticket = await _make_ticket_for_sender(db_session, account_manager)
+
+    # Only communication:reply_internal — no ticket:reply at all.
+    account_manager.permissions = ["communication:reply_internal", "ticket:editown_ticket"]
+    service = _build_interaction_service(db_session)
+    response = await service.add_internal_note(
+        ticket.ticket_id,
+        InternalNoteCreate(
+            subject="test", note="test note", recipient_user_ids=[staff.user_id]
+        ),
+        account_manager,
+    )
+    assert response.recipient_user_ids == [staff.user_id]
+
+
+async def test_ticket_reply_alone_is_not_sufficient_for_internal_note(db_session):
+    account_manager = await _get_user_by_role(db_session, "Account Manager")
+    staff = await _get_user_by_role(db_session, "Staff")
+    _client, ticket = await _make_ticket_for_sender(db_session, account_manager)
+
+    # ticket:reply present, communication:reply_internal absent — must
+    # 403 naming the correct (internal-note) permission, not fall
+    # through as if ticket:reply alone were enough.
+    account_manager.permissions = ["ticket:reply", "ticket:editown_ticket"]
+    service = _build_interaction_service(db_session)
+    with pytest.raises(HTTPException) as exc_info:
+        await service.add_internal_note(
+            ticket.ticket_id,
+            InternalNoteCreate(
+                subject="test", note="test note", recipient_user_ids=[staff.user_id]
+            ),
+            account_manager,
+        )
+    assert exc_info.value.status_code == 403
+    assert "communication:reply_internal" in exc_info.value.detail

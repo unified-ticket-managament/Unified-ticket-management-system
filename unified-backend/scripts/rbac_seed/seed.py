@@ -85,7 +85,7 @@ DEFAULT_PERMISSIONS = [
     ("ticket:change_priority", "Change how urgent a ticket is marked"),
     ("ticket:change_category", "Change what type of issue a ticket is filed under"),
     ("ticket:change_sla", "Adjust the response/resolution time target on a ticket"),
-    ("ticket:reply", "Reply to tickets and add internal notes"),
+    ("ticket:reply", "Reply to tickets"),
     ("ticket:editown_ticket", "Edit tickets assigned to yourself"),
     ("ticket:editother_ticket", "Edit tickets assigned to other agents — lets more than one person work the same ticket"),
     ("ticket:update_status", "Change ticket status"),
