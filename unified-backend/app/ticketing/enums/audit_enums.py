@@ -27,6 +27,12 @@ class AuditEventType(str, Enum):
     STATUS_CHANGED = "STATUS_CHANGED"
     PRIORITY_CHANGED = "PRIORITY_CHANGED"
     AGENT_TRANSFERRED = "AGENT_TRANSFERRED"
+    # A ticket's current-working-category move (Ticket.ticket_type),
+    # written alongside AGENT_TRANSFERRED by the same transfer_agent
+    # call when the caller selects a destination category different
+    # from the ticket's current one — see root CLAUDE.md's "Cross-
+    # Category Ticket Transfer" section.
+    CATEGORY_TRANSFERRED = "CATEGORY_TRANSFERRED"
     # Closing/reopening used to be logged as a generic STATUS_CHANGED
     # row — these are dedicated events for the new Close Ticket/Reopen
     # Ticket actions (InteractionService.close_ticket/reopen_ticket),

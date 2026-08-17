@@ -79,6 +79,7 @@ const sourceLabels: Record<string, string> = {
   STATUS_CHANGE: "Internal System",
   PRIORITY_CHANGE: "Internal System",
   AGENT_TRANSFER: "Internal System",
+  CATEGORY_TRANSFER: "Internal System",
   ATTACHMENT: "File Upload",
 };
 

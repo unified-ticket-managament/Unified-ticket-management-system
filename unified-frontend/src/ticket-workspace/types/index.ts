@@ -500,6 +500,7 @@ export interface UnrelateTicketResponse {
 export interface TransferAgentRequest {
   new_agent_id: string;
   reason: string;
+  category_name?: string;
 }
 
 export interface TicketUpdateRequest {
@@ -722,6 +723,7 @@ export type AuditEventType =
   | "STATUS_CHANGED"
   | "PRIORITY_CHANGED"
   | "AGENT_TRANSFERRED"
+  | "CATEGORY_TRANSFERRED"
   | "INTERACTION_HIDDEN"
   | "ATTACHMENT_UPLOADED"
   | "NOTE_ADDED"

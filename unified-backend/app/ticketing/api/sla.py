@@ -10,6 +10,9 @@ from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import InteractionRepository
+from app.ticketing.repositories.ticket_escalation_repository import (
+    TicketEscalationRepository,
+)
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.assignment import AssignableAgentsResponse
@@ -22,8 +25,7 @@ from app.ticketing.schemas.sla import (
 )
 from app.ticketing.schemas.ticket_action import TicketActionResponse
 from app.ticketing.services.access_control import (
-    ensure_account_manager_owns_ticket_client,
-    ensure_agent_can_view_ticket,
+    ensure_agent_can_view_ticket_including_escalated,
 )
 from app.ticketing.services.escalation_service import build_escalation_service
 from app.ticketing.services.interaction_service import InteractionService
@@ -63,6 +65,7 @@ async def get_ticket_sla(
 
     ticket_repository = TicketRepository(db)
     client_repository = ClientRepository(db)
+    ticket_escalation_repository = TicketEscalationRepository(db)
 
     ticket = await ticket_repository.get_by_id(ticket_id)
     if ticket is None:
@@ -70,9 +73,8 @@ async def get_ticket_sla(
             status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found."
         )
 
-    ensure_agent_can_view_ticket(ticket, current_user)
-    await ensure_account_manager_owns_ticket_client(
-        ticket, current_user, client_repository
+    await ensure_agent_can_view_ticket_including_escalated(
+        ticket, current_user, client_repository, ticket_escalation_repository
     )
 
     sla_service = build_sla_service(db)

@@ -10,6 +10,14 @@ from fastapi import status as http_status
 from sqlalchemy.exc import IntegrityError
 
 from shared_models.models import User
+from shared_models.models.category import CategoryName
+
+# Valid values of the category_name_enum Postgres type — same
+# validate-in-Python-before-querying idiom as UserRepository's own
+# _VALID_CATEGORY_NAMES, used here to reject a nonexistent destination
+# category with a precise error rather than the indirect "no user
+# found in that category" one.
+_CATEGORY_NAME_VALUES = {member.value for member in CategoryName}
 
 from app.core.config import get_settings
 from app.ticketing.repositories.client_repository import ClientRepository
@@ -17,6 +25,9 @@ from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
+from app.ticketing.repositories.ticket_escalation_repository import (
+    TicketEscalationRepository,
+)
 from app.ticketing.repositories.ticket_repository import (
     TicketRepository,
 )
@@ -70,6 +81,7 @@ from app.ticketing.services.access_control import (
     ensure_agent_can_act_on_ticket,
     ensure_agent_can_view_pending_interaction,
     ensure_agent_can_view_ticket,
+    ensure_agent_can_view_ticket_including_escalated,
     ensure_can_close_ticket,
     ensure_can_compose_for_client,
     ensure_can_reassign_ticket,
@@ -197,6 +209,7 @@ class InteractionService:
         notification_service: NotificationService | None = None,
         sla_service: SLAService | None = None,
         escalation_service: EscalationService | None = None,
+        ticket_escalation_repository: TicketEscalationRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
@@ -210,6 +223,12 @@ class InteractionService:
         self.notification_service = notification_service
         self.sla_service = sla_service
         self.escalation_service = escalation_service
+        # Optional — only supplied by the three read routes that need the
+        # ticket:view_escalated visibility widening (timeline/attachments/
+        # audit-logs); every other caller omits it and gets the ordinary,
+        # narrower ensure_agent_can_view_ticket check, matching this
+        # class's existing optional-repository convention.
+        self.ticket_escalation_repository = ticket_escalation_repository
 
     def _escalation_handling_sla_repository_or_none(self):
         """
@@ -343,9 +362,8 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
 
-        ensure_agent_can_view_ticket(ticket, current_user)
-        await ensure_account_manager_owns_ticket_client(
-            ticket, current_user, self.client_repository
+        await ensure_agent_can_view_ticket_including_escalated(
+            ticket, current_user, self.client_repository, self.ticket_escalation_repository
         )
 
         interactions = (
@@ -439,9 +457,8 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
 
-        ensure_agent_can_view_ticket(ticket, current_user)
-        await ensure_account_manager_owns_ticket_client(
-            ticket, current_user, self.client_repository
+        await ensure_agent_can_view_ticket_including_escalated(
+            ticket, current_user, self.client_repository, self.ticket_escalation_repository
         )
 
         if self.attachment_repository is None or self.storage_service is None:
@@ -532,11 +549,11 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
 
-        ensure_agent_can_view_ticket(ticket, current_user)
-        await ensure_account_manager_owns_ticket_client(
-            ticket, current_user, self.client_repository
+        viewable_via_escalation = await ensure_agent_can_view_ticket_including_escalated(
+            ticket, current_user, self.client_repository, self.ticket_escalation_repository
         )
-        ensure_has_permission(current_user, "ticket:view_audit_trail")
+        if not viewable_via_escalation:
+            ensure_has_permission(current_user, "ticket:view_audit_trail")
 
         audit_logs = await self.audit_log_repository.list_by_ticket(ticket_id)
 
@@ -2238,7 +2255,7 @@ class InteractionService:
     # ---------------------------------------------------------
 
     async def get_transfer_candidates(
-        self, ticket_id: UUID, current_user: User
+        self, ticket_id: UUID, current_user: User, category_name: str | None = None
     ) -> AssignableAgentsResponse:
         """
         Every active, agent-capable user other than the ticket's
@@ -2251,11 +2268,23 @@ class InteractionService:
         `me` is always returned — the frontend decides whether to
         render "Myself" based on the caller's own role, unchanged from
         before this method was widened.
+
+        `category_name` is an optional, purely additive narrowing on
+        top of the above — a UI convenience for finding a specific
+        category's people faster, never a replacement for the existing
+        authorization gates above. When omitted, behavior is
+        byte-identical to before this filter existed.
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_agent_can_view_ticket(ticket, current_user)
         ensure_can_reassign_ticket(current_user)
+
+        category_user_ids: set[UUID] | None = None
+        if category_name:
+            category_user_ids = await self.user_repository.list_active_user_ids_by_category(
+                category_name
+            )
 
         current_agent_id = ticket.agent_id
         by_role: dict[str, list[User]] = {
@@ -2273,6 +2302,8 @@ class InteractionService:
             if role_name not in AGENT_ROLE_NAMES:
                 continue
             if user.user_id in (current_agent_id, current_user.user_id):
+                continue
+            if category_user_ids is not None and user.user_id not in category_user_ids:
                 continue
             by_role[role_name].append(user)
 
@@ -2309,10 +2340,20 @@ class InteractionService:
         rights on the ticket the moment this completes — the new
         agent_id fully replaces the old one, it isn't shared or
         co-owned.
+
+        When request.category_name is supplied AND differs from the
+        ticket's own current ticket_type, this is also a cross-category
+        transfer: ticket.ticket_type moves to it in the same request,
+        recorded as a separate CATEGORY_TRANSFERRED audit entry
+        alongside the usual AGENT_TRANSFERRED one. Omitting
+        category_name (or supplying the ticket's own current category)
+        leaves ticket_type untouched — byte-identical to this method's
+        pre-existing, category-blind reassignment behavior.
         """
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
+        category_will_change = bool(request.category_name) and request.category_name != ticket.ticket_type
         # Previously missing: transfer_agent had no category/client
         # visibility check at all, only the role/permission gate below
         # — a Team Lead could transfer a ticket outside their own
@@ -2351,11 +2392,38 @@ class InteractionService:
                 detail="New agent must be an active platform user.",
             )
 
-        if ticket.agent_id == new_agent.user_id:
+        # Same-agent reassignment is only meaningless (and rejected) when
+        # nothing else about the ticket is changing either — a
+        # multi-category agent already on the ticket can still submit a
+        # "transfer" that purely moves the ticket into their other
+        # category, staying its owner throughout.
+        if ticket.agent_id == new_agent.user_id and not category_will_change:
             raise HTTPException(
                 status_code=http_status.HTTP_400_BAD_REQUEST,
                 detail="Ticket is already assigned to this agent.",
             )
+
+        # The category filter is optional on the frontend picker (see
+        # get_transfer_candidates above) — but when the caller does
+        # supply one, it must not be trusted as a display-only hint.
+        # Re-derive category membership server-side exactly the same
+        # way the candidate list itself was filtered, so a request that
+        # bypasses the picker (or a mismatched category/target pair)
+        # can't silently assign outside the selected category.
+        if request.category_name:
+            if request.category_name not in _CATEGORY_NAME_VALUES:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="Destination category does not exist.",
+                )
+            category_user_ids = await self.user_repository.list_active_user_ids_by_category(
+                request.category_name
+            )
+            if new_agent.user_id not in category_user_ids:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="Selected user does not belong to the selected category.",
+                )
 
         old_agent_id = ticket.agent_id
         old_agent_name = None
@@ -2375,6 +2443,7 @@ class InteractionService:
         old_status = ticket.current_status
         new_status = resolve_status_after_assignment(old_status)
         status_will_change = new_status is not None
+        old_category = ticket.ticket_type
         update_fields: dict[str, Any] = {
             "agent_id": new_agent.user_id,
             # Who performed this reassignment — current_user, not
@@ -2384,6 +2453,8 @@ class InteractionService:
         }
         if status_will_change:
             update_fields["current_status"] = new_status
+        if category_will_change:
+            update_fields["ticket_type"] = request.category_name
 
         await self.ticket_repository.update(
             ticket,
@@ -2424,6 +2495,26 @@ class InteractionService:
             old_values=old_values,
             new_values=new_values,
         )
+
+        # Cross-category transfer — a second, dedicated audit entry for
+        # the category move itself, written in the same request as the
+        # AGENT_TRANSFERRED entry above (one user action, two distinct
+        # facts). audit_to_interaction.py synthesizes this into its own
+        # "Category Transferred" Timeline row, same mechanism as
+        # AGENT_TRANSFER already uses — no Interaction row, no new
+        # timeline code.
+        if category_will_change:
+            await AuditLogService.log_event(
+                self.ticket_repository.db,
+                entity_type=AuditEntityType.TICKET,
+                entity_id=ticket_id,
+                event_type=AuditEventType.CATEGORY_TRANSFERRED,
+                actor_id=actor_id,
+                actor_name=actor_name,
+                actor_role=actor_role,
+                old_values={"ticket_type": old_category},
+                new_values={"ticket_type": request.category_name, "reason": request.reason},
+            )
 
         if self.notification_service is not None:
             await self.notification_service.notify(
@@ -2473,10 +2564,15 @@ class InteractionService:
                 ticket_id, current_user
             )
 
+        message = (
+            f"Ticket transferred to {new_agent.name} in {request.category_name}."
+            if category_will_change
+            else f"Ticket transferred to {new_agent.name}."
+        )
         return TicketActionResponse(
             interaction_id=None,
             ticket_id=ticket_id,
-            message=f"Ticket transferred to {new_agent.name}.",
+            message=message,
             created_at=datetime.now(timezone.utc),
         )
 
@@ -2631,17 +2727,18 @@ class InteractionService:
         owner" and routed to EscalationService.confirm_assignment —
         the one branch that never calls transfer_agent, since transfer_agent
         itself 400s on "already assigned to this agent". Any other
-        assignee_id is routed through this class's own transfer_agent,
-        which re-validates the candidate against the full
-        role/category rules EscalationService.get_acknowledge_candidates
-        already offers the caller (self, Team Lead, Site Lead, or
-        Account Manager during an active escalation, or an ordinary
-        same-category Staff member) and performs the actual
-        reassignment, audit log, and notifications — then itself calls
-        acknowledge_via_assignment, which is what actually marks the
-        escalation accepted and starts the Resolution/handling SLA
-        clocks (see EscalationService._complete_acceptance). Nothing
-        about transfer_agent's own business rules changes here.
+        assignee_id is checked below against EscalationService.
+        is_valid_acknowledge_target (the same role/category resolver
+        get_acknowledge_candidates offers the caller) before being
+        routed through this class's own transfer_agent, which performs
+        the actual reassignment, audit log, and notifications — then
+        itself calls acknowledge_via_assignment, which is what actually
+        marks the escalation accepted and starts the Resolution/handling
+        SLA clocks (see EscalationService._complete_acceptance).
+        transfer_agent's own target check stays deliberately wider (any
+        active agent-capable user, for ordinary non-escalation
+        reassignment) — the role/category narrowing for escalation
+        acceptance specifically lives here, not there.
         """
 
         if self.escalation_service is None:
@@ -2696,6 +2793,14 @@ class InteractionService:
             raise HTTPException(
                 status_code=http_status.HTTP_403_FORBIDDEN,
                 detail="Reporting managers cannot assign this ticket to themselves.",
+            )
+
+        if not await self.escalation_service.is_valid_acknowledge_target(
+            ticket, current_user, assignee_id
+        ):
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Selected assignee is not eligible for this escalation.",
             )
 
         if ticket.agent_id is not None and ticket.agent_id == assignee_id:

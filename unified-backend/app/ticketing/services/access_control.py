@@ -408,6 +408,47 @@ async def ensure_account_manager_owns_ticket_client(
         )
 
 
+async def ensure_agent_can_view_ticket_including_escalated(
+    ticket: Ticket,
+    current_user: User,
+    client_repository,
+    escalation_repository=None,
+) -> bool:
+    """
+    Same gate as ensure_agent_can_view_ticket + ensure_account_manager_owns_
+    ticket_client, with the one additional escape hatch ticket_service.
+    get_by_id already applies to the ticket-detail read itself: a caller
+    holding ticket:view_escalated may also view this ticket's read-only
+    sub-resources (timeline, attachments, audit logs, SLA/escalation
+    state) whenever it currently has an active (non-CLOSED) escalation,
+    regardless of category/client-ownership scoping. `escalation_repository`
+    is optional — a caller that omits it just never gets the widening
+    (falls through to the ordinary, narrower check), matching this file's
+    existing "optional repository -> narrower fallback, never a bypass"
+    idiom.
+
+    Returns True when access was granted purely via the escalation
+    override, so a caller with an additional permission check of its own
+    (e.g. get_ticket_audit_logs' ticket:view_audit_trail) can decide
+    whether to also skip that check for this one escalated ticket.
+    """
+
+    if escalation_repository is not None and has_permission(
+        current_user, "ticket:view_escalated"
+    ):
+        escalation = await escalation_repository.get_active_by_ticket_id(
+            ticket.ticket_id
+        )
+        if escalation is not None:
+            return True
+
+    ensure_agent_can_view_ticket(ticket, current_user)
+    await ensure_account_manager_owns_ticket_client(
+        ticket, current_user, client_repository
+    )
+    return False
+
+
 async def ensure_agent_can_view_pending_interaction(
     interaction,
     current_user: User,

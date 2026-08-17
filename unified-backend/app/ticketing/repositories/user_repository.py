@@ -231,6 +231,32 @@ class UserRepository:
         )
         return list(result.scalars().all())
 
+    async def list_active_user_ids_by_category(self, category_name: str) -> set[UUID]:
+        """
+        Every active user's id (any role) belonging to category_name via
+        the many-to-many user_categories relationship — same
+        validate-before-querying idiom as list_active_by_role_and_category
+        (an invalid category_name just means "no one to find," never a
+        Postgres enum-cast error). Used to narrow an already-authorized
+        candidate set (e.g. InteractionService.get_transfer_candidates) by
+        category without a per-role join.
+        """
+
+        if category_name not in _VALID_CATEGORY_NAMES:
+            return set()
+
+        result = await self.db.execute(
+            select(User.user_id)
+            .join(user_categories, user_categories.c.user_id == User.user_id)
+            .join(Category, Category.category_id == user_categories.c.category_id)
+            .where(
+                User.is_active.is_(True),
+                Category.category_name == category_name,
+            )
+            .distinct()
+        )
+        return set(result.scalars().all())
+
     async def list_active_by_role_and_manager(
         self, role_name: str, manager_id: UUID
     ) -> list[User]:

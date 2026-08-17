@@ -13,6 +13,7 @@ const EVENT_META: Record<AuditEventType, AuditEventMeta> = {
   STATUS_CHANGED: { icon: "⚙", label: "Status Changed", tone: "info" },
   PRIORITY_CHANGED: { icon: "🔥", label: "Priority Changed", tone: "danger" },
   AGENT_TRANSFERRED: { icon: "🔁", label: "Agent Assigned", tone: "accent" },
+  CATEGORY_TRANSFERRED: { icon: "🔀", label: "Category Transferred", tone: "info" },
   INTERACTION_HIDDEN: { icon: "🙈", label: "Interaction Hidden", tone: "warning" },
   ATTACHMENT_UPLOADED: { icon: "📎", label: "Attachment Uploaded", tone: "default" },
   NOTE_ADDED: { icon: "📝", label: "Note Added", tone: "warning" },

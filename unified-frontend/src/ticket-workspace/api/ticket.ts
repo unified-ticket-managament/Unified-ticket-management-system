@@ -206,17 +206,18 @@ export async function updateTicket(
   return data;
 }
 
-// GET /tickets/{ticket_id}/transfer-candidates — role- and
-// hierarchy-scoped for THIS ticket (self, company-wide Team
-// Leads/Site Leads, category-matched Account Manager during an active
-// escalation, category-matched Staff) — mirrors transfer_agent's own
-// acceptance rules exactly, unlike the old flat GET /agents Staff-only
-// list this replaces here.
+// GET /tickets/{ticket_id}/transfer-candidates — every active,
+// agent-capable user, any role/category/hierarchy, optionally narrowed
+// to one category via `categoryName` (a purely additive UI filter — the
+// backend re-validates category membership independently on submit,
+// see transferTicketAgent below).
 export async function getTransferCandidates(
-  ticketId: string
+  ticketId: string,
+  categoryName?: string
 ): Promise<AssignableAgentsResponse> {
   const { data } = await apiClient.get<AssignableAgentsResponse>(
-    `/tickets/${ticketId}/transfer-candidates`
+    `/tickets/${ticketId}/transfer-candidates`,
+    { params: categoryName ? { category_name: categoryName } : undefined }
   );
   return data;
 }

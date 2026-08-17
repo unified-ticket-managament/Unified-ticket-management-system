@@ -15,6 +15,7 @@ const TYPE_META: Record<string, InteractionTypeMeta> = {
   PRIORITY_CHANGE: { icon: "🔥", label: "Priority Change", tone: "danger" },
   ATTACHMENT: { icon: "📎", label: "Attachment", tone: "default" },
   AGENT_TRANSFER: { icon: "🔁", label: "Agent Assigned", tone: "info" },
+  CATEGORY_TRANSFER: { icon: "🔀", label: "Category Transferred", tone: "info" },
   CLAIM: { icon: "🙌", label: "Ticket Claimed", tone: "success" },
   EDIT_ACCESS_REQUESTED: { icon: "🙏", label: "Edit Access Requested", tone: "warning" },
   EDIT_ACCESS_APPROVED: { icon: "🤝", label: "Edit Access Approved", tone: "success" },
@@ -37,6 +38,7 @@ export const RETIRED_INTERACTION_TYPES = new Set([
   "STATUS_CHANGE",
   "PRIORITY_CHANGE",
   "AGENT_TRANSFER",
+  "CATEGORY_TRANSFER",
   "CLAIM",
   "EDIT_ACCESS_REQUESTED",
   "EDIT_ACCESS_APPROVED",
@@ -67,6 +69,10 @@ export function summarize(interaction: InteractionResponse): string {
     }
     case "AGENT_TRANSFER": {
       const base = `${payload.from_agent_name ?? "Unassigned"} → ${payload.to_agent_name ?? "?"}`;
+      return payload.reason ? `${base} (${payload.reason as string})` : base;
+    }
+    case "CATEGORY_TRANSFER": {
+      const base = `${payload.from_category ?? "?"} → ${payload.to_category ?? "?"}`;
       return payload.reason ? `${base} (${payload.reason as string})` : base;
     }
     case "CLAIM":

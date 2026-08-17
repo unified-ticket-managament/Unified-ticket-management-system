@@ -23,6 +23,7 @@ from app.ticketing.models.resolution_sla import ResolutionSLA
 from app.ticketing.models.ticket import Ticket
 from app.ticketing.models.ticket_escalation import TicketEscalation
 from app.ticketing.repositories.audit_log_repository import AuditLogRepository
+from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.resolution_sla_repository import ResolutionSLARepository
 from app.ticketing.repositories.sla_policy_repository import SLAPolicyRepository
 from app.ticketing.repositories.ticket_escalation_repository import (
@@ -41,6 +42,7 @@ from app.ticketing.schemas.ticket_action import TicketActionResponse
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
     AGENT_ROLE_NAMES,
+    GLOBAL_INBOX_ROLE_NAMES,
     SITE_LEAD_ROLE_NAME,
     STAFF_ROLE_NAME,
     SUPER_ADMIN_ROLE_NAME,
@@ -1054,22 +1056,108 @@ class EscalationService:
         candidates = await self._resolve_category_account_managers(ticket.ticket_type)
         return any(u.user_id == candidate_id for u in candidates)
 
+    async def _resolve_acknowledge_group_users(
+        self, ticket: Ticket, current_user: User
+    ) -> tuple[list[AssignableGroup], set[UUID]]:
+        """
+        Role- and escalated-ticket-category-eligible Acknowledge & Assign
+        candidates — restores the per-role/category design this method
+        originally had (before an unrelated Transfer-widening commit
+        flattened it to "every active user, any role"), with one
+        deliberate change from that original design: the Site Lead/Super
+        Admin "Account Manager" entry is the escalated ticket's own
+        client-owning Account Manager (Client.account_manager_id) —
+        never the Reporting-Manager-to-category mapping
+        (_resolve_category_account_managers above) — since this
+        role-based filtering is explicitly independent of the Reporting
+        Manager flow:
+
+        - Team Lead: that category's Staff.
+        - Account Manager: that category's Team Lead(s) and Staff — not
+          narrowed to their own direct reports; any of that category's
+          Team Leads is a valid hand-off target.
+        - Site Lead / Super Admin: that category's Team Lead(s) and
+          Staff, plus the escalated ticket's own client's Account
+          Manager.
+        - Any other role (Staff): no candidates — Staff was never given
+          escalation-assignment capability.
+
+        Returns both the display groups (for get_acknowledge_candidates)
+        and the flat set of every eligible user_id, including the
+        caller's own ("Myself" is always structurally valid), so
+        is_valid_acknowledge_target can re-check a submitted assignee
+        against the exact same source of truth without duplicating this
+        resolution logic.
+        """
+
+        role_name = current_user.role.name
+        groups: list[AssignableGroup] = []
+        eligible_ids: set[UUID] = {current_user.user_id}
+
+        def add(role_label: str, users: list[User]) -> None:
+            filtered = [u for u in users if u.user_id != current_user.user_id]
+            if filtered:
+                groups.append(_to_assignable_group(role_label, filtered))
+            eligible_ids.update(u.user_id for u in filtered)
+
+        if role_name == TEAM_LEAD_ROLE_NAME:
+            add(
+                STAFF_ROLE_NAME,
+                await self.user_repository.list_active_by_role_and_category(
+                    STAFF_ROLE_NAME, ticket.ticket_type
+                ),
+            )
+
+        elif role_name == ACCOUNT_MANAGER_ROLE_NAME:
+            add(
+                TEAM_LEAD_ROLE_NAME,
+                await self.user_repository.list_active_by_role_and_category(
+                    TEAM_LEAD_ROLE_NAME, ticket.ticket_type
+                ),
+            )
+            add(
+                STAFF_ROLE_NAME,
+                await self.user_repository.list_active_by_role_and_category(
+                    STAFF_ROLE_NAME, ticket.ticket_type
+                ),
+            )
+
+        elif role_name in GLOBAL_INBOX_ROLE_NAMES:
+            add(
+                TEAM_LEAD_ROLE_NAME,
+                await self.user_repository.list_active_by_role_and_category(
+                    TEAM_LEAD_ROLE_NAME, ticket.ticket_type
+                ),
+            )
+            add(
+                STAFF_ROLE_NAME,
+                await self.user_repository.list_active_by_role_and_category(
+                    STAFF_ROLE_NAME, ticket.ticket_type
+                ),
+            )
+            if ticket.client_company_id is not None:
+                client_repository = ClientRepository(self.ticket_repository.db)
+                client = await client_repository.get_by_id(ticket.client_company_id)
+                if client is not None and client.account_manager_id is not None:
+                    account_manager = await self.user_repository.get_by_id(
+                        client.account_manager_id
+                    )
+                    if account_manager is not None and account_manager.is_active:
+                        add(ACCOUNT_MANAGER_ROLE_NAME, [account_manager])
+
+        return groups, eligible_ids
+
     async def get_acknowledge_candidates(
         self, ticket_id: UUID, current_user: User
     ) -> AssignableAgentsResponse:
         """
         Who the caller may hand this escalated ticket to when
-        acknowledging it — every active, agent-capable user other than
-        the ticket's current agent and the caller themselves, grouped
-        by role. This is the exact same "existing assignment
-        permissions" InteractionService.get_transfer_candidates already
-        offers for an ordinary reassignment (any active, agent-capable
-        user, any role/category/hierarchy — see that method's own
-        docstring), reused here rather than standing up a second,
-        escalation-specific candidate table. ensure_can_reassign_ticket
-        is the same reason: an escalation owner who couldn't reassign
-        an ordinary ticket shouldn't be shown a candidate list here they
-        can't actually act on either.
+        acknowledging it — role- and escalated-ticket-category-scoped,
+        computed by _resolve_acknowledge_group_users above.
+        ensure_can_reassign_ticket is kept as an additional gate: an
+        escalation owner who couldn't reassign an ordinary ticket
+        shouldn't be shown a candidate list here they can't actually
+        act on either.
 
         The caller's own "assign to myself" option is the separate `me`
         field, never included in `groups` — and is omitted entirely
@@ -1096,30 +1184,7 @@ class EscalationService:
             ticket_id
         )
 
-        current_agent_id = ticket.agent_id
-        by_role: dict[str, list[User]] = {
-            role_name: []
-            for role_name in (
-                STAFF_ROLE_NAME,
-                TEAM_LEAD_ROLE_NAME,
-                ACCOUNT_MANAGER_ROLE_NAME,
-                SITE_LEAD_ROLE_NAME,
-                SUPER_ADMIN_ROLE_NAME,
-            )
-        }
-        for user in await self.user_repository.list_all_active():
-            role_name = user.role.name if user.role is not None else None
-            if role_name not in AGENT_ROLE_NAMES:
-                continue
-            if user.user_id in (current_agent_id, current_user.user_id):
-                continue
-            by_role[role_name].append(user)
-
-        groups = [
-            _to_assignable_group(role_name, users)
-            for role_name, users in by_role.items()
-            if users
-        ]
+        groups, _ = await self._resolve_acknowledge_group_users(ticket, current_user)
 
         is_reporting_manager = (
             escalation is not None
@@ -1140,6 +1205,32 @@ class EscalationService:
             ),
             groups=groups,
         )
+
+    async def is_valid_acknowledge_target(
+        self, ticket: Ticket, current_user: User, candidate_id: UUID
+    ) -> bool:
+        """
+        Re-validates a submitted Acknowledge & Assign target server-side
+        against the exact same role+category resolver
+        get_acknowledge_candidates already offers the caller — so a
+        crafted request can't hand an escalation to someone outside the
+        caller's role-scoped, category-matched candidate set. Self-assign
+        (candidate_id == current_user.user_id) is always structurally
+        valid here; the separate Reporting-Manager-cannot-self-assign
+        rule is enforced by the caller (InteractionService.
+        acknowledge_and_assign_escalation), not this method. Keeping the
+        ticket with its current, already-assigned agent (candidate_id ==
+        ticket.agent_id) is likewise always valid regardless of role/
+        category — this is the "confirm unchanged" branch (Escalation
+        Service.confirm_assignment), which changes nothing about who the
+        ticket is assigned to, so it must never be blocked by this
+        new-assignment-only eligibility rule.
+        """
+
+        if candidate_id in (current_user.user_id, ticket.agent_id):
+            return True
+        _, eligible_ids = await self._resolve_acknowledge_group_users(ticket, current_user)
+        return candidate_id in eligible_ids
 
     # ---------------------------------------------------------
     # Shared advance mechanics — the one place an escalation actually

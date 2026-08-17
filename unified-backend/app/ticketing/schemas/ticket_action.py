@@ -121,6 +121,20 @@ class TransferAgentRequest(BaseModel):
         description="Why the ticket is being transferred, recorded on the audit log.",
     )
 
+    category_name: str | None = Field(
+        default=None,
+        description=(
+            "Optional — the category the caller filtered the picker to. "
+            "When present, the backend re-validates new_agent_id actually "
+            "belongs to it, rather than trusting the frontend filter. "
+            "When it also differs from the ticket's own current "
+            "ticket_type, this becomes a cross-category transfer: the "
+            "ticket's category is moved to it (recorded as a separate "
+            "CATEGORY_TRANSFERRED audit entry) in the same request that "
+            "reassigns the agent."
+        ),
+    )
+
 
 class TicketActionResponse(ORMBase):
     """

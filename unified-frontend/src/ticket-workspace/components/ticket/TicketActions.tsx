@@ -86,7 +86,7 @@ interface TicketActionsProps {
 // permission check, and API call below is unchanged from before; only
 // the trigger markup moved.
 export function TicketActions({ onActionComplete }: TicketActionsProps) {
-  const { activeTicket } = useWorkflowContext();
+  const { activeTicket, categories } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const [modal, setModal] = useState<ActiveModal>(null);
   const [isMoreOpen, setIsMoreOpen] = useState(false);
@@ -99,6 +99,9 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   const [transferCandidatesError, setTransferCandidatesError] = useState(false);
   const [newAgentId, setNewAgentId] = useState("");
   const [transferReason, setTransferReason] = useState("");
+  // "" = no category filter (every eligible user, unchanged default
+  // behavior) — a pure additive UI narrowing, see loadTransferCandidates.
+  const [transferCategory, setTransferCategory] = useState("");
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
 
   const { run: runStatus, isLoading: isStatusLoading } = useApiAction(changeTicketStatus, {
@@ -129,12 +132,13 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   // Every active, agent-capable user other than the ticket's current
   // agent and the caller themselves (see
   // InteractionService.get_transfer_candidates's own docstring) — any
-  // role, any category, any hierarchy level. A failed fetch is tracked
-  // separately from a genuinely-empty result (transferCandidatesError)
-  // so the two don't render identically — see the Modal below.
-  function loadTransferCandidates(ticketId: string) {
+  // role, any hierarchy level, optionally narrowed to one category.
+  // A failed fetch is tracked separately from a genuinely-empty result
+  // (transferCandidatesError) so the two don't render identically —
+  // see the Modal below.
+  function loadTransferCandidates(ticketId: string, categoryName?: string) {
     setTransferCandidatesError(false);
-    getTransferCandidates(ticketId)
+    getTransferCandidates(ticketId, categoryName || undefined)
       .then((res) => {
         setTransferGroups(res.groups);
         setTransferMe(res.me);
@@ -150,6 +154,14 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
     if (!activeTicket) return;
     loadTransferCandidates(activeTicket.ticket_id);
   }, [activeTicket?.ticket_id]);
+
+  function handleTransferCategoryChange(categoryName: string) {
+    setTransferCategory(categoryName);
+    setNewAgentId("");
+    if (activeTicket) {
+      loadTransferCandidates(activeTicket.ticket_id, categoryName);
+    }
+  }
 
   useEffect(() => {
     if (!isMoreOpen) return;
@@ -281,6 +293,12 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
       firstGroupUser?.user_id ?? (canSelfAssignViaTransfer ? transferMe!.user_id : "")
     );
     setTransferReason("");
+    if (transferCategory && activeTicket) {
+      // Reopening after a previous transfer shouldn't silently keep an
+      // old category filter the user never re-confirmed.
+      setTransferCategory("");
+      loadTransferCandidates(activeTicket.ticket_id);
+    }
     openMoreItem("transfer");
   }
 
@@ -312,6 +330,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
     const result = await runTransfer(activeTicket!.ticket_id, {
       new_agent_id: newAgentId,
       reason: transferReason.trim(),
+      category_name: transferCategory || undefined,
     });
     if (result) {
       setTransferReason("");
@@ -528,57 +547,84 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
           </Button>
         }
       >
-        {transferCandidatesError ? (
-          <div className="flex flex-col gap-2">
-            <p className="text-sm text-danger">
-              Couldn't load eligible people — check your connection and try again.
+        <div className="flex flex-col gap-3">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">
+              Current Category
             </p>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => activeTicket && loadTransferCandidates(activeTicket.ticket_id)}
-            >
-              Retry
-            </Button>
+            <p className="mt-1 text-[13px] font-medium text-slate-800">
+              {activeTicket.ticket_type}
+            </p>
           </div>
-        ) : !hasTransferCandidates ? (
-          <p className="text-sm text-muted">
-            No one is currently eligible for you to
-            {isUnclaimed ? " assign this ticket to" : " transfer this ticket to"}.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-3">
-            <div>
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">
-                Current Assignee
+          <SelectInput
+            label="Category"
+            hint="Leave as All Categories to reassign without moving categories. Selecting a different category also moves this ticket into it."
+            value={transferCategory}
+            onChange={(e) => handleTransferCategoryChange(e.target.value)}
+          >
+            <option value="">All Categories</option>
+            {categories.map((c) => (
+              <option key={c.category_id} value={c.category_name}>
+                {c.category_name}
+              </option>
+            ))}
+          </SelectInput>
+
+          {transferCandidatesError ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-danger">
+                Couldn't load eligible people — check your connection and try again.
               </p>
-              <p className="mt-1 text-[13px] font-medium text-slate-800">
-                {activeTicket.agent_name ?? "Unassigned"}
-              </p>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() =>
+                  activeTicket && loadTransferCandidates(activeTicket.ticket_id, transferCategory)
+                }
+              >
+                Retry
+              </Button>
             </div>
-            <SearchableSelect
-              label={isUnclaimed ? "Assign to" : "New owner"}
-              hint="Search by name or employee ID, across every role — or open the list and pick one."
-              placeholder="Search by name or employee ID…"
-              options={transferOptions}
-              value={newAgentId}
-              onChange={setNewAgentId}
-              emptyMessage="No matching users found."
-            />
-            <TextArea
-              label="Reason"
-              hint="Why is this ticket being transferred? Recorded on the audit log."
-              value={transferReason}
-              onChange={(e) => setTransferReason(e.target.value)}
-              placeholder="e.g. Workload balancing"
-            />
-            <p className="text-[11px] text-muted">
-              {isUnclaimed
-                ? "Every person you're allowed to assign this ticket to is listed above."
-                : `${activeTicket.agent_name ?? "The current agent"} will lose all access to this ticket the moment it's transferred — ownership moves fully to the new agent.`}
+          ) : !hasTransferCandidates ? (
+            <p className="text-sm text-muted">
+              No one is currently eligible for you to
+              {isUnclaimed ? " assign this ticket to" : " transfer this ticket to"}
+              {transferCategory ? ` in ${transferCategory}` : ""}.
             </p>
-          </div>
-        )}
+          ) : (
+            <>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">
+                  Current Assignee
+                </p>
+                <p className="mt-1 text-[13px] font-medium text-slate-800">
+                  {activeTicket.agent_name ?? "Unassigned"}
+                </p>
+              </div>
+              <SearchableSelect
+                label={isUnclaimed ? "Assign to" : "New owner"}
+                hint="Search by name or employee ID, across every role — or open the list and pick one."
+                placeholder="Search by name or employee ID…"
+                options={transferOptions}
+                value={newAgentId}
+                onChange={setNewAgentId}
+                emptyMessage="No matching users found."
+              />
+              <TextArea
+                label="Reason"
+                hint="Why is this ticket being transferred? Recorded on the audit log."
+                value={transferReason}
+                onChange={(e) => setTransferReason(e.target.value)}
+                placeholder="e.g. Workload balancing"
+              />
+              <p className="text-[11px] text-muted">
+                {isUnclaimed
+                  ? "Every person you're allowed to assign this ticket to is listed above."
+                  : `${activeTicket.agent_name ?? "The current agent"} will lose all access to this ticket the moment it's transferred — ownership moves fully to the new agent.`}
+              </p>
+            </>
+          )}
+        </div>
       </Modal>
 
       <Modal

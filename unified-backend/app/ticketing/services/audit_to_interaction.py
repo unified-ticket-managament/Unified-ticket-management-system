@@ -22,6 +22,7 @@ _EVENT_TO_INTERACTION_TYPE: dict[AuditEventType, str] = {
     AuditEventType.STATUS_CHANGED: "STATUS_CHANGE",
     AuditEventType.PRIORITY_CHANGED: "PRIORITY_CHANGE",
     AuditEventType.AGENT_TRANSFERRED: "AGENT_TRANSFER",
+    AuditEventType.CATEGORY_TRANSFERRED: "CATEGORY_TRANSFER",
     AuditEventType.TICKET_CLAIMED: "CLAIM",
     AuditEventType.EDIT_ACCESS_REQUESTED: "EDIT_ACCESS_REQUESTED",
     AuditEventType.EDIT_ACCESS_APPROVED: "EDIT_ACCESS_APPROVED",
@@ -57,6 +58,12 @@ def _payload_for(log: AuditLog, interaction_type: str) -> dict:
             "to_agent_name": new.get("agent_name"),
             "reason": new.get("reason"),
         }
+    if interaction_type == "CATEGORY_TRANSFER":
+        return {
+            "from_category": old.get("ticket_type"),
+            "to_category": new.get("ticket_type"),
+            "reason": new.get("reason"),
+        }
     if interaction_type == "CLAIM":
         return {"agent_id": new.get("agent_id"), "agent_name": new.get("agent_name")}
     if interaction_type == "TICKET_CLOSED":
@@ -87,7 +94,7 @@ def synthesize_interaction_from_audit(
 ) -> TicketInteractionResponse:
     """
     Builds a TicketInteractionResponse-shaped display row from one
-    ticket_audit_logs row, for exactly the 9 retired event types that
+    ticket_audit_logs row, for exactly the retired event types that
     no longer have a real Interaction row of their own. Uses
     `log.audit_id` as the synthetic interaction_id — it's a real,
     unique UUID, just not one that exists in `interactions` (callers

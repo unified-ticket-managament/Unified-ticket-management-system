@@ -248,6 +248,7 @@ async def get_ticket_interactions(
     attachment_repository = AttachmentRepository(db)
     audit_log_repository = AuditLogRepository(db)
     client_repository = ClientRepository(db)
+    ticket_escalation_repository = TicketEscalationRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
@@ -257,6 +258,7 @@ async def get_ticket_interactions(
         storage_service=get_storage_service(),
         audit_log_repository=audit_log_repository,
         client_repository=client_repository,
+        ticket_escalation_repository=ticket_escalation_repository,
     )
 
     return await service.get_ticket_interactions(ticket_id, current_user=current_user)
@@ -277,6 +279,7 @@ async def get_ticket_attachments(
     user_repository = UserRepository(db)
     attachment_repository = AttachmentRepository(db)
     client_repository = ClientRepository(db)
+    ticket_escalation_repository = TicketEscalationRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
@@ -285,6 +288,7 @@ async def get_ticket_attachments(
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
         client_repository=client_repository,
+        ticket_escalation_repository=ticket_escalation_repository,
     )
 
     return await service.get_ticket_attachments(ticket_id, current_user=current_user)
@@ -319,6 +323,7 @@ async def get_ticket_audit_logs(
     user_repository = UserRepository(db)
     audit_log_repository = AuditLogRepository(db)
     client_repository = ClientRepository(db)
+    ticket_escalation_repository = TicketEscalationRepository(db)
 
     service = InteractionService(
         interaction_repository=interaction_repository,
@@ -326,6 +331,7 @@ async def get_ticket_audit_logs(
         user_repository=user_repository,
         audit_log_repository=audit_log_repository,
         client_repository=client_repository,
+        ticket_escalation_repository=ticket_escalation_repository,
     )
 
     return await service.get_ticket_audit_logs(ticket_id, current_user=current_user)
@@ -672,15 +678,20 @@ async def hide_ticket_interaction(
 )
 async def get_ticket_transfer_candidates(
     ticket_id: UUID,
+    category_name: str | None = Query(
+        None,
+        description=(
+            "Optional — narrow the candidate list to this category only. "
+            "See InteractionService.get_transfer_candidates's own docstring."
+        ),
+    ),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Who the caller may transfer this specific ticket to — role- and
-    hierarchy-scoped (self, company-wide Team Leads/Site Leads,
-    category-matched Account Manager during an active escalation,
-    category-matched Staff), built to mirror transfer_agent's own
-    acceptance rules exactly. See
+    Who the caller may transfer this specific ticket to — every active,
+    agent-capable user, any role/category/hierarchy, optionally narrowed
+    to one category via `category_name`. See
     InteractionService.get_transfer_candidates's own docstring.
     """
 
@@ -691,7 +702,7 @@ async def get_ticket_transfer_candidates(
         client_repository=ClientRepository(db),
         escalation_service=build_escalation_service(db),
     )
-    return await service.get_transfer_candidates(ticket_id, current_user)
+    return await service.get_transfer_candidates(ticket_id, current_user, category_name)
 
 
 @router.post(
