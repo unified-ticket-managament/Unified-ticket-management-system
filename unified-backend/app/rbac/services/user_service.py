@@ -153,6 +153,16 @@ class UserService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Reporting Manager is required.",
                 )
+            if not user_data.employee_number or not user_data.employee_number.strip():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Employee ID is required.",
+                )
+            if await self.user_repository.exists_by_employee_number(user_data.employee_number):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Employee ID already exists.",
+                )
 
         if category_ids:
             found_categories = await self.category_repository.get_by_ids(category_ids)
@@ -193,6 +203,7 @@ class UserService:
             # dropped them now that they're mandatory.
             designation=user_data.designation,
             alternate_email=user_data.alternate_email,
+            employee_number=user_data.employee_number,
         )
 
         user = await self.user_repository.create(user)

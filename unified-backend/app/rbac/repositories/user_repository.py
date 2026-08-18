@@ -195,6 +195,14 @@ class UserRepository(BaseRepository):
 
         return result.scalar_one_or_none() is not None
 
+    async def exists_by_employee_number(self, employee_number: str) -> bool:
+        result = await self.db.execute(
+            select(User.user_id)
+            .where(User.employee_number == employee_number)
+        )
+
+        return result.scalar_one_or_none() is not None
+
     async def get_by_role(
         self,
         role_id: UUID,

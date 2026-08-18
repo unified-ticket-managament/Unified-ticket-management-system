@@ -207,6 +207,10 @@ export interface UserForm {
   // DESIGNATION_REQUIRED_ROLE_NAMES.
   designation?: string | null;
   alternate_email?: string | null;
+  // Internal roles only — required server-side on create, see
+  // unified-backend/app/rbac/services/user_service.py's
+  // DESIGNATION_REQUIRED_ROLE_NAMES employee_number check.
+  employee_number?: string | null;
   // Client role only — full-replace on edit, at least one required on
   // create. Omitted entirely for every other role.
   contact_emails?: string[];

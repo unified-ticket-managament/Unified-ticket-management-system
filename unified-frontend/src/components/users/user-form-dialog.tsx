@@ -69,6 +69,7 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
       // this form (the backend derives it from the first entry here).
       category_ids: z.array(z.string()).optional(),
       designation: z.string().optional(),
+      employee_number: z.string().optional(),
       alternate_email: z
         .union([z.string().email("Enter a valid email"), z.literal("")])
         .optional(),
@@ -180,6 +181,9 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
         if (!data.designation || !data.designation.trim()) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["designation"], message: "Designation is required" });
         }
+        if (!data.employee_number || !data.employee_number.trim()) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["employee_number"], message: "Employee ID is required" });
+        }
         if (!data.alternate_email || !data.alternate_email.trim()) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -266,6 +270,7 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
       reporting_manager_id: "",
       category_ids: [],
       designation: "",
+      employee_number: "",
       alternate_email: "",
       contact_emails: [{ value: "" }],
     },
@@ -286,6 +291,7 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
         reporting_manager_id: user?.reporting_manager_id ?? "",
         category_ids: user?.category_ids ?? (user?.category_id ? [user.category_id] : []),
         designation: user?.designation ?? "",
+        employee_number: user?.employee_number ?? "",
         alternate_email: user?.alternate_email ?? "",
         contact_emails: [{ value: "" }],
       });
@@ -410,7 +416,11 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
       // Designation + Personal Email — internal roles only.
       const internalProfileFields =
         selectedRoleName && INTERNAL_ROLE_NAMES.includes(selectedRoleName)
-          ? { designation: values.designation || null, alternate_email: values.alternate_email || null }
+          ? {
+              designation: values.designation || null,
+              alternate_email: values.alternate_email || null,
+              employee_number: values.employee_number || null,
+            }
           : {};
 
       // Contact Emails — Client only, full-replace semantics on edit.
@@ -541,6 +551,20 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
             </Select>
             {errors.role_id && <p className="text-sm text-destructive">{errors.role_id.message}</p>}
           </div>
+
+          {showInternalRoleFields && (
+            <div className="space-y-2">
+              <Label htmlFor="employee_number">Employee ID</Label>
+              <Input
+                id="employee_number"
+                placeholder="266"
+                {...register("employee_number")}
+              />
+              {errors.employee_number && (
+                <p className="text-sm text-destructive">{errors.employee_number.message}</p>
+              )}
+            </div>
+          )}
 
           {showInternalRoleFields && (
             <div className="space-y-2">
