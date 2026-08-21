@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, Save, Send, Trash2, X } from "lucide-react";
-import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,9 +9,7 @@ import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
-  SelectGroup,
   SelectItem,
-  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -21,9 +18,12 @@ import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
 import { listInternalNoteRecipients } from "@tw/api/interaction";
 import { listClientContacts } from "@tw/api/clients";
+import { RecipientCombobox } from "@tw/components/common/RecipientCombobox";
+import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { htmlToPlainText } from "@tw/lib/richText";
+import { isValidEmailAddress } from "@tw/lib/validation";
 import type { ClientContact, ClientResponse, InternalNoteRecipientCandidate } from "@tw/types";
 
 const LOCAL_DRAFT_KEY = "utms-mail-compose-draft";
@@ -106,15 +106,18 @@ interface ComposeViewProps {
     files: File[];
   }) => Promise<unknown>;
   // Forward mode's own Send path — distinct from onSend since
-  // forwarding addresses an internal organization user (by user_id,
-  // resolved server-side to their real email) rather than an
-  // external client contact, and creates a different kind of
-  // communication (see InteractionService.forward_to_internal_user).
-  // Only required when initialValues.mode === "forward".
+  // forwarding can address either an internal organization user (by
+  // user_id, resolved server-side to their real email) or an
+  // arbitrary external address (recipientEmail, e.g. another
+  // client's mailbox), and creates a different kind of communication
+  // (see InteractionService.forward_to_internal_user). Exactly one of
+  // recipientUserId/recipientEmail is set. Only required when
+  // initialValues.mode === "forward".
   onForwardSend?: (payload: {
     interactionId: string;
     clientId: string;
-    recipientUserId: string;
+    recipientUserId?: string;
+    recipientEmail?: string;
     subject: string;
     message: string;
   }) => Promise<unknown>;
@@ -137,16 +140,6 @@ function parseEmails(value: string): string[] {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-}
-
-// Same validation convention as EditProfileDialog/user-form-dialog/the
-// login form (a bare `z.string().email()` check) — there's no shared
-// isValidEmail-style utility anywhere in this codebase, so this
-// mirrors those call sites rather than inventing a new one.
-const emailAddressSchema = z.string().trim().email();
-
-function isValidEmailAddress(value: string): boolean {
-  return emailAddressSchema.safeParse(value).success;
 }
 
 // View 3 — replaces the right pane in-place when Compose is clicked
@@ -232,10 +225,9 @@ export function ComposeView({
   const [bodyHtml, setBodyHtml] = useState(initialValues?.bodyHtml ?? localDraft?.bodyHtml ?? "");
   const [files, setFiles] = useState<File[]>([]);
 
-  // Forward's "To" data source — every active internal user, grouped
-  // by role. Fetched only in Forward mode (Compose's own client
-  // picker needs none of this). Grouped once, right at fetch time, so
-  // rendering never has to re-derive a user's role name.
+  // Forward's "To" data source — every active internal user. Fetched
+  // only in Forward mode (Compose's own client picker needs none of
+  // this).
   //
   // Sourced from listInternalNoteRecipients() (GET /tickets/internal-
   // notes/recipients) — the same unscoped, company-wide "every active
@@ -245,11 +237,13 @@ export function ComposeView({
   // hierarchy-scoped GET /api/v1/users + role:view-gated GET
   // /api/v1/roles) silently under-populates or empties out entirely
   // for Account Manager/Team Lead/Staff senders.
-  const [internalRecipientGroups, setInternalRecipientGroups] = useState<
-    Record<string, InternalNoteRecipientCandidate[]>
-  >({});
   const [allInternalUsers, setAllInternalUsers] = useState<InternalNoteRecipientCandidate[]>([]);
-  const [toUserId, setToUserId] = useState("");
+  // The resolved recipient — userId set only when the current value
+  // matches a known internal user (selected from the dropdown, or an
+  // exact-matching typed email); otherwise this is a genuinely custom
+  // external address and only email is set. Exactly one of the two
+  // is sent to the backend (see handleSend's forward branch).
+  const [toRecipient, setToRecipient] = useState<{ userId?: string; email: string }>({ email: "" });
 
   useEffect(() => {
     if (!isForward) return;
@@ -260,19 +254,10 @@ export function ComposeView({
         const eligible = candidates.filter(
           (u) => u.user_id !== currentUser?.user_id && INTERNAL_RECIPIENT_ROLE_ORDER.includes(u.role_name)
         );
-        const groups: Record<string, InternalNoteRecipientCandidate[]> = {};
-        for (const roleName of INTERNAL_RECIPIENT_ROLE_ORDER) groups[roleName] = [];
-        for (const user of eligible) {
-          groups[user.role_name].push(user);
-        }
         setAllInternalUsers(eligible);
-        setInternalRecipientGroups(groups);
       })
       .catch(() => {
-        if (!cancelled) {
-          setAllInternalUsers([]);
-          setInternalRecipientGroups({});
-        }
+        if (!cancelled) setAllInternalUsers([]);
       });
     return () => {
       cancelled = true;
@@ -280,11 +265,17 @@ export function ComposeView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isForward]);
 
-  function handleInternalRecipientChange(userId: string) {
-    setToUserId(userId);
-    const user = allInternalUsers.find((u) => u.user_id === userId);
-    setToEmail(user?.email ?? "");
-  }
+  const internalRecipientOptions = useMemo<RecipientOption[]>(
+    () =>
+      allInternalUsers.map((user) => ({
+        id: user.user_id,
+        label: user.name,
+        email: user.email,
+        sublabel: user.email,
+        group: user.role_name,
+      })),
+    [allInternalUsers]
+  );
 
   useEffect(() => {
     if (localDraft) {
@@ -408,11 +399,12 @@ export function ComposeView({
     if (!canSend) return;
 
     if (isForward) {
-      if (!onForwardSend || !initialValues?.interactionId || !toUserId) return;
+      if (!onForwardSend || !initialValues?.interactionId || !toRecipient.email) return;
       const result = await onForwardSend({
         interactionId: initialValues.interactionId,
         clientId,
-        recipientUserId: toUserId,
+        recipientUserId: toRecipient.userId,
+        recipientEmail: toRecipient.userId ? undefined : toRecipient.email,
         subject: subject.trim(),
         message: htmlToPlainText(bodyHtml),
       });
@@ -522,25 +514,32 @@ export function ComposeView({
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">To</label>
               {isForward ? (
-                <Select value={toUserId} onValueChange={handleInternalRecipientChange}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Choose an internal recipient" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {INTERNAL_RECIPIENT_ROLE_ORDER.filter(
-                      (roleName) => (internalRecipientGroups[roleName]?.length ?? 0) > 0
-                    ).map((roleName) => (
-                      <SelectGroup key={roleName}>
-                        <SelectLabel>{roleName}</SelectLabel>
-                        {internalRecipientGroups[roleName].map((user) => (
-                          <SelectItem key={user.user_id} value={user.user_id}>
-                            {user.name} · {user.email}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <RecipientCombobox
+                  options={internalRecipientOptions}
+                  groupOrder={INTERNAL_RECIPIENT_ROLE_ORDER}
+                  value={toRecipient.email}
+                  onChange={({ email, matchedOption }) => {
+                    setToRecipient(
+                      matchedOption
+                        ? { userId: matchedOption.id, email: matchedOption.email }
+                        : { email }
+                    );
+                    // Keeps the pre-existing canSend/invalidToEntries
+                    // validation (computed from toEmail) working
+                    // unchanged for Forward too.
+                    setToEmail(email);
+                  }}
+                  resetKey={initialValues?.interactionId ?? "compose"}
+                  placeholder="Search internal users, or type any email…"
+                  inputClassName="flex h-11 w-full rounded-lg border border-border bg-card px-4 py-2.5 pr-8 text-sm text-foreground transition-colors placeholder:text-muted-foreground focus-visible:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
+                  emptyStateLabel="No matching internal users — the typed address will be used as an external recipient."
+                  // The existing invalidToEntries block just below
+                  // (shared with non-forward Compose's own "To" field)
+                  // already renders this exact message from the same
+                  // toEmail value — showing the combobox's own inline
+                  // error too would duplicate it.
+                  showInlineError={false}
+                />
               ) : (
                 <div className="relative">
                   <div className="relative">
@@ -615,7 +614,8 @@ export function ComposeView({
               )}
               {isForward && (
                 <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
-                  Forwarding is limited to internal organization users — no external addresses.
+                  Search internal users by name or email, or type any valid email address to
+                  forward to someone outside the organization.
                 </p>
               )}
               {!isForward && (

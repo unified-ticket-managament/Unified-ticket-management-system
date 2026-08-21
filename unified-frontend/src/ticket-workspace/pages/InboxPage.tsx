@@ -171,7 +171,8 @@ export function InboxPage() {
   async function handleForwardSend(payload: {
     interactionId: string;
     clientId: string;
-    recipientUserId: string;
+    recipientUserId?: string;
+    recipientEmail?: string;
     subject: string;
     message: string;
   }) {

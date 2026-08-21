@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from app.ticketing.schemas.forward import ForwardToInternalUserRequest
 from app.ticketing.services.interaction_service import InteractionService
@@ -381,3 +382,132 @@ async def test_forward_falls_back_to_shared_mailbox_when_client_has_none():
     # From address, when the selected client has no dedicated mailbox.
     assert created.payload["envelope"]["from_email"]
     assert created.payload["envelope"]["from_email"] != ""
+
+
+def test_forward_request_rejects_both_recipient_fields():
+    """Exactly one of recipient_user_id/recipient_email is allowed —
+    supplying both must be rejected at the schema layer, before any
+    service logic runs."""
+
+    with pytest.raises(ValidationError):
+        ForwardToInternalUserRequest(
+            client_id=uuid4(),
+            recipient_user_id=uuid4(),
+            recipient_email="external@example.com",
+            subject="Fwd: test",
+            message="content",
+        )
+
+
+def test_forward_request_rejects_neither_recipient_field():
+    """Supplying neither recipient field must also be rejected — the
+    request must always pick exactly one recipient kind."""
+
+    with pytest.raises(ValidationError):
+        ForwardToInternalUserRequest(
+            client_id=uuid4(),
+            subject="Fwd: test",
+            message="content",
+        )
+
+
+async def test_forward_to_external_email_sends_real_outbound_with_no_notification():
+    """
+    A recipient_email (e.g. another client's mailbox) must be accepted
+    without any internal-identity lookup/check, must produce a real
+    outbound envelope addressed to that literal address, must never
+    call notification_service.notify (there's no platform user to
+    notify), and the response must carry recipient_user_id=None
+    alongside the literal recipient_email.
+    """
+
+    manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="FamilyFirst",
+        inbox_email="familyfirst@probeps.com",
+        account_manager_id=manager_id,
+    )
+    original = _FakeInteraction(interaction_id=uuid4(), client_id=client.client_id)
+    current_user = _FakeUser(manager_id, "Some Manager", "manager@probeps.com", "Account Manager")
+    notification_service = _FakeNotificationService()
+
+    service = _build_service(
+        original=original,
+        clients_by_id={client.client_id: client},
+        # No user rows at all — an external-email forward must never
+        # touch the user repository's lookup path.
+        users_by_id={},
+        notification_service=notification_service,
+    )
+
+    response = await service.forward_to_internal_user(
+        interaction_id=original.interaction_id,
+        request=ForwardToInternalUserRequest(
+            client_id=client.client_id,
+            recipient_email="client2@example.com",
+            subject="Fwd: Billing question",
+            message="Please see the attached billing question.",
+        ),
+        current_user=current_user,
+    )
+
+    assert response.recipient_user_id is None
+    assert response.recipient_email == "client2@example.com"
+
+    created = service.interaction_repository.created
+    assert created.payload["envelope"]["from_email"] == "familyfirst@probeps.com"
+    assert created.payload["envelope"]["to_email"] == "client2@example.com"
+    assert created.payload["recipient_kind"] == "external_email"
+    assert created.payload["recipient_email"] == "client2@example.com"
+    assert "recipient_user_id" not in created.payload
+
+    # No platform user exists to notify for an external address.
+    assert notification_service.calls == []
+
+
+async def test_forward_to_external_email_still_enforces_client_authorization():
+    """The external-email branch must still go through the exact same
+    ensure_can_compose_for_client check as the internal branch — an
+    Account Manager can't forward from a client's mailbox they don't
+    own just because the recipient is now a free-text email."""
+
+    manager_id = uuid4()
+    other_manager_id = uuid4()
+    owned_client = _FakeClient(
+        client_id=uuid4(),
+        name="Manager's Own Client",
+        inbox_email="ownclient@probeps.com",
+        account_manager_id=manager_id,
+    )
+    original = _FakeInteraction(interaction_id=uuid4(), client_id=owned_client.client_id)
+    unauthorized_client = _FakeClient(
+        client_id=uuid4(),
+        name="Someone Else's Client",
+        inbox_email="other@probeps.com",
+        account_manager_id=other_manager_id,
+    )
+    current_user = _FakeUser(manager_id, "Some Manager", "manager@probeps.com", "Account Manager")
+
+    service = _build_service(
+        original=original,
+        clients_by_id={
+            owned_client.client_id: owned_client,
+            unauthorized_client.client_id: unauthorized_client,
+        },
+        users_by_id={},
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.forward_to_internal_user(
+            interaction_id=original.interaction_id,
+            request=ForwardToInternalUserRequest(
+                client_id=unauthorized_client.client_id,
+                recipient_email="client2@example.com",
+                subject="Fwd: test",
+                message="forwarded content",
+            ),
+            current_user=current_user,
+        )
+
+    assert exc_info.value.status_code == 403

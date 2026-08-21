@@ -272,16 +272,19 @@ export async function composeEmail(
 export interface ForwardToInternalUserPayload {
   interactionId: string;
   clientId: string;
-  recipientUserId: string;
+  // Exactly one of these two is set — an internal user (resolved
+  // server-side to their own email) or an arbitrary external address.
+  recipientUserId?: string;
+  recipientEmail?: string;
   subject: string;
   message: string;
 }
 
 // POST /inbox/{interaction_id}/forward — forward an existing client
-// email to an internal organization user. Plain JSON (unlike
-// composeEmail above): no new file uploads here, only attachments
-// already stored against the original interaction are carried over
-// server-side.
+// email to either an internal organization user or an arbitrary
+// external address. Plain JSON (unlike composeEmail above): no new
+// file uploads here, only attachments already stored against the
+// original interaction are carried over server-side.
 export async function forwardToInternalUser(
   payload: ForwardToInternalUserPayload
 ): Promise<ForwardToInternalUserResponse> {
@@ -290,6 +293,7 @@ export async function forwardToInternalUser(
     {
       client_id: payload.clientId,
       recipient_user_id: payload.recipientUserId,
+      recipient_email: payload.recipientEmail,
       subject: payload.subject,
       message: payload.message,
     }

@@ -11,7 +11,11 @@ interface FieldWrapperProps {
   children?: ReactNode;
 }
 
-function FieldWrapper({ label, hint, children }: FieldWrapperProps) {
+// Exported so other composed field-like components (e.g.
+// RecipientCombobox.tsx, which isn't a plain <input>/<select> and so
+// can't just spread props onto TextInput/SelectInput) can render the
+// identical label+hint chrome instead of duplicating it.
+export function FieldWrapper({ label, hint, children }: FieldWrapperProps) {
   return (
     <label className="block">
       <span className="mb-1.5 block text-xs font-semibold text-slate-600">
@@ -23,7 +27,7 @@ function FieldWrapper({ label, hint, children }: FieldWrapperProps) {
   );
 }
 
-const fieldBase =
+export const fieldBase =
   "w-full rounded-md2 border border-border bg-surface px-3.5 py-2.5 text-sm text-slate-900 " +
   "placeholder:text-muted/60 shadow-xs transition-all duration-150 " +
   "focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";

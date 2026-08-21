@@ -4,7 +4,9 @@ import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
 import { EnvelopePreview } from "@tw/components/common/EnvelopePreview";
 import { FileDropzone } from "@tw/components/common/FileDropzone";
-import { SelectInput, TextArea, TextInput } from "@tw/components/common/FormField";
+import { TextArea, TextInput } from "@tw/components/common/FormField";
+import { RecipientCombobox } from "@tw/components/common/RecipientCombobox";
+import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
 import { UserMultiSelect } from "@tw/components/common/UserMultiSelect";
 import { validateFiles } from "@tw/lib/attachmentMeta";
 import { useApiAction } from "@tw/hooks/useApiAction";
@@ -19,6 +21,7 @@ import type { SelectableUser } from "@tw/components/common/UserMultiSelect";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import { isValidEmailAddress } from "@tw/lib/validation";
 import { showUndoSendToast } from "@tw/lib/undoSend";
 import type { ClientContact } from "@tw/types";
 // Cross-alias imports, same deliberate exception MessageDetailsView.tsx
@@ -192,16 +195,21 @@ export function TicketComposer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTicket?.ticket_id]);
 
-  const toOptions = useMemo(() => {
+  const toRecipientOptions = useMemo(() => {
     const seen = new Set<string>();
-    const options: ClientContact[] = [];
+    const options: RecipientOption[] = [];
     for (const contact of [
-      ...(fromEmail ? [{ email: fromEmail, name: null }] : []),
+      ...(fromEmail ? [{ email: fromEmail, name: null as string | null }] : []),
       ...contacts,
     ]) {
       if (seen.has(contact.email)) continue;
       seen.add(contact.email);
-      options.push(contact);
+      options.push({
+        id: contact.email,
+        label: contact.name ?? contact.email,
+        email: contact.email,
+        sublabel: contact.name ? contact.email : undefined,
+      });
     }
     return options;
   }, [contacts, fromEmail]);
@@ -226,6 +234,12 @@ export function TicketComposer({
   async function handleSend() {
     if (!activeTicket || !message.trim() || !hasComposePermission) return;
     if (!isReply && !noteSubject.trim()) return;
+    // Reply's "To" previously had no email-format validation at all
+    // (it only ever offered known contacts) — now that it also
+    // accepts a manually-typed address, an invalid one must block
+    // Send rather than silently reaching the backend's own EmailStr
+    // rejection.
+    if (isReply && selectedTo && !isValidEmailAddress(selectedTo)) return;
 
     // Reply attachments are uploaded *before* the reply itself (not
     // after) so the reply can reference them via
@@ -342,19 +356,14 @@ export function TicketComposer({
         <>
         {isReply ? (
           <>
-            {toOptions.length > 1 && (
-              <SelectInput
-                label="To"
-                value={selectedTo}
-                onChange={(e) => setSelectedTo(e.target.value)}
-              >
-                {toOptions.map((contact) => (
-                  <option key={contact.email} value={contact.email}>
-                    {contact.name ? `${contact.name} <${contact.email}>` : contact.email}
-                  </option>
-                ))}
-              </SelectInput>
-            )}
+            <RecipientCombobox
+              label="To"
+              options={toRecipientOptions}
+              value={selectedTo}
+              onChange={({ email }) => setSelectedTo(email)}
+              resetKey={activeTicket.ticket_id}
+              placeholder="Select a contact or type an email…"
+            />
             <EnvelopePreview
               senderName={currentUser?.name ?? "you"}
               viaEmail={toEmail}

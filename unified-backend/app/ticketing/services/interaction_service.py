@@ -1575,25 +1575,31 @@ class InteractionService:
         current_user: User,
     ) -> ForwardToInternalUserResponse:
         """
-        Forwards an existing client email/interaction to an internal
-        organization user — distinct from compose_email, which always
-        addresses an external client contact and creates a brand-new
-        client conversation thread. Here the recipient is one of
-        this platform's own employees, so the communication is
-        delivered via the existing Notification mechanism (see
-        NotificationType.MAIL_FORWARDED) so it appears in that
-        employee's own dashboard Inbox, rather than becoming a new
-        client-facing thread nobody's dashboard would surface.
+        Forwards an existing client email/interaction — distinct from
+        compose_email, which always addresses an external client
+        contact and creates a brand-new client conversation thread.
+        The recipient is either:
+        - an internal organization user (request.recipient_user_id):
+          the communication is delivered via the existing Notification
+          mechanism (see NotificationType.MAIL_FORWARDED) so it
+          appears in that employee's own dashboard Inbox, in addition
+          to the real outbound Graph send every branch performs; or
+        - an arbitrary external address (request.recipient_email,
+          e.g. another client's mailbox): no platform user exists to
+          notify, so only the real outbound send happens.
 
-        Both the sending mailbox (client_id) and the recipient are
-        independently re-validated here, server-side — never trusted
-        just because the frontend submitted them:
+        Both the sending mailbox (client_id) and an internal recipient
+        are independently re-validated here, server-side — never
+        trusted just because the frontend submitted them:
         - client_id must be a real, active Client this current_user is
           actually authorized to compose for (ensure_can_compose_for_client
           — the exact same rule Compose already enforces).
-        - recipient_user_id must resolve to a real, active internal
-          agent (a role in AGENT_ROLE_NAMES) — never a Client/Viewer
-          account, and never just whatever email string was posted.
+        - recipient_user_id, when supplied, must resolve to a real,
+          active internal agent (a role in AGENT_ROLE_NAMES) — never a
+          Client/Viewer account. recipient_email, when supplied
+          instead, is trusted as-is (any syntactically valid address,
+          exactly like Reply/Compose's own to_email) — it is never
+          cross-matched against an existing internal user's address.
         """
 
         original = await self.interaction_repository.get_by_id(interaction_id)
@@ -1638,18 +1644,32 @@ class InteractionService:
         # dropdown is never trusted on its own.
         ensure_can_compose_for_client(client, current_user)
 
-        recipient = await self.user_repository.get_by_id(request.recipient_user_id)
+        recipient: User | None = None
+        recipient_kind: str
+        recipient_email: str
 
-        if (
-            recipient is None
-            or not recipient.is_active
-            or recipient.role is None
-            or recipient.role.name not in AGENT_ROLE_NAMES
-        ):
-            raise HTTPException(
-                status_code=http_status.HTTP_400_BAD_REQUEST,
-                detail="Invalid internal recipient.",
-            )
+        if request.recipient_user_id is not None:
+            recipient = await self.user_repository.get_by_id(request.recipient_user_id)
+
+            if (
+                recipient is None
+                or not recipient.is_active
+                or recipient.role is None
+                or recipient.role.name not in AGENT_ROLE_NAMES
+            ):
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid internal recipient.",
+                )
+            recipient_kind = "internal_user"
+            recipient_email = recipient.email
+        else:
+            # Enforced by ForwardToInternalUserRequest's own
+            # model_validator — exactly one of recipient_user_id/
+            # recipient_email is always present.
+            assert request.recipient_email is not None
+            recipient_kind = "external_email"
+            recipient_email = request.recipient_email
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -1663,11 +1683,24 @@ class InteractionService:
 
         envelope = build_compose_envelope(
             from_email=mailbox_address,
-            to_email=recipient.email,
+            to_email=recipient_email,
             subject=request.subject,
             body=signed_message,
             agent_name=current_user.name,
         )
+
+        payload: dict = {
+            "message": signed_message,
+            "envelope": envelope.model_dump(),
+            "dispatch_status": "PENDING_SEND",
+            "recipient_kind": recipient_kind,
+            "forwarded_interaction_id": str(original.interaction_id),
+        }
+        if recipient is not None:
+            payload["recipient_user_id"] = str(recipient.user_id)
+            payload["recipient_name"] = recipient.name
+        else:
+            payload["recipient_email"] = recipient_email
 
         interaction = await self.interaction_repository.create(
             InteractionCreate(
@@ -1676,14 +1709,7 @@ class InteractionService:
                 direction=InteractionDirection.OUTBOUND,
                 status=InteractionStatus.ASSIGNED,
                 performed_by=actor_id,
-                payload={
-                    "message": signed_message,
-                    "envelope": envelope.model_dump(),
-                    "dispatch_status": "PENDING_SEND",
-                    "recipient_user_id": str(recipient.user_id),
-                    "recipient_name": recipient.name,
-                    "forwarded_interaction_id": str(original.interaction_id),
-                },
+                payload=payload,
                 is_visible=True,
                 message_id=envelope.message_id,
                 client_id=client.client_id,
@@ -1691,6 +1717,15 @@ class InteractionService:
                 subject=request.subject,
             )
         )
+
+        audit_new_values: dict = {
+            "forwarded_interaction_id": original.interaction_id,
+            "client_id": client.client_id,
+        }
+        if recipient is not None:
+            audit_new_values["recipient_user_id"] = recipient.user_id
+        else:
+            audit_new_values["recipient_email"] = recipient_email
 
         await AuditLogService.log_event(
             self.interaction_repository.db,
@@ -1704,11 +1739,7 @@ class InteractionService:
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            new_values={
-                "forwarded_interaction_id": original.interaction_id,
-                "recipient_user_id": recipient.user_id,
-                "client_id": client.client_id,
-            },
+            new_values=audit_new_values,
         )
 
         envelope = await self._merge_existing_attachments_into_envelope(
@@ -1717,7 +1748,10 @@ class InteractionService:
 
         await self._schedule_delayed_send(interaction, envelope)
 
-        if self.notification_service is not None:
+        # No platform user to notify for an external-email recipient —
+        # the real outbound send above is that recipient's only
+        # delivery mechanism.
+        if recipient is not None and self.notification_service is not None:
             await self.notification_service.notify(
                 [recipient.user_id],
                 NotificationType.MAIL_FORWARDED,
@@ -1730,8 +1764,8 @@ class InteractionService:
 
         return ForwardToInternalUserResponse(
             interaction_id=interaction.interaction_id,
-            recipient_user_id=recipient.user_id,
-            recipient_email=recipient.email,
+            recipient_user_id=recipient.user_id if recipient is not None else None,
+            recipient_email=recipient_email,
             dispatch_status="PENDING_SEND",
             created_at=interaction.created_at,
         )
