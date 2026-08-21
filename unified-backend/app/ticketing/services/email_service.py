@@ -526,6 +526,19 @@ class EmailService:
                 attachments, self.attachment_service.storage_service
             )
 
+        # OneDrive/SharePoint "Attach as cloud link" files — no real
+        # Graph attachment object exists for these at all (see
+        # mail_mapping_service.extract_cloud_link_attachments), so
+        # they're recorded separately from the real-upload branch
+        # above rather than folded into the same `files` list.
+        if email.linked_attachments:
+            linked_attachments = await self.attachment_service.create_linked_attachments(
+                created.interaction_id, email.linked_attachments
+            )
+            attachment_metas += await attachments_to_metadata(
+                linked_attachments, self.attachment_service.storage_service
+            )
+
         # ---------------------------------------
         # Response SLA: semantic OTP classification, independent of
         # any OTP Rule configuration. An email whose subject+body

@@ -24,6 +24,7 @@ from app.ticketing.schemas.attachment import (
     AttachmentMetadata,
     AttachmentUploadResponse,
 )
+from app.ticketing.schemas.email import LinkedAttachmentCandidate
 from app.ticketing.schemas.interaction import InteractionCreate
 from app.ticketing.schemas.payloads import EnvelopeAttachment
 from app.ticketing.services.access_control import (
@@ -56,6 +57,20 @@ async def attachment_to_metadata(
     attachment: Attachment,
     storage_service: StorageService,
 ) -> AttachmentMetadata:
+    if attachment.is_external_link:
+        # No real bytes, no storage_key — the "download" is just the
+        # original OneDrive/SharePoint URL, opened in a new tab rather
+        # than fetched through our own storage service.
+        return AttachmentMetadata(
+            id=attachment.attachment_id,
+            filename=attachment.filename,
+            mime_type=attachment.mime_type,
+            size=attachment.size_bytes,
+            download_url=attachment.external_url or "",
+            preview_url=None,
+            is_external_link=True,
+        )
+
     is_image = (attachment.mime_type or "").startswith("image/")
 
     download_url, preview_url = await asyncio.gather(
@@ -80,6 +95,7 @@ async def attachment_to_metadata(
         size=attachment.size_bytes,
         download_url=download_url,
         preview_url=preview_url,
+        is_external_link=False,
     )
 
 
@@ -111,6 +127,18 @@ async def load_envelope_attachments(
     loaded: list[EnvelopeAttachment] = []
 
     for attachment in attachments:
+        if attachment.is_external_link:
+            # A cloud-link reference has no real bytes to embed in an
+            # outbound Graph message — skip it rather than trying to
+            # read a storage object that was never created.
+            logger.info(
+                "Skipping external-link attachment %s (%r) on outbound send — "
+                "no real file content to embed.",
+                attachment.attachment_id,
+                attachment.filename,
+            )
+            continue
+
         if (attachment.size_bytes or 0) > GRAPH_INLINE_ATTACHMENT_MAX_BYTES:
             logger.warning(
                 "Skipping attachment %s (%r, %d bytes) on outbound send — exceeds "
@@ -275,6 +303,37 @@ class AttachmentService:
 
         return attachments
 
+    async def create_linked_attachments(
+        self,
+        interaction_id: UUID,
+        candidates: list[LinkedAttachmentCandidate],
+    ) -> list[Attachment]:
+        """
+        Records OneDrive/SharePoint "Attach as cloud link" references
+        (extracted from an inbound email's HTML body — see
+        mail_mapping_service.extract_cloud_link_attachments) as
+        Attachment rows with no real storage_key/bytes, only
+        external_url. Deliberately bypasses validate_and_store_files —
+        there is nothing to type-check, size-check, or upload; only a
+        filename+URL to persist.
+        """
+
+        attachments: list[Attachment] = []
+
+        for candidate in candidates[:MAX_ATTACHMENT_FILES]:
+            attachment = await self.attachment_repository.create(
+                AttachmentCreate(
+                    interaction_id=interaction_id,
+                    filename=sanitize_filename(candidate.filename),
+                    storage_key=None,
+                    external_url=candidate.url,
+                    is_external_link=True,
+                )
+            )
+            attachments.append(attachment)
+
+        return attachments
+
     # ---------------------------------------------------------
     # Ticket Attachment Upload
     # ---------------------------------------------------------
@@ -425,6 +484,8 @@ class AttachmentService:
         current_user: User,
     ) -> str:
         attachment = await self._resolve_and_authorize(attachment_id, current_user)
+        if attachment.is_external_link:
+            return attachment.external_url or ""
         return await self.storage_service.presigned_get_url(
             object_key=attachment.storage_key,
             filename=attachment.filename,
@@ -443,5 +504,8 @@ class AttachmentService:
         # Site Lead/Account Manager (own clients, checked above), a
         # personal override for everyone else.
         ensure_has_permission(current_user, "ticket:archive_attachment")
-        await self.storage_service.delete(object_key=attachment.storage_key)
+        # An external-link attachment has no object in our own storage
+        # to delete — only the DB row itself.
+        if not attachment.is_external_link:
+            await self.storage_service.delete(object_key=attachment.storage_key)
         await self.attachment_repository.delete(attachment)

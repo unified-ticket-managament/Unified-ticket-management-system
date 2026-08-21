@@ -1,4 +1,4 @@
-import { Download } from "lucide-react";
+import { Download, ExternalLink } from "lucide-react";
 import type { AttachmentMeta } from "@tw/types";
 import { formatBytes, iconForFilename, isImageAttachment } from "@tw/lib/attachmentMeta";
 
@@ -13,8 +13,9 @@ export function AttachmentList({ attachments, className = "" }: AttachmentListPr
   return (
     <div className={`flex flex-col gap-2 ${className}`}>
       {attachments.map((attachment) => {
-        const Icon = iconForFilename(attachment.filename);
-        const isImage = isImageAttachment(attachment);
+        const isExternal = Boolean(attachment.is_external_link);
+        const Icon = isExternal ? ExternalLink : iconForFilename(attachment.filename);
+        const isImage = !isExternal && isImageAttachment(attachment);
 
         return (
           <a
@@ -22,7 +23,8 @@ export function AttachmentList({ attachments, className = "" }: AttachmentListPr
             href={isImage ? attachment.preview_url ?? attachment.download_url : attachment.download_url}
             target="_blank"
             rel="noreferrer"
-            download={!isImage}
+            download={!isImage && !isExternal}
+            title={isExternal ? "Opens the original OneDrive/SharePoint link" : undefined}
             className="group flex items-center gap-3 rounded-md2 border border-border bg-surface px-3 py-2 text-[12px] font-medium text-slate-700 shadow-xs transition-colors hover:border-accent/30 hover:bg-accent/5"
           >
             {isImage && attachment.preview_url ? (
@@ -39,10 +41,14 @@ export function AttachmentList({ attachments, className = "" }: AttachmentListPr
             <span className="min-w-0 flex-1">
               <span className="block truncate text-slate-800">{attachment.filename}</span>
               <span className="block text-[11px] font-normal text-muted">
-                {formatBytes(attachment.size)}
+                {isExternal ? "Linked file — opens in OneDrive/SharePoint" : formatBytes(attachment.size)}
               </span>
             </span>
-            <Download size={14} className="flex-none text-muted transition-colors group-hover:text-accent" />
+            {isExternal ? (
+              <ExternalLink size={14} className="flex-none text-muted transition-colors group-hover:text-accent" />
+            ) : (
+              <Download size={14} className="flex-none text-muted transition-colors group-hover:text-accent" />
+            )}
           </a>
         );
       })}

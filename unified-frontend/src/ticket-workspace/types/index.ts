@@ -113,6 +113,10 @@ export interface AttachmentMeta {
   size: number | null;
   download_url: string;
   preview_url?: string | null;
+  // True for a OneDrive/SharePoint cloud-link reference with no real
+  // stored bytes — download_url is the original external URL (opens
+  // in a new tab), not a link to our own storage.
+  is_external_link?: boolean;
 }
 
 // One row of a ticket's complete attachment history (GET

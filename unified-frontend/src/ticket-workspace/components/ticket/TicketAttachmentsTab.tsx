@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Download, Loader2, Trash2 } from "lucide-react";
+import { Download, ExternalLink, Loader2, Trash2 } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
@@ -16,6 +16,7 @@ interface FlatAttachment {
   filename: string;
   size: number | null;
   download_url: string;
+  isExternalLink: boolean;
   uploadedBy: string;
   uploadedAt: string;
 }
@@ -26,6 +27,7 @@ function toFlatAttachment(item: TicketAttachmentItem): FlatAttachment {
     filename: item.filename,
     size: item.size,
     download_url: item.download_url,
+    isExternalLink: Boolean(item.is_external_link),
     uploadedBy: item.performed_by_name ?? (item.performed_by ? shortId(item.performed_by) : "System"),
     uploadedAt: item.created_at,
   };
@@ -150,7 +152,7 @@ export function TicketAttachmentsTab({ onChanged, flat = false }: TicketAttachme
       ) : (
         <ul className="flex flex-col divide-y divide-border">
           {attachments.map((attachment) => {
-            const Icon = iconForFilename(attachment.filename);
+            const Icon = attachment.isExternalLink ? ExternalLink : iconForFilename(attachment.filename);
             const isRowDeleting = isDeleting && deletingId === attachment.id;
 
             return (
@@ -169,7 +171,7 @@ export function TicketAttachmentsTab({ onChanged, flat = false }: TicketAttachme
                 </div>
 
                 <span className="flex-none text-[11px] font-medium text-muted">
-                  {formatBytes(attachment.size)}
+                  {attachment.isExternalLink ? "Linked" : formatBytes(attachment.size)}
                 </span>
 
                 <div className="flex flex-none items-center gap-1">
@@ -177,12 +179,12 @@ export function TicketAttachmentsTab({ onChanged, flat = false }: TicketAttachme
                     href={attachment.download_url}
                     target="_blank"
                     rel="noreferrer"
-                    download
-                    aria-label={`Download ${attachment.filename}`}
-                    title="Download"
+                    download={!attachment.isExternalLink}
+                    aria-label={attachment.isExternalLink ? `Open ${attachment.filename}` : `Download ${attachment.filename}`}
+                    title={attachment.isExternalLink ? "Opens the original OneDrive/SharePoint link" : "Download"}
                     className="flex h-8 w-8 items-center justify-center rounded-md2 text-muted transition-colors hover:bg-surfaceHover hover:text-accent"
                   >
-                    <Download size={15} />
+                    {attachment.isExternalLink ? <ExternalLink size={15} /> : <Download size={15} />}
                   </a>
                   {canDelete && (
                     <button

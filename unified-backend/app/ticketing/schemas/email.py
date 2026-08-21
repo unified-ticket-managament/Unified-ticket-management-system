@@ -5,6 +5,21 @@ from pydantic import BaseModel, EmailStr, Field
 from app.ticketing.schemas.attachment import AttachmentMetadata
 
 
+class LinkedAttachmentCandidate(BaseModel):
+    """
+    A OneDrive/SharePoint file referenced only as a plain HTML link
+    inside a message body — Outlook's "Attach as cloud link" creates
+    no real Graph attachment object at all (confirmed live:
+    hasAttachments comes back False, the attachments collection is
+    empty), so there are no bytes to store. See
+    mail_mapping_service.extract_cloud_link_attachments, the only
+    producer of this schema.
+    """
+
+    filename: str = Field(..., min_length=1, max_length=255)
+    url: str = Field(..., min_length=1)
+
+
 class EmailRequest(BaseModel):
     """
     Incoming email received from the communication platform
@@ -42,6 +57,14 @@ class EmailRequest(BaseModel):
     )
 
     html_body: str | None = None
+
+    # Cloud-linked files detected in html_body (see
+    # mail_mapping_service.extract_cloud_link_attachments) — empty for
+    # the N8N transport (which never carries HTML at all) and for any
+    # HTML email with no such link. Recorded as external-link
+    # Attachment rows alongside real uploaded files (see
+    # EmailService.receive_email).
+    linked_attachments: list[LinkedAttachmentCandidate] = Field(default_factory=list)
 
     # The original message's own Cc recipients — populated for the
     # Graph transport (mail_mapping_service.py maps Graph's

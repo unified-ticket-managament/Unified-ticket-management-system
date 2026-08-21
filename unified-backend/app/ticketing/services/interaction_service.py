@@ -503,6 +503,7 @@ class InteractionService:
                         size=metadata.size,
                         download_url=metadata.download_url,
                         preview_url=metadata.preview_url,
+                        is_external_link=metadata.is_external_link,
                         interaction_id=interaction_id,
                         interaction_type=interaction.interaction_type,
                         performed_by=interaction.performed_by,

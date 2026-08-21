@@ -11,9 +11,13 @@ class AttachmentCreate(BaseModel):
     filename: str = Field(..., min_length=1, max_length=255)
     mime_type: str | None = Field(default=None, max_length=100)
     size_bytes: int | None = Field(default=None, ge=0)
-    storage_key: str = Field(..., min_length=1)
+    # None for an external-link attachment (is_external_link=True) —
+    # there are no real bytes, so no object-storage key exists.
+    storage_key: str | None = Field(default=None, min_length=1)
     bucket_name: str | None = Field(default=None, max_length=255)
     scan_status: str = Field(default="pending", max_length=20)
+    external_url: str | None = Field(default=None, min_length=1)
+    is_external_link: bool = False
 
 
 class AttachmentResponse(ORMBase):
@@ -22,12 +26,14 @@ class AttachmentResponse(ORMBase):
     filename: str
     mime_type: str | None
     size_bytes: int | None
-    storage_key: str
+    storage_key: str | None
     bucket_name: str | None
     scan_status: str
     uploaded_at: datetime
     created_at: datetime | None
     updated_at: datetime | None
+    external_url: str | None
+    is_external_link: bool
 
 
 class AttachmentMetadata(BaseModel):
@@ -43,6 +49,10 @@ class AttachmentMetadata(BaseModel):
     size: int | None
     download_url: str
     preview_url: str | None = None
+    # True for a OneDrive/SharePoint cloud-link reference with no real
+    # stored bytes — download_url is then the original external URL
+    # (opens in a new tab), not a presigned link to our own storage.
+    is_external_link: bool = False
 
 
 class TicketAttachmentItem(BaseModel):
@@ -62,6 +72,7 @@ class TicketAttachmentItem(BaseModel):
     size: int | None
     download_url: str
     preview_url: str | None = None
+    is_external_link: bool = False
     interaction_id: UUID
     interaction_type: str
     performed_by: UUID | None

@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import {
   Archive,
   ArrowLeft,
+  ExternalLink,
   FilePlus,
   Forward as ForwardIcon,
   Link2,
@@ -219,10 +220,18 @@ function Bubble({ data }: { data: BubbleData }) {
                 href={a.download_url}
                 target="_blank"
                 rel="noreferrer"
+                title={a.is_external_link ? "Opens the original OneDrive/SharePoint link" : undefined}
                 className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-[11.5px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5"
               >
-                <Paperclip className="h-3 w-3 flex-none text-muted-foreground" />
+                {a.is_external_link ? (
+                  <ExternalLink className="h-3 w-3 flex-none text-muted-foreground" />
+                ) : (
+                  <Paperclip className="h-3 w-3 flex-none text-muted-foreground" />
+                )}
                 <span className="truncate">{a.filename}</span>
+                {a.is_external_link && (
+                  <span className="flex-none text-[10px] font-normal text-muted-foreground">(link)</span>
+                )}
               </a>
             ))}
           </div>

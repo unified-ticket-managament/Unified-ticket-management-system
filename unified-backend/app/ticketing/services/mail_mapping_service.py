@@ -10,10 +10,11 @@
 
 import base64
 import logging
+from urllib.parse import unquote
 
 from bs4 import BeautifulSoup
 
-from app.ticketing.schemas.email import EmailRequest
+from app.ticketing.schemas.email import EmailRequest, LinkedAttachmentCandidate
 from app.ticketing.schemas.mail_integration import GraphAttachmentPayload, IncomingMailPayload
 from app.ticketing.utils.constants import MAX_ATTACHMENT_FILES, MAX_ATTACHMENT_SIZE_BYTES
 from app.ticketing.utils.validators import sanitize_filename, validate_attachment_type
@@ -21,6 +22,58 @@ from app.ticketing.utils.validators import sanitize_filename, validate_attachmen
 logger = logging.getLogger(__name__)
 
 GRAPH_FILE_ATTACHMENT_ODATA_TYPE = "#microsoft.graph.fileAttachment"
+
+# Host substrings identifying a OneDrive/SharePoint share link.
+# Confirmed live against a real Outlook "Attach as cloud link" send:
+# Graph's own attachments collection is empty for these (no
+# fileAttachment/referenceAttachment object at all) — the only trace
+# is an <a href="https://<tenant>-my.sharepoint.com/...">filename</a>
+# anchor Outlook embeds directly in the HTML body (its own
+# "_EType_OWALink" card). Matched by href host rather than that CSS
+# class, since the class name is Outlook's undocumented internal
+# styling hook and not something to depend on across client/version
+# combinations — the URL host is the stable, real signal.
+CLOUD_LINK_HOST_MARKERS = ("sharepoint.com", "1drv.ms", "onedrive.live.com")
+
+
+def extract_cloud_link_attachments(html: str) -> list[LinkedAttachmentCandidate]:
+    """
+    Finds every OneDrive/SharePoint share-link anchor in an inbound
+    email's HTML body and returns it as a LinkedAttachmentCandidate
+    (filename + url) — the file has no real bytes anywhere Graph
+    exposes to us, so this is the only representation possible.
+
+    Unrelated to build_upload_files_from_graph_attachments below: that
+    function only ever sees Graph's real `attachments` collection,
+    which is empty for this case. This is a second, independent
+    extraction over the message body itself.
+    """
+
+    candidates: list[LinkedAttachmentCandidate] = []
+    seen_urls: set[str] = set()
+
+    for anchor in BeautifulSoup(html, "html.parser").find_all("a", href=True):
+        href = anchor["href"].strip()
+
+        if not href or href in seen_urls:
+            continue
+        if not any(marker in href.lower() for marker in CLOUD_LINK_HOST_MARKERS):
+            continue
+
+        filename = anchor.get_text(separator=" ").strip()
+        if not filename:
+            # An icon-only card with no visible link text at all —
+            # fall back to the URL's own last path segment rather
+            # than dropping the file reference entirely.
+            filename = unquote(href.rstrip("/").rsplit("/", 1)[-1]) or "Linked file"
+
+        seen_urls.add(href)
+        candidates.append(LinkedAttachmentCandidate(filename=filename[:255], url=href))
+
+        if len(candidates) >= MAX_ATTACHMENT_FILES:
+            break
+
+    return candidates
 
 
 def _extract_header(
@@ -34,6 +87,46 @@ def _extract_header(
             return header.value
 
     return None
+
+
+def _preserve_named_link_hrefs(soup: BeautifulSoup) -> None:
+    """
+    A plain get_text() keeps only an anchor's visible label, never its
+    href — fine for a bare pasted URL (Outlook auto-linkifies it,
+    label == href, nothing is lost), but confirmed live as a real bug
+    for a *named* link (Outlook's own Insert > Link, with a custom
+    "Display as" value like "link"): the actual URL vanishes
+    entirely, leaving an inert, unclickable label with no way to
+    reach it at all.
+
+    Rewrites each such anchor's contents to "label (href)" in place,
+    before get_text() ever runs, so the real URL survives as literal
+    text — which the frontend's own linkifyPlainText
+    (lib/richText.ts) then turns back into a real clickable link,
+    exactly as it already does for a bare pasted URL.
+
+    Skips anchors extract_cloud_link_attachments already handles
+    (OneDrive/SharePoint) — those are surfaced separately as a linked
+    attachment, not duplicated inline here. Prefers `originalsrc`
+    over `href` when present (Outlook's Safe Links rewrites `href` to
+    a safelinks.protection.outlook.com tracking redirect and puts the
+    real destination in `originalsrc` instead — using `href` here
+    would show the ugly tracking URL, not the real one).
+    """
+
+    for anchor in soup.find_all("a", href=True):
+        href = (anchor.get("originalsrc") or anchor["href"]).strip()
+
+        if not href.lower().startswith(("http://", "https://")):
+            continue
+        if any(marker in href.lower() for marker in CLOUD_LINK_HOST_MARKERS):
+            continue
+
+        label = anchor.get_text(separator=" ").strip()
+        if not label:
+            anchor.string = href
+        elif href not in label:
+            anchor.string = f"{label} ({href})"
 
 
 def _html_to_plain_text(html: str) -> str:
@@ -50,7 +143,9 @@ def _html_to_plain_text(html: str) -> str:
     entirely, not just their tags.
     """
 
-    return BeautifulSoup(html, "html.parser").get_text(separator="\n").strip()
+    soup = BeautifulSoup(html, "html.parser")
+    _preserve_named_link_hrefs(soup)
+    return soup.get_text(separator="\n").strip()
 
 
 def map_external_email_to_interaction(payload: IncomingMailPayload) -> EmailRequest:
@@ -86,6 +181,9 @@ def map_external_email_to_interaction(payload: IncomingMailPayload) -> EmailRequ
         subject=payload.subject or "(no subject)",
         body=plain_body,
         html_body=payload.body.content if is_html else None,
+        linked_attachments=(
+            extract_cloud_link_attachments(payload.body.content) if is_html else []
+        ),
         cc=[recipient.emailAddress.address for recipient in payload.ccRecipients],
         to_recipients=[recipient.emailAddress.address for recipient in payload.toRecipients],
         message_id=payload.internetMessageId,
