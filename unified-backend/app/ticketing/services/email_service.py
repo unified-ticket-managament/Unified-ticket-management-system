@@ -598,6 +598,12 @@ class EmailService:
                 subject=email.subject,
                 body=email.body,
                 client_id=client.client_id if client is not None else None,
+                has_attachments=bool(attachment_metas),
+                cc_recipients=[addr.lower() for addr in (email.cc or [])],
+                attachment_filenames=[meta.filename for meta in attachment_metas],
+                attachment_mime_types=[
+                    meta.mime_type for meta in attachment_metas if meta.mime_type
+                ],
             )
             await self.rule_engine_service.evaluate_and_execute_for_email(
                 interaction=created,

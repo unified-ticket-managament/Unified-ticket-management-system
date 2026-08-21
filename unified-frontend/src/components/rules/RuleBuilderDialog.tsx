@@ -42,7 +42,8 @@ interface RuleBuilderDialogProps {
 
 function defaultCondition(category: RuleCategory): RuleConditionItem {
   const field = CONDITION_FIELDS_BY_CATEGORY[category][0];
-  return { field: field.value, operator: field.fixedOperator ?? "equals", value: field.kind === "text" ? "" : [] };
+  const value = field.kind === "text" ? "" : field.kind === "boolean" ? true : [];
+  return { field: field.value, operator: field.fixedOperator ?? "equals", value };
 }
 
 function defaultAction(category: RuleCategory): RuleActionItem {
@@ -110,7 +111,13 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
   const isValid =
     name.trim().length > 0 &&
     conditions.rules.length > 0 &&
-    conditions.rules.every((c) => (Array.isArray(c.value) ? c.value.length > 0 : c.value.trim().length > 0)) &&
+    conditions.rules.every((c) =>
+      Array.isArray(c.value)
+        ? c.value.length > 0
+        : typeof c.value === "boolean"
+          ? true
+          : c.value.trim().length > 0
+    ) &&
     actions.length > 0 &&
     actions.every((a) =>
       a.type === "forward_to" ? (a.employee_user_ids ?? []).length > 0 : !!a.folder_name?.trim()

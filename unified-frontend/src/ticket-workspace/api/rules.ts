@@ -12,7 +12,7 @@ export type RuleActionType = "create_folder" | "move_to_folder" | "forward_to";
 export interface RuleConditionItem {
   field: string;
   operator: RuleConditionOperator;
-  value: string | string[];
+  value: string | string[] | boolean;
 }
 
 export interface RuleConditionGroup {

@@ -108,6 +108,89 @@ class TestCombinators:
         assert not rule_matches(conditions, _group(RuleCombinator.AND, []), _context())
 
 
+class TestHasAttachmentCondition:
+    def test_true_matches_when_email_has_attachments(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.HAS_ATTACHMENT, "operator": RuleConditionOperator.EQUALS, "value": True}],
+        )
+        assert rule_matches(conditions, _group(RuleCombinator.AND, []), _context(has_attachments=True))
+
+    def test_true_does_not_match_when_email_has_no_attachments(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.HAS_ATTACHMENT, "operator": RuleConditionOperator.EQUALS, "value": True}],
+        )
+        assert not rule_matches(conditions, _group(RuleCombinator.AND, []), _context(has_attachments=False))
+
+    def test_false_matches_when_email_has_no_attachments(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.HAS_ATTACHMENT, "operator": RuleConditionOperator.EQUALS, "value": False}],
+        )
+        assert rule_matches(conditions, _group(RuleCombinator.AND, []), _context(has_attachments=False))
+
+
+class TestRecipientCcCondition:
+    def test_contains_matches_when_cc_address_present(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.RECIPIENT_CC, "operator": RuleConditionOperator.CONTAINS, "value": "manager@crescenthealth.com"}],
+        )
+        context = _context(cc_recipients=["manager@crescenthealth.com", "billing@crescenthealth.com"])
+        assert rule_matches(conditions, _group(RuleCombinator.AND, []), context)
+
+    def test_contains_is_case_insensitive(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.RECIPIENT_CC, "operator": RuleConditionOperator.CONTAINS, "value": "MANAGER@crescenthealth.com"}],
+        )
+        context = _context(cc_recipients=["manager@crescenthealth.com"])
+        assert rule_matches(conditions, _group(RuleCombinator.AND, []), context)
+
+    def test_no_match_when_cc_address_absent(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.RECIPIENT_CC, "operator": RuleConditionOperator.CONTAINS, "value": "manager@crescenthealth.com"}],
+        )
+        context = _context(cc_recipients=["someoneelse@crescenthealth.com"])
+        assert not rule_matches(conditions, _group(RuleCombinator.AND, []), context)
+
+
+class TestAttachmentNameAndTypeConditions:
+    def test_name_contains_matches_a_filename_substring(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.ATTACHMENT_NAME_CONTAINS, "operator": RuleConditionOperator.CONTAINS, "value": "invoice"}],
+        )
+        context = _context(attachment_filenames=["March-Invoice.pdf", "notes.txt"])
+        assert rule_matches(conditions, _group(RuleCombinator.AND, []), context)
+
+    def test_name_contains_no_match_returns_false(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.ATTACHMENT_NAME_CONTAINS, "operator": RuleConditionOperator.CONTAINS, "value": "invoice"}],
+        )
+        context = _context(attachment_filenames=["notes.txt"])
+        assert not rule_matches(conditions, _group(RuleCombinator.AND, []), context)
+
+    def test_type_contains_matches_a_mime_type_substring(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.ATTACHMENT_TYPE_CONTAINS, "operator": RuleConditionOperator.CONTAINS, "value": "pdf"}],
+        )
+        context = _context(attachment_mime_types=["application/pdf"])
+        assert rule_matches(conditions, _group(RuleCombinator.AND, []), context)
+
+    def test_type_contains_no_match_returns_false(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.ATTACHMENT_TYPE_CONTAINS, "operator": RuleConditionOperator.CONTAINS, "value": "pdf"}],
+        )
+        context = _context(attachment_mime_types=["image/png"])
+        assert not rule_matches(conditions, _group(RuleCombinator.AND, []), context)
+
+
 class TestExceptions:
     def test_exception_suppresses_an_otherwise_matching_rule(self):
         conditions = _group(
@@ -137,3 +220,36 @@ class TestExceptions:
             [{"field": RuleConditionField.SUBJECT_CONTAINS, "operator": RuleConditionOperator.CONTAINS, "value": "otp"}],
         )
         assert rule_matches(conditions, exceptions, _context())
+
+    def test_except_if_has_attachment_suppresses_a_matching_rule(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.SENDER_DOMAIN, "operator": RuleConditionOperator.EQUALS, "value": "crescenthealth.com"}],
+        )
+        exceptions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.HAS_ATTACHMENT, "operator": RuleConditionOperator.EQUALS, "value": True}],
+        )
+        assert not rule_matches(conditions, exceptions, _context(has_attachments=True))
+
+    def test_except_if_cc_contains_suppresses_a_matching_rule(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.SENDER_DOMAIN, "operator": RuleConditionOperator.EQUALS, "value": "crescenthealth.com"}],
+        )
+        exceptions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.RECIPIENT_CC, "operator": RuleConditionOperator.CONTAINS, "value": "manager@crescenthealth.com"}],
+        )
+        assert not rule_matches(conditions, exceptions, _context(cc_recipients=["manager@crescenthealth.com"]))
+
+    def test_except_if_attachment_name_contains_suppresses_a_matching_rule(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.SENDER_DOMAIN, "operator": RuleConditionOperator.EQUALS, "value": "crescenthealth.com"}],
+        )
+        exceptions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.ATTACHMENT_NAME_CONTAINS, "operator": RuleConditionOperator.CONTAINS, "value": "invoice"}],
+        )
+        assert not rule_matches(conditions, exceptions, _context(attachment_filenames=["March-Invoice.pdf"]))

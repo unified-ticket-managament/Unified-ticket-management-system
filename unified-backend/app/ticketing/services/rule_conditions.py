@@ -19,6 +19,10 @@ class RuleEmailContext:
     subject: str | None
     body: str | None
     client_id: UUID | None
+    has_attachments: bool = False
+    cc_recipients: list[str] = field(default_factory=list)
+    attachment_filenames: list[str] = field(default_factory=list)
+    attachment_mime_types: list[str] = field(default_factory=list)
 
     sender_domain: str = field(init=False)
 
@@ -39,6 +43,10 @@ def _text_matches(operator: str, haystack: str, needle: str) -> bool:
 
     # CONTAINS (also the fixed operator for subject_contains/body_contains)
     return needle in haystack
+
+
+def _text_matches_any(operator: str, haystacks: list[str], needle: str) -> bool:
+    return any(_text_matches(operator, haystack, needle) for haystack in haystacks)
 
 
 def _condition_matches(condition, context: RuleEmailContext) -> bool:
@@ -63,6 +71,18 @@ def _condition_matches(condition, context: RuleEmailContext) -> bool:
             return False
         allowed = {str(v) for v in value}
         return str(context.client_id) in allowed
+
+    if field_name == RuleConditionField.HAS_ATTACHMENT:
+        return context.has_attachments == bool(value)
+
+    if field_name == RuleConditionField.RECIPIENT_CC:
+        return _text_matches_any(operator, context.cc_recipients, str(value))
+
+    if field_name == RuleConditionField.ATTACHMENT_NAME_CONTAINS:
+        return _text_matches_any(operator, context.attachment_filenames, str(value))
+
+    if field_name == RuleConditionField.ATTACHMENT_TYPE_CONTAINS:
+        return _text_matches_any(operator, context.attachment_mime_types, str(value))
 
     return False
 

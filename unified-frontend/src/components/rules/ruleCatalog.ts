@@ -12,7 +12,7 @@ export interface ConditionFieldDef {
   // "in") never show an operator picker — Outlook-style, the verb is
   // baked into the field name itself.
   fixedOperator?: RuleConditionOperator;
-  kind: "text" | "client-single" | "client-multi";
+  kind: "text" | "client-single" | "client-multi" | "boolean";
 }
 
 export const CONDITION_FIELDS: Record<string, ConditionFieldDef> = {
@@ -37,6 +37,30 @@ export const CONDITION_FIELDS: Record<string, ConditionFieldDef> = {
     fixedOperator: "in",
     kind: "client-multi",
   },
+  has_attachment: {
+    value: "has_attachment",
+    label: "Has attachment(s)",
+    fixedOperator: "equals",
+    kind: "boolean",
+  },
+  recipient_cc: {
+    value: "recipient_cc",
+    label: "Cc contains",
+    fixedOperator: "contains",
+    kind: "text",
+  },
+  attachment_name_contains: {
+    value: "attachment_name_contains",
+    label: "Attachment name contains",
+    fixedOperator: "contains",
+    kind: "text",
+  },
+  attachment_type_contains: {
+    value: "attachment_type_contains",
+    label: "Attachment type contains",
+    fixedOperator: "contains",
+    kind: "text",
+  },
 };
 
 export const CONDITION_FIELDS_BY_CATEGORY: Record<RuleCategory, ConditionFieldDef[]> = {
@@ -46,6 +70,10 @@ export const CONDITION_FIELDS_BY_CATEGORY: Record<RuleCategory, ConditionFieldDe
     CONDITION_FIELDS.subject_contains,
     CONDITION_FIELDS.body_contains,
     CONDITION_FIELDS.client,
+    CONDITION_FIELDS.has_attachment,
+    CONDITION_FIELDS.recipient_cc,
+    CONDITION_FIELDS.attachment_name_contains,
+    CONDITION_FIELDS.attachment_type_contains,
   ],
   otp_rule: [
     CONDITION_FIELDS.subject_contains,

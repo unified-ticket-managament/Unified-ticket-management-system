@@ -30,15 +30,31 @@ class RuleConditionField:
     SUBJECT_CONTAINS = "subject_contains"
     BODY_CONTAINS = "body_contains"
     CLIENT = "client"
+    HAS_ATTACHMENT = "has_attachment"
+    RECIPIENT_CC = "recipient_cc"
+    ATTACHMENT_NAME_CONTAINS = "attachment_name_contains"
+    ATTACHMENT_TYPE_CONTAINS = "attachment_type_contains"
 
-    ALL = (SENDER_EMAIL, SENDER_DOMAIN, SUBJECT_CONTAINS, BODY_CONTAINS, CLIENT)
+    ALL = (
+        SENDER_EMAIL,
+        SENDER_DOMAIN,
+        SUBJECT_CONTAINS,
+        BODY_CONTAINS,
+        CLIENT,
+        HAS_ATTACHMENT,
+        RECIPIENT_CC,
+        ATTACHMENT_NAME_CONTAINS,
+        ATTACHMENT_TYPE_CONTAINS,
+    )
 
     # Which condition fields each rule category may use — enforced at
     # the schema layer so a Mail Rule can never smuggle in a
-    # forward-only concept and vice versa (both categories currently
-    # allow the same condition fields; kept as an explicit per-category
+    # forward-only concept and vice versa. HAS_ATTACHMENT/RECIPIENT_CC/
+    # ATTACHMENT_NAME_CONTAINS/ATTACHMENT_TYPE_CONTAINS are deliberately
+    # Mail-Rule-only — Cc/attachment signals don't fit OTP Rules'
+    # recognition/forwarding purpose. Kept as an explicit per-category
     # map rather than one shared tuple so the two never silently drift
-    # apart if OTP Rules ever needs a narrower/wider set later).
+    # apart.
     BY_CATEGORY = {
         RuleCategory.MAIL_RULE: (
             SENDER_EMAIL,
@@ -46,6 +62,10 @@ class RuleConditionField:
             SUBJECT_CONTAINS,
             BODY_CONTAINS,
             CLIENT,
+            HAS_ATTACHMENT,
+            RECIPIENT_CC,
+            ATTACHMENT_NAME_CONTAINS,
+            ATTACHMENT_TYPE_CONTAINS,
         ),
         RuleCategory.OTP_RULE: (
             SUBJECT_CONTAINS,
@@ -68,12 +88,16 @@ class RuleConditionOperator:
 
     ALL = (EQUALS, CONTAINS, IN)
 
-    # The only operator subject_contains/body_contains/client are ever
-    # evaluated with — not user-selectable for those fields.
+    # The only operator subject_contains/body_contains/client/etc. are
+    # ever evaluated with — not user-selectable for those fields.
     FIXED_BY_FIELD = {
         RuleConditionField.SUBJECT_CONTAINS: CONTAINS,
         RuleConditionField.BODY_CONTAINS: CONTAINS,
         RuleConditionField.CLIENT: IN,
+        RuleConditionField.HAS_ATTACHMENT: EQUALS,
+        RuleConditionField.RECIPIENT_CC: CONTAINS,
+        RuleConditionField.ATTACHMENT_NAME_CONTAINS: CONTAINS,
+        RuleConditionField.ATTACHMENT_TYPE_CONTAINS: CONTAINS,
     }
 
 

@@ -35,7 +35,7 @@ export function ConditionRow({ category, condition, onChange, onRemove }: Condit
     onChange({
       field: next.value,
       operator: next.fixedOperator ?? "equals",
-      value: next.kind === "text" ? "" : [],
+      value: next.kind === "text" ? "" : next.kind === "boolean" ? true : [],
     });
   }
 
@@ -82,6 +82,19 @@ export function ConditionRow({ category, condition, onChange, onRemove }: Condit
             value={typeof condition.value === "string" ? condition.value : ""}
             onChange={(e) => onChange({ ...condition, value: e.target.value })}
           />
+        ) : fieldDef.kind === "boolean" ? (
+          <Select
+            value={condition.value === false ? "false" : "true"}
+            onValueChange={(value) => onChange({ ...condition, value: value === "true" })}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="true">Yes</SelectItem>
+              <SelectItem value="false">No</SelectItem>
+            </SelectContent>
+          </Select>
         ) : (
           <ClientPicker
             multiple={fieldDef.kind === "client-multi"}

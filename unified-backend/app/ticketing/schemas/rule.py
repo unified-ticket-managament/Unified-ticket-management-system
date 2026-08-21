@@ -35,6 +35,9 @@ class RuleConditionItem(BaseModel):
         if self.field == RuleConditionField.CLIENT:
             if not isinstance(self.value, list) or not self.value:
                 raise ValueError("Client condition value must be a non-empty list of client ids.")
+        elif self.field == RuleConditionField.HAS_ATTACHMENT:
+            if not isinstance(self.value, bool):
+                raise ValueError("has_attachment condition value must be a boolean.")
         else:
             if not isinstance(self.value, str) or not self.value.strip():
                 raise ValueError(f"Condition value for '{self.field}' must be non-empty text.")
