@@ -3,8 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
-  ChevronLeft,
-  ChevronRight,
   Paperclip,
   RefreshCw,
   Search,
@@ -46,8 +44,6 @@ type SlaRiskFilter = "ALL" | SlaTier;
 // useFirstResponseCountdown) — this drives a whole list's sort/badges, not a
 // live per-second countdown, so a cheaper refresh is enough to stay honest.
 const TIER_REFRESH_INTERVAL_MS = 30_000;
-
-const PAGE_SIZE = 10;
 
 const STATUS_META: Record<string, { label: string; variant: "warning" | "success" | "secondary" }> = {
   PENDING: { label: "Pending", variant: "warning" },
@@ -125,9 +121,9 @@ interface MessageListProps {
   // Whether the active view's underlying tab(s) have more rows on the
   // server than what's currently in `items` — this list is fetched in
   // bounded batches now (see useMailInbox's MAIL_TAB_FETCH_SIZE)
-  // rather than a tab's entire history up front, so reaching the last
-  // locally-available page doesn't necessarily mean there's nothing
-  // more to see.
+  // rather than a tab's entire history up front. Surfaced here only as
+  // a "+" in the message count below, not wired to any load-more
+  // action from this component.
   hasMore: boolean;
   onLoadMore: () => Promise<void>;
 }
@@ -166,8 +162,6 @@ export function MessageList({
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [attachmentsOnly, setAttachmentsOnly] = useState(false);
   const [slaRiskFilter, setSlaRiskFilter] = useState<SlaRiskFilter>("ALL");
-  const [page, setPage] = useState(0);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   // First Response SLA tier, computed client-side — no dedicated read
   // endpoint exists (same reason SlaFirstResponseBadge/
@@ -246,43 +240,6 @@ export function MessageList({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, unreadOnly, attachmentsOnly, sort, openedIds, slaRiskFilter, targetMinutes, now]);
-
-  useEffect(() => {
-    setPage(0);
-  }, [
-    search,
-    priorityFilter,
-    unreadOnly,
-    attachmentsOnly,
-    categoryFilter,
-    slaRiskFilter,
-    sort,
-    timeFilter,
-    clientFilter,
-    folderLabel,
-  ]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const clampedPage = Math.min(page, totalPages - 1);
-  const paged = filtered.slice(clampedPage * PAGE_SIZE, clampedPage * PAGE_SIZE + PAGE_SIZE);
-  const onLastLoadedPage = clampedPage >= totalPages - 1;
-
-  // Reaching the last page of what's currently loaded doesn't mean
-  // there's nothing more — fetch the next server batch, then advance,
-  // instead of the "Next" button just going dead early.
-  async function handleNextOrLoadMore() {
-    if (onLastLoadedPage && hasMore) {
-      setIsLoadingMore(true);
-      try {
-        await onLoadMore();
-        setPage((p) => p + 1);
-      } finally {
-        setIsLoadingMore(false);
-      }
-      return;
-    }
-    setPage((p) => Math.min(totalPages - 1, p + 1));
-  }
 
   const activeFilterCount = [
     priorityFilter !== "ALL",
@@ -439,7 +396,7 @@ export function MessageList({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {isLoading && paged.length === 0 ? (
+        {isLoading && filtered.length === 0 ? (
           <WorkflowLoader loading size={56} className="h-full" />
         ) : isError && filtered.length === 0 ? (
           // Distinct from the "genuinely empty" branch below — a
@@ -462,7 +419,7 @@ export function MessageList({
           </div>
         ) : (
           <ul className="divide-y divide-border">
-            {paged.map((item) => {
+            {filtered.map((item) => {
               const openId = item.open_interaction_id ?? item.interaction_id;
               const isUnread = !openedIds.has(openId);
               const status = statusMeta(item);
@@ -544,29 +501,8 @@ export function MessageList({
         <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-2.5">
           <p className="text-[11.5px] text-muted-foreground">
             {filtered.length} message{filtered.length === 1 ? "" : "s"}
-            {hasMore ? "+" : ""} · Page {clampedPage + 1} of {totalPages}
-            {isLoadingMore && " · Loading more…"}
+            {hasMore ? "+" : ""}
           </p>
-          <div className="flex items-center gap-1">
-            <Button
-              variant="outline"
-              size="icon"
-              className="h-7 w-7"
-              disabled={clampedPage === 0}
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
-            >
-              <ChevronLeft className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="outline"
-              size="icon"
-              className="h-7 w-7"
-              disabled={(onLastLoadedPage && !hasMore) || isLoadingMore}
-              onClick={handleNextOrLoadMore}
-            >
-              <ChevronRight className="h-3.5 w-3.5" />
-            </Button>
-          </div>
         </div>
       )}
     </div>
