@@ -130,7 +130,7 @@ async def _get_category(session, category_name: str) -> Category:
     # column compares against a raw string.
     result = await session.execute(select(Category))
     for category in result.scalars().all():
-        if category.category_name.value == category_name:
+        if category.category_name == category_name:
             return category
     pytest.skip(f"Seeded category {category_name!r} not found.")
 
@@ -472,7 +472,7 @@ async def test_same_category_allows_request_with_no_shared_supervisor(scenario):
     _, ticket = await _make_ticket(
         session,
         owner=owner,
-        ticket_type=category.category_name.value,
+        ticket_type=category.category_name,
         account_manager=account_manager_two,
     )
 

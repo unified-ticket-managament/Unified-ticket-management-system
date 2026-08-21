@@ -5,13 +5,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
 from app.database.session import get_db
-from app.rbac.repositories.category_repository import CategoryRepository
+from app.rbac.repositories import CategoryRepository, UserRepository
 from app.rbac.schemas.category import (
     CategoryCreate,
     CategoryListResponse,
+    CategoryMembersResponse,
+    CategoryMembersUpdate,
     CategoryResponse,
     CategoryUpdate,
 )
+from app.rbac.services.access_control import ensure_has_permission
 from app.rbac.services.category_service import CategoryService
 
 router = APIRouter(
@@ -33,9 +36,11 @@ def get_category_service(
     """
 
     category_repository = CategoryRepository(db)
+    user_repository = UserRepository(db)
 
     return CategoryService(
         category_repository=category_repository,
+        user_repository=user_repository,
     )
 
 
@@ -56,10 +61,13 @@ async def create_category(
     current_user=Depends(get_current_active_user),
 ):
     """
-    Create a new work-specialization category.
+    Create a new work-specialization category, optionally assigning
+    Staff/Team Lead users to it at the same time.
     """
 
-    return await service.create_category(category_data)
+    ensure_has_permission(current_user, "category:create")
+
+    return await service.create_category(category_data, actor=current_user)
 
 
 # --------------------------------------------------
@@ -137,13 +145,67 @@ async def update_category(
     current_user=Depends(get_current_active_user),
 ):
     """
-    Update category.
+    Update (rename) a category.
     """
+
+    ensure_has_permission(current_user, "category:create")
 
     return await service.update_category(
         category_id,
         category_data,
     )
+
+
+# --------------------------------------------------
+# Category Members (Edit Category — add/remove Team Leads/Staff)
+# --------------------------------------------------
+
+
+@router.get(
+    "/{category_id}/members",
+    response_model=CategoryMembersResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List Category Members",
+)
+async def list_category_members(
+    category_id: UUID,
+    service: CategoryService = Depends(get_category_service),
+    current_user=Depends(get_current_active_user),
+):
+    """
+    Every user currently assigned to this category, with their real
+    role name — backs the Edit Category UI's pre-populated Team
+    Lead/Staff pickers. Viewing has no extra permission gate, matching
+    every other read on this router.
+    """
+
+    members = await service.get_members(category_id)
+
+    return CategoryMembersResponse(members=members)
+
+
+@router.put(
+    "/{category_id}/members",
+    response_model=CategoryMembersResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Set Category Members",
+)
+async def set_category_members(
+    category_id: UUID,
+    members_data: CategoryMembersUpdate,
+    service: CategoryService = Depends(get_category_service),
+    current_user=Depends(get_current_active_user),
+):
+    """
+    Full-replace this category's Team Lead/Staff membership — adds
+    whoever's newly listed, removes whoever's missing.
+    """
+
+    ensure_has_permission(current_user, "category:create")
+
+    members = await service.set_members(category_id, members_data.user_ids)
+
+    return CategoryMembersResponse(members=members)
 
 
 # --------------------------------------------------
@@ -164,5 +226,7 @@ async def delete_category(
     """
     Delete category.
     """
+
+    ensure_has_permission(current_user, "category:create")
 
     await service.delete_category(category_id)

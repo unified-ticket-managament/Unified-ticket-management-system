@@ -238,6 +238,7 @@ class AuditLogRepository:
         date_to: datetime | None = None,
         search: str | None = None,
         assigned_to: UUID | None = None,
+        client_company_id_filter: UUID | None = None,
     ) -> AuditLogVisiblePage:
         """
         The Audit Log page's query, collapsed the same way
@@ -305,6 +306,9 @@ class AuditLogRepository:
         if assigned_to is not None:
             conditions.append(Ticket.agent_id == assigned_to)
 
+        if client_company_id_filter is not None:
+            conditions.append(Ticket.client_company_id == client_company_id_filter)
+
         if entity_type is not None:
             conditions.append(AuditLog.entity_type == entity_type)
         if event_type is not None:
@@ -320,8 +324,14 @@ class AuditLogRepository:
 
         def _base_select(*extra_columns):
             return (
-                select(AuditLog, Ticket.title.label("ticket_title"), *extra_columns)
+                select(
+                    AuditLog,
+                    Ticket.title.label("ticket_title"),
+                    Client.name.label("client_company_name"),
+                    *extra_columns,
+                )
                 .join(Ticket, Ticket.ticket_id == AuditLog.ticket_id)
+                .outerjoin(Client, Client.client_id == Ticket.client_company_id)
                 .where(*conditions)
             )
 

@@ -138,7 +138,7 @@ async def _get_team_lead(session) -> User:
         .where(Role.name == "Team Lead", User.is_active.is_(True))
     )
     for user in result.unique().scalars().all():
-        if user.category is not None and user.category.category_name.value == TEAM_LEAD_CATEGORY:
+        if user.category is not None and user.category.category_name == TEAM_LEAD_CATEGORY:
             return user
     pytest.skip(f"No active seeded Team Lead found for category {TEAM_LEAD_CATEGORY!r}.")
 
@@ -153,7 +153,7 @@ async def _get_staff_members(session, *, count: int) -> list[User]:
     matches = [
         u
         for u in result.unique().scalars().all()
-        if u.category is not None and u.category.category_name.value == TEAM_LEAD_CATEGORY
+        if u.category is not None and u.category.category_name == TEAM_LEAD_CATEGORY
     ]
     if len(matches) < count:
         pytest.skip(

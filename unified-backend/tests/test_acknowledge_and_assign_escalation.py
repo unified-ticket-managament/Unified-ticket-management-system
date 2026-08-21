@@ -274,7 +274,7 @@ async def test_acknowledge_and_assign_invalid_candidate_leaves_escalation_active
     )
     other_category_staff = None
     for candidate in result.unique().scalars().all():
-        if candidate.category and candidate.category.category_name.value != TEAM_LEAD_CATEGORY:
+        if candidate.category and candidate.category.category_name != TEAM_LEAD_CATEGORY:
             other_category_staff = candidate
             break
     if other_category_staff is None:

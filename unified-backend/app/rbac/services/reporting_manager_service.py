@@ -19,7 +19,7 @@ def _to_response(row) -> ReportingManagerResponse:
         account_manager_id=mapping.account_manager_id,
         account_manager_name=row.account_manager_name,
         category_id=mapping.category_id,
-        category_name=row.category_name.value,
+        category_name=row.category_name,
         assigned_by=mapping.assigned_by,
         assigned_by_name=row.assigned_by_name,
         assigned_at=mapping.assigned_at,

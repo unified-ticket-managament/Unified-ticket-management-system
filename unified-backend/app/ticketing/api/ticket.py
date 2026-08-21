@@ -964,6 +964,10 @@ async def list_tickets(
     date_to: datetime | None = Query(None),
     sort_by: str = Query("created_at", pattern="^(created_at|updated_at|title)$"),
     sort_dir: str = Query("desc", pattern="^(asc|desc)$"),
+    client_company_id: UUID | None = Query(
+        None,
+        description="Narrow to one client's tickets, within whatever the caller's own role scope already allows.",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1012,6 +1016,7 @@ async def list_tickets(
         date_to=date_to,
         sort_by=sort_by,
         sort_dir=sort_dir,
+        client_company_id_filter=client_company_id,
     )
 
     if limit is not None:
@@ -1055,6 +1060,10 @@ async def get_ticket_view_counts(
     status_code=status.HTTP_200_OK,
 )
 async def get_ticket_dashboard_stats(
+    client_company_id: UUID | None = Query(
+        None,
+        description="Narrow every stat/list to one client, within whatever the caller's own role scope already allows.",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1077,7 +1086,9 @@ async def get_ticket_dashboard_stats(
         client_repository=client_repository,
     )
 
-    return await service.get_dashboard_stats(current_user=current_user)
+    return await service.get_dashboard_stats(
+        current_user=current_user, client_company_id_filter=client_company_id
+    )
 
 
 @router.get(
@@ -1086,6 +1097,10 @@ async def get_ticket_dashboard_stats(
     status_code=status.HTTP_200_OK,
 )
 async def get_ticket_sla_overview_counts(
+    client_company_id: UUID | None = Query(
+        None,
+        description="Narrow the tile row to one client, within whatever the caller's own role scope already allows.",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1108,7 +1123,9 @@ async def get_ticket_sla_overview_counts(
         client_repository=client_repository,
     )
 
-    return await service.get_sla_overview_counts(current_user=current_user)
+    return await service.get_sla_overview_counts(
+        current_user=current_user, client_company_id_filter=client_company_id
+    )
 
 
 # =========================================================
@@ -1143,6 +1160,10 @@ async def list_all_ticket_audit_logs(
             "for every role except Site Lead/Super Admin, who always get the "
             "unrestricted view regardless of this flag."
         ),
+    ),
+    client_company_id: UUID | None = Query(
+        None,
+        description="Narrow to one client's audit-log entries, within whatever the caller's own role scope already allows.",
     ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1184,6 +1205,7 @@ async def list_all_ticket_audit_logs(
         date_to=date_to,
         search=search,
         centralized=centralized,
+        client_company_id_filter=client_company_id,
     )
 
     if limit is not None:
@@ -1216,6 +1238,10 @@ async def list_all_ticket_interactions(
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
     search: str | None = Query(None),
+    client_company_id: UUID | None = Query(
+        None,
+        description="Narrow to one client's interactions, within whatever the caller's own role scope already allows.",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1268,6 +1294,7 @@ async def list_all_ticket_interactions(
         date_from=date_from,
         date_to=date_to,
         search=search,
+        client_company_id_filter=client_company_id,
     )
 
     if limit is not None:

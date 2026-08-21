@@ -107,10 +107,10 @@ async def _find_team_lead_with_staff(session, staff_count: int) -> tuple[User, l
     for user in staff_result.unique().scalars().all():
         if user.category is None:
             continue
-        staff_by_category.setdefault(user.category.category_name.value, []).append(user)
+        staff_by_category.setdefault(user.category.category_name, []).append(user)
 
     for team_lead in team_leads:
-        candidates = staff_by_category.get(team_lead.category.category_name.value, [])
+        candidates = staff_by_category.get(team_lead.category.category_name, [])
         if len(candidates) >= staff_count:
             return team_lead, candidates[:staff_count]
 
@@ -192,7 +192,7 @@ async def test_claim_open_ticket_moves_to_in_progress(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=staff.manager_id or staff.user_id,
-        ticket_type=staff.category.category_name.value,
+        ticket_type=staff.category.category_name,
         current_status="OPEN",
     )
 
@@ -214,7 +214,7 @@ async def test_assign_unclaimed_open_ticket_moves_to_in_progress(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=None,
         current_status="OPEN",
     )
@@ -241,7 +241,7 @@ async def test_reassign_open_ticket_to_new_agent_moves_to_in_progress(db_session
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff_a.user_id,
         current_status="OPEN",
     )
@@ -269,7 +269,7 @@ async def test_transfer_already_in_progress_ticket_stays_in_progress(db_session)
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff_a.user_id,
         current_status="IN_PROGRESS",
     )
@@ -301,7 +301,7 @@ async def test_transfer_closed_ticket_is_still_rejected(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff_a.user_id,
         current_status="CLOSED",
     )
@@ -325,7 +325,7 @@ async def test_transfer_resolved_ticket_does_not_reopen_it(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff_a.user_id,
         current_status="RESOLVED",
     )
@@ -354,7 +354,7 @@ async def test_assign_open_ticket_writes_exactly_one_audit_event(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=None,
         current_status="OPEN",
     )
@@ -393,7 +393,7 @@ async def test_assign_open_ticket_does_not_touch_resolution_sla_clock(db_session
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=None,
         current_status="OPEN",
     )
@@ -448,7 +448,7 @@ async def test_team_lead_self_assign_open_ticket_moves_to_in_progress(db_session
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=None,
         current_status="OPEN",
     )
@@ -533,7 +533,7 @@ async def test_create_ticket_with_preassigned_agent_starts_in_progress(db_sessio
         TicketFromInteractionCreate(
             interaction_id=interaction.interaction_id,
             title="Pre-assigned-at-creation regression test ticket",
-            ticket_type=team_lead.category.category_name.value,
+            ticket_type=team_lead.category.category_name,
             current_priority=TicketPriority.MEDIUM,
             agent_id=team_lead.user_id,
         ),
@@ -578,7 +578,7 @@ async def test_create_ticket_without_agent_stays_open(db_session):
         TicketFromInteractionCreate(
             interaction_id=interaction.interaction_id,
             title="Unassigned-at-creation regression test ticket",
-            ticket_type=team_lead.category.category_name.value,
+            ticket_type=team_lead.category.category_name,
             current_priority=TicketPriority.MEDIUM,
             agent_id=None,
         ),
@@ -621,7 +621,7 @@ async def test_generic_update_endpoint_rejects_agent_id_reassignment(db_session)
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=None,
         current_status="OPEN",
     )
@@ -651,7 +651,7 @@ async def test_generic_update_endpoint_still_allows_non_agent_fields(db_session)
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=None,
         current_status="OPEN",
     )
@@ -680,7 +680,7 @@ async def test_claim_repository_guard_rejects_second_claim_on_stale_object(db_se
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=staff_a.manager_id or staff_a.user_id,
-        ticket_type=staff_a.category.category_name.value,
+        ticket_type=staff_a.category.category_name,
         agent_id=None,
         current_status="OPEN",
     )

@@ -1018,7 +1018,7 @@ class EscalationService:
         category_repository = CategoryRepository(self.ticket_repository.db)
         categories = await category_repository.list_all()
         category = next(
-            (c for c in categories if c.category_name.value == ticket_type), None
+            (c for c in categories if c.category_name == ticket_type), None
         )
         if category is None:
             return []

@@ -117,7 +117,7 @@ async def main() -> None:
         roles = await seed_permissions_and_roles(session)
 
         categories_by_name: dict[str, Category] = {
-            category.category_name.value: category
+            category.category_name: category
             for category in (await session.execute(select(Category))).scalars().all()
         }
         missing_categories = set(mapping.NEW_CATEGORY_NAMES) - set(categories_by_name)

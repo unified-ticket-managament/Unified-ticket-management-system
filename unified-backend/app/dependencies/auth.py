@@ -3,7 +3,7 @@ from uuid import UUID, uuid4
 from fastapi import Depends, HTTPException, Query, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
-from shared_models.models import Category, CategoryName, Role, User
+from shared_models.models import Category, Role, User
 
 from app.auth.jwt import decode_token
 from app.core.rbac_cache import get_rbac_cache, resolution_lock
@@ -36,7 +36,7 @@ def _build_transient_user(payload: dict) -> User:
     Only populates what ticketing code actually reads off
     `current_user` (confirmed by grep before this was written):
     `.user_id`, `.name` (audit-log actor name), `.role.name`,
-    `.category.category_name.value`, plus `.permissions`/
+    `.category.category_name`, plus `.permissions`/
     `.scoped_permissions` (attached by the caller, same as the DB path).
     `.is_active` is unconditionally True here — a cache hit only exists
     because the last DB check confirmed it for this exact
@@ -67,7 +67,7 @@ def _build_transient_user(payload: dict) -> User:
     if payload.get("category_id") and payload.get("category"):
         user.category = Category(
             category_id=user.category_id,
-            category_name=CategoryName(payload["category"]),
+            category_name=payload["category"],
         )
     else:
         user.category = None
@@ -85,7 +85,7 @@ def _build_transient_user(payload: dict) -> User:
     categories_claim = payload.get("categories")
     if categories_claim:
         user.categories = [
-            Category(category_id=uuid4(), category_name=CategoryName(name))
+            Category(category_id=uuid4(), category_name=name)
             for name in categories_claim
         ]
     elif user.category is not None:

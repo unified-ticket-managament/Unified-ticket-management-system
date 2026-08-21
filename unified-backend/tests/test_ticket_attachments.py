@@ -99,10 +99,10 @@ async def _find_team_lead_with_staff(session, staff_count: int) -> tuple[User, l
     for user in staff_result.unique().scalars().all():
         if user.category is None:
             continue
-        staff_by_category.setdefault(user.category.category_name.value, []).append(user)
+        staff_by_category.setdefault(user.category.category_name, []).append(user)
 
     for team_lead in team_leads:
-        candidates = staff_by_category.get(team_lead.category.category_name.value, [])
+        candidates = staff_by_category.get(team_lead.category.category_name, [])
         if len(candidates) >= staff_count:
             return team_lead, candidates[:staff_count]
 
@@ -207,7 +207,7 @@ async def test_inbound_email_attachment_is_returned(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
     _interaction, attachment = await _add_interaction_with_attachment(
@@ -232,7 +232,7 @@ async def test_outbound_email_attachment_is_returned(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
     _interaction, attachment = await _add_interaction_with_attachment(
@@ -258,7 +258,7 @@ async def test_internal_note_attachment_is_returned(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
     _interaction, attachment = await _add_interaction_with_attachment(
@@ -283,7 +283,7 @@ async def test_direct_ticket_upload_attachment_is_returned(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
     _interaction, attachment = await _add_interaction_with_attachment(
@@ -313,7 +313,7 @@ async def test_multiple_attachment_types_are_all_aggregated(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
 
@@ -351,13 +351,13 @@ async def test_attachment_from_another_ticket_is_excluded(db_session):
     _client_a, ticket_a = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
     _client_b, ticket_b = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
 
@@ -394,7 +394,7 @@ async def test_no_duplicate_attachments_for_repeated_calls_or_multiple_files(db_
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
 
@@ -452,7 +452,7 @@ async def test_account_manager_cannot_view_attachments_for_another_clients_ticke
         # Owned by a *different* Account Manager than the one making
         # the request below.
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
     await _add_interaction_with_attachment(
@@ -487,7 +487,7 @@ async def test_team_lead_outside_category_cannot_view_attachments(db_session):
     for candidate in result.unique().scalars().all():
         if (
             candidate.category is not None
-            and candidate.category.category_name.value != team_lead.category.category_name.value
+            and candidate.category.category_name != team_lead.category.category_name
         ):
             other_team_lead = candidate
             break
@@ -497,7 +497,7 @@ async def test_team_lead_outside_category_cannot_view_attachments(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
     await _add_interaction_with_attachment(

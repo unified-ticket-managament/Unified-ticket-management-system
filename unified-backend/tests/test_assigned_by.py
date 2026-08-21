@@ -86,10 +86,10 @@ async def _find_team_lead_with_staff(session, staff_count: int) -> tuple[User, l
     for user in staff_result.unique().scalars().all():
         if user.category is None:
             continue
-        staff_by_category.setdefault(user.category.category_name.value, []).append(user)
+        staff_by_category.setdefault(user.category.category_name, []).append(user)
 
     for team_lead in team_leads:
-        candidates = staff_by_category.get(team_lead.category.category_name.value, [])
+        candidates = staff_by_category.get(team_lead.category.category_name, [])
         if len(candidates) >= staff_count:
             return team_lead, candidates[:staff_count]
 
@@ -173,7 +173,7 @@ async def test_claim_sets_assigned_by_to_the_claiming_agent(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=staff.category.category_name.value,
+        ticket_type=staff.category.category_name,
     )
 
     service = _build_interaction_service(db_session)
@@ -247,7 +247,7 @@ async def test_create_ticket_with_preassigned_agent_sets_assigned_by_to_creator(
         TicketFromInteractionCreate(
             interaction_id=interaction.interaction_id,
             title="Pre-assigned-at-creation assigned-by test ticket",
-            ticket_type=team_lead.category.category_name.value,
+            ticket_type=team_lead.category.category_name,
             current_priority=TicketPriority.MEDIUM,
             agent_id=team_lead.user_id,
         ),
@@ -272,7 +272,7 @@ async def test_create_ticket_without_agent_leaves_assigned_by_none(db_session):
         TicketFromInteractionCreate(
             interaction_id=interaction.interaction_id,
             title="Unassigned-at-creation assigned-by test ticket",
-            ticket_type=team_lead.category.category_name.value,
+            ticket_type=team_lead.category.category_name,
             current_priority=TicketPriority.MEDIUM,
             agent_id=None,
         ),
@@ -296,7 +296,7 @@ async def test_transfer_sets_assigned_by_to_the_transferring_actor_not_new_agent
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff_a.user_id,
         assigned_by=staff_a.user_id,
     )
@@ -330,7 +330,7 @@ async def test_assigned_by_chain_matches_hema_kiran_koushik_example(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=hema.manager_id or hema.user_id,
-        ticket_type=hema.category.category_name.value,
+        ticket_type=hema.category.category_name,
     )
 
     service = _build_interaction_service(db_session)
@@ -380,7 +380,7 @@ async def test_unclaimed_ticket_has_no_assigned_by(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
     )
 
     reloaded = await _reload_ticket(db_session, ticket.ticket_id)
@@ -393,7 +393,7 @@ async def test_ticket_with_agent_but_no_assignment_history_has_no_assigned_by(db
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
         # assigned_by deliberately omitted — the exact "existing
         # ticket, no history" case the migration's nullable/default
@@ -418,7 +418,7 @@ async def test_ticket_detail_response_exposes_assigned_by(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=staff.category.category_name.value,
+        ticket_type=staff.category.category_name,
     )
 
     interaction_service = _build_interaction_service(db_session)
@@ -437,7 +437,7 @@ async def test_ticket_list_response_exposes_assigned_by(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=staff.category.category_name.value,
+        ticket_type=staff.category.category_name,
     )
 
     interaction_service = _build_interaction_service(db_session)

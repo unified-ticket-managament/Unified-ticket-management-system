@@ -4,6 +4,7 @@ import { AlertTriangle, Globe, Lock, RefreshCw, Search, SlidersHorizontal } from
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { AuditLogDetailsDrawer } from "@tw/components/common/AuditLogDetailsDrawer";
 import { Badge } from "@tw/components/common/Badge";
+import { ClientFilterSelect } from "@tw/components/common/ClientFilterSelect";
 import { Button } from "@tw/components/common/Button";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { WorkflowLoader } from "@/components/common/WorkflowLoader";
@@ -25,6 +26,7 @@ interface AuditRow {
   actorRole: ActorRole;
   ticketId: string;
   ticketTitle: string;
+  clientCompanyName: string | null;
   oldValues: Record<string, unknown> | null;
   newValues: Record<string, unknown> | null;
 }
@@ -67,7 +69,7 @@ const selectClass =
 export function AuditLogPage() {
   const navigate = useNavigate();
   const { currentUser } = useAuthContext();
-  const { agents } = useWorkflowContext();
+  const { agents, clients } = useWorkflowContext();
 
   // Super Admin/Site Lead always see the unrestricted, company-wide
   // log — same as before this change, no button, no toggle. Everyone
@@ -99,6 +101,7 @@ export function AuditLogPage() {
   const [entityFilter, setEntityFilter] = useState<AuditEntityType | "ALL">("ALL");
   const [eventFilter, setEventFilter] = useState<AuditEventType | "ALL">("ALL");
   const [agentFilter, setAgentFilter] = useState("ALL");
+  const [clientFilter, setClientFilter] = useState("ALL");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
@@ -129,6 +132,7 @@ export function AuditLogPage() {
           dateTo: dateTo ? new Date(`${dateTo}T23:59:59`).toISOString() : undefined,
           search: debouncedSearch.trim() || undefined,
           centralized: effectiveCentralized,
+          clientCompanyId: clientFilter === "ALL" ? undefined : clientFilter,
         });
 
         // A newer load already started (a filter/page change, manual
@@ -145,6 +149,7 @@ export function AuditLogPage() {
           actorRole: log.actor_role,
           ticketId: log.ticket_id,
           ticketTitle: log.ticket_title,
+          clientCompanyName: log.client_company_name,
           oldValues: log.old_values,
           newValues: log.new_values,
         }));
@@ -159,7 +164,7 @@ export function AuditLogPage() {
         if (requestId === requestIdRef.current) setIsLoading(false);
       }
     },
-    [entityFilter, eventFilter, agentFilter, dateFrom, dateTo, debouncedSearch, effectiveCentralized]
+    [entityFilter, eventFilter, agentFilter, clientFilter, dateFrom, dateTo, debouncedSearch, effectiveCentralized]
   );
 
   // The poll interval below is only ever created once (on mount), but
@@ -188,11 +193,12 @@ export function AuditLogPage() {
         entityFilter,
         eventFilter,
         agentFilter,
+        clientFilter,
         dateFrom,
         dateTo,
         effectiveCentralized,
       ]),
-    [debouncedSearch, entityFilter, eventFilter, agentFilter, dateFrom, dateTo, effectiveCentralized]
+    [debouncedSearch, entityFilter, eventFilter, agentFilter, clientFilter, dateFrom, dateTo, effectiveCentralized]
   );
   const prevFilterSignatureRef = useRef(filterSignature);
 
@@ -224,6 +230,7 @@ export function AuditLogPage() {
       entityFilter !== "ALL" ||
       eventFilter !== "ALL" ||
       agentFilter !== "ALL" ||
+      clientFilter !== "ALL" ||
       dateFrom ||
       dateTo
   );
@@ -340,6 +347,13 @@ export function AuditLogPage() {
             ))}
           </select>
 
+          <ClientFilterSelect
+            clients={clients}
+            currentUser={currentUser}
+            value={clientFilter}
+            onChange={setClientFilter}
+          />
+
           <div className="flex items-center gap-1.5">
             <input
               type="date"
@@ -427,6 +441,11 @@ export function AuditLogPage() {
                             <span className="truncate text-xs text-muted">
                               on <span className="font-medium text-slate-500">{row.ticketTitle}</span>
                             </span>
+                            {row.clientCompanyName && (
+                              <span className="truncate text-xs text-muted">
+                                · {row.clientCompanyName}
+                              </span>
+                            )}
                           </div>
                           {fields.length > 0 && (
                             <p className="mt-1 truncate text-[13px] text-slate-600">

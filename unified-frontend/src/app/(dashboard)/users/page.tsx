@@ -21,6 +21,7 @@ import {
   RefreshCw,
   Search,
   Shield,
+  Tags,
   Trash2,
   UserCog,
 } from "lucide-react";
@@ -474,6 +475,12 @@ export default function UsersPage() {
               <Link href="/permission-requests">
                 <KeyRound className="h-4 w-4" />
                 Permission Requests
+              </Link>
+            </Button>
+            <Button variant="outline" className="gap-2" asChild>
+              <Link href="/categories">
+                <Tags className="h-4 w-4" />
+                Categories
               </Link>
             </Button>
             {canViewRoles ? (

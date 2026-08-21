@@ -216,6 +216,7 @@ class InteractionRepository:
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         search: str | None = None,
+        client_company_id_filter: UUID | None = None,
     ) -> InteractionVisiblePage:
         """
         The Interactions-tab query, collapsed into as few round trips
@@ -299,6 +300,9 @@ class InteractionRepository:
 
         if ticket_id is not None:
             conditions.append(Ticket.ticket_id == ticket_id)
+
+        if client_company_id_filter is not None:
+            conditions.append(Ticket.client_company_id == client_company_id_filter)
 
         if interaction_types is not None:
             conditions.append(Interaction.interaction_type.in_(interaction_types))

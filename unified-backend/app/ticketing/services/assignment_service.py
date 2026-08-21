@@ -70,8 +70,8 @@ class AssignmentService:
       narrowing as Site Lead for Team Lead/Staff.
     - Staff (or anything else): no groups — always themselves only.
 
-    `category_name` (optional, a `CategoryName` value like
-    "Eligibility") is the new ticket's own `ticket_type` — passed by
+    `category_name` (optional, a real category's name string, e.g.
+    "AR") is the new ticket's own `ticket_type` — passed by
     the caller (the GET /agents/assignable route reads it from a query
     param; `resolve_target` below reads it from the same
     `TicketFromInteractionCreate.ticket_type` the ticket is actually

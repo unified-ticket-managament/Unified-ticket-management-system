@@ -34,7 +34,6 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload, selectinload
 from shared_models.models import Category, User
-from shared_models.models.category import CategoryName
 from shared_models.models.user_category import user_categories as user_categories_table
 
 from app.ticketing.enums import AuditEventType
@@ -62,7 +61,7 @@ async def _with_categories(session, user: User) -> User:
 
 async def _get_category(session, name: str) -> Category:
     result = await session.execute(
-        select(Category).where(Category.category_name == CategoryName(name))
+        select(Category).where(Category.category_name == name)
     )
     category = result.scalars().first()
     if category is None:
@@ -79,7 +78,7 @@ async def _get_active_user_in_category(
         .join(user_categories_table, user_categories_table.c.user_id == User.user_id)
         .join(Category, Category.category_id == user_categories_table.c.category_id)
         .where(
-            Category.category_name == CategoryName(category_name),
+            Category.category_name == category_name,
             User.is_active.is_(True),
         )
     )

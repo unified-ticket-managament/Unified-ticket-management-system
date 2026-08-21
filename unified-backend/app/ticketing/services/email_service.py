@@ -34,6 +34,7 @@ from app.ticketing.services.attachment_service import (
     attachments_to_metadata,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.otp_classifier import classify_otp_email
 from app.ticketing.services.rule_conditions import RuleEmailContext
 from app.ticketing.services.rule_engine_service import RuleEngineService
 from app.ticketing.services.sla_service import SLAService
@@ -526,6 +527,46 @@ class EmailService:
             )
 
         # ---------------------------------------
+        # Response SLA: semantic OTP classification, independent of
+        # any OTP Rule configuration. An email whose subject+body
+        # reads as a genuine one-time-code delivery (not just a
+        # message that happens to mention "OTP"/"code" — e.g. a
+        # support request about a missing OTP) needs no human first
+        # response, so its clock is stopped immediately, before the
+        # Mail/OTP Rules pass below even runs — completion never
+        # waits on, or depends on, a matching rule existing, or on
+        # that rule's forward_to action's send succeeding. Same
+        # completion function every human-triage path already uses
+        # (reply/archive/attach/create-ticket) — see
+        # SLAService.complete_first_response_clock. The root
+        # interaction id, not this reply's own id, since
+        # FirstResponseSLA is always keyed by the thread root.
+        # ---------------------------------------
+
+        otp_classification = classify_otp_email(
+            email.subject,
+            email.body,
+            threshold=settings.otp_nlp_confidence_threshold,
+        )
+
+        logger.info(
+            "OTP classification for interaction %s: is_otp=%s confidence=%.2f (threshold=%.2f)",
+            created.interaction_id,
+            otp_classification.is_otp,
+            otp_classification.confidence,
+            settings.otp_nlp_confidence_threshold,
+        )
+
+        if otp_classification.is_otp and self.sla_service is not None:
+            root_interaction_id = (
+                parent_interaction_id if parent_interaction_id is not None else created.interaction_id
+            )
+            await self.sla_service.complete_first_response_clock(
+                interaction_id=root_interaction_id,
+                completion_reason="OTP_RECOGNIZED",
+            )
+
+        # ---------------------------------------
         # Mail/OTP Rules
         #
         # Fixed trigger ("Email Received") — evaluated inline, in this
@@ -533,10 +574,10 @@ class EmailService:
         # take today (ensure-folder-exists, file-into-folder, queue a
         # fire-and-forget forward email) is a cheap, idempotent side
         # effect, not a multi-step mutation that would need deferring
-        # the way notification emails are.
+        # the way notification emails are. Runs regardless of the
+        # Response SLA classification above — an OTP Rule's own
+        # forward_to action is a separate concern from SLA completion.
         # ---------------------------------------
-
-        otp_recognized = False
 
         if self.rule_engine_service is not None:
             rule_context = RuleEmailContext(
@@ -545,29 +586,9 @@ class EmailService:
                 body=email.body,
                 client_id=client.client_id if client is not None else None,
             )
-            otp_recognized = await self.rule_engine_service.evaluate_and_execute_for_email(
+            await self.rule_engine_service.evaluate_and_execute_for_email(
                 interaction=created,
                 context=rule_context,
-            )
-
-        # ---------------------------------------
-        # Response SLA: an OTP email needs no human first response —
-        # stop the clock the instant an OTP Rule recognizes it,
-        # regardless of whether the rule's forward_to action's send
-        # itself later succeeds or fails. Same completion function
-        # every human-triage path already uses (reply/archive/attach/
-        # create-ticket) — see SLAService.complete_first_response_clock.
-        # The root interaction id, not this reply's own id, since
-        # FirstResponseSLA is always keyed by the thread root.
-        # ---------------------------------------
-
-        if otp_recognized and self.sla_service is not None:
-            root_interaction_id = (
-                parent_interaction_id if parent_interaction_id is not None else created.interaction_id
-            )
-            await self.sla_service.complete_first_response_clock(
-                interaction_id=root_interaction_id,
-                completion_reason="OTP_RECOGNIZED",
             )
 
         # ---------------------------------------

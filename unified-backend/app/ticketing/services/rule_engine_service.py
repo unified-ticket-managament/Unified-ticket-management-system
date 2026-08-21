@@ -63,8 +63,13 @@ class RuleEngineService:
         """
         Returns whether an OTP Rule recognized this email (matched),
         regardless of whether its forward_to action's send later
-        succeeds or fails — EmailService uses this to stop the
-        interaction's Response SLA clock on recognition alone.
+        succeeds or fails. Informational/logging only today —
+        EmailService.receive_email no longer uses this return value to
+        stop the interaction's Response SLA clock; that decision is
+        now made independently by the semantic classifier in
+        app.ticketing.services.otp_classifier, precisely so SLA
+        completion never depends on whether an OTP Rule is configured
+        or matches.
         """
 
         rules = await self.rule_repository.list_enabled_ordered()

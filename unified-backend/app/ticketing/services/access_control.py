@@ -195,7 +195,7 @@ def ensure_agent_can_view_ticket(
         return
 
     user_category_names = {
-        c.category_name.value for c in getattr(current_user, "categories", None) or []
+        c.category_name for c in getattr(current_user, "categories", None) or []
     }
 
     if ticket.ticket_type not in user_category_names:

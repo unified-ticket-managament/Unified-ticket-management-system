@@ -263,7 +263,7 @@ class TicketService:
         if current_user.role.name not in CATEGORY_SCOPED_ROLE_NAMES:
             return None
 
-        return [c.category_name.value for c in getattr(current_user, "categories", None) or []]
+        return [c.category_name for c in getattr(current_user, "categories", None) or []]
 
     # ---------------------------------------------------------
     # Team Lead / Staff Audit Log Scoping
@@ -557,6 +557,7 @@ class TicketService:
         date_to: datetime | None = None,
         sort_by: str = "created_at",
         sort_dir: str = "desc",
+        client_company_id_filter: UUID | None = None,
     ) -> tuple[list[TicketListItemResponse], int]:
         """
         `limit=None` (the default) preserves the original unbounded
@@ -670,6 +671,7 @@ class TicketService:
                 sort_dir=sort_dir,
                 include_escalated_override=can_view_escalated,
                 scoped_ticket_ids=scoped_ticket_ids,
+                client_company_id_filter=client_company_id_filter,
             )
 
             rows = [
@@ -726,6 +728,7 @@ class TicketService:
             client_company_ids=owned_client_ids,
             ticket_types=ticket_types,
             include_escalated_override=can_view_escalated,
+            client_company_id_filter=client_company_id_filter,
         )
 
         await self._attach_names(tickets)
@@ -776,7 +779,9 @@ class TicketService:
 
         return counts
 
-    async def get_dashboard_stats(self, current_user: User) -> dict:
+    async def get_dashboard_stats(
+        self, current_user: User, *, client_company_id_filter: UUID | None = None
+    ) -> dict:
         """
         Everything the ticket-workspace Dashboard needs: eight stat-
         card counts (one grouped SQL query, see
@@ -809,6 +814,7 @@ class TicketService:
             ticket_types=ticket_types,
             today_start=today_start,
             sla_risk_cutoff=sla_risk_cutoff,
+            client_company_id_filter=client_company_id_filter,
         )
 
         recent_page = await self.ticket_repository.list_visible_page(
@@ -817,6 +823,7 @@ class TicketService:
             limit=6,
             sort_by="updated_at",
             sort_dir="desc",
+            client_company_id_filter=client_company_id_filter,
         )
         # HIGH-priority tickets bounded to a small page, then narrowed
         # to still-open ones and trimmed to 5 in Python — a second
@@ -831,6 +838,7 @@ class TicketService:
             priority_filter=TicketPriority.HIGH,
             sort_by="updated_at",
             sort_dir="desc",
+            client_company_id_filter=client_company_id_filter,
         )
         open_statuses = set(OPEN_STATUSES)
         critical_rows = [
@@ -895,7 +903,9 @@ class TicketService:
             "critical_tickets": [_to_summary(row) for row in critical_rows],
         }
 
-    async def get_sla_overview_counts(self, current_user: User) -> dict[str, int]:
+    async def get_sla_overview_counts(
+        self, current_user: User, *, client_company_id_filter: UUID | None = None
+    ) -> dict[str, int]:
         """
         Dashboard "SLA Overview" tile counts — one grouped query (see
         TicketRepository.sla_overview_counts) under the same
@@ -916,6 +926,7 @@ class TicketService:
             account_manager_id=account_manager_id,
             ticket_types=ticket_types,
             now=datetime.now(timezone.utc),
+            client_company_id_filter=client_company_id_filter,
         )
 
     # ---------------------------------------------------------
@@ -935,6 +946,7 @@ class TicketService:
         date_to: datetime | None = None,
         search: str | None = None,
         centralized: bool = False,
+        client_company_id_filter: UUID | None = None,
     ) -> tuple[list[TicketAuditLogResponse], int]:
         """
         Same visibility scoping as list_all, but returns every audit-
@@ -1017,6 +1029,7 @@ class TicketService:
                 date_from=date_from,
                 date_to=date_to,
                 search=search,
+                client_company_id_filter=client_company_id_filter,
             )
 
             responses = [
@@ -1033,8 +1046,9 @@ class TicketService:
                     created_at=log.created_at,
                     ticket_id=log.ticket_id,
                     ticket_title=ticket_title or "Unknown",
+                    client_company_name=client_company_name,
                 )
-                for log, ticket_title, *_ in page.items
+                for log, ticket_title, client_company_name, *_ in page.items
             ]
 
             return responses, page.total
@@ -1062,6 +1076,7 @@ class TicketService:
             client_company_ids=owned_client_ids,
             ticket_types=ticket_types,
             agent_ids=agent_ids,
+            client_company_id_filter=client_company_id_filter,
         )
 
         if not unrestricted and current_user.role.name == STAFF_ROLE_NAME:
@@ -1070,7 +1085,12 @@ class TicketService:
         if not tickets:
             return [], 0
 
+        await self._attach_names(tickets)
+
         titles = {ticket.ticket_id: ticket.title for ticket in tickets}
+        client_company_names = {
+            ticket.ticket_id: getattr(ticket, "client_company_name", None) for ticket in tickets
+        }
         ticket_ids = list(titles.keys())
 
         if search:
@@ -1115,6 +1135,7 @@ class TicketService:
                     created_at=log.created_at,
                     ticket_id=ticket_id,
                     ticket_title=titles.get(ticket_id, "Unknown"),
+                    client_company_name=client_company_names.get(ticket_id),
                 )
             )
 
@@ -1139,6 +1160,7 @@ class TicketService:
         date_from: datetime | None = None,
         date_to: datetime | None = None,
         search: str | None = None,
+        client_company_id_filter: UUID | None = None,
     ) -> tuple[list[TicketInteractionResponse], int, str | None]:
         """
         Same visibility scoping as list_all, but returns every
@@ -1184,6 +1206,7 @@ class TicketService:
                 date_from=date_from,
                 date_to=date_to,
                 search=search,
+                client_company_id_filter=client_company_id_filter,
             )
 
         with timed_stage("visibility"):
@@ -1192,6 +1215,7 @@ class TicketService:
             tickets, _ = await self.ticket_repository.list_all(
                 client_company_ids=owned_client_ids,
                 ticket_types=ticket_types,
+                client_company_id_filter=client_company_id_filter,
             )
 
             if ticket_id is not None:
@@ -1307,6 +1331,7 @@ class TicketService:
         date_from: datetime | None,
         date_to: datetime | None,
         search: str | None,
+        client_company_id_filter: UUID | None = None,
     ) -> tuple[list[TicketInteractionResponse], int, str | None]:
         """
         The paginated (embedded-frontend) branch of list_all_interactions
@@ -1346,6 +1371,7 @@ class TicketService:
             date_from=date_from,
             date_to=date_to,
             search=search,
+            client_company_id_filter=client_company_id_filter,
         )
 
         next_cursor = None

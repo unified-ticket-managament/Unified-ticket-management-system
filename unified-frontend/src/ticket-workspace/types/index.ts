@@ -769,6 +769,9 @@ export interface AuditLogResponse {
 export interface TicketAuditLogResponse extends AuditLogResponse {
   ticket_id: string;
   ticket_title: string;
+  // Null when the ticket has no client_company_id (legacy/unassigned
+  // tickets).
+  client_company_name: string | null;
 }
 
 // ==========================================================

@@ -321,7 +321,7 @@ class PermissionRequestService:
             # category is a property of the ticket itself.
             requester = await self.user_repository.get_by_id(current_user.user_id)
             requester_category_names = (
-                {c.category_name.value for c in requester.categories}
+                {c.category_name for c in requester.categories}
                 if requester is not None
                 else set()
             )

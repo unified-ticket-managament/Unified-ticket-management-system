@@ -31,7 +31,11 @@ const REFRESH_INTERVAL_MS = 15_000;
 // individual SLA lookups) that was both why this tile was slow to
 // resolve and why it sat on its "…" loading placeholder for as long as
 // it did. See TicketRepository.sla_overview_counts for the SQL side.
-export function useDashboardSlaCounts() {
+// `clientCompanyId` (optional) narrows the tile row to one client,
+// within whatever the caller's own role scope already allows — a
+// change to it re-fires the poll immediately (via `load`'s own
+// dependency below), same as a mount or a manual refresh().
+export function useDashboardSlaCounts(clientCompanyId?: string) {
   const [counts, setCounts] = useState<DashboardSlaCounts>(EMPTY_COUNTS);
   const [isLoading, setIsLoading] = useState(true);
   const isUnmountedRef = useRef(false);
@@ -45,7 +49,7 @@ export function useDashboardSlaCounts() {
     const controller = new AbortController();
     controllerRef.current = controller;
     try {
-      const data = await getSlaOverviewCounts(controller.signal);
+      const data = await getSlaOverviewCounts(clientCompanyId, controller.signal);
       if (isUnmountedRef.current) return;
       setCounts({
         running: data.running,
@@ -63,7 +67,7 @@ export function useDashboardSlaCounts() {
     } finally {
       if (!isUnmountedRef.current) setIsLoading(false);
     }
-  }, []);
+  }, [clientCompanyId]);
 
   useEffect(() => {
     isUnmountedRef.current = false;

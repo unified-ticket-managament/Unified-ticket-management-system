@@ -58,6 +58,14 @@ class Settings(BaseSettings):
     # extra Neon round trips a sub-minute cadence costs.
     sla_sweep_interval_seconds: int = 10
 
+    # Confidence threshold (0.0-1.0) the semantic OTP classifier
+    # (app/ticketing/services/otp_classifier.py) must clear before an
+    # inbound email's Response SLA is marked COMPLETED as a recognized
+    # one-time-code delivery — see EmailService.receive_email. A
+    # runtime setting, not a hardcoded constant, since the backend
+    # (not the classifier) applies this as the actual business rule.
+    otp_nlp_confidence_threshold: float = 0.90
+
     # Kept as a raw string (not List[str]): pydantic-settings tries to
     # JSON-decode env vars for list-typed fields before any validator runs,
     # which blows up on a plain comma-separated value like "http://a,http://b".

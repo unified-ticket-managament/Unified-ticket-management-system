@@ -21,6 +21,7 @@ DEFAULT_PERMISSIONS = [
     ("user:delete", "Delete users"),
     ("user:disable", "Activate or deactivate a user account"),
     ("user:reset_password", "Force-reset another user's password"),
+    ("category:create", "Create a new work-specialization category"),
     ("role:create", "Create roles"),
     ("role:view", "View roles"),
     ("role:update", "Update roles"),
@@ -180,6 +181,9 @@ DEFAULT_ROLES = {
         "ticket:manage_agents", "ticket:manage_roles_permissions",
         # User management — can manage Team Leads and Staff.
         "user:view", "user:create", "user:update", "user:disable", "user:reset_password",
+        # Can create the work-specialization categories the Staff/Team
+        # Leads they manage belong to.
+        "category:create",
         # Role & permission — can view and grant/revoke scoped overrides
         # for their own reports, but not edit role definitions.
         "role:view", "permission:view", "permission:override_grant", "permission:override_revoke",
@@ -499,17 +503,20 @@ async def seed() -> None:
             roles[role_name] = role
 
         # --------------------------------------------------
-        # Categories — read-only here. The categories table is owned
-        # and seeded by an Alembic migration (a native Postgres enum
-        # column, not a freeform lookup this script should be writing
-        # to), so this just resolves category_name -> Category for the
-        # demo users' category_id backfill below. If the migration
-        # hasn't run yet, category_id assignment is skipped with a
-        # warning rather than crashing the whole seed run.
+        # Categories — read-only here. `category_name` is a plain,
+        # dynamically-creatable string (see shared_models.models.
+        # Category) rather than a fixed enum, so this just resolves
+        # category_name -> Category for the demo users' category_id
+        # backfill below from whatever categories already exist (an
+        # admin creating new ones at runtime through the Category CRUD
+        # API is exactly the point — this script never writes to
+        # `categories` itself). If none exist yet, category_id
+        # assignment is skipped with a warning rather than crashing
+        # the whole seed run.
         # --------------------------------------------------
 
         categories_by_name: dict[str, Category] = {
-            category.category_name.value: category
+            category.category_name: category
             for category in (await session.execute(select(Category))).scalars().all()
         }
 

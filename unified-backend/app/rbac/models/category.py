@@ -1,3 +1,3 @@
-from shared_models.models import Category, CategoryName
+from shared_models.models import Category
 
-__all__ = ["Category", "CategoryName"]
+__all__ = ["Category"]

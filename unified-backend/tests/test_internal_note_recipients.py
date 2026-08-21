@@ -94,7 +94,7 @@ def _ticket_type_for(user: User) -> str:
     # 403 on their own ticket. Every other role is unrestricted, so any
     # real category name works.
     if user.role.name in CATEGORY_SCOPED_ROLE_NAMES and user.category is not None:
-        return user.category.category_name.value
+        return user.category.category_name
     return "Eligibility"
 
 

@@ -375,12 +375,12 @@ class OrganizationService:
         # is the real source; `department` (singular, pre-existing) is
         # derived from it for back-compat — for a 0-or-1-category user
         # this renders byte-identical to before this change.
-        departments = sorted(c.category_name.value for c in user.categories)
+        departments = sorted(c.category_name for c in user.categories)
         department = (
             ", ".join(departments)
             if departments
             else (
-                user.category.category_name.value
+                user.category.category_name
                 if user.category is not None
                 else None
             )

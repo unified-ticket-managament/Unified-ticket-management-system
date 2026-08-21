@@ -10,15 +10,20 @@ import { useDashboardSlaCounts, type DashboardSlaCounts } from "@tw/hooks/useDas
 import { getDashboardStats, type DashboardTicketSummary } from "@tw/api/ticket";
 import { SlaBadge } from "@tw/components/sla/SlaBadge";
 
-// Deliberately independent of this dashboard's own `tickets` prop
-// (MOCK_TICKETS / getTicketsFor***, see super-admin-dashboard.tsx) —
-// those are fictional records with no real backend ticket_id, so a
-// real per-ticket SLA lookup couldn't run against them at all.
-// useDashboardSlaCounts calls GET /tickets/sla-overview-counts, one
-// grouped server-side query under the caller's real visibility
-// scoping, entirely independent of the mock-data KPIs/charts above.
-export function SlaOverviewSection() {
-  const { counts, isLoading } = useDashboardSlaCounts();
+interface SlaOverviewSectionProps {
+  // Optional — narrows this tile row to one client, within whatever
+  // the caller's own role scope already allows. Passed down from
+  // super-admin-dashboard.tsx's own Client filter.
+  clientCompanyId?: string;
+}
+
+// GET /tickets/sla-overview-counts, one grouped server-side query
+// under the caller's real visibility scoping (see
+// useDashboardSlaCounts) — independent of the KPI cards above, which
+// now also run on real backend data (see super-admin-dashboard.tsx),
+// just fetched via a separate call with its own refresh cadence.
+export function SlaOverviewSection({ clientCompanyId }: SlaOverviewSectionProps) {
+  const { counts, isLoading } = useDashboardSlaCounts(clientCompanyId);
 
   // Same data source (and same real-ticket-id caveat) as the counts
   // above — GET /tickets/dashboard-stats, the identical endpoint the
@@ -32,7 +37,7 @@ export function SlaOverviewSection() {
 
   useEffect(() => {
     let cancelled = false;
-    getDashboardStats()
+    getDashboardStats(clientCompanyId)
       .then((data) => {
         if (!cancelled) setCriticalTickets(data.critical_tickets);
       })
@@ -42,7 +47,7 @@ export function SlaOverviewSection() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [clientCompanyId]);
 
   const items: Array<{
     key: keyof DashboardSlaCounts;
@@ -63,8 +68,8 @@ export function SlaOverviewSection() {
       <CardHeader>
         <CardTitle className="text-base">SLA Overview</CardTitle>
         <CardDescription>
-          Live Resolution SLA state across real tickets — independent of the KPI cards above,
-          which still run on this dashboard&apos;s existing mock dataset.
+          Live Resolution SLA state across real tickets, fetched independently of the KPI cards
+          above (its own refresh cadence).
         </CardDescription>
       </CardHeader>
       <CardContent>

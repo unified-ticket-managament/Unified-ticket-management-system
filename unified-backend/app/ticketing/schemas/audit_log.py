@@ -36,3 +36,6 @@ class TicketAuditLogResponse(AuditLogResponse):
 
     ticket_id: UUID
     ticket_title: str
+    # None when the ticket has no client_company_id (legacy/unassigned
+    # tickets) — see Ticket.client_company_id's own docstring.
+    client_company_name: str | None = None

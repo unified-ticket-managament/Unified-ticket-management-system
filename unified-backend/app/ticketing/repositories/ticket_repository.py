@@ -333,6 +333,7 @@ class TicketRepository:
         sort_dir: str = "desc",
         include_escalated_override: bool = False,
         scoped_ticket_ids: list[UUID] | None = None,
+        client_company_id_filter: UUID | None = None,
     ) -> tuple[list[Ticket], int]:
         """
         `limit=None` (the default) preserves this method's original,
@@ -420,6 +421,8 @@ class TicketRepository:
             conditions.append(Ticket.current_status == status_filter)
         if priority_filter is not None:
             conditions.append(Ticket.current_priority == priority_filter)
+        if client_company_id_filter is not None:
+            conditions.append(Ticket.client_company_id == client_company_id_filter)
         if search:
             ticket_number_query = parse_ticket_number_query(search)
             if ticket_number_query is not None:
@@ -539,6 +542,7 @@ class TicketRepository:
         ticket_types: list[str] | None,
         today_start: datetime,
         sla_risk_cutoff: datetime,
+        client_company_id_filter: UUID | None = None,
     ) -> dict[str, int]:
         """
         Every stat card on the ticket-workspace Dashboard, in one
@@ -555,6 +559,8 @@ class TicketRepository:
         conditions = self._visibility_conditions(
             account_manager_id=account_manager_id, ticket_types=ticket_types
         )
+        if client_company_id_filter is not None:
+            conditions.append(Ticket.client_company_id == client_company_id_filter)
 
         query = select(
             func.count().filter(Ticket.agent_id.isnot(None)),
@@ -605,6 +611,7 @@ class TicketRepository:
         account_manager_id: UUID | None,
         ticket_types: list[str] | None,
         now: datetime,
+        client_company_id_filter: UUID | None = None,
     ) -> dict[str, int]:
         """
         The Dashboard's "SLA Overview" tile row (Running / Paused / At
@@ -644,6 +651,8 @@ class TicketRepository:
         conditions = self._visibility_conditions(
             account_manager_id=account_manager_id, ticket_types=ticket_types
         )
+        if client_company_id_filter is not None:
+            conditions.append(Ticket.client_company_id == client_company_id_filter)
 
         remaining_seconds = func.extract(
             "epoch", ResolutionSLA.due_at - now
@@ -702,6 +711,7 @@ class TicketRepository:
         sort_dir: str = "desc",
         include_escalated_override: bool = False,
         scoped_ticket_ids: list[UUID] | None = None,
+        client_company_id_filter: UUID | None = None,
     ) -> TicketVisiblePage:
         """
         The ticket-list page's real query — same visibility/filter/
@@ -810,6 +820,8 @@ class TicketRepository:
             conditions.append(Ticket.current_status == status_filter)
         if priority_filter is not None:
             conditions.append(Ticket.current_priority == priority_filter)
+        if client_company_id_filter is not None:
+            conditions.append(Ticket.client_company_id == client_company_id_filter)
         if search:
             ticket_number_query = parse_ticket_number_query(search)
             if ticket_number_query is not None:

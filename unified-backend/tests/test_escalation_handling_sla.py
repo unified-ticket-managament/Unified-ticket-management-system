@@ -113,7 +113,7 @@ async def _get_team_lead(session) -> User:
     )
     team_leads = result.unique().scalars().all()
     for user in team_leads:
-        if user.category is not None and user.category.category_name.value == TEAM_LEAD_CATEGORY:
+        if user.category is not None and user.category.category_name == TEAM_LEAD_CATEGORY:
             return user
     pytest.skip(f"No active seeded Team Lead found for category {TEAM_LEAD_CATEGORY!r}.")
 

@@ -124,7 +124,7 @@ async def _get_role(session, role_name: str) -> Role:
 async def _get_category(session, category_name: str) -> Category:
     result = await session.execute(select(Category))
     for category in result.scalars().all():
-        if category.category_name.value == category_name:
+        if category.category_name == category_name:
             return category
     pytest.skip(f"Seeded category {category_name!r} not found.")
 
@@ -185,13 +185,13 @@ async def test_list_visible_page_mine_includes_scoped_grant_ticket(db_session):
         name="Grantee",
     )
 
-    ticket = await _make_ticket(db_session, owner=owner, ticket_type=category.category_name.value)
+    ticket = await _make_ticket(db_session, owner=owner, ticket_type=category.category_name)
 
     repo = TicketRepository(db_session)
 
     page = await repo.list_visible_page(
         account_manager_id=None,
-        ticket_types=[other_category.category_name.value],
+        ticket_types=[other_category.category_name],
         limit=20,
         view="mine",
         assigned_to=grantee.user_id,
@@ -207,7 +207,7 @@ async def test_list_visible_page_mine_includes_scoped_grant_ticket(db_session):
     # the work.
     page_without_grant = await repo.list_visible_page(
         account_manager_id=None,
-        ticket_types=[other_category.category_name.value],
+        ticket_types=[other_category.category_name],
         limit=20,
         view="mine",
         assigned_to=grantee.user_id,
@@ -233,20 +233,20 @@ async def test_count_by_view_mine_reflects_scoped_grant_ticket(db_session):
         name="Grantee",
     )
 
-    ticket = await _make_ticket(db_session, owner=owner, ticket_type=category.category_name.value)
+    ticket = await _make_ticket(db_session, owner=owner, ticket_type=category.category_name)
 
     repo = TicketRepository(db_session)
 
     counts_with_grant = await repo.count_by_view(
         account_manager_id=None,
-        ticket_types=[other_category.category_name.value],
+        ticket_types=[other_category.category_name],
         assigned_to=grantee.user_id,
         viewer_user_id=grantee.user_id,
         scoped_ticket_ids=[ticket.ticket_id],
     )
     counts_without_grant = await repo.count_by_view(
         account_manager_id=None,
-        ticket_types=[other_category.category_name.value],
+        ticket_types=[other_category.category_name],
         assigned_to=grantee.user_id,
         viewer_user_id=grantee.user_id,
         scoped_ticket_ids=None,

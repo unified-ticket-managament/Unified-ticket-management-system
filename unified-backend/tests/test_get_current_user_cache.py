@@ -79,7 +79,7 @@ def _mint_token(user: User) -> str:
         role_id=user.role_id,
         category_id=user.category_id,
         category=(
-            user.category.category_name.value if user.category else None
+            user.category.category_name if user.category else None
         ),
         permission_version=user.permission_version,
     )

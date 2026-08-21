@@ -195,6 +195,127 @@ class UserRepository(BaseRepository):
 
         return result.scalar_one_or_none() is not None
 
+    async def get_by_ids(self, user_ids: list[UUID]) -> list[User]:
+        """
+        Batch lookup, mirrors the ticketing-side UserRepository's own
+        list_by_ids — used by CategoryService.create_category to
+        validate every submitted user_id exists in one round trip
+        rather than one get_by_id call per id.
+        """
+
+        if not user_ids:
+            return []
+
+        result = await self.db.execute(
+            select(User).where(User.user_id.in_(user_ids))
+        )
+
+        return list(result.scalars().all())
+
+    async def add_users_to_category(
+        self,
+        category_id: UUID,
+        user_ids: list[UUID],
+        assigned_by: UUID | None = None,
+    ) -> None:
+        """
+        Adds category_id to each given user's many-to-many
+        user_categories membership — an ADD, not the full-replace
+        UserService.set_user_categories/replace_categories perform, so
+        a user's other existing category memberships are left
+        untouched. Safe no-op for an empty user_ids list (category
+        creation with no assigned users is a normal, valid case).
+
+        Also backfills each user's legacy scalar `category_id` only
+        where it is currently NULL — never overwrites an existing
+        primary category — and bumps `permission_version` for every
+        affected user (bulk UPDATE, mirrors
+        bump_permission_version_for_role) so their next request picks
+        up the new membership within the existing RBAC-cache TTL
+        window instead of waiting for their next login/refresh.
+        """
+
+        if not user_ids:
+            return
+
+        deduped_ids = list(dict.fromkeys(user_ids))
+
+        await self.db.execute(
+            insert(user_categories),
+            [
+                {
+                    "user_id": user_id,
+                    "category_id": category_id,
+                    "assigned_by": assigned_by,
+                }
+                for user_id in deduped_ids
+            ],
+        )
+
+        await self.db.execute(
+            update(User)
+            .where(User.user_id.in_(deduped_ids), User.category_id.is_(None))
+            .values(category_id=category_id)
+        )
+
+        await self.db.execute(
+            update(User)
+            .where(User.user_id.in_(deduped_ids))
+            .values(permission_version=User.permission_version + 1)
+        )
+
+    async def remove_users_from_category(
+        self,
+        category_id: UUID,
+        user_ids: list[UUID],
+    ) -> None:
+        """
+        Removes category_id from each given user's user_categories
+        membership — the inverse of add_users_to_category above. Safe
+        no-op for an empty user_ids list.
+
+        For any affected user whose legacy scalar `category_id`
+        equals the one being removed, reassigns it to one of their
+        remaining user_categories rows (arbitrary choice — there's no
+        "primary" marker, same convention
+        UserService.set_user_categories already uses) or NULL if none
+        remain, and bumps permission_version for every affected user
+        — the same "keep the legacy scalar in sync, invalidate the
+        RBAC cache" behavior add_users_to_category already provides
+        for the opposite direction.
+        """
+
+        if not user_ids:
+            return
+
+        deduped_ids = list(dict.fromkeys(user_ids))
+
+        await self.db.execute(
+            delete(user_categories).where(
+                user_categories.c.user_id.in_(deduped_ids),
+                user_categories.c.category_id == category_id,
+            )
+        )
+
+        replacement_subquery = (
+            select(user_categories.c.category_id)
+            .where(user_categories.c.user_id == User.user_id)
+            .limit(1)
+            .scalar_subquery()
+        )
+
+        await self.db.execute(
+            update(User)
+            .where(User.user_id.in_(deduped_ids), User.category_id == category_id)
+            .values(category_id=replacement_subquery)
+        )
+
+        await self.db.execute(
+            update(User)
+            .where(User.user_id.in_(deduped_ids))
+            .values(permission_version=User.permission_version + 1)
+        )
+
     async def exists_by_employee_number(self, employee_number: str) -> bool:
         result = await self.db.execute(
             select(User.user_id)
@@ -238,7 +359,11 @@ class UserRepository(BaseRepository):
 
         result = await self.db.execute(
             select(User)
-            .options(selectinload(User.role))
+            .options(
+                    selectinload(User.role),
+                    selectinload(User.category),
+                    selectinload(User.categories),
+                     )
             .join(Role, Role.role_id == User.role_id)
             .where(
                 func.lower(Role.name) == role_name.lower(),

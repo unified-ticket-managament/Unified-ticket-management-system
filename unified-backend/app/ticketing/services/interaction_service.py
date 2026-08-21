@@ -10,16 +10,9 @@ from fastapi import status as http_status
 from sqlalchemy.exc import IntegrityError
 
 from shared_models.models import User
-from shared_models.models.category import CategoryName
-
-# Valid values of the category_name_enum Postgres type — same
-# validate-in-Python-before-querying idiom as UserRepository's own
-# _VALID_CATEGORY_NAMES, used here to reject a nonexistent destination
-# category with a precise error rather than the indirect "no user
-# found in that category" one.
-_CATEGORY_NAME_VALUES = {member.value for member in CategoryName}
 
 from app.core.config import get_settings
+from app.ticketing.repositories.category_repository import CategoryRepository
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
@@ -2411,7 +2404,8 @@ class InteractionService:
         # bypasses the picker (or a mismatched category/target pair)
         # can't silently assign outside the selected category.
         if request.category_name:
-            if request.category_name not in _CATEGORY_NAME_VALUES:
+            category_repository = CategoryRepository(self.user_repository.db)
+            if not await category_repository.exists(request.category_name):
                 raise HTTPException(
                     status_code=http_status.HTTP_400_BAD_REQUEST,
                     detail="Destination category does not exist.",

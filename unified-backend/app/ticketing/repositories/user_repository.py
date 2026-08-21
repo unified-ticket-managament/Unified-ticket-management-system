@@ -6,17 +6,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 from shared_models.models import Category, Role, User
-from shared_models.models.category import CategoryName
 from shared_models.models.user_category import user_categories
 
 STAFF_ROLE_NAME = "Staff"
 ACCOUNT_MANAGER_ROLE_NAME = "Account Manager"
-
-# Valid values of the category_name_enum Postgres type, computed once
-# at import time — see list_active_by_role_and_category's own
-# docstring for why this is checked in Python before ever reaching the
-# database.
-_VALID_CATEGORY_NAMES = {member.value for member in CategoryName}
 
 
 class UserRepository:
@@ -189,32 +182,17 @@ class UserRepository:
         this ticket's category" (Team Lead, category-scoped) without
         hardcoding Staff.
 
-        `category_name` is a ticket's own `ticket_type` string, not
-        something validated at ticket-creation time against the real
-        `category_name_enum` values — a ticket with corrupted/garbage
-        test data (`ticket_type="string"`, say) reaching this method
-        would otherwise have Postgres reject the implicit enum
-        comparison with `InvalidTextRepresentationError` mid-query.
-        That's bad enough on its own for a single caller
-        (`manual_escalate`'s route), but far worse for
-        `SLASweepService`: it calls this (via
-        `EscalationService._resolve_owners_for_level`) from inside a
-        per-clock `db.begin_nested()` SAVEPOINT specifically so one
-        ticket's failure can't affect another's — confirmed live that
-        it doesn't actually hold up against this specific error class,
-        with the session ending up unable to serve later queries in
-        the same request at all (surfacing as a confusing
-        `MissingGreenlet` on a *different*, unrelated ticket later in
-        the same sweep tick, not the original enum error). Validating
-        in Python first, before the query ever reaches the database,
-        sidesteps the whole question of whether a SAVEPOINT rollback
-        can cleanly recover from this — an invalid category_name now
-        just means "no one to find," the same as a valid category with
-        no Team Lead configured yet.
+        `category_name` is a ticket's own `ticket_type` string, plain
+        text compared against `categories.category_name` (also plain
+        text — categories are created dynamically at runtime, see
+        shared_models.models.Category). A category_name matching no
+        real category (e.g. corrupted/garbage test data) simply joins
+        to zero rows here — "no one to find," the same as a valid
+        category with no Team Lead configured yet. Never raises: this
+        is a plain string comparison, not an enum cast, so there is no
+        Postgres `InvalidTextRepresentationError` class of failure to
+        guard against here at all.
         """
-
-        if category_name not in _VALID_CATEGORY_NAMES:
-            return []
 
         result = await self.db.execute(
             select(User)
@@ -234,16 +212,14 @@ class UserRepository:
     async def list_active_user_ids_by_category(self, category_name: str) -> set[UUID]:
         """
         Every active user's id (any role) belonging to category_name via
-        the many-to-many user_categories relationship — same
-        validate-before-querying idiom as list_active_by_role_and_category
-        (an invalid category_name just means "no one to find," never a
-        Postgres enum-cast error). Used to narrow an already-authorized
-        candidate set (e.g. InteractionService.get_transfer_candidates) by
-        category without a per-role join.
+        the many-to-many user_categories relationship — a category_name
+        matching no real category just means "no one to find" (a plain
+        string join against zero rows, never a Postgres enum-cast
+        error — see list_active_by_role_and_category's own docstring).
+        Used to narrow an already-authorized candidate set (e.g.
+        InteractionService.get_transfer_candidates) by category without
+        a per-role join.
         """
-
-        if category_name not in _VALID_CATEGORY_NAMES:
-            return set()
 
         result = await self.db.execute(
             select(User.user_id)
@@ -331,17 +307,14 @@ class UserRepository:
     async def list_active_staff_by_category(self, category_name: str) -> list[User]:
         """
         Active Staff belonging to one work-specialization category
-        (Eligibility, AR, Claims, ...) — used to scope the "assign to
+        (AR, Referral, Coding, ...) — used to scope the "assign to
         staff" ticket picker to the ticket's own category/team,
         instead of listing every Staff member company-wide.
 
         See list_active_by_role_and_category's own docstring for why
-        an invalid `category_name` is checked in Python and treated as
-        "no one to find" rather than reaching the database at all.
+        an invalid `category_name` naturally yields "no one to find"
+        without ever risking a Postgres enum-cast error.
         """
-
-        if category_name not in _VALID_CATEGORY_NAMES:
-            return []
 
         result = await self.db.execute(
             select(User)

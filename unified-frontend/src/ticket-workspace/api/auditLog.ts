@@ -38,6 +38,9 @@ export interface ListTicketAuditLogsParams {
   // caller's own role-scoped default — backend-gated by
   // ticket:view_global_audit_log regardless of what this is set to.
   centralized?: boolean;
+  // Narrows to one client's entries, within whatever the caller's own
+  // role scope (or centralized mode) already allows.
+  clientCompanyId?: string;
 }
 
 export interface ListTicketAuditLogsResult {
@@ -67,6 +70,7 @@ export async function getAllTicketAuditLogs(
         date_to: params.dateTo,
         search: params.search,
         centralized: params.centralized,
+        client_company_id: params.clientCompanyId,
       },
     }
   );

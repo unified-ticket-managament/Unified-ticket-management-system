@@ -94,6 +94,17 @@ export interface Role {
 export interface Category {
   category_id: string;
   category_name: string;
+  assigned_user_count?: number;
+}
+
+// A user currently assigned to a category, with their real role name
+// — backs the Edit Category page's pre-populated Team Lead/Staff
+// pickers (GET /categories/{id}/members).
+export interface CategoryMember {
+  user_id: string;
+  name: string;
+  email: string;
+  role_name: string;
 }
 
 export interface Permission {
@@ -222,6 +233,10 @@ export interface RoleForm {
 
 export interface CategoryForm {
   category_name: string;
+  // Optional — a category may be created with zero, some, or many
+  // Staff/Team Lead users assigned at once (see
+  // CategoryFormDialog's "Create Category" form).
+  user_ids?: string[];
 }
 
 export interface ProfileForm {

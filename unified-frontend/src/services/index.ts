@@ -3,6 +3,7 @@ import {
   AuditLog,
   AuthUser,
   CategoryForm,
+  CategoryMember,
   EligibleApproverUser,
   LoginForm,
   OrganizationNode,
@@ -279,6 +280,23 @@ export const categoryService = {
 
   delete: async (id: string) => {
     await api.delete(`/categories/${id}`);
+  },
+
+  getMembers: async (id: string): Promise<{ members: CategoryMember[] }> => {
+    const response = await api.get(`/categories/${id}/members`);
+
+    return response.data;
+  },
+
+  setMembers: async (
+    id: string,
+    userIds: string[]
+  ): Promise<{ members: CategoryMember[] }> => {
+    const response = await api.put(`/categories/${id}/members`, {
+      user_ids: userIds,
+    });
+
+    return response.data;
   },
 };
 

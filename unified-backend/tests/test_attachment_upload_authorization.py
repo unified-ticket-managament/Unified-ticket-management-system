@@ -172,10 +172,10 @@ async def _find_team_lead_with_staff(session, staff_count: int) -> tuple[User, l
     for user in staff_result.unique().scalars().all():
         if user.category is None:
             continue
-        staff_by_category.setdefault(user.category.category_name.value, []).append(user)
+        staff_by_category.setdefault(user.category.category_name, []).append(user)
 
     for team_lead in team_leads:
-        candidates = staff_by_category.get(team_lead.category.category_name.value, [])
+        candidates = staff_by_category.get(team_lead.category.category_name, [])
         if len(candidates) >= staff_count:
             return team_lead, candidates[:staff_count]
 
@@ -237,7 +237,7 @@ async def test_assigned_staff_with_editown_ticket_permission_can_upload(db_sessi
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
 
@@ -270,7 +270,7 @@ async def test_assigned_staff_without_editown_ticket_permission_is_rejected(db_s
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
 
@@ -299,7 +299,7 @@ async def test_non_assigned_staff_without_permission_or_grant_is_rejected(db_ses
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff_a.user_id,
     )
 
@@ -329,7 +329,7 @@ async def test_team_lead_can_upload_to_unassigned_or_other_agents_ticket(db_sess
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
 
@@ -355,7 +355,7 @@ async def test_closed_ticket_blocks_upload_even_for_assigned_agent(db_session):
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
     ticket.current_status = "CLOSED"
@@ -386,7 +386,7 @@ async def test_escalated_ticket_awaiting_acceptance_blocks_upload_for_everyone(d
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
 
@@ -441,7 +441,7 @@ async def test_uploaded_attachment_persists_and_is_visible_afterward(db_session)
     _client, ticket = await _make_ticket(
         db_session,
         account_manager_id=team_lead.manager_id or team_lead.user_id,
-        ticket_type=team_lead.category.category_name.value,
+        ticket_type=team_lead.category.category_name,
         agent_id=staff.user_id,
     )
 

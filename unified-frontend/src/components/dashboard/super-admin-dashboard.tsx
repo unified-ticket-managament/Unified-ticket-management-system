@@ -11,6 +11,7 @@ import {
 import { useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
+import { ClientFilterSelect } from "@tw/components/common/ClientFilterSelect";
 import { ModernBarListCard } from "@/components/dashboard/ModernBarListCard";
 import { ModernStatCard } from "@/components/dashboard/ModernStatCard";
 import { SlaOverviewSection } from "@/components/dashboard/SlaOverviewSection";
@@ -22,9 +23,10 @@ import { countsByPriorityFromTickets } from "@/lib/reportAggregations";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { useAuthStore } from "@/store/auth-store";
 import { getAllTicketAuditLogs } from "@tw/api/auditLog";
+import { listClients } from "@tw/api/clients";
 import { getDashboardStats, listTickets, type DashboardStats } from "@tw/api/ticket";
 import { auditMetaFor } from "@tw/lib/auditLogMeta";
-import type { TicketAuditLogResponse, TicketResponse, TicketStatus } from "@tw/types";
+import type { ClientResponse, TicketAuditLogResponse, TicketResponse, TicketStatus } from "@tw/types";
 
 const STATUS_BADGE: Record<TicketStatus, { label: string; variant: "default" | "warning" | "success" | "secondary" }> = {
   OPEN: { label: "Open", variant: "default" },
@@ -67,13 +69,30 @@ export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
   const [recentActivity, setRecentActivity] = useState<TicketAuditLogResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  // Fetched once, independent of the client-filtered reload below —
+  // this app has no WorkflowContext here (this component renders
+  // outside the embedded ticket workspace's own provider tree, at the
+  // bare /dashboard root — see dashboard/layout.tsx), so it can't
+  // reuse that context's session-cached `clients` the way every
+  // ticket-workspace page does; GET /clients is cheap and ungated
+  // regardless.
+  const [clients, setClients] = useState<ClientResponse[]>([]);
+  const [clientFilter, setClientFilter] = useState("ALL");
+  const clientCompanyId = clientFilter === "ALL" ? undefined : clientFilter;
+
+  useEffect(() => {
+    listClients()
+      .then(setClients)
+      .catch(() => setClients([]));
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
     Promise.all([
-      getDashboardStats(),
-      listTickets(),
-      getAllTicketAuditLogs({ limit: 8 }),
+      getDashboardStats(clientCompanyId),
+      listTickets(clientCompanyId),
+      getAllTicketAuditLogs({ limit: 8, clientCompanyId }),
     ])
       .then(([statsResult, ticketsResult, activityResult]) => {
         if (cancelled) return;
@@ -95,7 +114,7 @@ export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [clientCompanyId]);
 
   const priorityBreakdown = countsByPriorityFromTickets(tickets);
 
@@ -112,6 +131,14 @@ export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
       <PageHeader
         title={`Welcome back, ${currentUser?.name ?? "there"}`}
         description={description ?? "Ticket operations overview across the organization."}
+        action={
+          <ClientFilterSelect
+            clients={clients}
+            currentUser={currentUser}
+            value={clientFilter}
+            onChange={setClientFilter}
+          />
+        }
       />
 
       {isLoading ? (
@@ -137,7 +164,7 @@ export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
             <ModernStatCard title="Closed" value={stats?.closed ?? 0} subtitle="All-time closed" icon={Archive} />
           </div>
 
-          <SlaOverviewSection />
+          <SlaOverviewSection clientCompanyId={clientCompanyId} />
 
           {/* "Tickets by Status" was removed per spec — Tickets by Priority
               now takes the full width instead of sharing a 2-col grid with

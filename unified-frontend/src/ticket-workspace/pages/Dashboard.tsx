@@ -135,7 +135,7 @@ export function Dashboard() {
       // `.total`). Neither scales with total ticket/mail count
       // anymore; both cost a fixed, small amount of work regardless.
       const [dashboardStats, viewCounts] = await Promise.all([
-        getDashboardStats(signal),
+        getDashboardStats(undefined, signal),
         getViewCounts(),
       ]);
       if (signal?.aborted) return;

@@ -4,6 +4,7 @@ import axios from "axios";
 import { AlertTriangle, ArrowUpDown, Lock, MessagesSquare, Search, ShieldAlert, UserPlus } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { Badge } from "@tw/components/common/Badge";
+import { ClientFilterSelect } from "@tw/components/common/ClientFilterSelect";
 import { Button } from "@tw/components/common/Button";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { RefreshButton } from "@tw/components/common/RefreshButton";
@@ -65,7 +66,7 @@ const selectClass =
 export function TicketsListPage() {
   const navigate = useNavigate();
   const { currentUser } = useAuthContext();
-  const { categories } = useWorkflowContext();
+  const { categories, clients } = useWorkflowContext();
   const { pushToast } = useToast();
 
   // Server-paginated/filtered/sorted rows for the current page —
@@ -94,6 +95,7 @@ export function TicketsListPage() {
   const [statusFilter, setStatusFilter] = useState<TicketStatus | "ALL">("ALL");
   const [priorityFilter, setPriorityFilter] = useState<TicketPriority | "ALL">("ALL");
   const [categoryFilter, setCategoryFilter] = useState<string>("ALL");
+  const [clientFilter, setClientFilter] = useState<string>("ALL");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("updated_at");
@@ -121,6 +123,7 @@ export function TicketsListPage() {
             status: statusFilter === "ALL" ? undefined : statusFilter,
             priority: priorityFilter === "ALL" ? undefined : priorityFilter,
             ticketType: categoryFilter === "ALL" ? undefined : categoryFilter,
+            clientCompanyId: clientFilter === "ALL" ? undefined : clientFilter,
             search: debouncedSearch.trim() || undefined,
             dateFrom:
               dateFrom && isValidDateRange(dateFrom, dateTo)
@@ -151,7 +154,7 @@ export function TicketsListPage() {
         if (requestId === requestIdRef.current) setIsLoading(false);
       }
     },
-    [poolTab, statusFilter, priorityFilter, categoryFilter, debouncedSearch, dateFrom, dateTo, sortKey, sortDir]
+    [poolTab, statusFilter, priorityFilter, categoryFilter, clientFilter, debouncedSearch, dateFrom, dateTo, sortKey, sortDir]
   );
 
   // Independent of loadTickets — the tab badges don't need to be
@@ -178,12 +181,13 @@ export function TicketsListPage() {
         statusFilter,
         priorityFilter,
         categoryFilter,
+        clientFilter,
         dateFrom,
         dateTo,
         sortKey,
         sortDir,
       ]),
-    [poolTab, debouncedSearch, statusFilter, priorityFilter, categoryFilter, dateFrom, dateTo, sortKey, sortDir]
+    [poolTab, debouncedSearch, statusFilter, priorityFilter, categoryFilter, clientFilter, dateFrom, dateTo, sortKey, sortDir]
   );
   const prevFilterSignatureRef = useRef(filterSignature);
 
@@ -334,13 +338,20 @@ export function TicketsListPage() {
     setStatusFilter("ALL");
     setPriorityFilter("ALL");
     setCategoryFilter("ALL");
+    setClientFilter("ALL");
     setDateFrom("");
     setDateTo("");
     setPage(1);
   }
 
   const hasActiveFilters =
-    search || statusFilter !== "ALL" || priorityFilter !== "ALL" || categoryFilter !== "ALL" || dateFrom || dateTo;
+    search ||
+    statusFilter !== "ALL" ||
+    priorityFilter !== "ALL" ||
+    categoryFilter !== "ALL" ||
+    clientFilter !== "ALL" ||
+    dateFrom ||
+    dateTo;
 
   function SortHeader({ label, sortField }: { label: string; sortField: SortKey }) {
     const isActive = sortKey === sortField;
@@ -491,6 +502,13 @@ export function TicketsListPage() {
               ))}
             </select>
           )}
+
+          <ClientFilterSelect
+            clients={clients}
+            currentUser={currentUser}
+            value={clientFilter}
+            onChange={setClientFilter}
+          />
 
           <div className="flex items-center gap-1.5">
             <input

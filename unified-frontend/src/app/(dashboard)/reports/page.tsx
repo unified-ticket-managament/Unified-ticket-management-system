@@ -17,6 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageHeader } from "@/components/layout/dashboard-shell";
 import { Breadcrumbs } from "@/components/shared/breadcrumbs";
 import { AreaTrendChart } from "@/components/shared/charts";
+import { ClientFilterSelect } from "@tw/components/common/ClientFilterSelect";
 import { ModernBarListCard } from "@/components/dashboard/ModernBarListCard";
 import { ModernStatCard } from "@/components/dashboard/ModernStatCard";
 import { WorkflowLoader } from "@/components/common/WorkflowLoader";
@@ -35,9 +36,10 @@ import {
 import { ROLE_NAMES } from "@/lib/role-access";
 import { useAuthStore } from "@/store/auth-store";
 import { listCategories } from "@tw/api/categories";
+import { listClients } from "@tw/api/clients";
 import { getAllTicketAuditLogs } from "@tw/api/auditLog";
 import { listTickets } from "@tw/api/ticket";
-import type { CategoryResponse, TicketAuditLogResponse, TicketResponse } from "@tw/types";
+import type { CategoryResponse, ClientResponse, TicketAuditLogResponse, TicketResponse } from "@tw/types";
 
 function downloadBlob(content: string, filename: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType });
@@ -63,12 +65,25 @@ export default function ReportsPage() {
   const [replyAddedLogs, setReplyAddedLogs] = useState<TicketAuditLogResponse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
+  // Fetched once — no WorkflowContext here, this page sits outside
+  // the embedded ticket workspace's own provider tree (same reason
+  // super-admin-dashboard.tsx fetches its own copy).
+  const [clients, setClients] = useState<ClientResponse[]>([]);
+  const [clientFilter, setClientFilter] = useState("ALL");
+  const clientCompanyId = clientFilter === "ALL" ? undefined : clientFilter;
+
+  useEffect(() => {
+    listClients()
+      .then(setClients)
+      .catch(() => setClients([]));
+  }, []);
+
   const loadData = useCallback((signal?: { aborted: boolean }) => {
     setIsLoading(true);
     return Promise.all([
-      listTickets(),
+      listTickets(clientCompanyId),
       listCategories(),
-      getAllTicketAuditLogs({ eventType: "REPLY_ADDED" }),
+      getAllTicketAuditLogs({ eventType: "REPLY_ADDED", clientCompanyId }),
     ])
       .then(([ticketsResult, categoriesResult, replyLogsResult]) => {
         if (signal?.aborted) return;
@@ -86,7 +101,7 @@ export default function ReportsPage() {
       .finally(() => {
         if (!signal?.aborted) setIsLoading(false);
       });
-  }, []);
+  }, [clientCompanyId]);
 
   useEffect(() => {
     const signal = { aborted: false };
@@ -95,7 +110,7 @@ export default function ReportsPage() {
       signal.aborted = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [clientCompanyId]);
 
   // Super Admin/Site Lead/Account Manager keep Tickets by Category
   // (Account Manager's current behavior is deliberately unchanged);
@@ -164,6 +179,12 @@ export default function ReportsPage() {
         description="Ticket volume, SLA compliance, and team performance across the organization."
         action={
           <div className="flex items-center gap-2 print:hidden">
+            <ClientFilterSelect
+              clients={clients}
+              currentUser={currentUser}
+              value={clientFilter}
+              onChange={setClientFilter}
+            />
             <Button
               variant="outline"
               size="icon"

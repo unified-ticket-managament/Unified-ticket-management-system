@@ -30,6 +30,7 @@ export interface ListTicketInteractionsParams {
   dateFrom?: string;
   dateTo?: string;
   search?: string;
+  clientCompanyId?: string;
 }
 
 export interface ListTicketInteractionsResult {
@@ -89,6 +90,7 @@ export async function getAllTicketInteractions(
         date_from: params.dateFrom,
         date_to: params.dateTo,
         search: params.search,
+        client_company_id: params.clientCompanyId,
       },
       signal,
     }

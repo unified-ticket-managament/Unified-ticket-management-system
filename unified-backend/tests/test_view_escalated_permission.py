@@ -112,7 +112,7 @@ async def _get_staff_for_category(session, category_name: str) -> User:
         .where(Role.name == "Staff", User.is_active.is_(True))
     )
     for user in result.unique().scalars().all():
-        if any(c.category_name.value == category_name for c in user.categories):
+        if any(c.category_name == category_name for c in user.categories):
             return user
     pytest.skip(f"No active seeded Staff found for category {category_name!r}.")
 
@@ -131,7 +131,7 @@ async def _get_staff_outside_category(session, excluded_category_name: str) -> U
     )
     for user in result.unique().scalars().all():
         if user.categories and all(
-            c.category_name.value != excluded_category_name for c in user.categories
+            c.category_name != excluded_category_name for c in user.categories
         ):
             return user
     pytest.skip("No active seeded Staff outside the ticket's own category found.")
@@ -214,7 +214,7 @@ def _build_escalation_service(session) -> EscalationService:
 
 async def _setup_escalated_ticket(session):
     team_lead = await _get_team_lead_with_category(session)
-    category_name = team_lead.categories[0].category_name.value
+    category_name = team_lead.categories[0].category_name
     staff_owner = await _get_staff_for_category(session, category_name)
     outsider = await _get_staff_outside_category(session, category_name)
 
@@ -333,7 +333,7 @@ async def test_viewer_without_active_escalation_has_no_widened_access(db_session
     existed."""
 
     team_lead = await _get_team_lead_with_category(db_session)
-    category_name = team_lead.categories[0].category_name.value
+    category_name = team_lead.categories[0].category_name
     staff_owner = await _get_staff_for_category(db_session, category_name)
     outsider = await _get_staff_outside_category(db_session, category_name)
     outsider.permissions = ["ticket:view_escalated"]
@@ -373,7 +373,7 @@ async def test_viewer_cannot_manually_escalate_unescalated_ticket(db_session):
     holds regardless of escalation state."""
 
     team_lead = await _get_team_lead_with_category(db_session)
-    category_name = team_lead.categories[0].category_name.value
+    category_name = team_lead.categories[0].category_name
     staff_owner = await _get_staff_for_category(db_session, category_name)
     outsider = await _get_staff_outside_category(db_session, category_name)
     outsider.permissions = ["ticket:view_escalated"]
@@ -510,7 +510,7 @@ async def test_actual_owner_can_still_manually_escalate(db_session):
     permission at all is involved (staff_owner is given none)."""
 
     team_lead = await _get_team_lead_with_category(db_session)
-    category_name = team_lead.categories[0].category_name.value
+    category_name = team_lead.categories[0].category_name
     staff_owner = await _get_staff_for_category(db_session, category_name)
     staff_owner.permissions = []
 

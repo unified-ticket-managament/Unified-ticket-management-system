@@ -130,7 +130,7 @@ class InboxService:
             # Ticket.ticket_type) preserves the original "sees nothing"
             # convention for a Team Lead with zero categories assigned.
             ticket_types = [
-                c.category_name.value
+                c.category_name
                 for c in (getattr(current_user, "categories", None) or [])
             ] or ["__no_category__"]
         elif role_name == STAFF_ROLE_NAME:

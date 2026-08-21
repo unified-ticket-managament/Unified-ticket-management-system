@@ -16,8 +16,12 @@ import type {
 // GET /tickets
 // Identity comes from the Bearer token — Staff sees only their own
 // (plus unassigned) tickets, Team Lead/Manager/Super Admin see all.
-export async function listTickets(): Promise<TicketResponse[]> {
-  const { data } = await apiClient.get<TicketResponse[]>("/tickets");
+// `clientCompanyId` narrows within whatever the caller's own role
+// scope already allows — never widens it.
+export async function listTickets(clientCompanyId?: string): Promise<TicketResponse[]> {
+  const { data } = await apiClient.get<TicketResponse[]>("/tickets", {
+    params: clientCompanyId ? { client_company_id: clientCompanyId } : undefined,
+  });
   return data;
 }
 
@@ -33,6 +37,7 @@ export interface ListTicketsPageParams {
   dateTo?: string;
   sortBy?: "created_at" | "updated_at" | "title";
   sortDir?: "asc" | "desc";
+  clientCompanyId?: string;
 }
 
 export interface ListTicketsPageResult {
@@ -62,6 +67,7 @@ export async function listTicketsPage(
       date_to: params.dateTo,
       sort_by: params.sortBy,
       sort_dir: params.sortDir,
+      client_company_id: params.clientCompanyId,
     },
     signal,
   });
@@ -132,9 +138,11 @@ export interface DashboardStats {
 // visibility scoping instead of the browser fetching every visible
 // ticket (listTickets()) and deriving these numbers client-side.
 export async function getDashboardStats(
+  clientCompanyId?: string,
   signal?: AbortSignal
 ): Promise<DashboardStats> {
   const { data } = await apiClient.get<DashboardStats>("/tickets/dashboard-stats", {
+    params: clientCompanyId ? { client_company_id: clientCompanyId } : undefined,
     signal,
   });
   return data;
@@ -157,9 +165,11 @@ export interface SlaOverviewCounts {
 // calling GET /tickets/{id}/sla once per ticket to classify it — see
 // useDashboardSlaCounts, which this replaced an N+1 pattern inside.
 export async function getSlaOverviewCounts(
+  clientCompanyId?: string,
   signal?: AbortSignal
 ): Promise<SlaOverviewCounts> {
   const { data } = await apiClient.get<SlaOverviewCounts>("/tickets/sla-overview-counts", {
+    params: clientCompanyId ? { client_company_id: clientCompanyId } : undefined,
     signal,
   });
   return data;

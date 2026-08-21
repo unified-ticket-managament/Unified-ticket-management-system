@@ -4,6 +4,7 @@ import axios from "axios";
 import { AlertTriangle, EyeOff, Search, SlidersHorizontal, X } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { Badge } from "@tw/components/common/Badge";
+import { ClientFilterSelect } from "@tw/components/common/ClientFilterSelect";
 import { Button } from "@tw/components/common/Button";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { InteractionDetailsDrawer } from "@tw/components/common/InteractionDetailsDrawer";
@@ -65,7 +66,7 @@ const selectClass =
 export function InteractionsPage() {
   const navigate = useNavigate();
   const { currentUser } = useAuthContext();
-  const { agents, interactionDrawer, setInteractionDrawer } = useWorkflowContext();
+  const { agents, clients, interactionDrawer, setInteractionDrawer } = useWorkflowContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const ticketIdParam = searchParams.get("ticketId");
 
@@ -111,6 +112,7 @@ export function InteractionsPage() {
   const [directionFilter, setDirectionFilter] = useState<InteractionDirection | "ALL">("ALL");
   const [statusFilter, setStatusFilter] = useState<InteractionStatus | "ALL">("ALL");
   const [agentFilter, setAgentFilter] = useState("ALL");
+  const [clientFilter, setClientFilter] = useState("ALL");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(1);
@@ -181,6 +183,7 @@ export function InteractionsPage() {
             dateFrom: dateFrom ? new Date(dateFrom).toISOString() : undefined,
             dateTo: dateTo ? new Date(`${dateTo}T23:59:59`).toISOString() : undefined,
             search: debouncedSearch.trim() || undefined,
+            clientCompanyId: clientFilter === "ALL" ? undefined : clientFilter,
           },
           controller.signal
         );
@@ -231,7 +234,7 @@ export function InteractionsPage() {
         if (requestId === requestIdRef.current) setIsLoading(false);
       }
     },
-    [typeFilter, directionFilter, statusFilter, agentId, ticketIdParam, dateFrom, dateTo, debouncedSearch]
+    [typeFilter, directionFilter, statusFilter, agentId, ticketIdParam, dateFrom, dateTo, debouncedSearch, clientFilter]
   );
 
   // Secondary/non-essential: the still-pending (pre-ticket) queue,
@@ -255,7 +258,14 @@ export function InteractionsPage() {
       }
 
       try {
-        const inbox = await getInbox("pending", { limit: PAGE_SIZE }, controller.signal);
+        const inbox = await getInbox(
+          "pending",
+          {
+            limit: PAGE_SIZE,
+            clientId: clientFilter === "ALL" ? undefined : clientFilter,
+          },
+          controller.signal
+        );
         if (requestId !== pendingRequestIdRef.current) return;
 
         const pendingRows: InteractionRow[] = inbox.items.map((item) => ({
@@ -280,7 +290,7 @@ export function InteractionsPage() {
         // error for what's still a successful page load overall.
       }
     },
-    [ticketIdParam, currentUser]
+    [ticketIdParam, currentUser, clientFilter]
   );
 
   // Drives every fetch: a page change (Next/Previous) or a filter
@@ -299,11 +309,12 @@ export function InteractionsPage() {
         directionFilter,
         statusFilter,
         agentId,
+        clientFilter,
         dateFrom,
         dateTo,
         ticketIdParam,
       ]),
-    [debouncedSearch, typeFilter, directionFilter, statusFilter, agentId, dateFrom, dateTo, ticketIdParam]
+    [debouncedSearch, typeFilter, directionFilter, statusFilter, agentId, clientFilter, dateFrom, dateTo, ticketIdParam]
   );
   const prevFilterSignatureRef = useRef(filterSignature);
 
@@ -413,6 +424,7 @@ export function InteractionsPage() {
       directionFilter !== "ALL" ||
       statusFilter !== "ALL" ||
       agentFilter !== "ALL" ||
+      clientFilter !== "ALL" ||
       dateFrom ||
       dateTo ||
       ticketIdParam
@@ -604,6 +616,13 @@ export function InteractionsPage() {
               </option>
             ))}
           </select>
+
+          <ClientFilterSelect
+            clients={clients}
+            currentUser={currentUser}
+            value={clientFilter}
+            onChange={setClientFilter}
+          />
 
           <div className="flex items-center gap-1.5">
             <input
