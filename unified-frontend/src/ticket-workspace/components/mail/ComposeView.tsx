@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -125,6 +126,10 @@ interface ComposeViewProps {
   // selection/scroll state the task's Back-button requirement asks
   // for, with no new routing (see InboxPage.tsx's handleComposeBack).
   onBack?: () => void;
+  // See MessageDetailsView's identical prop for the full rationale —
+  // "panel" drops this component's own card chrome when it renders
+  // inside the Mail workspace's own already-chromed panel.
+  variant?: "standalone" | "panel";
 }
 
 function parseEmails(value: string): string[] {
@@ -162,6 +167,7 @@ export function ComposeView({
   onForwardSend,
   onDiscard,
   onBack,
+  variant = "standalone",
 }: ComposeViewProps) {
   const { currentUser } = useAuthContext();
   const { pushToast } = useToast();
@@ -437,7 +443,12 @@ export function ComposeView({
   }
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card">
+    <div
+      className={cn(
+        "flex flex-col overflow-hidden",
+        variant !== "panel" && "rounded-xl border border-border bg-card shadow-card"
+      )}
+    >
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-card px-5 py-4">
         <div className="flex flex-col gap-1.5">
           {isForward && onBack && (

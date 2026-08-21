@@ -4,11 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { ComposeView, type ComposeInitialValues } from "@tw/components/mail/ComposeView";
+import { MailReadingPaneEmptyState } from "@tw/components/mail/MailReadingPaneEmptyState";
 import { MailSidebar } from "@tw/components/mail/MailSidebar";
+import { MailWorkspaceLayout } from "@tw/components/mail/MailWorkspaceLayout";
 import { MessageDetailsView } from "@tw/components/mail/MessageDetailsView";
 import { MessageList } from "@tw/components/mail/MessageList";
 import { SystemMailDetailsView } from "@tw/components/mail/SystemMailDetailsView";
 import { SystemMailList } from "@tw/components/mail/SystemMailList";
+import { useIsDesktopViewport } from "@tw/hooks/useIsDesktopViewport";
 import { useMailInbox, type MailViewKey } from "@tw/hooks/useMailInbox";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { useAuthContext } from "@tw/context/AuthContext";
@@ -27,17 +30,25 @@ const VIEW_LABELS: Record<MailViewKey, string> = {
   system: "System",
 };
 
-// The entire Mail page: a fixed left folder sidebar and a dynamic
-// right content area with exactly three views (Message List, Message
-// Details, Compose), switched only via client-side state here — never
-// navigation, a modal, or a second panel. `useMailInbox` is still
-// owned exactly once, at the top of the page (see its own docstring
-// for why), and every child below is a plain, mostly-presentational
-// consumer of it.
+// The entire Mail page. On desktop (see useIsDesktopViewport), this is
+// an Outlook-style three-panel workspace — Mail Folders, Message
+// List, and Message Details all visible and independently scrollable
+// at once, resized via MailWorkspaceLayout's draggable dividers, with
+// only Rules (not a mail list/detail pair at all) and Compose/message-
+// selection swapping what Panel 3 shows. Below the `lg` breakpoint,
+// this falls back to the original single dynamic content pane next to
+// the folder sidebar, switching between exactly three views (Message
+// List, Message Details, Compose) via client-side state — never
+// navigation, a modal, or a second panel — since a resizable
+// three-column layout isn't practical at that width. `useMailInbox` is
+// still owned exactly once, at the top of the page (see its own
+// docstring for why), and every child below is a plain, mostly-
+// presentational consumer of it.
 export function InboxPage() {
   const mail = useMailInbox();
   const { selectedEmail, setSelectedEmail } = useWorkflowContext();
   const { currentUser } = useAuthContext();
+  const isDesktop = useIsDesktopViewport();
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeInitialValues, setComposeInitialValues] = useState<ComposeInitialValues | undefined>(undefined);
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -185,154 +196,305 @@ export function InboxPage() {
 
   const folderLabel = `${VIEW_LABELS[mail.activeView]} (${mail.viewCounts[mail.activeView] ?? 0})`;
 
+  function renderSidebar(variant: "standalone" | "panel") {
+    return (
+      <MailSidebar
+        variant={variant}
+        activeView={mail.activeView}
+        isComposing={composeOpen}
+        onSelectView={handleSelectView}
+        onCompose={handleComposeClick}
+        counts={mail.viewCounts}
+        isSupervisor={mail.isSupervisor}
+        hideMyClaims={currentUser?.role === "Staff"}
+        folders={mail.folders}
+        folderCounts={mail.folderCounts}
+        activeFolderId={mail.activeFolderId}
+        onSelectFolder={handleSelectFolder}
+        canManageRules={canManageRules}
+        rulesActive={rulesOpen}
+        onOpenRules={handleOpenRules}
+      />
+    );
+  }
+
+  // Panel 2 (Message List) for the desktop three-panel workspace —
+  // deliberately independent of selectedEmail/selectedSystemNotification
+  // so the list stays visible and browsable while Panel 3 shows a
+  // message's details, Outlook-style (see MailWorkspaceLayout below).
+  // Which list renders depends only on the active folder/view — the
+  // exact same condition the original single-pane layout's own
+  // ternary used for this half of its decision.
+  const desktopListPanel = mail.activeFolderId ? (
+    <MessageList
+      variant="panel"
+      selectedId={selectedEmail?.interaction_id ?? null}
+      folderLabel={`${mail.folders.find((f) => f.folder_id === mail.activeFolderId)?.name.trim() ?? "Folder"} (${mail.folderRowsTotal})`}
+      items={mail.folderRows}
+      isLoading={mail.isFolderLoading}
+      isError={mail.hasFolderError}
+      openingId={mail.openingId}
+      openedIds={mail.openedIds}
+      search={mail.search}
+      onSearchChange={mail.setSearch}
+      timeFilter={mail.timeFilter}
+      onTimeFilterChange={mail.setTimeFilter}
+      clientFilter={mail.clientFilter}
+      onClientFilterChange={mail.setClientFilter}
+      priorityFilter={mail.priorityFilter}
+      onPriorityFilterChange={mail.setPriorityFilter}
+      categoryFilter={mail.messageCategoryFilter}
+      onCategoryFilterChange={mail.setMessageCategoryFilter}
+      availableCategories={mail.categories}
+      clients={mail.clients}
+      onOpen={handleOpen}
+      onCompose={handleComposeClick}
+      onRefresh={mail.refresh}
+      hasMore={mail.folderRowsHasMore}
+      onLoadMore={mail.loadMoreFolderRows}
+    />
+  ) : mail.activeView === "system" ? (
+    <SystemMailList
+      variant="panel"
+      selectedId={mail.selectedSystemNotification?.notification_id ?? null}
+      items={mail.systemNotifications}
+      isLoading={mail.isSystemLoading}
+      isError={mail.hasError}
+      onOpen={mail.selectSystemNotification}
+      onRefresh={mail.refresh}
+    />
+  ) : (
+    <MessageList
+      variant="panel"
+      selectedId={selectedEmail?.interaction_id ?? null}
+      folderLabel={folderLabel}
+      items={mail.filteredItems}
+      isLoading={mail.isLoading}
+      isError={mail.hasError}
+      openingId={mail.openingId}
+      openedIds={mail.openedIds}
+      search={mail.search}
+      onSearchChange={mail.setSearch}
+      timeFilter={mail.timeFilter}
+      onTimeFilterChange={mail.setTimeFilter}
+      clientFilter={mail.clientFilter}
+      onClientFilterChange={mail.setClientFilter}
+      priorityFilter={mail.priorityFilter}
+      onPriorityFilterChange={mail.setPriorityFilter}
+      categoryFilter={mail.messageCategoryFilter}
+      onCategoryFilterChange={mail.setMessageCategoryFilter}
+      availableCategories={mail.categories}
+      clients={mail.clients}
+      onOpen={handleOpen}
+      onCompose={handleComposeClick}
+      onRefresh={mail.refresh}
+      hasMore={mail.hasMore}
+      onLoadMore={mail.loadMore}
+    />
+  );
+
+  // Panel 3 (Message Details) — same priority order as the original
+  // single-pane layout's own ternary below: selectedEmail is checked
+  // ahead of selectedSystemNotification so opening a specific message
+  // (e.g. via the interaction_id query param a First Response SLA
+  // notification's "View Mail" link sets) always shows that message,
+  // and an OTP-forward row opened from the regular Inbox tab (see
+  // otpNotificationToInboxItem/openThread in useMailInbox.ts, which
+  // sets selectedSystemNotification without touching activeView) shows
+  // its notification detail here while Panel 2 keeps showing whatever
+  // list was already active — genuinely better Outlook-style behavior
+  // than the single-pane layout could offer, since the list never has
+  // to be replaced just to show that one notification.
+  const desktopDetailPanel = composeOpen ? (
+    <ComposeView
+      variant="panel"
+      clients={mail.clients}
+      clientsLoading={mail.clientsLoading}
+      clientsError={mail.clientsError}
+      initialValues={composeInitialValues}
+      isSending={mail.isComposing || mail.isForwarding}
+      onSend={handleComposeSend}
+      onForwardSend={handleForwardSend}
+      onDiscard={closeCompose}
+      onBack={handleComposeBack}
+    />
+  ) : selectedEmail ? (
+    <MessageDetailsView
+      variant="panel"
+      email={selectedEmail}
+      folders={mail.folders}
+      onBack={() => setSelectedEmail(null)}
+      onRefreshList={mail.refresh}
+      onRefreshMessage={handleOpen}
+      isRefreshingMessage={mail.openingId === selectedEmail.interaction_id}
+      onForward={handleForward}
+      onSaveDraft={mail.saveDraftMessage}
+      onSendDraft={mail.sendDraftMessage}
+      onDiscardDraft={mail.discardDraftMessage}
+      onUploadDraftAttachment={mail.uploadDraftAttachment}
+      onRemoveDraftAttachment={mail.removeDraftAttachment}
+      onUpdateTags={mail.updateTags}
+      onAssignFolder={mail.assignFolder}
+    />
+  ) : mail.selectedSystemNotification ? (
+    <SystemMailDetailsView
+      variant="panel"
+      notification={mail.selectedSystemNotification}
+      onBack={mail.clearSelectedSystemNotification}
+      onMarkRead={mail.markSystemNotificationRead}
+    />
+  ) : (
+    <MailReadingPaneEmptyState />
+  );
+
   return (
     <AppLayout>
       {/* No title passed above (per Mail spec: no page header) — the
           top navbar (h-16) + main's own p-6 padding are the only other
-          chrome, so no gap is left where the removed header used to be.
-          Scrolling model: MailSidebar and MessageList each own a fixed,
-          viewport-relative height (calc(100vh-7rem), matching that
-          chrome) with their own internal scrollbar — the sidebar via
-          `sticky` so it stays put as the page scrolls, the list via a
-          plain bounded height. MessageDetailsView/ComposeView are
-          deliberately left auto-height (no clamp) so a long thread or a
-          tall reply composer just grows the page instead of being
-          clipped — `main`'s own overflow-y-auto (shared with every
-          other page) is what scrolls in that case. */}
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
-        <MailSidebar
-          activeView={mail.activeView}
-          isComposing={composeOpen}
-          onSelectView={handleSelectView}
-          onCompose={handleComposeClick}
-          counts={mail.viewCounts}
-          isSupervisor={mail.isSupervisor}
-          hideMyClaims={currentUser?.role === "Staff"}
-          folders={mail.folders}
-          folderCounts={mail.folderCounts}
-          activeFolderId={mail.activeFolderId}
-          onSelectFolder={handleSelectFolder}
-          canManageRules={canManageRules}
-          rulesActive={rulesOpen}
-          onOpenRules={handleOpenRules}
-        />
+          chrome. Desktop scrolling model: MailWorkspaceLayout's outer
+          container owns the one fixed, viewport-relative height
+          (calc(100vh-7rem), matching that chrome); each of its three
+          panels scrolls independently within it (the folder panel and
+          message list via their own existing internal scroll regions,
+          the reading pane via the generic wrapper MailWorkspaceLayout
+          gives it) — `main`'s own overflow-y-auto never becomes the
+          scroll container here. Below `lg`, the fallback pane keeps the
+          pre-redesign behavior: MailSidebar/MessageList each own that
+          same fixed height with their own internal scrollbar, while
+          MessageDetailsView/ComposeView are left auto-height so a long
+          thread or a tall reply composer just grows the page instead of
+          being clipped, scrolled via `main`'s own overflow-y-auto. */}
+      {isDesktop ? (
+        rulesOpen ? (
+          <MailWorkspaceLayout folderPanel={renderSidebar("panel")} wideContent={<RulesPanel />} />
+        ) : (
+          <MailWorkspaceLayout
+            folderPanel={renderSidebar("panel")}
+            listPanel={desktopListPanel}
+            detailPanel={desktopDetailPanel}
+          />
+        )
+      ) : (
+        <div className="flex flex-col gap-4">
+          {renderSidebar("standalone")}
 
-        <div className="min-h-[560px] min-w-0 flex-1">
-          {rulesOpen ? (
-            <RulesPanel />
-          ) : composeOpen ? (
-            <ComposeView
-              clients={mail.clients}
-              clientsLoading={mail.clientsLoading}
-              clientsError={mail.clientsError}
-              initialValues={composeInitialValues}
-              isSending={mail.isComposing || mail.isForwarding}
-              onSend={handleComposeSend}
-              onForwardSend={handleForwardSend}
-              onDiscard={closeCompose}
-              onBack={handleComposeBack}
-            />
-          ) : selectedEmail ? (
-            // Checked ahead of the System-folder branch below: opening a
-            // specific message (e.g. via the interaction_id query param a
-            // First Response SLA notification's "View Mail" link sets,
-            // handled by the effect above) must show that message even
-            // while activeView is still "system" from wherever the click
-            // originated — otherwise this branch never runs, since
-            // activeView doesn't change on its own and the System view
-            // would keep rendering in front of it.
-            <MessageDetailsView
-              email={selectedEmail}
-              folders={mail.folders}
-              onBack={() => setSelectedEmail(null)}
-              onRefreshList={mail.refresh}
-              onRefreshMessage={handleOpen}
-              isRefreshingMessage={mail.openingId === selectedEmail.interaction_id}
-              onForward={handleForward}
-              onSaveDraft={mail.saveDraftMessage}
-              onSendDraft={mail.sendDraftMessage}
-              onDiscardDraft={mail.discardDraftMessage}
-              onUploadDraftAttachment={mail.uploadDraftAttachment}
-              onRemoveDraftAttachment={mail.removeDraftAttachment}
-              onUpdateTags={mail.updateTags}
-              onAssignFolder={mail.assignFolder}
-            />
-          ) : mail.activeFolderId ? (
-            <MessageList
-              folderLabel={`${mail.folders.find((f) => f.folder_id === mail.activeFolderId)?.name.trim() ?? "Folder"} (${mail.folderRowsTotal})`}
-              items={mail.folderRows}
-              isLoading={mail.isFolderLoading}
-              isError={mail.hasFolderError}
-              openingId={mail.openingId}
-              openedIds={mail.openedIds}
-              search={mail.search}
-              onSearchChange={mail.setSearch}
-              timeFilter={mail.timeFilter}
-              onTimeFilterChange={mail.setTimeFilter}
-              clientFilter={mail.clientFilter}
-              onClientFilterChange={mail.setClientFilter}
-              priorityFilter={mail.priorityFilter}
-              onPriorityFilterChange={mail.setPriorityFilter}
-              categoryFilter={mail.messageCategoryFilter}
-              onCategoryFilterChange={mail.setMessageCategoryFilter}
-              availableCategories={mail.categories}
-              clients={mail.clients}
-              onOpen={handleOpen}
-              onCompose={handleComposeClick}
-              onRefresh={mail.refresh}
-              hasMore={mail.folderRowsHasMore}
-              onLoadMore={mail.loadMoreFolderRows}
-            />
-          ) : mail.activeView === "system" || mail.selectedSystemNotification ? (
-            // The `||` half covers an OTP-forward row opened from the
-            // regular Inbox tab (see otpNotificationToInboxItem/
-            // openThread in useMailInbox.ts) — activeView stays
-            // "pending" there, so this branch must not be gated on
-            // activeView alone the way it used to be.
-            mail.selectedSystemNotification ? (
-              <SystemMailDetailsView
-                notification={mail.selectedSystemNotification}
-                onBack={mail.clearSelectedSystemNotification}
-                onMarkRead={mail.markSystemNotificationRead}
+          <div className="min-h-[560px] min-w-0 flex-1">
+            {rulesOpen ? (
+              <RulesPanel />
+            ) : composeOpen ? (
+              <ComposeView
+                clients={mail.clients}
+                clientsLoading={mail.clientsLoading}
+                clientsError={mail.clientsError}
+                initialValues={composeInitialValues}
+                isSending={mail.isComposing || mail.isForwarding}
+                onSend={handleComposeSend}
+                onForwardSend={handleForwardSend}
+                onDiscard={closeCompose}
+                onBack={handleComposeBack}
               />
-            ) : (
-              <SystemMailList
-                items={mail.systemNotifications}
-                isLoading={mail.isSystemLoading}
-                isError={mail.hasError}
-                onOpen={mail.selectSystemNotification}
+            ) : selectedEmail ? (
+              // Checked ahead of the System-folder branch below: opening a
+              // specific message (e.g. via the interaction_id query param a
+              // First Response SLA notification's "View Mail" link sets,
+              // handled by the effect above) must show that message even
+              // while activeView is still "system" from wherever the click
+              // originated — otherwise this branch never runs, since
+              // activeView doesn't change on its own and the System view
+              // would keep rendering in front of it.
+              <MessageDetailsView
+                email={selectedEmail}
+                folders={mail.folders}
+                onBack={() => setSelectedEmail(null)}
+                onRefreshList={mail.refresh}
+                onRefreshMessage={handleOpen}
+                isRefreshingMessage={mail.openingId === selectedEmail.interaction_id}
+                onForward={handleForward}
+                onSaveDraft={mail.saveDraftMessage}
+                onSendDraft={mail.sendDraftMessage}
+                onDiscardDraft={mail.discardDraftMessage}
+                onUploadDraftAttachment={mail.uploadDraftAttachment}
+                onRemoveDraftAttachment={mail.removeDraftAttachment}
+                onUpdateTags={mail.updateTags}
+                onAssignFolder={mail.assignFolder}
+              />
+            ) : mail.activeFolderId ? (
+              <MessageList
+                folderLabel={`${mail.folders.find((f) => f.folder_id === mail.activeFolderId)?.name.trim() ?? "Folder"} (${mail.folderRowsTotal})`}
+                items={mail.folderRows}
+                isLoading={mail.isFolderLoading}
+                isError={mail.hasFolderError}
+                openingId={mail.openingId}
+                openedIds={mail.openedIds}
+                search={mail.search}
+                onSearchChange={mail.setSearch}
+                timeFilter={mail.timeFilter}
+                onTimeFilterChange={mail.setTimeFilter}
+                clientFilter={mail.clientFilter}
+                onClientFilterChange={mail.setClientFilter}
+                priorityFilter={mail.priorityFilter}
+                onPriorityFilterChange={mail.setPriorityFilter}
+                categoryFilter={mail.messageCategoryFilter}
+                onCategoryFilterChange={mail.setMessageCategoryFilter}
+                availableCategories={mail.categories}
+                clients={mail.clients}
+                onOpen={handleOpen}
+                onCompose={handleComposeClick}
                 onRefresh={mail.refresh}
+                hasMore={mail.folderRowsHasMore}
+                onLoadMore={mail.loadMoreFolderRows}
               />
-            )
-          ) : (
-            <MessageList
-              folderLabel={folderLabel}
-              items={mail.filteredItems}
-              isLoading={mail.isLoading}
-              isError={mail.hasError}
-              openingId={mail.openingId}
-              openedIds={mail.openedIds}
-              search={mail.search}
-              onSearchChange={mail.setSearch}
-              timeFilter={mail.timeFilter}
-              onTimeFilterChange={mail.setTimeFilter}
-              clientFilter={mail.clientFilter}
-              onClientFilterChange={mail.setClientFilter}
-              priorityFilter={mail.priorityFilter}
-              onPriorityFilterChange={mail.setPriorityFilter}
-              categoryFilter={mail.messageCategoryFilter}
-              onCategoryFilterChange={mail.setMessageCategoryFilter}
-              availableCategories={mail.categories}
-              clients={mail.clients}
-              onOpen={handleOpen}
-              onCompose={handleComposeClick}
-              onRefresh={mail.refresh}
-              hasMore={mail.hasMore}
-              onLoadMore={mail.loadMore}
-            />
-          )}
+            ) : mail.activeView === "system" || mail.selectedSystemNotification ? (
+              // The `||` half covers an OTP-forward row opened from the
+              // regular Inbox tab (see otpNotificationToInboxItem/
+              // openThread in useMailInbox.ts) — activeView stays
+              // "pending" there, so this branch must not be gated on
+              // activeView alone the way it used to be.
+              mail.selectedSystemNotification ? (
+                <SystemMailDetailsView
+                  notification={mail.selectedSystemNotification}
+                  onBack={mail.clearSelectedSystemNotification}
+                  onMarkRead={mail.markSystemNotificationRead}
+                />
+              ) : (
+                <SystemMailList
+                  items={mail.systemNotifications}
+                  isLoading={mail.isSystemLoading}
+                  isError={mail.hasError}
+                  onOpen={mail.selectSystemNotification}
+                  onRefresh={mail.refresh}
+                />
+              )
+            ) : (
+              <MessageList
+                folderLabel={folderLabel}
+                items={mail.filteredItems}
+                isLoading={mail.isLoading}
+                isError={mail.hasError}
+                openingId={mail.openingId}
+                openedIds={mail.openedIds}
+                search={mail.search}
+                onSearchChange={mail.setSearch}
+                timeFilter={mail.timeFilter}
+                onTimeFilterChange={mail.setTimeFilter}
+                clientFilter={mail.clientFilter}
+                onClientFilterChange={mail.setClientFilter}
+                priorityFilter={mail.priorityFilter}
+                onPriorityFilterChange={mail.setPriorityFilter}
+                categoryFilter={mail.messageCategoryFilter}
+                onCategoryFilterChange={mail.setMessageCategoryFilter}
+                availableCategories={mail.categories}
+                clients={mail.clients}
+                onOpen={handleOpen}
+                onCompose={handleComposeClick}
+                onRefresh={mail.refresh}
+                hasMore={mail.hasMore}
+                onLoadMore={mail.loadMore}
+              />
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </AppLayout>
   );
 }

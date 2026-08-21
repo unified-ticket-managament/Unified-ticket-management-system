@@ -65,8 +65,17 @@ def upgrade() -> None:
     # Reset the sequence to the new highest value so the next real
     # ticket creation continues immediately after it, not from
     # whatever stale high-water mark the sequence was previously at.
+    # When the table is empty, setval(..., 1, false) is used instead
+    # of setval(..., 0, true) — 0 is out of range for a sequence whose
+    # minimum value is 1.
     op.execute(
-        "SELECT setval('ticket_number_seq', COALESCE((SELECT MAX(ticket_number) FROM tickets), 0), true)"
+        """
+        SELECT setval(
+            'ticket_number_seq',
+            COALESCE((SELECT MAX(ticket_number) FROM tickets), 1),
+            (SELECT MAX(ticket_number) FROM tickets) IS NOT NULL
+        )
+        """
     )
 
 

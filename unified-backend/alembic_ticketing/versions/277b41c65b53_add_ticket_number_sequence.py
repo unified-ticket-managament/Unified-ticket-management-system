@@ -75,12 +75,21 @@ def upgrade() -> None:
     )
 
     # Advance the sequence's own counter to the highest backfilled
-    # value (0 if the table was empty) so the very next nextval() call
-    # — the first real ticket created after this migration — continues
-    # immediately after the last backfilled number, with no gap and no
-    # collision.
+    # value so the very next nextval() call — the first real ticket
+    # created after this migration — continues immediately after the
+    # last backfilled number, with no gap and no collision. When the
+    # table is empty, setval(..., 1, false) is used instead of
+    # setval(..., 0, true) — 0 is out of range for a sequence whose
+    # minimum value is 1, and passing is_called=false is the correct
+    # way to make the *next* nextval() return 1 rather than 2.
     op.execute(
-        "SELECT setval('ticket_number_seq', COALESCE((SELECT MAX(ticket_number) FROM tickets), 0), true)"
+        """
+        SELECT setval(
+            'ticket_number_seq',
+            COALESCE((SELECT MAX(ticket_number) FROM tickets), 1),
+            (SELECT MAX(ticket_number) FROM tickets) IS NOT NULL
+        )
+        """
     )
 
     op.alter_column("tickets", "ticket_number", nullable=False)

@@ -87,6 +87,20 @@ interface MessageListProps {
   folderLabel: string;
   items: InboxItem[];
   isLoading: boolean;
+  // "standalone" (default) keeps this component's own card chrome
+  // (rounded/border/shadow, fixed viewport-relative height) for any
+  // caller rendering it on its own. "panel" — used by the Outlook-
+  // style three-panel Mail workspace, see InboxPage.tsx/
+  // MailWorkspaceLayout.tsx — drops that chrome and fills its parent
+  // panel's own height instead, since the workspace's outer container
+  // already supplies the card look for the whole three-panel area.
+  variant?: "standalone" | "panel";
+  // The row currently open in the reading pane (Panel 3), matched
+  // against each row's own `open_interaction_id ?? interaction_id` —
+  // renders a highlighted state so the open message stays visually
+  // identifiable in the list, Outlook-style. Omitted/null renders no
+  // highlight, unchanged from before this prop existed.
+  selectedId?: string | null;
   // True only after a genuine (non-cancel) fetch failure for whatever
   // is currently backing `items` — lets the empty-state branch below
   // distinguish "the request failed" from "it genuinely returned zero
@@ -133,6 +147,8 @@ export function MessageList({
   items,
   isLoading,
   isError = false,
+  variant = "standalone",
+  selectedId = null,
   openingId,
   openedIds,
   search,
@@ -251,7 +267,14 @@ export function MessageList({
   ].filter(Boolean).length;
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card lg:h-[calc(100vh-7rem)]">
+    <div
+      className={cn(
+        "flex flex-col overflow-hidden",
+        variant === "panel"
+          ? "h-full"
+          : "rounded-xl border border-border bg-card shadow-card lg:h-[calc(100vh-7rem)]"
+      )}
+    >
       <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-card px-4 py-3.5">
         <div className="min-w-0">
           <h2 className="truncate text-[15px] font-semibold text-foreground">{folderLabel}</h2>
@@ -426,6 +449,7 @@ export function MessageList({
               const isOpening = openingId === openId;
               const preview = previewOf(item.latest_message);
               const slaTier = firstResponseTierFor(item);
+              const isSelected = selectedId != null && openId === selectedId;
 
               return (
                 <li key={item.interaction_id}>
@@ -436,6 +460,7 @@ export function MessageList({
                     className={cn(
                       "group flex w-full items-start gap-3 px-4 py-3 text-left transition-all duration-150 hover:z-[1] hover:-translate-y-0.5 hover:bg-muted/60 hover:shadow-sm",
                       isUnread && "bg-primary/[0.03]",
+                      isSelected && "bg-primary/10 hover:bg-primary/10",
                       isOpening && "opacity-60"
                     )}
                   >

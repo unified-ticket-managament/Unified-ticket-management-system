@@ -6,6 +6,7 @@ import { ArrowLeft, Bell, ExternalLink } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { formatDateTime } from "@tw/lib/format";
 import { linkifyPlainText } from "@tw/lib/richText";
 import type { NotificationItem } from "@tw/types";
@@ -14,6 +15,10 @@ interface SystemMailDetailsViewProps {
   notification: NotificationItem;
   onBack: () => void;
   onMarkRead: (notificationId: string) => Promise<unknown>;
+  // See MessageDetailsView's identical prop for the full rationale —
+  // "panel" drops this component's own card chrome when it renders
+  // inside the Mail workspace's own already-chromed panel.
+  variant?: "standalone" | "panel";
 }
 
 interface ParsedInternalNote {
@@ -60,6 +65,7 @@ export function SystemMailDetailsView({
   notification,
   onBack,
   onMarkRead,
+  variant = "standalone",
 }: SystemMailDetailsViewProps) {
   // First Response SLA notifications (and MAIL_RECEIVED) point at a
   // still-pending email — `link` is an /inbox?interaction_id=... deep
@@ -90,7 +96,12 @@ export function SystemMailDetailsView({
   }, [notification.notification_id]);
 
   return (
-    <div className="flex flex-col gap-4 rounded-xl border border-border bg-card p-6 shadow-card">
+    <div
+      className={cn(
+        "flex flex-col gap-4 p-6",
+        variant !== "panel" && "rounded-xl border border-border bg-card shadow-card"
+      )}
+    >
       <div className="flex items-start justify-between gap-3 border-b border-border pb-4">
         <div className="flex items-start gap-3">
           <div className="flex h-10 w-10 flex-none items-center justify-center rounded-full bg-primary/10 text-primary">

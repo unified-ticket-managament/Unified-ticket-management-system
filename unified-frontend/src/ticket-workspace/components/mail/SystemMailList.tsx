@@ -27,6 +27,10 @@ interface SystemMailListProps {
   isError?: boolean;
   onOpen: (notification: NotificationItem) => void;
   onRefresh: () => void;
+  // See MessageList's identical props for the full rationale (Outlook-
+  // style three-panel Mail workspace panel chrome / selection highlight).
+  variant?: "standalone" | "panel";
+  selectedId?: string | null;
 }
 
 function typeLabel(notificationType: string): string {
@@ -41,6 +45,8 @@ export function SystemMailList({
   isError = false,
   onOpen,
   onRefresh,
+  variant = "standalone",
+  selectedId = null,
 }: SystemMailListProps) {
   const [search, setSearch] = useState("");
   const [unreadOnly, setUnreadOnly] = useState(false);
@@ -59,7 +65,14 @@ export function SystemMailList({
   }, [items, search, unreadOnly]);
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card lg:h-[calc(100vh-7rem)]">
+    <div
+      className={cn(
+        "flex flex-col overflow-hidden",
+        variant === "panel"
+          ? "h-full"
+          : "rounded-xl border border-border bg-card shadow-card lg:h-[calc(100vh-7rem)]"
+      )}
+    >
       <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-card px-4 py-3.5">
         <div className="min-w-0">
           <h2 className="truncate text-[15px] font-semibold text-foreground">System</h2>
@@ -131,7 +144,8 @@ export function SystemMailList({
                   onClick={() => onOpen(item)}
                   className={cn(
                     "group flex w-full items-start gap-3 px-4 py-3 text-left transition-all duration-150 hover:z-[1] hover:-translate-y-0.5 hover:bg-muted/60 hover:shadow-sm",
-                    !item.is_read && "bg-primary/[0.03]"
+                    !item.is_read && "bg-primary/[0.03]",
+                    selectedId != null && item.notification_id === selectedId && "bg-primary/10 hover:bg-primary/10"
                   )}
                 >
                   <div className="flex h-9 w-9 flex-none items-center justify-center rounded-full bg-primary/10 text-primary">

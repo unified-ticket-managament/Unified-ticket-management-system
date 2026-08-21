@@ -68,6 +68,14 @@ interface MailSidebarProps {
   canManageRules: boolean;
   rulesActive: boolean;
   onOpenRules: () => void;
+  // "standalone" (default) keeps this component's own card chrome and
+  // fixed viewport-relative sizing for any caller rendering it on its
+  // own. "panel" — used by the Outlook-style three-panel Mail
+  // workspace, see InboxPage.tsx/MailWorkspaceLayout.tsx — drops that
+  // chrome and fills its parent panel's own width/height instead,
+  // since the workspace's outer container already supplies the card
+  // look for the whole three-panel area.
+  variant?: "standalone" | "panel";
 }
 
 function CountBadge({ count }: { count: number }): ReactNode {
@@ -101,10 +109,18 @@ export const MailSidebar = memo(function MailSidebar({
   canManageRules,
   rulesActive,
   onOpenRules,
+  variant = "standalone",
 }: MailSidebarProps) {
   const viewItems = hideMyClaims ? VIEW_ITEMS.filter((item) => item.key !== "mine") : VIEW_ITEMS;
   return (
-    <aside className="flex w-full flex-col gap-4 overflow-y-auto rounded-xl border border-border bg-card p-3 shadow-card lg:sticky lg:top-0 lg:h-[calc(100vh-7rem)] lg:w-[248px] lg:flex-none">
+    <aside
+      className={cn(
+        "flex flex-col gap-4 overflow-y-auto p-3",
+        variant === "panel"
+          ? "h-full w-full"
+          : "w-full rounded-xl border border-border bg-card shadow-card lg:sticky lg:top-0 lg:h-[calc(100vh-7rem)] lg:w-[248px] lg:flex-none"
+      )}
+    >
       <Button
         onClick={onCompose}
         data-active={isComposing}

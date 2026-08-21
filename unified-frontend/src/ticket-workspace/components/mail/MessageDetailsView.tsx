@@ -245,6 +245,14 @@ interface MessageDetailsViewProps {
   email: OpenEmailResponse;
   folders: MailFolder[];
   onBack: () => void;
+  // "standalone" (default) keeps this component's own card chrome
+  // (rounded/border/shadow) for any caller rendering it on its own.
+  // "panel" — used by the Outlook-style three-panel Mail workspace,
+  // see InboxPage.tsx/MailWorkspaceLayout.tsx — drops that chrome
+  // since the workspace's own outer container already supplies it,
+  // and a nested card-in-a-panel would read as two separate surfaces
+  // instead of one integrated one.
+  variant?: "standalone" | "panel";
   onRefreshList: () => void;
   // Re-fetches this specific open message (not the whole list) — see
   // InboxPage.tsx, wired to mail.openThread(interactionId).
@@ -272,6 +280,7 @@ export function MessageDetailsView({
   email,
   folders,
   onBack,
+  variant = "standalone",
   onRefreshList,
   onRefreshMessage,
   isRefreshingMessage,
@@ -697,7 +706,12 @@ export function MessageDetailsView({
   const archiveDisabled = isTicketed || email.status !== "PENDING" || isArchiving;
 
   return (
-    <div className="flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-card">
+    <div
+      className={cn(
+        "flex flex-col overflow-hidden",
+        variant !== "panel" && "rounded-xl border border-border bg-card shadow-card"
+      )}
+    >
       {/* Message Header — subject, priority/category badges, received date/time */}
       <div className="border-b border-border px-5 py-4">
         <button
