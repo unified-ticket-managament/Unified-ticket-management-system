@@ -1,0 +1,16 @@
+# Technical Debt
+
+| ID | Item | Description | Priority (inferred) | Related |
+|---|---|---|---|---|
+| TD-01 | Two Axios instances for one backend | `src/lib/api.ts` and `src/ticket-workspace/api/client.ts` are separate clients pointed at the same backend today — a direct, unremoved artifact of the pre-consolidation two-service architecture | Low (works fine, purely historical) | [05-technical-architecture/dependencies.md](../05-technical-architecture/dependencies.md) |
+| TD-02 | Three non-identical "supervisor role" constants | `unified-frontend/src/lib/role-access.ts`, the (now-gone) standalone app's equivalent, and the real backend `access_control.py` set all disagree | Medium — latent risk of a future feature relying on the wrong one | [05-technical-architecture/frontend-architecture.md](../05-technical-architecture/frontend-architecture.md) |
+| TD-03 | RBAC-domain hardcoded role-name checks | `/audit-logs`'s list/create/delete endpoints check `role.name == "Super Admin"` directly instead of a permission | Medium — a role rename would silently break access control here | [08-security/authorization-rbac.md](../08-security/authorization-rbac.md) |
+| TD-04 | `AttachmentService.upload_attachment`'s coarser escalation-freeze check | Never updated to pass the newer `EscalationHandlingSlaRepository` parameter | Low (safe fallback, just imprecise) | [03-business-workflows/escalation/escalation-handoff.md](../03-business-workflows/escalation/escalation-handoff.md) |
+| TD-05 | `SLAPolicy.handling_sla_percentage` superseded but not removed | `handling_stage_percentages` (JSONB) is what's actually read now; the old scalar column still exists | Low (dead column, not actively harmful) | [06-database/tables/sla-escalation-tables.md](../06-database/tables/sla-escalation-tables.md) |
+| TD-06 | No cross-chain migration-revision-id uniqueness guarantee | Two migrations in different chains share an identical revision id | Low (harmless given separate `version_table`s, but a scripting trap) | [06-database/migrations.md](../06-database/migrations.md) |
+| TD-07 | `Ticket.client_id` (legacy) vs `Ticket.client_company_id` (current) coexist | Unclear which is authoritative for all current code paths | Medium — could produce subtly wrong client-scoping logic in new code | [06-database/tables/ticket-tables.md](../06-database/tables/ticket-tables.md) |
+| TD-08 | No pytest marker distinguishing pure-logic from DB-touching tests | Manual file-by-file selection is required to avoid the known 3-file hang | Low-medium (workflow friction, not a correctness risk) | [11-testing/integration-testing.md](../11-testing/integration-testing.md) |
+| TD-09 | `DEPLOYMENT.md` describes a retired 4-service topology | Actively misleading if followed as-is | High — a real risk of a developer/operator wasting significant time following stale instructions | [09-deployment/README.md](../09-deployment/README.md) |
+| TD-10 | Two deployment paths (Render, EC2) with no documented reconciliation | Ambiguity about which is authoritative production | High — operational risk if a change is validated against the wrong environment | [09-deployment/environments.md](../09-deployment/environments.md) |
+
+Priority labels above are this documentation pass's own inference from confirmed impact/risk — no formal priority ranking exists in the repository itself.
