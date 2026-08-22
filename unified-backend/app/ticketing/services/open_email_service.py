@@ -93,6 +93,7 @@ class OpenEmailService:
         self,
         interaction_id: UUID,
         current_user: User | None = None,
+        mark_read: bool = True,
     ) -> OpenEmailResponse:
         """
         Returns the complete email details for the specified
@@ -147,10 +148,21 @@ class OpenEmailService:
         # "unread" tracking (see MessageReadReceipt's docstring).
         # After access control, so a request that failed the checks
         # above never gets recorded as "read".
-        if current_user is not None and self.read_receipt_repository is not None:
+        if (
+            mark_read
+            and current_user is not None
+            and self.read_receipt_repository is not None
+        ):
             await self.read_receipt_repository.mark_read(
                 current_user.user_id, interaction_id
             )
+
+        is_read = False
+        if current_user is not None and self.read_receipt_repository is not None:
+            read_ids = await self.read_receipt_repository.get_read_interaction_ids(
+                current_user.user_id, [interaction_id]
+            )
+            is_read = interaction_id in read_ids
 
         try:
             payload = EmailPayload.model_validate(interaction.payload)
@@ -232,6 +244,7 @@ class OpenEmailService:
             ticket_status=ticket_status,
             tags=interaction.tags,
             folder_id=interaction.folder_id,
+            is_read=is_read,
             draft_message=draft["message"],
             draft_cc=draft["cc"],
             draft_bcc=draft["bcc"],

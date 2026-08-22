@@ -129,6 +129,13 @@ export function InboxPage() {
     await mail.openThread(interactionId);
   }
 
+  // Refreshing an already-open message's details isn't "opening it
+  // to read" — pass markRead: false so this never silently undoes an
+  // explicit "Mark as Unread" on the message being refreshed.
+  async function handleRefreshMessage(interactionId: string) {
+    await mail.openThread(interactionId, { markRead: false });
+  }
+
   // A First Response SLA notification (topbar bell or the Mail
   // "System" folder) links here as "/inbox?interaction_id=<id>" so
   // clicking it opens the specific message instead of leaving the
@@ -157,6 +164,7 @@ export function InboxPage() {
     subject: string;
     bodyHtml: string;
     interactionId: string;
+    originalAttachmentCount: number;
   }) {
     openCompose({
       clientId: values.clientId ?? undefined,
@@ -165,6 +173,7 @@ export function InboxPage() {
       bodyHtml: values.bodyHtml,
       mode: "forward",
       interactionId: values.interactionId,
+      originalAttachmentCount: values.originalAttachmentCount,
     });
   }
 
@@ -173,8 +182,11 @@ export function InboxPage() {
     clientId: string;
     recipientUserId?: string;
     recipientEmail?: string;
+    cc?: string[];
+    bcc?: string[];
     subject: string;
     message: string;
+    files: File[];
   }) {
     const result = await mail.forwardToInternalUser(payload);
     if (result) closeCompose();
@@ -206,7 +218,6 @@ export function InboxPage() {
         onSelectView={handleSelectView}
         onCompose={handleComposeClick}
         counts={mail.viewCounts}
-        isSupervisor={mail.isSupervisor}
         hideMyClaims={currentUser?.role === "Staff"}
         folders={mail.folders}
         folderCounts={mail.folderCounts}
@@ -326,7 +337,7 @@ export function InboxPage() {
       folders={mail.folders}
       onBack={() => setSelectedEmail(null)}
       onRefreshList={mail.refresh}
-      onRefreshMessage={handleOpen}
+      onRefreshMessage={handleRefreshMessage}
       isRefreshingMessage={mail.openingId === selectedEmail.interaction_id}
       onForward={handleForward}
       onSaveDraft={mail.saveDraftMessage}
@@ -336,6 +347,8 @@ export function InboxPage() {
       onRemoveDraftAttachment={mail.removeDraftAttachment}
       onUpdateTags={mail.updateTags}
       onAssignFolder={mail.assignFolder}
+      onMarkRead={mail.markRead}
+      onMarkUnread={mail.markUnread}
     />
   ) : mail.selectedSystemNotification ? (
     <SystemMailDetailsView
@@ -379,120 +392,123 @@ export function InboxPage() {
         <div className="flex flex-col gap-4">
           {renderSidebar("standalone")}
 
-          <div className="min-h-[560px] min-w-0 flex-1">
-            {rulesOpen ? (
-              <RulesPanel />
-            ) : composeOpen ? (
-              <ComposeView
-                clients={mail.clients}
-                clientsLoading={mail.clientsLoading}
-                clientsError={mail.clientsError}
-                initialValues={composeInitialValues}
-                isSending={mail.isComposing || mail.isForwarding}
-                onSend={handleComposeSend}
-                onForwardSend={handleForwardSend}
-                onDiscard={closeCompose}
-                onBack={handleComposeBack}
+          
+        <div className="min-h-[560px] min-w-0 flex-1">
+          {rulesOpen ? (
+            <RulesPanel />
+          ) : composeOpen ? (
+            <ComposeView
+              clients={mail.clients}
+              clientsLoading={mail.clientsLoading}
+              clientsError={mail.clientsError}
+              initialValues={composeInitialValues}
+              isSending={mail.isComposing || mail.isForwarding}
+              onSend={handleComposeSend}
+              onForwardSend={handleForwardSend}
+              onDiscard={closeCompose}
+              onBack={handleComposeBack}
+            />
+          ) : selectedEmail ? (
+            // Checked ahead of the System-folder branch below: opening a
+            // specific message (e.g. via the interaction_id query param a
+            // First Response SLA notification's "View Mail" link sets,
+            // handled by the effect above) must show that message even
+            // while activeView is still "system" from wherever the click
+            // originated — otherwise this branch never runs, since
+            // activeView doesn't change on its own and the System view
+            // would keep rendering in front of it.
+            <MessageDetailsView
+              email={selectedEmail}
+              folders={mail.folders}
+              onBack={() => setSelectedEmail(null)}
+              onRefreshList={mail.refresh}
+              onRefreshMessage={handleRefreshMessage}
+              isRefreshingMessage={mail.openingId === selectedEmail.interaction_id}
+              onForward={handleForward}
+              onSaveDraft={mail.saveDraftMessage}
+              onSendDraft={mail.sendDraftMessage}
+              onDiscardDraft={mail.discardDraftMessage}
+              onUploadDraftAttachment={mail.uploadDraftAttachment}
+              onRemoveDraftAttachment={mail.removeDraftAttachment}
+              onUpdateTags={mail.updateTags}
+              onAssignFolder={mail.assignFolder}
+              onMarkRead={mail.markRead}
+              onMarkUnread={mail.markUnread}
+            />
+          ) : mail.activeFolderId ? (
+            <MessageList
+              folderLabel={`${mail.folders.find((f) => f.folder_id === mail.activeFolderId)?.name.trim() ?? "Folder"} (${mail.folderRowsTotal})`}
+              items={mail.folderRows}
+              isLoading={mail.isFolderLoading}
+              isError={mail.hasFolderError}
+              openingId={mail.openingId}
+              openedIds={mail.openedIds}
+              search={mail.search}
+              onSearchChange={mail.setSearch}
+              timeFilter={mail.timeFilter}
+              onTimeFilterChange={mail.setTimeFilter}
+              clientFilter={mail.clientFilter}
+              onClientFilterChange={mail.setClientFilter}
+              priorityFilter={mail.priorityFilter}
+              onPriorityFilterChange={mail.setPriorityFilter}
+              categoryFilter={mail.messageCategoryFilter}
+              onCategoryFilterChange={mail.setMessageCategoryFilter}
+              availableCategories={mail.categories}
+              clients={mail.clients}
+              onOpen={handleOpen}
+              onCompose={handleComposeClick}
+              onRefresh={mail.refresh}
+              hasMore={mail.folderRowsHasMore}
+              onLoadMore={mail.loadMoreFolderRows}
+            />
+          ) : mail.activeView === "system" || mail.selectedSystemNotification ? (
+            // The `||` half covers an OTP-forward row opened from the
+            // regular Inbox tab (see otpNotificationToInboxItem/
+            // openThread in useMailInbox.ts) — activeView stays
+            // "pending" there, so this branch must not be gated on
+            // activeView alone the way it used to be.
+            mail.selectedSystemNotification ? (
+              <SystemMailDetailsView
+                notification={mail.selectedSystemNotification}
+                onBack={mail.clearSelectedSystemNotification}
+                onMarkRead={mail.markSystemNotificationRead}
               />
-            ) : selectedEmail ? (
-              // Checked ahead of the System-folder branch below: opening a
-              // specific message (e.g. via the interaction_id query param a
-              // First Response SLA notification's "View Mail" link sets,
-              // handled by the effect above) must show that message even
-              // while activeView is still "system" from wherever the click
-              // originated — otherwise this branch never runs, since
-              // activeView doesn't change on its own and the System view
-              // would keep rendering in front of it.
-              <MessageDetailsView
-                email={selectedEmail}
-                folders={mail.folders}
-                onBack={() => setSelectedEmail(null)}
-                onRefreshList={mail.refresh}
-                onRefreshMessage={handleOpen}
-                isRefreshingMessage={mail.openingId === selectedEmail.interaction_id}
-                onForward={handleForward}
-                onSaveDraft={mail.saveDraftMessage}
-                onSendDraft={mail.sendDraftMessage}
-                onDiscardDraft={mail.discardDraftMessage}
-                onUploadDraftAttachment={mail.uploadDraftAttachment}
-                onRemoveDraftAttachment={mail.removeDraftAttachment}
-                onUpdateTags={mail.updateTags}
-                onAssignFolder={mail.assignFolder}
-              />
-            ) : mail.activeFolderId ? (
-              <MessageList
-                folderLabel={`${mail.folders.find((f) => f.folder_id === mail.activeFolderId)?.name.trim() ?? "Folder"} (${mail.folderRowsTotal})`}
-                items={mail.folderRows}
-                isLoading={mail.isFolderLoading}
-                isError={mail.hasFolderError}
-                openingId={mail.openingId}
-                openedIds={mail.openedIds}
-                search={mail.search}
-                onSearchChange={mail.setSearch}
-                timeFilter={mail.timeFilter}
-                onTimeFilterChange={mail.setTimeFilter}
-                clientFilter={mail.clientFilter}
-                onClientFilterChange={mail.setClientFilter}
-                priorityFilter={mail.priorityFilter}
-                onPriorityFilterChange={mail.setPriorityFilter}
-                categoryFilter={mail.messageCategoryFilter}
-                onCategoryFilterChange={mail.setMessageCategoryFilter}
-                availableCategories={mail.categories}
-                clients={mail.clients}
-                onOpen={handleOpen}
-                onCompose={handleComposeClick}
-                onRefresh={mail.refresh}
-                hasMore={mail.folderRowsHasMore}
-                onLoadMore={mail.loadMoreFolderRows}
-              />
-            ) : mail.activeView === "system" || mail.selectedSystemNotification ? (
-              // The `||` half covers an OTP-forward row opened from the
-              // regular Inbox tab (see otpNotificationToInboxItem/
-              // openThread in useMailInbox.ts) — activeView stays
-              // "pending" there, so this branch must not be gated on
-              // activeView alone the way it used to be.
-              mail.selectedSystemNotification ? (
-                <SystemMailDetailsView
-                  notification={mail.selectedSystemNotification}
-                  onBack={mail.clearSelectedSystemNotification}
-                  onMarkRead={mail.markSystemNotificationRead}
-                />
-              ) : (
-                <SystemMailList
-                  items={mail.systemNotifications}
-                  isLoading={mail.isSystemLoading}
-                  isError={mail.hasError}
-                  onOpen={mail.selectSystemNotification}
-                  onRefresh={mail.refresh}
-                />
-              )
             ) : (
-              <MessageList
-                folderLabel={folderLabel}
-                items={mail.filteredItems}
-                isLoading={mail.isLoading}
+              <SystemMailList
+                items={mail.systemNotifications}
+                isLoading={mail.isSystemLoading}
                 isError={mail.hasError}
-                openingId={mail.openingId}
-                openedIds={mail.openedIds}
-                search={mail.search}
-                onSearchChange={mail.setSearch}
-                timeFilter={mail.timeFilter}
-                onTimeFilterChange={mail.setTimeFilter}
-                clientFilter={mail.clientFilter}
-                onClientFilterChange={mail.setClientFilter}
-                priorityFilter={mail.priorityFilter}
-                onPriorityFilterChange={mail.setPriorityFilter}
-                categoryFilter={mail.messageCategoryFilter}
-                onCategoryFilterChange={mail.setMessageCategoryFilter}
-                availableCategories={mail.categories}
-                clients={mail.clients}
-                onOpen={handleOpen}
-                onCompose={handleComposeClick}
+                onOpen={mail.selectSystemNotification}
                 onRefresh={mail.refresh}
-                hasMore={mail.hasMore}
-                onLoadMore={mail.loadMore}
               />
-            )}
+            )
+          ) : (
+            <MessageList
+              folderLabel={folderLabel}
+              items={mail.filteredItems}
+              isLoading={mail.isLoading}
+              isError={mail.hasError}
+              openingId={mail.openingId}
+              openedIds={mail.openedIds}
+              search={mail.search}
+              onSearchChange={mail.setSearch}
+              timeFilter={mail.timeFilter}
+              onTimeFilterChange={mail.setTimeFilter}
+              clientFilter={mail.clientFilter}
+              onClientFilterChange={mail.setClientFilter}
+              priorityFilter={mail.priorityFilter}
+              onPriorityFilterChange={mail.setPriorityFilter}
+              categoryFilter={mail.messageCategoryFilter}
+              onCategoryFilterChange={mail.setMessageCategoryFilter}
+              availableCategories={mail.categories}
+              clients={mail.clients}
+              onOpen={handleOpen}
+              onCompose={handleComposeClick}
+              onRefresh={mail.refresh}
+              hasMore={mail.hasMore}
+              onLoadMore={mail.loadMore}
+            />
+          )}
           </div>
         </div>
       )}

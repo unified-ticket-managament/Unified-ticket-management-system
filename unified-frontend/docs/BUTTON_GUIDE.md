@@ -179,7 +179,6 @@ The redesigned two-panel Mail experience — a folder list on the left, messages
 |---|---|---|
 | **Compose** (pencil icon) | Opens a blank new-message form | Start a brand-new email |
 | Folder buttons (Inbox, Unassigned, My Claims, Sent, Drafts, Replied, Ticketed, Archived, System) | Switches which set of messages you're viewing | Organize mail by its status. "My Claims" is hidden for Staff, since their assigned tickets already serve that purpose. |
-| **All Inboxes** | Site Lead/Super Admin only | Shows every client's mail company-wide, for oversight |
 | **Refresh** | Reloads the current folder | Pull the latest mail immediately instead of waiting |
 | Search box | Filters by sender/subject/body | Find a specific message |
 | **Sort** dropdown | Newest / Oldest / Sender A–Z | Reorder the visible list |

@@ -229,6 +229,11 @@ export interface InboxItem {
   // root — null once ticketed or if no clock exists. See
   // FirstResponseSLAState's own definition below.
   first_response_sla?: FirstResponseSLAState | null;
+  // Persisted read state (message_read_receipts) for the current
+  // user — real backend truth, unlike the client-only openedIds Set
+  // this superseded. Optional so any stale-shaped cached response
+  // still degrades to the old openedIds-based rendering.
+  is_read?: boolean;
 }
 
 export interface InboxResponse {
@@ -298,6 +303,9 @@ export interface OpenEmailResponse {
   ticket_status: string | null;
   tags: string[];
   folder_id: string | null;
+  // Persisted read state (message_read_receipts) — always true here,
+  // since opening this endpoint is itself what records the receipt.
+  is_read: boolean;
   draft_message: string | null;
   draft_cc: string[];
   draft_bcc: string[];

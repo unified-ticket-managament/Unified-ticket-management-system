@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +30,20 @@ class MessageReadReceiptRepository:
             .on_conflict_do_nothing(
                 index_elements=["user_id", "interaction_id"]
             )
+        )
+        await self.db.execute(stmt)
+        await self.db.flush()
+
+    async def mark_unread(self, user_id: UUID, interaction_id: UUID) -> None:
+        """
+        The inverse of mark_read — deletes the receipt row so this
+        thread is once again absent from get_read_interaction_ids,
+        i.e. unread. A no-op (not an error) if no row exists yet.
+        """
+
+        stmt = delete(MessageReadReceipt).where(
+            MessageReadReceipt.user_id == user_id,
+            MessageReadReceipt.interaction_id == interaction_id,
         )
         await self.db.execute(stmt)
         await self.db.flush()

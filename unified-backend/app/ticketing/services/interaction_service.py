@@ -134,6 +134,7 @@ from app.ticketing.services.attachment_service import (
     load_envelope_attachments,
 )
 from app.ticketing.services.undo_send import compute_send_after, schedule_delayed_send
+from app.ticketing.utils.constants import MAX_ATTACHMENT_FILES
 from app.ticketing.storage.base import StorageService
 
 
@@ -1573,6 +1574,7 @@ class InteractionService:
         interaction_id: UUID,
         request: ForwardToInternalUserRequest,
         current_user: User,
+        files: list[UploadFile] | None = None,
     ) -> ForwardToInternalUserResponse:
         """
         Forwards an existing client email/interaction — distinct from
@@ -1644,6 +1646,21 @@ class InteractionService:
         # dropdown is never trusted on its own.
         ensure_can_compose_for_client(client, current_user)
 
+        # Combined-total attachment limit: original attachments already
+        # stored against the interaction being forwarded, plus any
+        # newly uploaded files, must never exceed MAX_ATTACHMENT_FILES
+        # — checked as one total, never as two separate <=10 limits.
+        existing_attachments = (
+            await self.attachment_repository.list_by_interaction_id(interaction_id)
+            if self.attachment_repository is not None
+            else []
+        )
+        if len(existing_attachments) + (len(files) if files else 0) > MAX_ATTACHMENT_FILES:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail=f"A maximum of {MAX_ATTACHMENT_FILES} attachments can be included in a single email.",
+            )
+
         recipient: User | None = None
         recipient_kind: str
         recipient_email: str
@@ -1686,6 +1703,8 @@ class InteractionService:
             to_email=recipient_email,
             subject=request.subject,
             body=signed_message,
+            cc=request.cc,
+            bcc=request.bcc,
             agent_name=current_user.name,
         )
 
@@ -1742,6 +1761,7 @@ class InteractionService:
             new_values=audit_new_values,
         )
 
+        envelope = await self._attach_outbound_files(interaction, envelope, files)
         envelope = await self._merge_existing_attachments_into_envelope(
             interaction, envelope, interaction_id
         )

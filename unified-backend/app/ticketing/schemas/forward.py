@@ -30,6 +30,8 @@ class ForwardToInternalUserRequest(BaseModel):
         default=None,
         description="An arbitrary external address. Mutually exclusive with recipient_user_id.",
     )
+    cc: list[EmailStr] = Field(default_factory=list)
+    bcc: list[EmailStr] = Field(default_factory=list)
     subject: str = Field(..., min_length=1, max_length=500)
     message: str = Field(..., min_length=1, max_length=20000)
 

@@ -81,6 +81,12 @@ class OpenEmailResponse(BaseModel):
 
     folder_id: UUID | None = None
 
+    # Persisted read state (message_read_receipts), mirroring
+    # InboxItemResponse.is_read — always True here, since opening this
+    # endpoint is itself what records the read receipt (see
+    # OpenEmailService.get_email_details).
+    is_read: bool = False
+
     # The requesting user's own saved-but-unsent draft reply on this
     # thread, if any — lets the reply composer prefill/resume it.
     # None both when there's no draft and when the thread is already

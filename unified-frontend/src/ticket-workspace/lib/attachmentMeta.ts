@@ -62,15 +62,18 @@ export interface FileValidationResult {
   errors: string[];
 }
 
-export function validateFiles(files: File[]): FileValidationResult {
+export function validateFiles(
+  files: File[],
+  maxFiles: number = MAX_ATTACHMENT_FILES
+): FileValidationResult {
   const errors: string[] = [];
   const accepted: File[] = [];
 
-  if (files.length > MAX_ATTACHMENT_FILES) {
-    errors.push(`Only ${MAX_ATTACHMENT_FILES} files can be attached at once.`);
+  if (files.length > maxFiles) {
+    errors.push(`Only ${maxFiles} files can be attached at once.`);
   }
 
-  const withinLimit = files.slice(0, MAX_ATTACHMENT_FILES);
+  const withinLimit = files.slice(0, maxFiles);
 
   for (const file of withinLimit) {
     const extension = extensionOf(file.name);

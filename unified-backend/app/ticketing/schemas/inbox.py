@@ -87,6 +87,14 @@ class InboxItemResponse(BaseModel):
     first_response_sla: FirstResponseSLAState | None = None
 
 
+class ReadStatusResponse(BaseModel):
+    """Response for the explicit mark-read/mark-unread endpoints."""
+
+    interaction_id: UUID
+
+    is_read: bool
+
+
 class InboxResponse(BaseModel):
     """
     Account Manager Inbox Response.

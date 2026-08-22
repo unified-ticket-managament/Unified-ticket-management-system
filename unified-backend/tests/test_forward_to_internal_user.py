@@ -511,3 +511,189 @@ async def test_forward_to_external_email_still_enforces_client_authorization():
         )
 
     assert exc_info.value.status_code == 403
+
+
+# ---------------------------------------------------------
+# Cc/Bcc — required To, optional-but-functional Cc/Bcc
+# ---------------------------------------------------------
+
+
+async def test_forward_to_only_defaults_cc_and_bcc_to_empty():
+    """To alone (Case 1): omitting cc/bcc entirely must still succeed,
+    and the resulting envelope must carry empty lists, never None and
+    never a malformed [""] placeholder."""
+
+    manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="FamilyFirst",
+        inbox_email="familyfirst@probeps.com",
+        account_manager_id=manager_id,
+    )
+    original = _FakeInteraction(interaction_id=uuid4(), client_id=client.client_id)
+    current_user = _FakeUser(manager_id, "Some Manager", "manager@probeps.com", "Account Manager")
+
+    service = _build_service(
+        original=original,
+        clients_by_id={client.client_id: client},
+        users_by_id={},
+    )
+
+    await service.forward_to_internal_user(
+        interaction_id=original.interaction_id,
+        request=ForwardToInternalUserRequest(
+            client_id=client.client_id,
+            recipient_email="client@example.com",
+            subject="Fwd: test",
+            message="content",
+        ),
+        current_user=current_user,
+    )
+
+    envelope = service.interaction_repository.created.payload["envelope"]
+    assert envelope["to_email"] == "client@example.com"
+    assert envelope["cc"] == []
+    assert envelope["bcc"] == []
+
+
+async def test_forward_to_plus_cc_includes_cc_recipient():
+    """Case 2: To + CC must forward with the CC recipient included."""
+
+    manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="FamilyFirst",
+        inbox_email="familyfirst@probeps.com",
+        account_manager_id=manager_id,
+    )
+    original = _FakeInteraction(interaction_id=uuid4(), client_id=client.client_id)
+    current_user = _FakeUser(manager_id, "Some Manager", "manager@probeps.com", "Account Manager")
+
+    service = _build_service(
+        original=original,
+        clients_by_id={client.client_id: client},
+        users_by_id={},
+    )
+
+    await service.forward_to_internal_user(
+        interaction_id=original.interaction_id,
+        request=ForwardToInternalUserRequest(
+            client_id=client.client_id,
+            recipient_email="client@example.com",
+            cc=["manager@example.com"],
+            subject="Fwd: test",
+            message="content",
+        ),
+        current_user=current_user,
+    )
+
+    envelope = service.interaction_repository.created.payload["envelope"]
+    assert envelope["to_email"] == "client@example.com"
+    # The full address must reach the envelope intact — never split on
+    # the "." in the domain into "manager@example"/"com".
+    assert envelope["cc"] == ["manager@example.com"]
+    assert envelope["bcc"] == []
+
+
+async def test_forward_to_plus_bcc_includes_bcc_recipient():
+    """Case 3: To + BCC must forward with the BCC recipient included."""
+
+    manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="FamilyFirst",
+        inbox_email="familyfirst@probeps.com",
+        account_manager_id=manager_id,
+    )
+    original = _FakeInteraction(interaction_id=uuid4(), client_id=client.client_id)
+    current_user = _FakeUser(manager_id, "Some Manager", "manager@probeps.com", "Account Manager")
+
+    service = _build_service(
+        original=original,
+        clients_by_id={client.client_id: client},
+        users_by_id={},
+    )
+
+    await service.forward_to_internal_user(
+        interaction_id=original.interaction_id,
+        request=ForwardToInternalUserRequest(
+            client_id=client.client_id,
+            recipient_email="client@example.com",
+            bcc=["audit@example.com"],
+            subject="Fwd: test",
+            message="content",
+        ),
+        current_user=current_user,
+    )
+
+    envelope = service.interaction_repository.created.payload["envelope"]
+    assert envelope["to_email"] == "client@example.com"
+    assert envelope["cc"] == []
+    assert envelope["bcc"] == ["audit@example.com"]
+
+
+async def test_forward_to_plus_cc_plus_bcc_includes_all_recipients():
+    """Case 4: To + CC + BCC must forward with all recipients correctly
+    included, and an address not present in any recipient dropdown
+    (there is no dropdown-membership requirement) must work."""
+
+    manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="FamilyFirst",
+        inbox_email="familyfirst@probeps.com",
+        account_manager_id=manager_id,
+    )
+    original = _FakeInteraction(interaction_id=uuid4(), client_id=client.client_id)
+    current_user = _FakeUser(manager_id, "Some Manager", "manager@probeps.com", "Account Manager")
+
+    service = _build_service(
+        original=original,
+        clients_by_id={client.client_id: client},
+        users_by_id={},
+    )
+
+    await service.forward_to_internal_user(
+        interaction_id=original.interaction_id,
+        request=ForwardToInternalUserRequest(
+            client_id=client.client_id,
+            recipient_email="client@example.com",
+            cc=["manager@example.com", "anotherclient@example.com"],
+            bcc=["audit@example.com"],
+            subject="Fwd: test",
+            message="content",
+        ),
+        current_user=current_user,
+    )
+
+    envelope = service.interaction_repository.created.payload["envelope"]
+    assert envelope["to_email"] == "client@example.com"
+    assert envelope["cc"] == ["manager@example.com", "anotherclient@example.com"]
+    assert envelope["bcc"] == ["audit@example.com"]
+
+
+def test_forward_request_rejects_invalid_cc_email():
+    """An invalid Cc address must be rejected at the schema layer, the
+    same way an invalid recipient_email already is."""
+
+    with pytest.raises(ValidationError):
+        ForwardToInternalUserRequest(
+            client_id=uuid4(),
+            recipient_email="client@example.com",
+            cc=["not-an-email"],
+            subject="Fwd: test",
+            message="content",
+        )
+
+
+def test_forward_request_rejects_invalid_bcc_email():
+    """An invalid Bcc address must be rejected at the schema layer."""
+
+    with pytest.raises(ValidationError):
+        ForwardToInternalUserRequest(
+            client_id=uuid4(),
+            recipient_email="client@example.com",
+            bcc=["not-an-email"],
+            subject="Fwd: test",
+            message="content",
+        )

@@ -26,7 +26,12 @@ from app.ticketing.schemas.forward import (
     ForwardToInternalUserRequest,
     ForwardToInternalUserResponse,
 )
-from app.ticketing.schemas.inbox import DraftListResponse, InboxResponse, SentResponse
+from app.ticketing.schemas.inbox import (
+    DraftListResponse,
+    InboxResponse,
+    ReadStatusResponse,
+    SentResponse,
+)
 from app.ticketing.schemas.interaction import (
     DraftDeleteResponse,
     DraftResponse,
@@ -46,6 +51,9 @@ from app.ticketing.schemas.ticket_action import (
 )
 from app.ticketing.services.attachment_service import AttachmentService, attachments_to_metadata
 from app.ticketing.services.inbox_service import InboxService
+from app.ticketing.services.message_read_status_service import (
+    MessageReadStatusService,
+)
 from app.ticketing.services.open_email_service import OpenEmailService
 from app.ticketing.services.interaction_service import InteractionService
 from app.ticketing.services.sla_service import build_sla_service
@@ -357,18 +365,36 @@ async def compose_email(
 )
 async def forward_to_internal_user(
     interaction_id: UUID,
-    request: ForwardToInternalUserRequest,
+    client_id: UUID = Form(...),
+    recipient_user_id: UUID | None = Form(default=None),
+    recipient_email: str | None = Form(default=None),
+    cc: str = Form(default=""),
+    bcc: str = Form(default=""),
+    subject: str = Form(...),
+    message: str = Form(...),
+    files: list[UploadFile] = File(default=[]),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Forwards an existing client email/interaction to an internal
     organization user — see InteractionService.forward_to_internal_user
-    for the full authorization/delivery mechanics. Plain JSON body
-    (unlike /compose): no new file uploads here, only existing
-    attachments already stored against `interaction_id` are carried
-    over.
+    for the full authorization/delivery mechanics. Multipart (like
+    /compose), not a plain JSON body: original attachments already
+    stored against `interaction_id` are always carried over, and any
+    newly uploaded `files` ride along too, subject to the combined
+    10-attachment total enforced in the service layer.
     """
+
+    request = ForwardToInternalUserRequest(
+        client_id=client_id,
+        recipient_user_id=recipient_user_id,
+        recipient_email=recipient_email,
+        cc=_split_emails(cc),
+        bcc=_split_emails(bcc),
+        subject=subject,
+        message=message,
+    )
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
@@ -392,6 +418,7 @@ async def forward_to_internal_user(
         interaction_id=interaction_id,
         request=request,
         current_user=current_user,
+        files=files,
     )
 
 
@@ -431,6 +458,54 @@ async def claim_interaction(
         interaction_id=interaction_id,
         current_user=current_user,
     )
+
+
+# ---------------------------------------------------------
+# Read / Unread (explicit manual toggle)
+# ---------------------------------------------------------
+#
+# The automatic "opened = read" marking already happens as a side
+# effect of GET /inbox/{interaction_id} (see OpenEmailService). These
+# two routes are the explicit counterpart — mark_unread has no other
+# caller anywhere in the app, since opening a thread only ever marks
+# it read, never unread.
+
+@router.post(
+    "/{interaction_id}/read",
+    response_model=ReadStatusResponse,
+    status_code=200,
+)
+async def mark_inbox_read(
+    interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Explicitly marks a mail thread read — the manual "Mark as Read" control."""
+
+    service = MessageReadStatusService(
+        InteractionRepository(db), MessageReadReceiptRepository(db)
+    )
+
+    return await service.mark_read(interaction_id, current_user)
+
+
+@router.post(
+    "/{interaction_id}/unread",
+    response_model=ReadStatusResponse,
+    status_code=200,
+)
+async def mark_inbox_unread(
+    interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Explicitly marks a mail thread unread — the manual "Mark as Unread" control."""
+
+    service = MessageReadStatusService(
+        InteractionRepository(db), MessageReadReceiptRepository(db)
+    )
+
+    return await service.mark_unread(interaction_id, current_user)
 
 
 # ---------------------------------------------------------
@@ -705,12 +780,19 @@ async def discard_draft(
 )
 async def open_email(
     interaction_id: UUID,
+    mark_read: bool = True,
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Returns the complete details of one inbox email, plus every
     reply already filed under it.
+
+    `mark_read` defaults to True (a genuine "open this thread" call
+    marks it read, as always) — callers re-fetching an already-open
+    thread's details (a manual refresh, or a post-send re-fetch) pass
+    `mark_read=false` so that doesn't silently undo an explicit
+    "Mark as Unread".
     """
 
     repository = InteractionRepository(db)
@@ -734,6 +816,7 @@ async def open_email(
     return await service.get_email_details(
         interaction_id=interaction_id,
         current_user=current_user,
+        mark_read=mark_read,
     )
 
 

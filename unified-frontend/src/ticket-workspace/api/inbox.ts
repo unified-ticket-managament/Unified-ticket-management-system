@@ -165,12 +165,17 @@ export async function discardDraft(
   return data;
 }
 
-// GET /inbox/{interaction_id}
+// GET /inbox/{interaction_id}. `markRead=false` fetches the thread's
+// details without re-marking it read — for a refresh/re-open of an
+// already-open thread, which shouldn't silently undo an explicit
+// "Mark as Unread".
 export async function openInboxThread(
-  interactionId: string
+  interactionId: string,
+  markRead: boolean = true
 ): Promise<OpenEmailResponse> {
   const { data } = await apiClient.get<OpenEmailResponse>(
-    `/inbox/${interactionId}`
+    `/inbox/${interactionId}`,
+    { params: { mark_read: markRead } }
   );
   return data;
 }
@@ -207,6 +212,36 @@ export async function archiveInteraction(
 ): Promise<InteractionArchiveResponse> {
   const { data } = await apiClient.post<InteractionArchiveResponse>(
     `/inbox/${interactionId}/archive`
+  );
+  return data;
+}
+
+export interface ReadStatusResponse {
+  interaction_id: string;
+  is_read: boolean;
+}
+
+// POST /inbox/{interaction_id}/read — explicit "Mark as Read". The
+// automatic mark-read-on-open path is openInboxThread itself (GET
+// /inbox/{interaction_id} already records the receipt server-side);
+// this is only for the manual toggle control.
+export async function markInboxRead(
+  interactionId: string
+): Promise<ReadStatusResponse> {
+  const { data } = await apiClient.post<ReadStatusResponse>(
+    `/inbox/${interactionId}/read`
+  );
+  return data;
+}
+
+// POST /inbox/{interaction_id}/unread — explicit "Mark as Unread".
+// Has no automatic counterpart — nothing else in Mail ever marks a
+// thread unread.
+export async function markInboxUnread(
+  interactionId: string
+): Promise<ReadStatusResponse> {
+  const { data } = await apiClient.post<ReadStatusResponse>(
+    `/inbox/${interactionId}/unread`
   );
   return data;
 }
@@ -276,27 +311,38 @@ export interface ForwardToInternalUserPayload {
   // server-side to their own email) or an arbitrary external address.
   recipientUserId?: string;
   recipientEmail?: string;
+  cc?: string[];
+  bcc?: string[];
   subject: string;
   message: string;
+  // Newly added attachments — combined server-side with whatever's
+  // already stored against the original interaction, subject to the
+  // 10-attachment total (see InteractionService.forward_to_internal_user).
+  files?: File[];
 }
 
 // POST /inbox/{interaction_id}/forward — forward an existing client
 // email to either an internal organization user or an arbitrary
-// external address. Plain JSON (unlike composeEmail above): no new
-// file uploads here, only attachments already stored against the
-// original interaction are carried over server-side.
+// external address. Multipart (like composeEmail above), not plain
+// JSON: attachments already stored against the original interaction
+// are always carried over server-side, and any newly uploaded `files`
+// ride along in the same request.
 export async function forwardToInternalUser(
   payload: ForwardToInternalUserPayload
 ): Promise<ForwardToInternalUserResponse> {
+  const formData = new FormData();
+  formData.append("client_id", payload.clientId);
+  if (payload.recipientUserId) formData.append("recipient_user_id", payload.recipientUserId);
+  if (payload.recipientEmail) formData.append("recipient_email", payload.recipientEmail);
+  if (payload.cc?.length) formData.append("cc", payload.cc.join(","));
+  if (payload.bcc?.length) formData.append("bcc", payload.bcc.join(","));
+  formData.append("subject", payload.subject);
+  formData.append("message", payload.message);
+  payload.files?.forEach((file) => formData.append("files", file));
+
   const { data } = await apiClient.post<ForwardToInternalUserResponse>(
     `/inbox/${payload.interactionId}/forward`,
-    {
-      client_id: payload.clientId,
-      recipient_user_id: payload.recipientUserId,
-      recipient_email: payload.recipientEmail,
-      subject: payload.subject,
-      message: payload.message,
-    }
+    formData
   );
   return data;
 }

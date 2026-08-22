@@ -49,13 +49,12 @@ interface MailSidebarProps {
   onSelectView: (view: MailViewKey) => void;
   onCompose: () => void;
   counts: Partial<Record<MailViewKey, number>>;
-  isSupervisor: boolean;
   // "My Claims" is hidden specifically for Staff — every other role
   // with a Mail tab keeps it (nothing else in this sidebar is
   // role-gated per-item today).
   hideMyClaims: boolean;
   // Custom mail folders (e.g. ones a Mail Rule filed an email into) —
-  // rendered as their own section under "All Inboxes", mutually
+  // rendered as their own section below the main view list, mutually
   // exclusive with the normal view tabs above (selecting a folder
   // doesn't change activeView; selecting a view clears the folder).
   folders: MailFolder[];
@@ -100,7 +99,6 @@ export const MailSidebar = memo(function MailSidebar({
   onSelectView,
   onCompose,
   counts,
-  isSupervisor,
   hideMyClaims,
   folders,
   folderCounts,
@@ -155,24 +153,6 @@ export const MailSidebar = memo(function MailSidebar({
           );
         })}
       </nav>
-
-      {isSupervisor && (
-        <button
-          type="button"
-          data-active={!isComposing && activeView === "all"}
-          onClick={() => onSelectView("all")}
-          className={cn(
-            "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] font-medium transition-all duration-150",
-            !isComposing && activeView === "all"
-              ? "bg-primary/10 text-primary"
-              : "text-foreground/80 hover:translate-x-0.5 hover:bg-muted hover:text-foreground"
-          )}
-        >
-          <InboxIcon className="h-4 w-4 flex-none text-muted-foreground" />
-          <span className="truncate">All Inboxes</span>
-          <CountBadge count={counts.all ?? 0} />
-        </button>
-      )}
 
       {folders.length > 0 && (
         <div className="flex flex-col gap-0.5 border-t border-border pt-3">

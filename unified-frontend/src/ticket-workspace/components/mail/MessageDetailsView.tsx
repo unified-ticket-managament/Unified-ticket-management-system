@@ -10,6 +10,8 @@ import {
   Forward as ForwardIcon,
   Link2,
   Loader2,
+  Mail,
+  MailOpen,
   Paperclip,
   RefreshCw,
   Reply as ReplyIcon,
@@ -258,7 +260,14 @@ interface MessageDetailsViewProps {
   // InboxPage.tsx, wired to mail.openThread(interactionId).
   onRefreshMessage: (interactionId: string) => void;
   isRefreshingMessage?: boolean;
-  onForward: (values: { clientId: string | null; toEmail: string; subject: string; bodyHtml: string; interactionId: string }) => void;
+  onForward: (values: {
+    clientId: string | null;
+    toEmail: string;
+    subject: string;
+    bodyHtml: string;
+    interactionId: string;
+    originalAttachmentCount: number;
+  }) => void;
   onSaveDraft: (
     interactionId: string,
     message: string,
@@ -274,6 +283,8 @@ interface MessageDetailsViewProps {
   onRemoveDraftAttachment: (interactionId: string, attachmentId: string) => Promise<boolean>;
   onUpdateTags: (interactionId: string, tags: string[]) => Promise<boolean>;
   onAssignFolder: (interactionId: string, folderId: string | null) => Promise<boolean>;
+  onMarkRead: (interactionId: string) => void;
+  onMarkUnread: (interactionId: string) => void;
 }
 
 export function MessageDetailsView({
@@ -290,6 +301,8 @@ export function MessageDetailsView({
   onDiscardDraft,
   onUploadDraftAttachment,
   onRemoveDraftAttachment,
+  onMarkRead,
+  onMarkUnread,
   onUpdateTags,
   onAssignFolder,
 }: MessageDetailsViewProps) {
@@ -624,6 +637,7 @@ export function MessageDetailsView({
       subject: email.subject.toLowerCase().startsWith("fwd:") ? email.subject : `Fwd: ${email.subject}`,
       bodyHtml,
       interactionId: email.interaction_id,
+      originalAttachmentCount: email.attachments?.length ?? 0,
     });
   }
 
@@ -917,6 +931,18 @@ export function MessageDetailsView({
             Archive
           </Button>
         )}
+
+        <Button
+          size="sm"
+          variant="outline"
+          className="gap-1.5"
+          onClick={() =>
+            email.is_read ? onMarkUnread(email.interaction_id) : onMarkRead(email.interaction_id)
+          }
+        >
+          {email.is_read ? <MailOpen className="h-3.5 w-3.5" /> : <Mail className="h-3.5 w-3.5" />}
+          {email.is_read ? "Mark as Unread" : "Mark as Read"}
+        </Button>
       </div>
 
       {isClosed && (

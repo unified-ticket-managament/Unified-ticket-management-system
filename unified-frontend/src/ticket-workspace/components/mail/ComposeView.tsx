@@ -24,6 +24,7 @@ import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { htmlToPlainText } from "@tw/lib/richText";
 import { isValidEmailAddress } from "@tw/lib/validation";
+import { MAX_ATTACHMENT_FILES } from "@tw/lib/attachmentMeta";
 import type { ClientContact, ClientResponse, InternalNoteRecipientCandidate } from "@tw/types";
 
 const LOCAL_DRAFT_KEY = "utms-mail-compose-draft";
@@ -59,6 +60,10 @@ export interface ComposeInitialValues {
   // needed so the backend can preserve the original-message/ticket
   // relationship on the resulting communication.
   interactionId?: string;
+  // How many attachments the original message already has (forward
+  // mode only) — used to cap newly-added attachments so original +
+  // new never exceeds the 10-attachment total the backend enforces.
+  originalAttachmentCount?: number;
 }
 
 interface LocalDraft {
@@ -118,8 +123,11 @@ interface ComposeViewProps {
     clientId: string;
     recipientUserId?: string;
     recipientEmail?: string;
+    cc?: string[];
+    bcc?: string[];
     subject: string;
     message: string;
+    files: File[];
   }) => Promise<unknown>;
   onDiscard: () => void;
   // Only rendered (as a "← Back" control) when this view is in
@@ -322,8 +330,36 @@ export function ComposeView({
     () => toEntries.filter((entry) => !isValidEmailAddress(entry)),
     [toEntries]
   );
+  // Cc/Bcc are optional everywhere (an empty value is never an error),
+  // but a non-empty entry must still be a real address — validated
+  // here only for Forward (see canSend below): Compose/Reply's own
+  // Cc/Bcc handling is unrelated and deliberately left as-is.
+  const ccEntries = useMemo(() => parseEmails(cc), [cc]);
+  const bccEntries = useMemo(() => parseEmails(bcc), [bcc]);
+  const invalidCcEntries = useMemo(
+    () => ccEntries.filter((entry) => !isValidEmailAddress(entry)),
+    [ccEntries]
+  );
+  const invalidBccEntries = useMemo(
+    () => bccEntries.filter((entry) => !isValidEmailAddress(entry)),
+    [bccEntries]
+  );
+  // Forward mode: original attachments already occupy part of the
+  // 10-attachment total the backend enforces (original + new <= 10),
+  // so newly-added attachments are capped to whatever's left rather
+  // than the full 10 — see AttachmentUploader's maxFiles prop.
+  const originalAttachmentCount = initialValues?.originalAttachmentCount ?? 0;
+  const remainingAttachmentSlots = isForward
+    ? Math.max(0, MAX_ATTACHMENT_FILES - originalAttachmentCount)
+    : MAX_ATTACHMENT_FILES;
+
   const canSend = Boolean(
-    clientId && toEntries.length > 0 && invalidToEntries.length === 0 && subject.trim() && !isEmpty
+    clientId &&
+      toEntries.length > 0 &&
+      invalidToEntries.length === 0 &&
+      subject.trim() &&
+      !isEmpty &&
+      (!isForward || (invalidCcEntries.length === 0 && invalidBccEntries.length === 0))
   );
 
   // The "To" field is a single text input (never a separate field —
@@ -405,8 +441,11 @@ export function ComposeView({
         clientId,
         recipientUserId: toRecipient.userId,
         recipientEmail: toRecipient.userId ? undefined : toRecipient.email,
+        cc: ccEntries,
+        bcc: bccEntries,
         subject: subject.trim(),
         message: htmlToPlainText(bodyHtml),
+        files,
       });
       if (result) {
         clearLocalDraft();
@@ -630,11 +669,35 @@ export function ComposeView({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label className="mb-1 block text-xs font-medium text-muted-foreground">Cc</label>
-                <Input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="cc@example.com, ..." />
+                <Input
+                  value={cc}
+                  onChange={(e) => setCc(e.target.value)}
+                  placeholder="cc@example.com, ..."
+                  aria-invalid={isForward && invalidCcEntries.length > 0}
+                />
+                {isForward && invalidCcEntries.length > 0 && (
+                  <p className="mt-1 text-[11px] text-destructive">
+                    {invalidCcEntries.length === 1
+                      ? `"${invalidCcEntries[0]}" isn't a valid email address.`
+                      : "Enter valid email addresses, separated by commas."}
+                  </p>
+                )}
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-muted-foreground">Bcc</label>
-                <Input value={bcc} onChange={(e) => setBcc(e.target.value)} placeholder="bcc@example.com, ..." />
+                <Input
+                  value={bcc}
+                  onChange={(e) => setBcc(e.target.value)}
+                  placeholder="bcc@example.com, ..."
+                  aria-invalid={isForward && invalidBccEntries.length > 0}
+                />
+                {isForward && invalidBccEntries.length > 0 && (
+                  <p className="mt-1 text-[11px] text-destructive">
+                    {invalidBccEntries.length === 1
+                      ? `"${invalidBccEntries[0]}" isn't a valid email address.`
+                      : "Enter valid email addresses, separated by commas."}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -650,7 +713,14 @@ export function ComposeView({
 
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Attachments</label>
-              <AttachmentUploader files={files} onFilesChange={setFiles} />
+              {isForward && originalAttachmentCount > 0 && (
+                <p className="mb-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                  {originalAttachmentCount} original attachment
+                  {originalAttachmentCount === 1 ? "" : "s"} will be forwarded automatically. You
+                  can add up to {remainingAttachmentSlots} more ({MAX_ATTACHMENT_FILES} total).
+                </p>
+              )}
+              <AttachmentUploader files={files} onFilesChange={setFiles} maxFiles={remainingAttachmentSlots} />
             </div>
           </div>
         )}

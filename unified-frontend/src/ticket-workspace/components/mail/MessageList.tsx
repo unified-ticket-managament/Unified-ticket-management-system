@@ -58,6 +58,16 @@ const PRIORITY_VARIANT: Record<TicketPriority, "success" | "warning" | "destruct
   CRITICAL: "destructive",
 };
 
+// Prefers the real, persisted is_read (message_read_receipts) once
+// present — falls back to the client-only openedIds Set only for a
+// row shape that doesn't carry is_read at all (the OTP-forward
+// synthetic rows built from a Notification, out of scope for this
+// change — they're backed by NotificationItem.is_read separately).
+function isItemUnread(item: InboxItem, openedIds: Set<string>): boolean {
+  if (item.is_read !== undefined) return !item.is_read;
+  return !openedIds.has(item.open_interaction_id ?? item.interaction_id);
+}
+
 function statusMeta(item: InboxItem): { label: string; variant: "warning" | "success" | "secondary" | "default" } {
   if (item.ticket_id) return { label: "Ticketed", variant: "default" };
   return STATUS_META[item.status] ?? { label: item.status, variant: "secondary" };
@@ -242,7 +252,7 @@ export function MessageList({
   // genuinely new incoming mail underneath older escalated items.
   const filtered = useMemo(() => {
     let rows = items;
-    if (unreadOnly) rows = rows.filter((item) => !openedIds.has(item.open_interaction_id ?? item.interaction_id));
+    if (unreadOnly) rows = rows.filter((item) => isItemUnread(item, openedIds));
     if (attachmentsOnly) rows = rows.filter((item) => item.has_attachments);
     if (slaRiskFilter !== "ALL") {
       rows = rows.filter((item) => firstResponseTierFor(item) === slaRiskFilter);
@@ -444,7 +454,7 @@ export function MessageList({
           <ul className="divide-y divide-border">
             {filtered.map((item) => {
               const openId = item.open_interaction_id ?? item.interaction_id;
-              const isUnread = !openedIds.has(openId);
+              const isUnread = isItemUnread(item, openedIds);
               const status = statusMeta(item);
               const isOpening = openingId === openId;
               const preview = previewOf(item.latest_message);
@@ -455,7 +465,14 @@ export function MessageList({
                 <li key={item.interaction_id}>
                   <button
                     type="button"
-                    onClick={() => onOpen(openId)}
+                    onClick={() => {
+                      // Already open in the reading pane — re-firing
+                      // onOpen would just re-run "open thread" (and
+                      // its mark-read side effect) for no reason; use
+                      // the dedicated Refresh action for that instead.
+                      if (isSelected) return;
+                      onOpen(openId);
+                    }}
                     disabled={isOpening}
                     className={cn(
                       "group flex w-full items-start gap-3 px-4 py-3 text-left transition-all duration-150 hover:z-[1] hover:-translate-y-0.5 hover:bg-muted/60 hover:shadow-sm",

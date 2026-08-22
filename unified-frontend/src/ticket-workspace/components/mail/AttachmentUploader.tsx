@@ -17,6 +17,11 @@ interface AttachmentUploaderProps {
   files: File[];
   onFilesChange: (files: File[]) => void;
   disabled?: boolean;
+  // Overrides MAX_ATTACHMENT_FILES for callers that need a lower cap
+  // than the global 10 — e.g. Forward, where original attachments
+  // already occupy some of the 10-attachment total (see ComposeView's
+  // remainingSlots computation).
+  maxFiles?: number;
 }
 
 function dedupeKey(file: File): string {
@@ -28,7 +33,12 @@ function dedupeKey(file: File): string {
 // PDF/DOC/DOCX/XLSX/CSV/PNG/JPG/JPEG/ZIP, up to 10 files / 25MB each
 // (see lib/attachmentMeta.ts, which mirrors the backend's own
 // allow-list).
-export function AttachmentUploader({ files, onFilesChange, disabled = false }: AttachmentUploaderProps) {
+export function AttachmentUploader({
+  files,
+  onFilesChange,
+  disabled = false,
+  maxFiles = MAX_ATTACHMENT_FILES,
+}: AttachmentUploaderProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
@@ -36,7 +46,7 @@ export function AttachmentUploader({ files, onFilesChange, disabled = false }: A
   function addFiles(incoming: FileList | File[]) {
     const existingKeys = new Set(files.map(dedupeKey));
     const newFiles = Array.from(incoming).filter((f) => !existingKeys.has(dedupeKey(f)));
-    const { accepted, errors: validationErrors } = validateFiles([...files, ...newFiles]);
+    const { accepted, errors: validationErrors } = validateFiles([...files, ...newFiles], maxFiles);
     setErrors(validationErrors);
     onFilesChange(accepted);
   }
@@ -71,7 +81,7 @@ export function AttachmentUploader({ files, onFilesChange, disabled = false }: A
           type="button"
           variant="secondary"
           size="sm"
-          disabled={disabled || files.length >= MAX_ATTACHMENT_FILES}
+          disabled={disabled || files.length >= maxFiles}
           onClick={() => inputRef.current?.click()}
         >
           Browse files
@@ -89,7 +99,7 @@ export function AttachmentUploader({ files, onFilesChange, disabled = false }: A
           }}
         />
         <p className="text-[11px] text-muted-foreground/80">
-          PDF, DOC, DOCX, XLSX, CSV, PNG, JPG, JPEG, ZIP — up to {MAX_ATTACHMENT_FILES} files, 25MB each.
+          PDF, DOC, DOCX, XLSX, CSV, PNG, JPG, JPEG, ZIP — up to {maxFiles} files, 25MB each.
         </p>
       </div>
 

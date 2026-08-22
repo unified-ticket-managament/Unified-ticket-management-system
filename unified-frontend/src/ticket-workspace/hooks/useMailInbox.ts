@@ -11,6 +11,8 @@ import {
   getReplied,
   getSent,
   getViewCounts,
+  markInboxRead,
+  markInboxUnread,
   openInboxThread,
   saveDraft,
   sendDraft,
@@ -516,6 +518,8 @@ export function useMailInbox() {
   );
 
   const { run: runOpen } = useApiAction(openInboxThread);
+  const { run: runMarkRead } = useApiAction(markInboxRead);
+  const { run: runMarkUnread } = useApiAction(markInboxUnread);
   const { run: runUpdateTags } = useApiAction(updateInteractionTags);
   const { run: runUpdateFolder } = useApiAction(updateInteractionFolder);
   const { run: runSaveDraft } = useApiAction(saveDraft);
@@ -955,7 +959,53 @@ export function useMailInbox() {
   // or (if left to fire after the direct call already marked the keys
   // loaded) become a redundant no-op — neither is needed.
 
-  async function openThread(interactionId: string) {
+  // Patches is_read in place across every cached row list, so the
+  // Mail list reflects a read/unread change immediately without a
+  // full refetch — correctness itself still comes from the backend's
+  // message_read_receipts table (re-read fresh on every mount/fetch),
+  // this is purely for instant same-session UI feedback.
+  const patchRowIsRead = useCallback((interactionId: string, isRead: boolean) => {
+    setRowsByTab((prev) => {
+      const next = { ...prev };
+      (Object.keys(next) as BaseTabKey[]).forEach((key) => {
+        next[key] = next[key].map((item) =>
+          item.interaction_id === interactionId ? { ...item, is_read: isRead } : item
+        );
+      });
+      return next;
+    });
+    setFolderRows((prev) =>
+      prev.map((item) =>
+        item.interaction_id === interactionId ? { ...item, is_read: isRead } : item
+      )
+    );
+  }, []);
+
+  async function markRead(interactionId: string) {
+    const result = await runMarkRead(interactionId);
+    if (result) {
+      patchRowIsRead(interactionId, true);
+      if (selectedEmail?.interaction_id === interactionId) {
+        setSelectedEmail({ ...selectedEmail, is_read: true });
+      }
+    }
+  }
+
+  async function markUnread(interactionId: string) {
+    const result = await runMarkUnread(interactionId);
+    if (result) {
+      patchRowIsRead(interactionId, false);
+      if (selectedEmail?.interaction_id === interactionId) {
+        setSelectedEmail({ ...selectedEmail, is_read: false });
+      }
+    }
+  }
+
+  async function openThread(
+    interactionId: string,
+    options?: { markRead?: boolean }
+  ) {
+    const markRead = options?.markRead ?? true;
     // A synthetic OTP-forward row (see otpNotificationToInboxItem) has
     // no real Interaction behind it — GET /inbox/{id} would 404 for
     // it. Route straight to the same notification detail view the
@@ -978,7 +1028,7 @@ export function useMailInbox() {
 
     const requestId = ++openThreadRequestIdRef.current;
     setOpeningId(interactionId);
-    const result = await runOpen(interactionId);
+    const result = await runOpen(interactionId, markRead);
     if (requestId !== openThreadRequestIdRef.current) return;
     setOpeningId(null);
 
@@ -989,6 +1039,14 @@ export function useMailInbox() {
         next.add(interactionId);
         return next;
       });
+      // GET /inbox/{id} (runOpen above) already persisted the read
+      // receipt server-side as its own side effect when markRead is
+      // true — this just makes the already-loaded list rows reflect
+      // it immediately too, without waiting for their own next
+      // refetch. When markRead is false (a refresh/re-open of an
+      // already-open thread), reflect the response's real state
+      // instead of forcing it read.
+      patchRowIsRead(interactionId, result.is_read);
     }
   }
 
@@ -1040,7 +1098,9 @@ export function useMailInbox() {
   async function sendDraftMessage(interactionId: string, toEmail?: string | null) {
     const result = await runSendDraft(interactionId, toEmail);
     if (result && selectedEmail?.interaction_id === interactionId) {
-      const fresh = await openInboxThread(interactionId);
+      // Sending a reply isn't "opening to read" — don't let this
+      // refresh silently re-mark an explicitly-unread thread as read.
+      const fresh = await openInboxThread(interactionId, false);
       setSelectedEmail(fresh);
     }
     if (result) {
@@ -1369,6 +1429,8 @@ export function useMailInbox() {
     managedClientCount,
     refresh,
     openThread,
+    markRead,
+    markUnread,
     selectedEmail,
     folders,
     folderCounts,
