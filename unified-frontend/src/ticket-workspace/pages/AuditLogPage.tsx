@@ -430,25 +430,39 @@ export function AuditLogPage() {
                       <button
                         onClick={() => handleRowClick(row)}
                         aria-label={`${meta.label} on ${row.ticketTitle}`}
-                        className="flex flex-1 items-center gap-3.5 px-5 py-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+                        className="flex min-w-0 flex-1 items-center gap-3.5 px-5 py-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
                       >
                         <span className="flex h-10 w-10 flex-none items-center justify-center rounded-full border border-border bg-canvas text-base">
                           {meta.icon}
                         </span>
                         <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
+                          <div className="flex min-w-0 items-center gap-2">
                             <Badge tone={meta.tone}>{meta.label}</Badge>
-                            <span className="truncate text-xs text-muted">
+                            <span
+                              className="min-w-0 flex-1 truncate text-xs text-muted"
+                              title={row.ticketTitle}
+                            >
                               on <span className="font-medium text-slate-500">{row.ticketTitle}</span>
                             </span>
                             {row.clientCompanyName && (
-                              <span className="truncate text-xs text-muted">
+                              <span
+                                className="max-w-[140px] flex-none truncate text-xs text-muted"
+                                title={row.clientCompanyName}
+                              >
                                 · {row.clientCompanyName}
                               </span>
                             )}
                           </div>
                           {fields.length > 0 && (
-                            <p className="mt-1 truncate text-[13px] text-slate-600">
+                            <p
+                              className="mt-1 truncate text-[13px] text-slate-600"
+                              title={fields
+                                .map(
+                                  (f) =>
+                                    `${humanizeFieldKey(f.key)}: ${formatFieldValue(f.to)}`
+                                )
+                                .join(" · ")}
+                            >
                               {fields
                                 .map(
                                   (f) =>
@@ -460,7 +474,10 @@ export function AuditLogPage() {
                         </div>
                         <div className="flex-none text-right">
                           <p className="text-xs font-medium text-slate-600">{formatDateTime(row.createdAt)}</p>
-                          <p className="mt-0.5 text-[11px] text-muted">
+                          <p
+                            className="mt-0.5 max-w-[180px] truncate text-[11px] text-muted"
+                            title={`${row.actorName} · ${ACTOR_ROLE_LABEL[row.actorRole]}`}
+                          >
                             {row.actorName}
                             <span className="text-muted/70"> · {ACTOR_ROLE_LABEL[row.actorRole]}</span>
                           </p>

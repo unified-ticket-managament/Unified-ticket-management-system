@@ -28,6 +28,7 @@ import {
   markNotificationRead,
   type NotificationItem,
 } from "@/lib/notifications-api";
+import { formatNotificationForDropdown, isMailNotification } from "@/lib/notification-display";
 import { authService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 
@@ -364,11 +365,38 @@ export function TopNavbar() {
                               notification.is_read ? "bg-transparent" : "bg-primary"
                             )}
                           />
-                          <span className="text-sm font-medium">{notification.title}</span>
+                          {isMailNotification(notification) ? (
+                            <span className="text-sm font-medium">{notification.title}</span>
+                          ) : (
+                            <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                              {formatNotificationForDropdown(notification).headline}
+                            </span>
+                          )}
                         </div>
-                        <p className="pl-3.5 text-xs text-muted-foreground">
-                          {notification.message}
-                        </p>
+                        {isMailNotification(notification) ? (
+                          <p className="pl-3.5 text-xs text-muted-foreground">
+                            {notification.message}
+                          </p>
+                        ) : (
+                          (() => {
+                            const display = formatNotificationForDropdown(notification);
+                            if (display.showBody) {
+                              return (
+                                <p className="pl-3.5 text-xs text-muted-foreground truncate">
+                                  {display.bodyText}
+                                </p>
+                              );
+                            }
+                            if (display.fromLabel) {
+                              return (
+                                <p className="pl-3.5 text-xs text-muted-foreground truncate">
+                                  From: {display.fromLabel}
+                                </p>
+                              );
+                            }
+                            return null;
+                          })()
+                        )}
                         <p className="pl-3.5 text-[11px] text-muted-foreground/70">
                           {timeAgo(notification.created_at)}
                         </p>

@@ -102,26 +102,28 @@ export function AuditLogDetailsDrawer({
               </div>
 
               <dl className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
-                <div>
+                <div className="min-w-0">
                   <dt className="text-muted">Audit ID</dt>
-                  <dd className="mt-0.5 font-mono text-[11px] text-slate-800">
+                  <dd className="mt-0.5 truncate font-mono text-[11px] text-slate-800">
                     {shortId(row.auditId, 12)}
                   </dd>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <dt className="text-muted">Related Ticket</dt>
-                  <dd className="mt-0.5 truncate font-medium text-slate-800">{row.ticketTitle}</dd>
+                  <dd className="mt-0.5 truncate font-medium text-slate-800" title={row.ticketTitle}>
+                    {row.ticketTitle}
+                  </dd>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <dt className="text-muted">Actor</dt>
-                  <dd className="mt-0.5 font-medium text-slate-800">
+                  <dd className="mt-0.5 truncate font-medium text-slate-800" title={`${row.actorName} · ${ACTOR_ROLE_LABEL[row.actorRole]}`}>
                     {row.actorName}
                     <span className="ml-1 text-muted">· {ACTOR_ROLE_LABEL[row.actorRole]}</span>
                   </dd>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <dt className="text-muted">Timestamp</dt>
-                  <dd className="mt-0.5 font-medium text-slate-800">
+                  <dd className="mt-0.5 truncate font-medium text-slate-800">
                     {formatDateTime(row.createdAt)}
                   </dd>
                 </div>
@@ -138,9 +140,9 @@ export function AuditLogDetailsDrawer({
                 ) : (
                   <dl className="mt-2 flex flex-col gap-2.5">
                     {fields.map((field) => (
-                      <div key={field.key} className="text-xs">
+                      <div key={field.key} className="min-w-0 text-xs">
                         <dt className="text-muted">{humanizeFieldKey(field.key)}</dt>
-                        <dd className="mt-0.5 font-medium text-slate-800">
+                        <dd className="mt-0.5 break-words font-medium text-slate-800">
                           {field.from !== null && field.from !== undefined ? (
                             <>
                               <span className="text-muted">{formatFieldValue(field.from)}</span>

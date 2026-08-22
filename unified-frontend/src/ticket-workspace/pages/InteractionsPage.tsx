@@ -3,7 +3,6 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { AlertTriangle, EyeOff, Search, SlidersHorizontal, X } from "lucide-react";
 import { AppLayout } from "@tw/components/layout/AppLayout";
-import { Badge } from "@tw/components/common/Badge";
 import { ClientFilterSelect } from "@tw/components/common/ClientFilterSelect";
 import { Button } from "@tw/components/common/Button";
 import { EmptyState } from "@tw/components/common/EmptyState";
@@ -17,7 +16,7 @@ import { useDebouncedValue } from "@tw/hooks/useDebouncedValue";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { shortId, formatDateTime } from "@tw/lib/format";
-import { RETIRED_INTERACTION_TYPES, metaFor, summarize } from "@tw/lib/interactionMeta";
+import { RETIRED_INTERACTION_TYPES, metaFor, subjectFallbackLabel, summarize } from "@tw/lib/interactionMeta";
 import { isSupervisorRole } from "@/lib/role-access";
 import type { InteractionDirection, InteractionResponse, InteractionStatus } from "@tw/types";
 
@@ -210,7 +209,7 @@ export function InteractionsPage() {
           // Falls back to summarize() only for the rare row created
           // before `subject` existed and never backfilled (a
           // rootless legacy reply) — every new row always has one.
-          subject: item.subject || summarize(item),
+          subject: item.subject || subjectFallbackLabel(item),
           summaryText: summarize(item),
           raw: item,
         }));
@@ -679,40 +678,19 @@ export function InteractionsPage() {
                   <li key={row.id} className="group flex items-center transition-colors hover:bg-surfaceHover">
                     <button
                       onClick={() => handleRowClick(row)}
-                      aria-label={`${row.subject}: ${row.summaryText}`}
-                      className="flex flex-1 items-center gap-3.5 px-5 py-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
+                      aria-label={row.subject}
+                      className="flex min-w-0 flex-1 items-center gap-3.5 px-5 py-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40"
                     >
                       <span className="flex h-10 w-10 flex-none items-center justify-center rounded-full border border-border bg-canvas text-base">
                         {meta.icon}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="truncate text-[13px] font-semibold text-slate-900">
-                            {row.subject}
-                          </p>
-                          <Badge tone={meta.tone}>{meta.label}</Badge>
-                          {row.clientName && (
-                            <span className="truncate text-xs text-muted">
-                              {row.clientName}
-                            </span>
-                          )}
-                          {row.ticketTitle && (
-                            <span className="truncate text-xs text-muted">
-                              on <span className="font-medium text-slate-500">{row.ticketTitle}</span>
-                            </span>
-                          )}
-                        </div>
-                        {/* For EMAIL rows summaryText IS the subject
-                            (no body preview in this trimmed list
-                            response) — skip the second line rather
-                            than repeat the heading verbatim. */}
-                        {row.summaryText && row.summaryText !== row.subject && (
-                          <p className="mt-1 truncate text-[13px] text-slate-600">{row.summaryText}</p>
-                        )}
+                        <p className="truncate text-[13px] font-semibold text-slate-900" title={row.subject}>
+                          {row.subject}
+                        </p>
                       </div>
                       <div className="flex-none text-right">
                         <p className="text-xs font-medium text-slate-600">{formatDateTime(row.createdAt)}</p>
-                        <p className="mt-0.5 text-[11px] text-muted">{row.agent}</p>
                       </div>
                     </button>
                     <button

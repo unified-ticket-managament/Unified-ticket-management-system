@@ -28,6 +28,22 @@ export function metaFor(type: string): InteractionTypeMeta {
   return TYPE_META[type] ?? { icon: "•", label: type, tone: "default" };
 }
 
+// A safe stand-in for summarize() specifically for use as a *Subject*
+// fallback (legacy rows created before `subject` existed). summarize()
+// is fine for every other type, but returns the raw reply/note body
+// verbatim for REPLY/INTERNAL_NOTE — never acceptable as visible
+// Subject text in the Interactions list row.
+export function subjectFallbackLabel(interaction: InteractionResponse): string {
+  switch (interaction.interaction_type) {
+    case "REPLY":
+      return "Reply";
+    case "INTERNAL_NOTE":
+      return "Internal note";
+    default:
+      return summarize(interaction);
+  }
+}
+
 // STATUS_CHANGE/PRIORITY_CHANGE/AGENT_TRANSFER/CLAIM/EDIT_ACCESS_*
 // no longer have a real Interaction row of their own — the backend
 // synthesizes a display row for them from the ticket's audit trail
