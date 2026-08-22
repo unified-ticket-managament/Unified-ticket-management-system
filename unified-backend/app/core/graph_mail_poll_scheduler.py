@@ -37,15 +37,16 @@ def start_scheduler() -> None:
     if scheduler.running:
         return
 
+    interval_seconds = get_settings().graph_mail_poll_interval_seconds
+
     scheduler.add_job(
         _run_poll,
         trigger="interval",
-        minutes=1,
+        seconds=interval_seconds,
         # Same "run immediately, not after the first interval" fix as
         # graph_subscription_scheduler.py — otherwise a freshly-
         # configured integration or a plain restart waits a full
-        # minute (small here, but the principle matters more once this
-        # value is ever raised) before the first poll.
+        # interval before the first poll.
         next_run_time=datetime.now(),
         id=GRAPH_MAIL_POLL_JOB_ID,
         max_instances=1,
@@ -53,7 +54,10 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
     scheduler.start()
-    logger.info("Graph mail poll scheduler started — polling every minute.")
+    logger.info(
+        "Graph mail poll scheduler started — polling every %s seconds.",
+        interval_seconds,
+    )
 
 
 def shutdown_scheduler() -> None:

@@ -55,6 +55,21 @@ export function InboxPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const canManageRules = (currentUser?.permissions ?? []).includes("rule:manage");
 
+  // Rules lives inside this same mounted page (rulesOpen is a local
+  // toggle, never a route change), so useMailInbox's own "load
+  // folders once per mount" cache is never naturally invalidated by
+  // creating/editing a rule's folder. Refetch folders specifically on
+  // the true→false transition (leaving Rules) rather than on every
+  // render or on every setRulesOpen(false) call site — this is the
+  // one point in time folder state could actually have changed.
+  const rulesWasOpenRef = useRef(false);
+  useEffect(() => {
+    if (rulesWasOpenRef.current && !rulesOpen) {
+      mail.refreshFolders();
+    }
+    rulesWasOpenRef.current = rulesOpen;
+  }, [rulesOpen, mail.refreshFolders]);
+
   // Tracks whatever message was open right before Compose/Forward
   // opened (openCompose always clears `selectedEmail`), so the Back
   // button on a Forward screen can return to it — a plain ref (not
@@ -382,7 +397,7 @@ export function InboxPage() {
           being clipped, scrolled via `main`'s own overflow-y-auto. */}
       {isDesktop ? (
         rulesOpen ? (
-          <MailWorkspaceLayout folderPanel={renderSidebar("panel")} wideContent={<RulesPanel />} />
+          <MailWorkspaceLayout folderPanel={renderSidebar("panel")} wideContent={<RulesPanel onFoldersMayHaveChanged={mail.refreshFolders} />} />
         ) : (
           <MailWorkspaceLayout
             folderPanel={renderSidebar("panel")}
@@ -396,7 +411,7 @@ export function InboxPage() {
 
           <div className="min-h-[560px] min-w-0 flex-1">
             {rulesOpen ? (
-              <RulesPanel />
+              <RulesPanel onFoldersMayHaveChanged={mail.refreshFolders} />
             ) : composeOpen ? (
               <ComposeView
                 clients={mail.clients}

@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import User
 
@@ -19,6 +19,7 @@ from app.ticketing.repositories.mail_folder_repository import MailFolderReposito
 from app.ticketing.repositories.message_read_receipt_repository import (
     MessageReadReceiptRepository,
 )
+from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
@@ -51,6 +52,7 @@ from app.ticketing.schemas.ticket_action import (
 )
 from app.ticketing.services.attachment_service import AttachmentService, attachments_to_metadata
 from app.ticketing.services.inbox_service import InboxService
+from app.ticketing.services.mail_folder_service import MailFolderService
 from app.ticketing.services.message_read_status_service import (
     MessageReadStatusService,
 )
@@ -139,6 +141,23 @@ async def get_inbox(
     be a client-side-only filter over whatever page was already loaded
     into the query itself, so it searches the full filtered set.
     """
+
+    if folder_id is not None:
+        # A folder now has the same ownership/sharing-driven visibility
+        # as the rules that file mail into it (see MailFolderService) —
+        # a guessed/leaked private folder_id must not be usable to
+        # filter the inbox by it. Missing and not-visible are treated
+        # identically (404) so existence isn't leaked either.
+        folder_repository = MailFolderRepository(db)
+        folder = await folder_repository.get_by_id(folder_id)
+        if folder is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Folder not found.",
+            )
+        await MailFolderService(folder_repository).ensure_visible(
+            folder, current_user, RuleRepository(db)
+        )
 
     repository = InteractionRepository(db)
     attachment_repository = AttachmentRepository(db)

@@ -58,6 +58,15 @@ class Settings(BaseSettings):
     # extra Neon round trips a sub-minute cadence costs.
     sla_sweep_interval_seconds: int = 10
 
+    # How often the in-process Graph mail poller checks every
+    # configured mailbox for new messages (app/core/
+    # graph_mail_poll_scheduler.py). Default matches this scheduler's
+    # own previous hardcoded `minutes=1` exactly — this only makes
+    # that cadence tunable (e.g. for faster local-dev feedback when
+    # testing a Mail Rule's actual email-matching behavior), it does
+    # not change production behavior by default.
+    graph_mail_poll_interval_seconds: int = 60
+
     # Confidence threshold (0.0-1.0) the semantic OTP classifier
     # (app/ticketing/services/otp_classifier.py) must clear before an
     # inbound email's Response SLA is marked COMPLETED as a recognized

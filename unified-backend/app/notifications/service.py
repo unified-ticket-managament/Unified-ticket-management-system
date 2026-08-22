@@ -51,6 +51,13 @@ class NotificationType:
     # that would send a second, notification-shaped email on top of
     # the real forwarded one.
     OTP_FORWARDED = "OTP_FORWARDED"
+    # A Mail Rule's "Forward To" action matched — the exact same
+    # RuleEngineService._forward_to_employees path as OTP_FORWARDED
+    # above (same real outbound email, same in-app notification
+    # mechanism), kept as its own distinct type only so the two
+    # forwarding sources stay distinguishable in the notification
+    # feed; nothing about OTP_FORWARDED's own behavior changes.
+    MAIL_RULE_FORWARDED = "MAIL_RULE_FORWARDED"
     # A manager forwarded an existing client email to a specific
     # internal organization user (Mail > Forward, addressed to an
     # employee rather than an external contact — see InteractionService

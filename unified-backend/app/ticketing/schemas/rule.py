@@ -111,6 +111,12 @@ class RuleCreate(BaseModel):
     exceptions: RuleConditionGroup = Field(default_factory=RuleConditionGroup)
     actions: list[RuleActionItem] = Field(..., min_length=1)
     stop_processing: bool = False
+    # Explicitly added/shared/assigned users — an empty list (the
+    # default) means this rule is private to its creator. Distinct
+    # from a forward_to action's employee_user_ids: forwarding a
+    # matching email to someone is never itself a grant of rule/folder
+    # access.
+    shared_user_ids: list[UUID] = Field(default_factory=list)
 
     @field_validator("conditions")
     @classmethod
@@ -132,6 +138,7 @@ class RuleUpdate(BaseModel):
     exceptions: RuleConditionGroup = Field(default_factory=RuleConditionGroup)
     actions: list[RuleActionItem] = Field(..., min_length=1)
     stop_processing: bool = False
+    shared_user_ids: list[UUID] = Field(default_factory=list)
 
     @field_validator("conditions")
     @classmethod
@@ -167,5 +174,6 @@ class RuleResponse(ORMBase):
     stop_processing: bool
     priority: int
     created_by: UUID | None
+    shared_user_ids: list[UUID]
     created_at: datetime
     updated_at: datetime

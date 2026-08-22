@@ -67,6 +67,17 @@ class Rule(Base):
         nullable=True,
     )
 
+    # Every explicitly added/shared/assigned user's id, as strings —
+    # same JSONB-list-of-UUID-strings shape as TicketEscalation.owner_ids.
+    # A rule with an empty list here is private to created_by; this is
+    # the ONLY thing (besides created_by itself, or rule:view_all) that
+    # widens who may view/manage it. Never populated from a rule's own
+    # forward_to action recipients — those are a forwarding destination,
+    # not a grant of rule/folder access.
+    shared_user_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

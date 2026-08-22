@@ -28,6 +28,7 @@ import {
 
 import { ActionRow } from "./ActionRow";
 import { ConditionRow } from "./ConditionRow";
+import { EmployeeMultiSelect } from "./EmployeeMultiSelect";
 import { ACTION_TYPES_BY_CATEGORY, CATEGORY_LABELS, CONDITION_FIELDS_BY_CATEGORY } from "./ruleCatalog";
 
 interface RuleBuilderDialogProps {
@@ -68,6 +69,7 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
   const [exceptions, setExceptions] = useState<RuleConditionGroup>(emptyGroup());
   const [actions, setActions] = useState<RuleActionItem[]>([]);
   const [stopProcessing, setStopProcessing] = useState(false);
+  const [sharedUserIds, setSharedUserIds] = useState<string[]>([]);
   const [isSaving, setIsSaving] = useState(false);
 
   // Re-seed local state every time the dialog opens, for either a
@@ -82,6 +84,7 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
       setExceptions(rule.exceptions);
       setActions(rule.actions);
       setStopProcessing(rule.stop_processing);
+      setSharedUserIds(rule.shared_user_ids ?? []);
     } else {
       setCategory("mail_rule");
       setName("");
@@ -90,6 +93,7 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
       setExceptions(emptyGroup());
       setActions([]);
       setStopProcessing(false);
+      setSharedUserIds([]);
     }
   }, [open, rule]);
 
@@ -135,6 +139,7 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
           exceptions,
           actions,
           stop_processing: stopProcessing,
+          shared_user_ids: sharedUserIds,
         });
         toast({ title: "Rule updated" });
       } else {
@@ -146,6 +151,7 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
           exceptions,
           actions,
           stop_processing: stopProcessing,
+          shared_user_ids: sharedUserIds,
         });
         toast({ title: "Rule created" });
       }
@@ -199,6 +205,22 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
+          </div>
+
+          {/* Shared With — explicitly added/shared/assigned users. An
+              empty list (the default) means this rule and its
+              associated folder are private to the creator; adding a
+              user here grants them the same view/manage access as the
+              creator. Distinct from a forward_to action's own
+              recipient picker below — forwarding is never itself a
+              grant of rule access. */}
+          <div className="space-y-2">
+            <Label>Shared With</Label>
+            <p className="text-xs text-muted-foreground">
+              Leave empty to keep this rule (and the folder it files mail into) private to you.
+              Add people here to let them view and manage it too.
+            </p>
+            <EmployeeMultiSelect selectedIds={sharedUserIds} onChange={setSharedUserIds} />
           </div>
 
           {/* Trigger — fixed, not user-selectable. */}

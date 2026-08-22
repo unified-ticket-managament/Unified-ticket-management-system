@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ticketing.models.rule import Rule
@@ -13,6 +13,27 @@ class RuleRepository:
     async def list_all(self) -> list[Rule]:
         result = await self.db.execute(
             select(Rule).order_by(Rule.category.asc(), Rule.priority.asc())
+        )
+        return list(result.scalars().all())
+
+    async def list_owned_or_shared(self, user_id: UUID) -> list[Rule]:
+        """
+        Every rule `user_id` created, plus every rule they've been
+        explicitly added/shared/assigned to — the rule:view_all-less
+        path. `shared_user_ids.contains([...])` compiles to Postgres's
+        JSONB `@>` containment operator, the same pattern this
+        codebase already uses for TicketEscalation.owner_ids.
+        """
+
+        result = await self.db.execute(
+            select(Rule)
+            .where(
+                or_(
+                    Rule.created_by == user_id,
+                    Rule.shared_user_ids.contains([str(user_id)]),
+                )
+            )
+            .order_by(Rule.category.asc(), Rule.priority.asc())
         )
         return list(result.scalars().all())
 

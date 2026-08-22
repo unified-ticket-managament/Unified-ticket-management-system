@@ -127,6 +127,20 @@ DEFAULT_PERMISSIONS = [
     # Reading the rule list (GET /rules) needs no permission at all,
     # same "read is open, write is gated" bias as SLA policies.
     ("rule:manage", "Create, edit, enable/disable, reorder, or delete a Mail/OTP Rule"),
+    # View-only widening on top of rule:manage: a rule/folder is
+    # otherwise private to its creator plus anyone explicitly added/
+    # shared on it (RuleService._can_view/_can_manage) — this
+    # permission lets its holder see every Mail Rule and OTP Rule and
+    # every folder regardless of ownership or sharing, without also
+    # granting edit/delete/reorder rights on a rule they don't own or
+    # aren't shared on (see _can_manage, which deliberately never
+    # checks this permission). Not granted to any role explicitly
+    # below — Super Admin picks it up via its own "all" wildcard and
+    # Site Lead via SITE_LEAD_PERMISSIONS' "every permission except
+    # two" computation, the same structural mechanism every other
+    # permission already goes through; no rule-specific role check
+    # exists anywhere in the Rules code itself.
+    ("rule:view_all", "View every Mail Rule and OTP Rule, and every mail folder, regardless of ownership or explicit sharing"),
 ]
 
 # `ticket:bulk_reassign` and `ticket:configure_routing` (previously part

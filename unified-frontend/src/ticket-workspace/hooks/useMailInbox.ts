@@ -913,6 +913,38 @@ export function useMailInbox() {
     endLoading,
   ]);
 
+  // Unconditional folder refetch — bypasses chromeLoadedRef's "once
+  // per mount, ever" gate above. Needed because Rules lives inside
+  // this same mounted InboxPage (a local rulesOpen toggle, never a
+  // route change — see InboxPage.tsx), so creating/editing a Mail
+  // Rule's create_folder/move_to_folder action never naturally
+  // triggers a remount that would otherwise reset chromeLoadedRef.
+  // Callers should invoke this once, when returning from Rules to
+  // Mail, not on every render.
+  const refreshFolders = useCallback(async () => {
+    try {
+      const folderList = await listMailFolders();
+      setFolders(folderList);
+      chromeLoadedRef.current = true;
+
+      // The currently-selected folder may have just been deleted
+      // (e.g. its owning Mail Rule was deleted and the folder had no
+      // other rule keeping it alive) — don't leave the reading pane
+      // pointed at a folder that no longer exists.
+      if (
+        activeFolderId &&
+        !folderList.some((f) => f.folder_id === activeFolderId)
+      ) {
+        selectFolder(null);
+      }
+    } catch (error) {
+      pushToast(
+        error instanceof Error ? error.message : "Failed to refresh folders.",
+        "error"
+      );
+    }
+  }, [pushToast, activeFolderId, selectFolder]);
+
   // A lighter alternative to refresh() for after a single mutation
   // (tag/folder/draft-send/discard/compose) — re-pulls the cheap view
   // count aggregate plus only the tab(s) the mutation actually
@@ -1429,6 +1461,7 @@ export function useMailInbox() {
     loadMore,
     managedClientCount,
     refresh,
+    refreshFolders,
     openThread,
     markRead,
     markUnread,

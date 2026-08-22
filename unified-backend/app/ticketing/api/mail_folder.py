@@ -7,6 +7,7 @@ from shared_models.models import User
 from app.database.session import get_db
 from app.dependencies.auth import get_current_agent
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
+from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.schemas.mail_folder import MailFolderCreate, MailFolderResponse
 from app.ticketing.services.mail_folder_service import MailFolderService
 
@@ -25,12 +26,13 @@ async def list_folders(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Every custom mail folder — global/shared across the org, not
-    scoped per-user.
+    Every custom mail folder the caller may see: a pre-existing
+    global folder, one they created, one filed into by a rule they
+    can view, or every folder if they hold rule:view_all.
     """
 
     service = MailFolderService(MailFolderRepository(db))
-    return await service.list_all()
+    return await service.list_visible(current_user, RuleRepository(db))
 
 
 @router.post(
@@ -57,4 +59,4 @@ async def delete_folder(
     db: AsyncSession = Depends(get_db),
 ):
     service = MailFolderService(MailFolderRepository(db))
-    await service.delete(folder_id)
+    await service.delete(folder_id, current_user, RuleRepository(db))

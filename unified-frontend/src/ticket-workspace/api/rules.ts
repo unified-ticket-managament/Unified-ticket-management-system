@@ -34,12 +34,18 @@ export interface RulePayload {
   exceptions: RuleConditionGroup;
   actions: RuleActionItem[];
   stop_processing: boolean;
+  // Explicitly added/shared/assigned users — an empty/omitted list
+  // means this rule (and its associated folder) is private to
+  // created_by. Distinct from a forward_to action's employee_user_ids:
+  // a forward destination is never itself a grant of rule access.
+  shared_user_ids?: string[];
 }
 
 export interface RuleResponse extends RulePayload {
   rule_id: string;
   priority: number;
   created_by: string | null;
+  shared_user_ids: string[];
   created_at: string;
   updated_at: string;
 }

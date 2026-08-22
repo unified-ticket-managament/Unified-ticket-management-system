@@ -172,20 +172,34 @@ function RuleTable({
 // Rules button) rather than a standalone /settings/rules route.
 // Everything below is unchanged from that former page — only the
 // breadcrumb was updated to reflect the new nesting.
-export function RulesPanel() {
+export function RulesPanel({
+  onFoldersMayHaveChanged,
+}: {
+  // Called right after a mutation that could add/rename/remove a
+  // rule-managed mail folder (create/update/delete) — lets the Mail
+  // page's own, separately-owned folder list (useMailInbox.folders)
+  // refresh immediately instead of only on the next full remount.
+  // Optional so this component still works standalone/in tests with
+  // no caller wired up.
+  onFoldersMayHaveChanged?: () => void;
+} = {}) {
   const currentUser = useAuthStore((s) => s.user);
   const hasPermission = useAuthStore((s) => s.hasPermission);
   const { toast } = useToast();
 
+  // null strictly means "never successfully loaded yet" — the one
+  // and only signal the render below uses to decide between the
+  // loading skeleton and "No Rules yet.", so a background refresh
+  // (after a toggle/reorder/delete/save) never re-blanks an
+  // already-populated list, and "0 rules" can never render before
+  // the first real response has actually arrived.
   const [rules, setRules] = useState<RuleResponse[] | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [builderOpen, setBuilderOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<RuleResponse | null>(null);
   const [pendingDelete, setPendingDelete] = useState<RuleResponse | null>(null);
 
   function refresh(signal?: AbortSignal) {
-    setIsLoading(true);
     listRules(signal)
       .then((data) => {
         setRules(data);
@@ -194,8 +208,7 @@ export function RulesPanel() {
       .catch((error) => {
         if (axios.isCancel(error)) return;
         setLoadError("Failed to load rules. Please try again.");
-      })
-      .finally(() => setIsLoading(false));
+      });
   }
 
   useEffect(() => {
@@ -231,8 +244,20 @@ export function RulesPanel() {
     try {
       await deleteRule(pendingDelete.rule_id);
       toast({ title: "Rule deleted" });
+      // If the just-deleted rule happened to be open for editing,
+      // close that dialog too rather than leaving it pointed at a
+      // rule that no longer exists.
+      if (editingRule?.rule_id === pendingDelete.rule_id) {
+        setBuilderOpen(false);
+        setEditingRule(null);
+      }
       setPendingDelete(null);
       refresh();
+      // The backend deletes the rule's own folder too, as part of the
+      // same request, once no remaining rule still references it —
+      // the Mail page's folder list needs to know right away, not
+      // just the next time Rules happens to be closed.
+      onFoldersMayHaveChanged?.();
     } catch {
       toast({ title: "Couldn't delete this rule", variant: "destructive" });
     }
@@ -276,7 +301,14 @@ export function RulesPanel() {
               <CardTitle>Mail Rules</CardTitle>
             </CardHeader>
             <CardContent className="p-0">
-              {isLoading ? (
+              {/* Only the true first load (rules === null, nothing to
+                  show yet at all) renders the skeleton — a later
+                  background refresh (toggle/reorder/delete/save)
+                  keeps showing the last-known list instead of
+                  blanking it out, and "No Mail Rules yet." only ever
+                  renders once real data has actually arrived, never
+                  while a request is still in flight. */}
+              {rules === null ? (
                 <div className="space-y-3 p-6">
                   <Skeleton className="h-10 w-full" />
                   <Skeleton className="h-10 w-full" />
@@ -302,7 +334,7 @@ export function RulesPanel() {
               <CardTitle>OTP Rules</CardTitle>
             </CardHeader>
             <CardContent className="p-0">
-              {isLoading ? (
+              {rules === null ? (
                 <div className="space-y-3 p-6">
                   <Skeleton className="h-10 w-full" />
                   <Skeleton className="h-10 w-full" />
@@ -329,7 +361,15 @@ export function RulesPanel() {
         open={builderOpen}
         onOpenChange={setBuilderOpen}
         rule={editingRule}
-        onSaved={refresh}
+        onSaved={() => {
+          refresh();
+          // A create/update can add a brand-new folder-action target
+          // (eagerly created server-side the moment the rule is
+          // saved) or change which folder an existing action names —
+          // the Mail page's folder list should reflect that right
+          // away too.
+          onFoldersMayHaveChanged?.();
+        }}
       />
 
       <AlertDialog open={pendingDelete != null} onOpenChange={(open) => !open && setPendingDelete(null)}>

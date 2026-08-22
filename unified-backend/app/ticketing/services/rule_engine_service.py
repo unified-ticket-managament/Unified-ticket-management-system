@@ -8,6 +8,7 @@ from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService, NotificationType
 from app.ticketing.enums.rule_enums import RuleActionType, RuleCategory
 from app.ticketing.models.interaction import Interaction
+from app.ticketing.models.rule import Rule
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
@@ -16,6 +17,7 @@ from app.ticketing.schemas.payloads import OutboundEnvelope
 from app.ticketing.schemas.rule import RuleActionItem, RuleConditionGroup
 from app.ticketing.services.mail_provider import get_mail_provider_client
 from app.ticketing.services.rule_conditions import RuleEmailContext, rule_matches
+from app.ticketing.services.rule_folder_sync import ensure_folder
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +105,7 @@ class RuleEngineService:
             for raw_action in rule.actions:
                 try:
                     action = RuleActionItem.model_validate(raw_action)
-                    await self._execute_action(action, interaction=interaction)
+                    await self._execute_action(action, interaction=interaction, rule=rule)
                 except Exception:
                     # One action failing (e.g. a stale employee id)
                     # never blocks the rest of this rule's actions, or
@@ -126,55 +128,68 @@ class RuleEngineService:
 
         return otp_recognized
 
-    async def _execute_action(self, action: RuleActionItem, *, interaction: Interaction) -> None:
+    async def _execute_action(
+        self, action: RuleActionItem, *, interaction: Interaction, rule: Rule
+    ) -> None:
+        # Folder creation is normally already done eagerly by
+        # RuleService.create/update the moment the rule was saved —
+        # this call is a safety net (idempotent get-or-create, via the
+        # same shared helper) for a rule saved before that eager path
+        # existed, or a folder deleted after the rule that names it
+        # was saved. It's never the primary path in the common case.
         if action.type == RuleActionType.CREATE_FOLDER:
-            await self._ensure_folder(action.folder_name)
+            await ensure_folder(
+                action.folder_name,
+                created_by=rule.created_by,
+                mail_folder_repository=self.mail_folder_repository,
+            )
 
         elif action.type == RuleActionType.MOVE_TO_FOLDER:
-            folder = await self._ensure_folder(action.folder_name)
+            folder = await ensure_folder(
+                action.folder_name,
+                created_by=rule.created_by,
+                mail_folder_repository=self.mail_folder_repository,
+            )
             await self.interaction_repository.set_folder(interaction, folder.folder_id)
 
         elif action.type == RuleActionType.FORWARD_TO:
-            await self._forward_to_employees(action.employee_user_ids or [], interaction=interaction)
-
-    async def _ensure_folder(self, folder_name: str):
-        """
-        Idempotent get-or-create — backs both the "Create Folder"
-        action and "Move to Folder"'s own auto-create-if-missing
-        behavior, so a rule with only "Move to Folder" (no explicit
-        "Create Folder" action) still creates the destination the
-        first time it's needed, per spec.
-        """
-
-        name = folder_name.strip()
-        existing = await self.mail_folder_repository.get_by_name(name)
-        if existing is not None:
-            return existing
-        return await self.mail_folder_repository.create(name, created_by=None)
+            await self._forward_to_employees(
+                action.employee_user_ids or [],
+                interaction=interaction,
+                rule_category=rule.category,
+            )
 
     async def _forward_to_employees(
-        self, employee_user_ids: list[UUID], *, interaction: Interaction
+        self,
+        employee_user_ids: list[UUID],
+        *,
+        interaction: Interaction,
+        rule_category: str,
     ) -> None:
         """
-        Two distinct, complementary effects — not one or the other:
-        a real outbound send via the same Microsoft Graph mailbox
-        every other outbound path in this app already sends through
-        (so the forward genuinely lands in the recipient's real
-        Outlook inbox, not just a log line — the plain EmailSender/
-        SMTP seam this used to go through is a no-op with no SMTP
-        host configured, which this app's dev environment never has),
-        plus an in-app Notification so the forward is also visible
-        inside this app's own Mail page (the "System" folder — see
-        unified-frontend's SYSTEM_NOTIFICATION_TYPES) for whoever it
-        was sent to, not just their external inbox.
+        Shared by OTP Rules and Mail Rules alike (`rule_category`
+        selects only the notification title/type below) — two
+        distinct, complementary effects, not one or the other: a real
+        outbound send via the same Microsoft Graph mailbox every
+        other outbound path in this app already sends through (so
+        the forward genuinely lands in the recipient's real Outlook
+        inbox, not just a log line — the plain EmailSender/SMTP seam
+        this used to go through is a no-op with no SMTP host
+        configured, which this app's dev environment never has), plus
+        an in-app Notification so the forward is also visible inside
+        this app (for OTP specifically, merged into the recipient's
+        own Inbox — see unified-frontend's SYSTEM_NOTIFICATION_TYPES/
+        otpNotificationToInboxItem) for whoever it was sent to, not
+        just their external inbox.
         """
 
         emails_by_id = await self.user_repository.get_active_emails_by_ids(employee_user_ids)
 
         if not emails_by_id:
             logger.warning(
-                "OTP forward rule matched interaction %s but none of the selected "
-                "employees resolved to an active user — nothing sent.",
+                "%s forward_to rule matched interaction %s but none of the "
+                "selected employees resolved to an active user — nothing sent.",
+                rule_category,
                 interaction.interaction_id,
             )
             return
@@ -215,14 +230,16 @@ class RuleEngineService:
             try:
                 await mail_provider.send_email(envelope)
                 logger.info(
-                    "OTP_FORWARD_SENT user_id=%s to=%s subject=%r",
+                    "RULE_FORWARD_SENT category=%s user_id=%s to=%s subject=%r",
+                    rule_category,
                     user_id,
                     recipient_email,
                     forward_subject,
                 )
             except Exception:
                 logger.exception(
-                    "OTP_FORWARD_FAILED user_id=%s to=%s subject=%r",
+                    "RULE_FORWARD_FAILED category=%s user_id=%s to=%s subject=%r",
+                    rule_category,
                     user_id,
                     recipient_email,
                     forward_subject,
@@ -232,10 +249,21 @@ class RuleEngineService:
         # carries, headers included) — not a truncated snippet.
         # Notification.message is an unbounded Text column specifically
         # so this never needs capping the way title (String(255)) does.
+        #
+        # Only the notification label distinguishes an OTP Rule's
+        # forward from a Mail Rule's — OTP's own copy/type is
+        # untouched from before this branch existed.
+        if rule_category == RuleCategory.OTP_RULE:
+            notification_type = NotificationType.OTP_FORWARDED
+            title = f"OTP forwarded: {subject}"
+        else:
+            notification_type = NotificationType.MAIL_RULE_FORWARDED
+            title = f"Mail forwarded: {subject}"
+
         await self.notification_service.notify(
             set(emails_by_id.keys()),
-            NotificationType.OTP_FORWARDED,
-            title=f"OTP forwarded: {subject}",
+            notification_type,
+            title=title,
             message=forward_body,
         )
 
