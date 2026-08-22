@@ -50,15 +50,27 @@ def _build_recipients(addresses: list[str]) -> list[dict]:
 
 
 def _build_graph_attachments(attachments: list) -> list[dict]:
-    return [
-        {
+    result = []
+    for attachment in attachments:
+        item = {
             "@odata.type": "#microsoft.graph.fileAttachment",
             "name": attachment.filename,
             "contentType": attachment.content_type,
             "contentBytes": attachment.content_base64,
         }
-        for attachment in attachments
-    ]
+        # Only added for a pasted-inline-image attachment (see
+        # EnvelopeAttachment.content_id/is_inline) — for every
+        # ordinary attachment (is_inline=False, the default, and the
+        # only value any attachment has ever had before this feature)
+        # this dict stays byte-identical to before: exactly the four
+        # keys above, never these two even as null.
+        if getattr(attachment, "is_inline", False) and getattr(
+            attachment, "content_id", None
+        ):
+            item["isInline"] = True
+            item["contentId"] = attachment.content_id
+        result.append(item)
+    return result
 
 
 def _build_send_mail_message(envelope: OutboundEnvelope) -> dict:
@@ -75,11 +87,22 @@ def _build_send_mail_message(envelope: OutboundEnvelope) -> dict:
     on the wire — this only ever affected what the recipient's own
     mail client would have seen, and Graph gives no supported way to
     set it via sendMail at all.
+
+    body.contentType is "HTML" only when envelope.body_html is set
+    (Outlook-style clipboard paste — see email_envelope.py, the one
+    place body_html is populated, already sanitized there). When it's
+    None — every send before this field existed, and every plain-text
+    send since — this produces the exact same {"contentType": "Text",
+    "content": envelope.body} dict as before.
     """
 
     message: dict = {
         "subject": envelope.subject,
-        "body": {"contentType": "Text", "content": envelope.body},
+        "body": (
+            {"contentType": "HTML", "content": envelope.body_html}
+            if envelope.body_html
+            else {"contentType": "Text", "content": envelope.body}
+        ),
         "toRecipients": _build_recipients([envelope.to_email]),
     }
 
@@ -120,6 +143,17 @@ def _build_reply_action_body(envelope: OutboundEnvelope) -> dict:
     any agent-picked "To" override) into the envelope itself before
     dispatch, so which action is used only changes which Graph
     endpoint is hit, never who actually receives the mail.
+
+    Graph's reply/replyAll `comment` field has no contentType toggle
+    at all (see _plain_text_to_html_comment's own docstring — Graph
+    always composes it as HTML) — so when envelope.body_html is
+    present, `comment` is that already-sanitized HTML *directly*, not
+    run through _plain_text_to_html_comment (which escapes &/</> and
+    turns \n into <br>; doing that to already-real HTML would
+    double-escape it and break the markup). When body_html is absent —
+    every send before this field existed, and every plain-text reply
+    since — this produces the exact same
+    _plain_text_to_html_comment(envelope.body) call as before.
     """
 
     message: dict = {
@@ -132,7 +166,13 @@ def _build_reply_action_body(envelope: OutboundEnvelope) -> dict:
     if envelope.attachments:
         message["attachments"] = _build_graph_attachments(envelope.attachments)
 
-    return {"comment": _plain_text_to_html_comment(envelope.body), "message": message}
+    comment = (
+        envelope.body_html
+        if envelope.body_html
+        else _plain_text_to_html_comment(envelope.body)
+    )
+
+    return {"comment": comment, "message": message}
 
 
 class GraphMailProviderClient(MailProviderClient):

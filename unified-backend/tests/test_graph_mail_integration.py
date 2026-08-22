@@ -641,8 +641,11 @@ async def test_build_upload_files_from_graph_attachments_content_readable():
 
 def test_build_upload_files_from_graph_attachments_drops_inline_attachments(caplog):
     """
-    Inline attachments are typically embedded signature/logo images,
-    not something a user is trying to send as a real file.
+    A non-image inline attachment (this fixture defaults to a PDF) has
+    nothing an HTML body's own <img src="cid:..."> could ever
+    reference — still dropped, unlike a genuine inline *image* (see
+    test_build_upload_files_from_graph_attachments_keeps_inline_image
+    below), which used to be dropped unconditionally too.
     """
 
     with caplog.at_level(logging.WARNING):
@@ -650,6 +653,66 @@ def test_build_upload_files_from_graph_attachments_drops_inline_attachments(capl
 
     assert files == []
     assert "inline attachment" in caplog.text
+
+
+def test_build_upload_files_from_graph_attachments_keeps_inline_image():
+    """
+    Regression test for the primary screenshot-loss bug: Outlook
+    represents a screenshot pasted directly into an email's body the
+    same way it represents an embedded signature/logo image — a real
+    fileAttachment with isInline=True and a contentId the body's own
+    <img src="cid:..."> references. Dropping every isInline attachment
+    (the old behavior) silently dropped every pasted screenshot too.
+    """
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="image001.png",
+                contentType="image/png",
+                isInline=True,
+                contentId="image001.png@01D9F2A1",
+                contentBytes="aGVsbG8=",
+            )
+        ]
+    )
+
+    assert len(files) == 1
+    assert files[0].filename == "image001.png"
+    assert files[0].is_inline is True
+    # Never re-minted — the body's own cid: reference must match this
+    # exact Graph-assigned value for cid: resolution to work at all.
+    assert files[0].content_id == "image001.png@01D9F2A1"
+
+
+def test_build_upload_files_from_graph_attachments_drops_inline_image_with_no_content_id(caplog):
+    """
+    An isInline image with no contentId at all can never be referenced
+    by any <img src="cid:..."> in the body — nothing to key display
+    resolution off, so it's still dropped rather than stored as a
+    silently-orphaned, never-displayed row.
+    """
+
+    with caplog.at_level(logging.WARNING):
+        files = build_upload_files_from_graph_attachments(
+            [_graph_attachment(contentType="image/png", isInline=True, contentId=None)]
+        )
+
+    assert files == []
+
+
+def test_build_upload_files_from_graph_attachments_ordinary_attachment_has_no_content_id():
+    """
+    An ordinary (non-inline) attachment must never pick up is_inline/
+    content_id — those stay exactly None/False, matching this
+    function's byte-identical output for every attachment that existed
+    before inline-image support.
+    """
+
+    files = build_upload_files_from_graph_attachments([_graph_attachment()])
+
+    assert files[0].is_inline is False
+    assert files[0].content_id is None
 
 
 def test_build_upload_files_from_graph_attachments_drops_non_file_attachments(caplog):
@@ -888,7 +951,12 @@ def test_map_external_email_to_interaction_derives_plain_body_from_html():
     email = map_external_email_to_interaction(payload)
 
     assert email.body == "hello there"
-    assert email.html_body == payload.body.content
+    # html_body is sanitized (the same choke point an agent-authored
+    # outbound body_html already goes through — see html_sanitizer.py)
+    # before storage, never the raw Graph HTML verbatim: the
+    # unrecognized html/body wrapper tags are stripped (content kept),
+    # and div's own dir attribute isn't in the sanitizer's allow-list.
+    assert email.html_body == "<div>hello there</div>"
 
 
 def test_map_external_email_to_interaction_leaves_plain_text_untouched():
@@ -908,7 +976,8 @@ def test_map_external_email_to_interaction_falls_back_to_raw_html_when_no_visibl
     email = map_external_email_to_interaction(payload)
 
     assert email.body  # non-empty
-    assert email.html_body == payload.body.content
+    assert email.html_body is not None
+    assert 'src="cid:image1.png"' in email.html_body
 
 
 def test_map_external_email_to_interaction_propagates_provider_message_id():
@@ -958,3 +1027,38 @@ def test_map_external_email_to_interaction_cc_and_to_recipients_empty_by_default
 
     assert email.cc == []
     assert email.to_recipients == ["ticketing@probeps.com"]
+
+
+def test_map_external_email_to_interaction_sanitizes_dangerous_inbound_html():
+    """
+    An inbound sender's raw HTML is no more trustworthy than an
+    agent-authored paste — a script tag/event-handler attribute must
+    never survive into the stored html_body that the Mail/Ticket UI
+    later renders via dangerouslySetInnerHTML.
+    """
+
+    payload = _graph_payload(
+        '<p onclick="evil()">hi</p><script>alert(1)</script>', "html"
+    )
+
+    email = map_external_email_to_interaction(payload)
+
+    assert email.html_body is not None
+    assert "<script" not in email.html_body
+    assert "onclick" not in email.html_body
+    assert "<p>hi</p>" in email.html_body
+
+
+def test_map_external_email_to_interaction_preserves_a_real_table():
+    payload = _graph_payload(
+        "<table><tbody><tr><td>Name</td><td>Status</td></tr>"
+        "<tr><td>Raju</td><td>Open</td></tr></tbody></table>",
+        "html",
+    )
+
+    email = map_external_email_to_interaction(payload)
+
+    assert email.html_body is not None
+    assert "<table>" in email.html_body
+    assert "<td>Raju</td>" in email.html_body
+    assert "<td>Status</td>" in email.html_body

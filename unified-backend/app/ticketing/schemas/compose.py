@@ -29,6 +29,11 @@ class ComposeEmailRequest(BaseModel):
 
     message: str = Field(..., min_length=1, max_length=20000)
 
+    # Optional sanitized-on-the-backend HTML counterpart to `message`
+    # (Outlook-style clipboard paste). See ReplyCreate.body_html
+    # (schemas/ticket_action.py) for the same additive contract.
+    body_html: str | None = None
+
 
 class ComposeEmailResponse(BaseModel):
     """Response returned after a new Compose email is recorded."""

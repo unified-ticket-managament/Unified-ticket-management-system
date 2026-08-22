@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Lock, Paperclip, X } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
 import { EnvelopePreview } from "@tw/components/common/EnvelopePreview";
 import { FileDropzone } from "@tw/components/common/FileDropzone";
-import { TextArea, TextInput } from "@tw/components/common/FormField";
+import { TextInput } from "@tw/components/common/FormField";
 import { RecipientCombobox } from "@tw/components/common/RecipientCombobox";
 import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
+import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
 import { UserMultiSelect } from "@tw/components/common/UserMultiSelect";
 import { validateFiles } from "@tw/lib/attachmentMeta";
 import { useApiAction } from "@tw/hooks/useApiAction";
@@ -16,6 +17,7 @@ import {
   listInternalNoteRecipients,
   replyToClient,
   uploadAttachment,
+  uploadTicketInlineImage,
 } from "@tw/api/interaction";
 import type { SelectableUser } from "@tw/components/common/UserMultiSelect";
 import { useAuthContext } from "@tw/context/AuthContext";
@@ -23,6 +25,7 @@ import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { isValidEmailAddress } from "@tw/lib/validation";
 import { showUndoSendToast } from "@tw/lib/undoSend";
+import { htmlToPlainText, isRichContent, resolveInlineImageSources } from "@tw/lib/richText";
 import type { ClientContact } from "@tw/types";
 // Cross-alias imports, same deliberate exception MessageDetailsView.tsx
 // already documents: useAuthContext() only re-exposes the store's
@@ -79,7 +82,23 @@ export function TicketComposer({
   const { pushToast } = useToast();
   const setUser = useAuthStore((s) => s.setUser);
   const [activeMode, setActiveMode] = useState<ComposerMode>(mode);
-  const [message, setMessage] = useState("");
+  // HTML string (Tiptap), not plain text — see RichTextEditor.tsx.
+  // Flattened to plain text (htmlToPlainText) at send time for the
+  // always-required `message`/`note` field, with a sanitized-on-the-
+  // backend HTML counterpart sent alongside it as `body_html` when
+  // the content actually contains real formatting/a table/an inline
+  // image (isRichContent) — see handleSend below.
+  const [messageHtml, setMessageHtml] = useState("");
+  const [hasPendingImageUploads, setHasPendingImageUploads] = useState(false);
+  // Every interaction_id a pasted-screenshot upload returned during
+  // this compose session — unlike a regular file attachment, a
+  // pasted image is uploaded to its own standalone interaction (see
+  // AttachmentService.upload_inline_image) that must be explicitly
+  // submitted back at Send time so the backend can reassign it onto
+  // the real reply/note and actually embed it (see
+  // InteractionService._merge_inline_images_into_envelope) — without
+  // this the image would silently never reach the outbound email.
+  const pastedImageInteractionIdsRef = useRef<string[]>([]);
   const [noteSubject, setNoteSubject] = useState("");
   const [contacts, setContacts] = useState<ClientContact[]>([]);
   const [selectedTo, setSelectedTo] = useState("");
@@ -232,7 +251,7 @@ export function TicketComposer({
   const hasComposePermission = isReply ? canReply : canAddNote;
 
   async function handleSend() {
-    if (!activeTicket || !message.trim() || !hasComposePermission) return;
+    if (!activeTicket || isRichTextEmpty(messageHtml) || !hasComposePermission) return;
     if (!isReply && !noteSubject.trim()) return;
     // Reply's "To" previously had no email-format validation at all
     // (it only ever offered known contacts) — now that it also
@@ -240,6 +259,9 @@ export function TicketComposer({
     // Send rather than silently reaching the backend's own EmailStr
     // rejection.
     if (isReply && selectedTo && !isValidEmailAddress(selectedTo)) return;
+    // A pasted screenshot's upload is still in flight — block Send
+    // rather than silently sending the message without it.
+    if (hasPendingImageUploads) return;
 
     // Reply attachments are uploaded *before* the reply itself (not
     // after) so the reply can reference them via
@@ -255,18 +277,27 @@ export function TicketComposer({
       attachmentSourceInteractionId = uploadResult.interaction_id;
     }
 
+    const plainMessage = htmlToPlainText(messageHtml);
+    const bodyHtml = isRichContent(messageHtml)
+      ? resolveInlineImageSources(messageHtml)
+      : undefined;
+
     const result = isReply
       ? await runReply(activeTicket.ticket_id, {
-          message,
+          message: plainMessage,
+          body_html: bodyHtml,
           to_email: selectedTo || undefined,
           cc: parseEmails(replyCc),
           bcc: parseEmails(replyBcc),
           attachment_source_interaction_id: attachmentSourceInteractionId,
+          inline_image_interaction_ids: pastedImageInteractionIdsRef.current,
         })
       : await runNote(activeTicket.ticket_id, {
-          note: message,
+          note: plainMessage,
+          body_html: bodyHtml,
           subject: noteSubject,
           recipient_user_ids: noteToIds,
+          inline_image_interaction_ids: pastedImageInteractionIdsRef.current,
         });
 
     if (result) {
@@ -279,7 +310,8 @@ export function TicketComposer({
       } else {
         pushToast("Internal note added.", "success");
       }
-      setMessage("");
+      pastedImageInteractionIdsRef.current = [];
+      setMessageHtml("");
       setNoteSubject("");
       setReplyCc("");
       setReplyBcc("");
@@ -417,15 +449,30 @@ export function TicketComposer({
           </>
         )}
 
-        <TextArea
-          label={isReply ? "Message to client" : "Note (visible to agents only)"}
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          placeholder={
-            isReply ? "Type a reply the client will see…" : "Type a note only agents can see…"
-          }
-          autoFocus={isReply}
-        />
+        <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-medium text-muted">
+            {isReply ? "Message to client" : "Note (visible to agents only)"}
+          </label>
+          <RichTextEditor
+            value={messageHtml}
+            onChange={setMessageHtml}
+            placeholder={
+              isReply
+                ? "Type a reply the client will see…"
+                : "Type a note only agents can see…"
+            }
+            onImageUpload={
+              activeTicket
+                ? (file) =>
+                    uploadTicketInlineImage(activeTicket.ticket_id, file).then((res) => {
+                      pastedImageInteractionIdsRef.current.push(res.interaction_id);
+                      return { attachmentId: res.id, contentId: res.content_id };
+                    })
+                : undefined
+            }
+            onPendingImageUploadsChange={setHasPendingImageUploads}
+          />
+        </div>
 
         {isReply && (
           <FileDropzone label="Attachments" files={replyFiles} onFilesChange={setReplyFiles} />
@@ -472,7 +519,12 @@ export function TicketComposer({
             variant="primary"
             size="sm"
             isLoading={isLoading}
-            disabled={!hasComposePermission || !message.trim() || (!isReply && !noteSubject.trim())}
+            disabled={
+              !hasComposePermission ||
+              isRichTextEmpty(messageHtml) ||
+              (!isReply && !noteSubject.trim()) ||
+              hasPendingImageUploads
+            }
             onClick={handleSend}
           >
             {isReply ? "Send Reply" : "Add Note"}

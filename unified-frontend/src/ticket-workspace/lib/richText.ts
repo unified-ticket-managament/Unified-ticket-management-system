@@ -51,6 +51,124 @@ export function linkifyPlainText(text: string): string {
     .replace(/\n/g, "<br/>");
 }
 
+// Cheap tag-presence check, not a parse — used to decide whether a
+// composer's HTML body is worth sending alongside the plain-text
+// `message` field as a real `body_html` (Outlook-style clipboard
+// paste: pasted tables/images/formatting), or whether the message is
+// genuinely plain and sending body_html at all would be a pointless
+// redundant field. A false positive just means "sent body_html when
+// plain text alone would've done" — harmless, so a simple tag check
+// is deliberately preferred over anything more precise.
+const RICH_CONTENT_TAG_PATTERN = /<(img|table|strong|b|em|i|u|ul|ol|blockquote)\b/i;
+
+export function isRichContent(html: string): boolean {
+  return RICH_CONTENT_TAG_PATTERN.test(html);
+}
+
+// Cheap substring check, re-run on every editor update (see
+// RichTextEditor.tsx) rather than tracked as separate counter state —
+// deliberately self-correcting: deleting the broken image node from
+// the document makes this false again on the very next keystroke,
+// with no "stuck forever" risk a manually-incremented/decremented
+// failure counter would have. A failed upload (oversized file,
+// network error, or no upload wiring at all for this composer) must
+// never be silently dropped from the sent message the way
+// resolveInlineImageSources otherwise would — composers block Send
+// while this is true, same as a still-in-flight upload.
+export function hasFailedImageUpload(html: string): boolean {
+  return /data-upload-status="error"/.test(html);
+}
+
+// Pasted screenshots are inserted into the Tiptap document with a
+// local blob: preview (see clipboardPaste.ts) and, once the
+// background upload resolves, a `data-content-id` attribute carrying
+// the real backend-minted content_id. `blob:` URLs are meaningless
+// outside this browser tab — before a body_html is ever sent to the
+// backend, every such <img>'s `src` must be rewritten to the real
+// `cid:{content_id}` reference the backend/Graph can actually
+// resolve. A pasted image with no data-content-id (upload failed, or
+// this composer has no upload wiring at all — see RichTextEditor's
+// onImageUpload prop) is removed entirely rather than sent with a
+// dead blob: reference no recipient could ever resolve.
+export function resolveInlineImageSources(html: string): string {
+  if (typeof document === "undefined") return html;
+
+  const container = document.createElement("div");
+  container.innerHTML = html;
+
+  container.querySelectorAll("img[data-local-id]").forEach((img) => {
+    const contentId = img.getAttribute("data-content-id");
+    if (contentId) {
+      img.setAttribute("src", `cid:${contentId}`);
+    } else {
+      img.remove();
+    }
+  });
+
+  return container.innerHTML;
+}
+
+// The inverse of resolveInlineImageSources: that one rewrites a local
+// blob: preview into `cid:{content_id}` right before SENDING (the
+// only reference Graph/a real email client can resolve). A `cid:` URL
+// means nothing to a plain web browser, though — there is no MIME
+// message here for it to resolve against — so before this app's own
+// read views (Mail thread bubbles, Ticket Timeline, Interaction
+// details) render a stored body_html back via dangerouslySetInnerHTML,
+// every `cid:` reference must be swapped for that attachment's real,
+// presigned download/preview URL, found by matching content_id
+// against the message's own already-fetched attachment list (no
+// extra request — every AttachmentMeta already carries content_id).
+export function resolveCidImagesForDisplay(
+  html: string,
+  attachments: Array<{ content_id?: string | null; download_url?: string; preview_url?: string | null }>
+): string {
+  if (typeof document === "undefined" || !html.includes("cid:")) return html;
+
+  const byContentId = new Map(
+    attachments.filter((a) => a.content_id).map((a) => [a.content_id as string, a])
+  );
+
+  const container = document.createElement("div");
+  container.innerHTML = html;
+
+  container.querySelectorAll("img").forEach((img) => {
+    const src = img.getAttribute("src") ?? "";
+    if (!src.startsWith("cid:")) return;
+    const attachment = byContentId.get(src.slice("cid:".length));
+    if (attachment) {
+      img.setAttribute("src", attachment.preview_url || attachment.download_url || "");
+      return;
+    }
+    // No attachment in this message's own list carries this content_id
+    // (e.g. an inline image the mail pipeline never captured as a real
+    // Attachment row) — `cid:` is not a scheme any browser can fetch,
+    // so leaving it as the <img> src always renders a native broken-
+    // image icon with no possible network request to retry. Swap it
+    // for an inert inline placeholder instead of a guaranteed-broken
+    // <img> element.
+    const placeholder = document.createElement("span");
+    placeholder.textContent = "[image unavailable]";
+    placeholder.style.cssText =
+      "display:inline-block;padding:1px 6px;border-radius:4px;background:var(--muted,#f1f5f9);color:var(--muted-foreground,#64748b);font-size:11px;font-style:italic;";
+    img.replaceWith(placeholder);
+  });
+
+  return container.innerHTML;
+}
+
+// Shared Tailwind arbitrary-variant classes for a container rendering
+// a message's real body_html via dangerouslySetInnerHTML (Mail thread
+// bubbles, Ticket Timeline, Interaction details, the full-page
+// Interaction view) — mirrors RichTextEditor.tsx's own compose-time
+// table/image styling so a pasted table/screenshot looks the same
+// (visible grid lines, sane image sizing) whether it's being composed
+// or read back. A bare <table>/<img> has no built-in visual styling
+// at all, so without this a real table renders with no grid lines —
+// easy to mistake for "not formatted".
+export const RENDERED_MESSAGE_HTML_CLASS =
+  "[&_table]:my-2 [&_table]:border-collapse [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:p-1.5 [&_td]:align-top [&_th]:border [&_th]:border-border [&_th]:bg-muted [&_th]:p-1.5 [&_th]:text-left [&_th]:font-semibold [&_img]:mb-2 [&_img]:max-w-full [&_img]:rounded";
+
 export function plainTextToHtml(text: string): string {
   if (!text) return "";
   return text

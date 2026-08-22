@@ -187,6 +187,7 @@ export function InboxPage() {
     subject: string;
     message: string;
     files: File[];
+    bodyHtml?: string;
   }) {
     const result = await mail.forwardToInternalUser(payload);
     if (result) closeCompose();
@@ -198,6 +199,7 @@ export function InboxPage() {
     toEmail: string;
     subject: string;
     message: string;
+    bodyHtml?: string;
     cc: string[];
     bcc: string[];
     files: File[];

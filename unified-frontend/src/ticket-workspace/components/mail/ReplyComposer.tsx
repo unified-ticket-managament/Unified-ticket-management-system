@@ -15,7 +15,7 @@ import {
   iconForFilename,
   validateFiles,
 } from "@tw/lib/attachmentMeta";
-import { escapeHtml, htmlToPlainText } from "@tw/lib/richText";
+import { escapeHtml, htmlToPlainText, isRichContent, resolveInlineImageSources } from "@tw/lib/richText";
 import type { AttachmentMeta, ClientContact } from "@tw/types";
 
 function parseEmails(value: string): string[] {
@@ -42,14 +42,21 @@ interface ReplyComposerProps {
   // Ticketed-thread send — files are local (`File[]`) and only
   // actually upload once the reply is sent, via the existing
   // ticket-scoped attachment endpoint (unchanged from before).
-  onSend: (payload: { message: string; cc: string[]; bcc: string[]; files: File[]; to: string | null }) => void;
+  onSend: (payload: {
+    message: string;
+    bodyHtml?: string;
+    cc: string[];
+    bcc: string[];
+    files: File[];
+    to: string | null;
+  }) => void;
   // Pre-ticket path: every field is continuously auto-saved as a
   // real server-side Draft (interaction-scoped, so it works with no
   // ticket at all — see the backend's AttachmentService), which is
   // also what makes attachments actually work before a ticket exists.
   isTicketed: boolean;
   draftAttachments: AttachmentMeta[];
-  onSaveDraft: (message: string, cc: string[], bcc: string[]) => Promise<unknown>;
+  onSaveDraft: (message: string, cc: string[], bcc: string[], bodyHtml?: string) => Promise<unknown>;
   // `toEmail` overrides the default recipient for this send only —
   // deliberately not part of the auto-saved draft (see ReplyComposer's
   // own "To" dropdown, chosen at send time, and InteractionService.
@@ -58,6 +65,12 @@ interface ReplyComposerProps {
   onDiscardDraft: () => Promise<unknown>;
   onUploadDraftAttachment: (files: File[]) => Promise<AttachmentMeta[] | null>;
   onRemoveDraftAttachment: (attachmentId: string) => Promise<boolean>;
+  // Uploads a single pasted-into-the-body screenshot through whichever
+  // attachment endpoint applies (ticketed vs. pre-ticket draft — the
+  // caller, MessageDetailsView.tsx, already knows which). Omit to
+  // leave pasted images preview-only, immediately marked as failed —
+  // see RichTextEditor.tsx's own onImageUpload prop.
+  onUploadInlineImage?: (file: File) => Promise<{ attachmentId: string; contentId: string }>;
 }
 
 type DraftSaveStatus = "idle" | "saving" | "saved";
@@ -93,10 +106,12 @@ export function ReplyComposer({
   onDiscardDraft,
   onUploadDraftAttachment,
   onRemoveDraftAttachment,
+  onUploadInlineImage,
 }: ReplyComposerProps) {
   const [bodyHtml, setBodyHtml] = useState(() =>
     initialMessage ? `<p>${escapeHtml(initialMessage).replace(/\n/g, "<br/>")}</p>` : ""
   );
+  const [hasPendingImageUploads, setHasPendingImageUploads] = useState(false);
   const [selectedTo, setSelectedTo] = useState(toEmail ?? "");
   const [cc, setCc] = useState(initialCc.join(", "));
   const [bcc, setBcc] = useState(initialBcc.join(", "));
@@ -129,7 +144,13 @@ export function ReplyComposer({
 
   async function persistDraft() {
     setDraftStatus("saving");
-    const result = await onSaveDraft(htmlToPlainText(bodyHtml), parseEmails(cc), parseEmails(bcc));
+    const richBodyHtml = isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined;
+    const result = await onSaveDraft(
+      htmlToPlainText(bodyHtml),
+      parseEmails(cc),
+      parseEmails(bcc),
+      richBodyHtml
+    );
     setDraftStatus(result ? "saved" : "idle");
     if (result) {
       if (savedIndicatorTimer.current) clearTimeout(savedIndicatorTimer.current);
@@ -165,9 +186,12 @@ export function ReplyComposer({
   }, []);
 
   async function handleSend() {
+    if (hasPendingImageUploads) return;
+
     if (isTicketed) {
       onSend({
         message: htmlToPlainText(bodyHtml),
+        bodyHtml: isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined,
         cc: parseEmails(cc),
         bcc: parseEmails(bcc),
         files,
@@ -293,6 +317,8 @@ export function ReplyComposer({
           onChange={setBodyHtml}
           placeholder="Write a reply to the client..."
           minHeight="7rem"
+          onImageUpload={onUploadInlineImage}
+          onPendingImageUploadsChange={setHasPendingImageUploads}
         />
       </div>
 
@@ -316,7 +342,12 @@ export function ReplyComposer({
               Attach Files{files.length > 0 ? ` (${files.length})` : ""}
             </Button>
 
-            <Button size="sm" className="gap-1.5" disabled={isEmpty || isSending} onClick={handleSend}>
+            <Button
+              size="sm"
+              className="gap-1.5"
+              disabled={isEmpty || isSending || hasPendingImageUploads}
+              onClick={handleSend}
+            >
               <Send className="h-3.5 w-3.5" />
               Send Reply
             </Button>
@@ -418,7 +449,7 @@ export function ReplyComposer({
               <Button
                 variant="outline"
                 size="sm"
-                disabled={isEmpty || draftStatus === "saving"}
+                disabled={isEmpty || draftStatus === "saving" || hasPendingImageUploads}
                 onClick={persistDraft}
               >
                 Save Draft
@@ -426,7 +457,7 @@ export function ReplyComposer({
               <Button
                 size="sm"
                 className="gap-1.5"
-                disabled={isEmpty || isSending || isSendingDraft}
+                disabled={isEmpty || isSending || isSendingDraft || hasPendingImageUploads}
                 onClick={handleSend}
               >
                 {isSendingDraft ? (

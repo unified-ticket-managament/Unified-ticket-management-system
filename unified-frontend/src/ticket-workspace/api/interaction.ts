@@ -4,6 +4,7 @@ import type {
   CancelSendResponse,
   HideInteractionRequest,
   HideInteractionResponse,
+  InlineImageUploadResponse,
   InteractionDirection,
   InteractionResponse,
   InteractionStatus,
@@ -179,6 +180,26 @@ export async function uploadAttachment(
 
   const { data } = await apiClient.post<AttachmentUploadResponse>(
     `/tickets/${ticketId}/attachments`,
+    formData
+  );
+  return data;
+}
+
+// POST /tickets/{ticket_id}/attachments/inline-image — a single
+// pasted-into-the-body screenshot (Outlook-style clipboard paste),
+// distinct from the batch uploadAttachment above: one file, always
+// inline, and the response carries a content_id the composer
+// references as `cid:{content_id}` inside the HTML body it submits
+// at send time (see lib/resolveInlineImageSources in lib/richText.ts).
+export async function uploadTicketInlineImage(
+  ticketId: string,
+  file: File
+): Promise<InlineImageUploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const { data } = await apiClient.post<InlineImageUploadResponse>(
+    `/tickets/${ticketId}/attachments/inline-image`,
     formData
   );
   return data;

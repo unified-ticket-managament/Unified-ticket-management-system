@@ -48,16 +48,21 @@ import { useApiAction } from "@tw/hooks/useApiAction";
 // currentUser above) is needed here.
 import { authService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
-import { archiveInteraction, replyToInteraction } from "@tw/api/inbox";
+import { archiveInteraction, replyToInteraction, uploadDraftInlineImage } from "@tw/api/inbox";
 import { listAssignableAgents } from "@tw/api/agent";
 import { listClientContacts } from "@tw/api/clients";
-import { replyToClient, uploadAttachment } from "@tw/api/interaction";
+import { replyToClient, uploadAttachment, uploadTicketInlineImage } from "@tw/api/interaction";
 import { attachInteractionToTicket, createTicketFromInteraction, listTickets } from "@tw/api/ticket";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { formatAssigneeLabel, formatDateTime, formatTicketNumber } from "@tw/lib/format";
-import { buildForwardHtml, renderThreadedMessageHtml } from "@tw/lib/richText";
+import {
+  RENDERED_MESSAGE_HTML_CLASS,
+  buildForwardHtml,
+  renderThreadedMessageHtml,
+  resolveCidImagesForDisplay,
+} from "@tw/lib/richText";
 import { showUndoSendToast } from "@tw/lib/undoSend";
 import type {
   AssignableAgentsResponse,
@@ -128,6 +133,14 @@ interface BubbleData {
   toLabel: string | null;
   timestamp: string;
   body: string;
+  // The rich, sanitized-on-the-backend HTML counterpart to `body` —
+  // for an agent-authored reply, Outlook-style clipboard paste
+  // (pasted tables/images/formatting); for an inbound client email
+  // (isClient), the sanitized real HTML the sender's own mail client
+  // sent (tables/inline screenshots/formatting included). null/
+  // undefined falls back to the existing plain-text rendering
+  // (renderThreadedMessageHtml) exactly as before this field existed.
+  bodyHtml?: string | null;
   isClient: boolean;
   attachments?: OpenEmailResponse["attachments"];
 }
@@ -140,6 +153,7 @@ function rootBubble(email: OpenEmailResponse): BubbleData {
     toLabel: email.to_email,
     timestamp: email.received_at,
     body: email.body,
+    bodyHtml: email.body_html ?? null,
     isClient: true,
     // Each message renders its own attachments inline, right where it
     // was sent — not deduplicated into one bucket for the whole thread.
@@ -149,7 +163,13 @@ function rootBubble(email: OpenEmailResponse): BubbleData {
 
 function replyBubble(reply: InteractionResponse): BubbleData {
   if (reply.interaction_type === "EMAIL") {
-    const payload = reply.payload as { body?: string; from_name?: string; from_email?: string; to_email?: string };
+    const payload = reply.payload as {
+      body?: string;
+      html_body?: string | null;
+      from_name?: string;
+      from_email?: string;
+      to_email?: string;
+    };
     return {
       key: reply.interaction_id,
       senderName: payload.from_name || payload.from_email || "Client",
@@ -157,12 +177,14 @@ function replyBubble(reply: InteractionResponse): BubbleData {
       toLabel: payload.to_email ?? null,
       timestamp: reply.created_at,
       body: payload.body ?? "",
+      bodyHtml: payload.html_body ?? null,
       isClient: true,
       attachments: reply.attachments,
     };
   }
   const payload = reply.payload as {
     message?: string;
+    body_html?: string | null;
     envelope?: { from_name?: string; from_email?: string; to_email?: string };
   };
   return {
@@ -172,6 +194,7 @@ function replyBubble(reply: InteractionResponse): BubbleData {
     toLabel: payload.envelope?.to_email ?? null,
     timestamp: reply.created_at,
     body: payload.message ?? "",
+    bodyHtml: payload.body_html ?? null,
     isClient: false,
     attachments: reply.attachments,
   };
@@ -183,7 +206,9 @@ function Bubble({ data }: { data: BubbleData }) {
   // than the raw stored body (which may include Outlook's own quoted
   // reply-history headers — see renderThreadedMessageHtml's own
   // comment for how those are shown vs. dropped).
-  const renderedBody = renderThreadedMessageHtml(data.body, { name: data.senderName, email: data.senderEmail });
+  const renderedBody = data.bodyHtml
+    ? resolveCidImagesForDisplay(data.bodyHtml, data.attachments ?? [])
+    : renderThreadedMessageHtml(data.body, { name: data.senderName, email: data.senderEmail });
   const { ref, isExpanded, isOverflowing, toggle, clampClassName } = useCollapsibleMessage([renderedBody]);
 
   return (
@@ -209,6 +234,7 @@ function Bubble({ data }: { data: BubbleData }) {
           ref={ref}
           className={cn(
             "mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90 [&_a]:break-all [&_a]:underline",
+            RENDERED_MESSAGE_HTML_CLASS,
             clampClassName
           )}
           dangerouslySetInnerHTML={{ __html: renderedBody }}
@@ -272,7 +298,8 @@ interface MessageDetailsViewProps {
     interactionId: string,
     message: string,
     cc: string[],
-    bcc: string[]
+    bcc: string[],
+    bodyHtml?: string
   ) => Promise<DraftSaveResponse | null>;
   onSendDraft: (
     interactionId: string,
@@ -324,6 +351,9 @@ export function MessageDetailsView({
     "communication:reply_external"
   );
   const [replyMode, setReplyMode] = useState<"reply" | "replyAll" | null>(null);
+  // See handleUploadInlineImage/handleSend below — only ever
+  // populated for a ticketed reply's pasted images.
+  const pastedImageInteractionIdsRef = useRef<string[]>([]);
 
   // canReplyExternal above is a render-time snapshot of whatever
   // useAuthStore held at login/last refresh — it never re-checks a
@@ -500,6 +530,7 @@ export function MessageDetailsView({
 
   async function handleSend(payload: {
     message: string;
+    bodyHtml?: string;
     cc: string[];
     bcc: string[];
     files: File[];
@@ -520,13 +551,16 @@ export function MessageDetailsView({
 
       const result = await runTicketReply(email.ticket_id, {
         message: payload.message,
+        body_html: payload.bodyHtml,
         cc: payload.cc,
         bcc: payload.bcc,
         to_email: payload.to,
         attachment_source_interaction_id: attachmentSourceInteractionId,
         reply_all: replyMode === "replyAll",
+        inline_image_interaction_ids: pastedImageInteractionIdsRef.current,
       });
       if (result) {
+        pastedImageInteractionIdsRef.current = [];
         showUndoSendToast(pushToast, result.interaction_id, "Reply sent.");
         setReplyMode(null);
         onRefreshList();
@@ -563,6 +597,7 @@ export function MessageDetailsView({
 
     const result = await runReply(email.interaction_id, {
       message: payload.message,
+      body_html: payload.bodyHtml,
       cc: payload.cc,
       bcc: payload.bcc,
       to_email: payload.to,
@@ -597,8 +632,24 @@ export function MessageDetailsView({
     }
   }
 
-  async function handleSaveDraft(message: string, cc: string[], bcc: string[]) {
-    return onSaveDraft(email.interaction_id, message, cc, bcc);
+  async function handleSaveDraft(message: string, cc: string[], bcc: string[], bodyHtml?: string) {
+    return onSaveDraft(email.interaction_id, message, cc, bcc, bodyHtml);
+  }
+
+  async function handleUploadInlineImage(file: File) {
+    if (isTicketed && email.ticket_id) {
+      const result = await uploadTicketInlineImage(email.ticket_id, file);
+      // Unlike the pre-ticket draft path (whose pasted images already
+      // share the draft's own interaction_id, reassigned onto the
+      // reply wholesale by send_draft's existing mechanism), a
+      // ticketed reply's pasted image lands on its own fresh
+      // interaction that must be explicitly submitted back at Send
+      // time — see handleSend's inline_image_interaction_ids below.
+      pastedImageInteractionIdsRef.current.push(result.interaction_id);
+      return { attachmentId: result.id, contentId: result.content_id };
+    }
+    const result = await uploadDraftInlineImage(email.interaction_id, file);
+    return { attachmentId: result.id, contentId: result.content_id };
   }
 
   async function handleSendDraft(toEmail?: string | null) {
@@ -970,6 +1021,7 @@ export function MessageDetailsView({
           onDiscardDraft={handleDiscardDraft}
           onUploadDraftAttachment={handleUploadDraftAttachment}
           onRemoveDraftAttachment={handleRemoveDraftAttachment}
+          onUploadInlineImage={handleUploadInlineImage}
         />
       )}
 

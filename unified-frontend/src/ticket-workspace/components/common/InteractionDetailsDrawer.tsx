@@ -7,11 +7,13 @@ import { ShowMoreToggle } from "@tw/components/common/ShowMoreToggle";
 import { useCollapsibleMessage } from "@tw/hooks/useCollapsibleMessage";
 import {
   messageBody,
+  messageBodyHtml,
   messageDirectionLabel,
   messageSender,
   metaFor,
   summarize,
 } from "@tw/lib/interactionMeta";
+import { RENDERED_MESSAGE_HTML_CLASS, resolveCidImagesForDisplay } from "@tw/lib/richText";
 import { shortId, formatDateTime } from "@tw/lib/format";
 import type {
   AttachmentMeta,
@@ -49,6 +51,10 @@ export interface InteractionDrawerEmail {
   to_email: string | null;
   subject: string;
   body: string;
+  // Sanitized-on-ingest real HTML for an inbound client email (see
+  // OpenEmailResponse.body_html) — null/undefined falls back to the
+  // existing plain-text rendering.
+  body_html?: string | null;
   message_id: string | null;
   attachments?: AttachmentMeta[];
 }
@@ -90,6 +96,7 @@ const HIDDEN_PAYLOAD_KEYS = new Set([
   "to_agent_name",
   "subject",
   "body",
+  "body_html",
   "message",
   "note",
   "filename",
@@ -113,6 +120,10 @@ interface ResolvedFields {
   to: string | null;
   subject: string | null;
   message: string | null;
+  // The rich, sanitized-on-the-backend HTML counterpart to `message`
+  // (Outlook-style clipboard paste) — null falls back to the plain
+  // `message` rendering exactly as before this field existed.
+  messageHtml: string | null;
   attachments: AttachmentMeta[];
   extra: Array<[string, unknown]>;
 }
@@ -176,13 +187,17 @@ function resolveFields(
   // full email is fetched on demand.
   if (!row.ticketId) {
     if (!email) {
-      return { from: null, to: null, subject: row.summaryText, message: null, attachments: [], extra: [] };
+      return { from: null, to: null, subject: row.summaryText, message: null, messageHtml: null, attachments: [], extra: [] };
     }
+    const rawMessageHtml = email.body_html ?? null;
     return {
       from: email.client_name ?? email.from_email,
       to: email.to_email,
       subject: email.subject,
       message: email.body,
+      messageHtml: rawMessageHtml
+        ? resolveCidImagesForDisplay(rawMessageHtml, email.attachments ?? [])
+        : null,
       attachments: email.attachments ?? [],
       extra: [["from_email", email.from_email], ["message_id", email.message_id]],
     };
@@ -193,6 +208,8 @@ function resolveFields(
     (payload.body ?? payload.message ?? payload.note) as string | undefined ??
     (row.raw ? summarize(row.raw) : row.summaryText);
   const attachments = row.raw?.attachments ?? [];
+  const rawMessageHtml = row.raw ? messageBodyHtml(row.raw) : null;
+  const messageHtml = rawMessageHtml ? resolveCidImagesForDisplay(rawMessageHtml, attachments) : null;
   const extra = Object.entries(payload).filter(
     ([key, value]) => !HIDDEN_PAYLOAD_KEYS.has(key) && value !== null && value !== undefined
   );
@@ -200,6 +217,7 @@ function resolveFields(
   return {
     ...resolveFromToSubject(row, payload),
     message: message ?? null,
+    messageHtml,
     attachments,
     extra,
   };
@@ -218,8 +236,11 @@ function ThreadMessageItem({
   const messageMeta = metaFor(message.interaction_type);
   const sender = messageSender(message);
   const body = messageBody(message);
-  const { ref, isExpanded, isOverflowing, toggle, clampClassName } = useCollapsibleMessage<HTMLParagraphElement>([
+  const rawBodyHtml = messageBodyHtml(message);
+  const bodyHtml = rawBodyHtml ? resolveCidImagesForDisplay(rawBodyHtml, message.attachments ?? []) : null;
+  const { ref, isExpanded, isOverflowing, toggle, clampClassName } = useCollapsibleMessage<HTMLDivElement>([
     body,
+    bodyHtml,
   ]);
 
   return (
@@ -241,10 +262,18 @@ function ThreadMessageItem({
         <span className="flex-none text-[10px] text-muted">{formatDateTime(message.created_at)}</span>
       </div>
       {sender && <p className="mt-1 text-[11px] font-medium text-slate-600">{sender}</p>}
-      {body && (
-        <p ref={ref} className={`mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${clampClassName}`}>
-          {body}
-        </p>
+      {bodyHtml ? (
+        <div
+          ref={ref}
+          className={`mt-1 text-[13px] leading-relaxed text-slate-700 ${RENDERED_MESSAGE_HTML_CLASS} ${clampClassName}`}
+          dangerouslySetInnerHTML={{ __html: bodyHtml }}
+        />
+      ) : (
+        body && (
+          <div ref={ref} className={`mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${clampClassName}`}>
+            {body}
+          </div>
+        )
       )}
       {isOverflowing && <ShowMoreToggle isExpanded={isExpanded} onToggle={toggle} />}
       {message.attachments && message.attachments.length > 0 && (
@@ -285,7 +314,7 @@ export function InteractionDetailsDrawer({
   // full conversation list — same information, no redundant "1
   // message" thread box around it.
   const hasThread = !isLoadingThread && !!thread && thread.ordered_thread.length > 1;
-  const messageContent = useCollapsibleMessage<HTMLParagraphElement>([fields?.message]);
+  const messageContent = useCollapsibleMessage<HTMLDivElement>([fields?.message, fields?.messageHtml]);
 
   // Scroll the clicked message into view within the thread, keeping
   // every earlier message above it and every later one below —
@@ -434,14 +463,25 @@ export function InteractionDetailsDrawer({
                   </p>
                   {isLoadingEmail ? (
                     <p className="mt-2 text-[13px] text-muted">Loading…</p>
+                  ) : fields.messageHtml ? (
+                    <>
+                      <div
+                        ref={messageContent.ref}
+                        className={`mt-2 text-[13px] leading-relaxed text-slate-700 ${RENDERED_MESSAGE_HTML_CLASS} ${messageContent.clampClassName}`}
+                        dangerouslySetInnerHTML={{ __html: fields.messageHtml }}
+                      />
+                      {messageContent.isOverflowing && (
+                        <ShowMoreToggle isExpanded={messageContent.isExpanded} onToggle={messageContent.toggle} />
+                      )}
+                    </>
                   ) : (
                     <>
-                      <p
+                      <div
                         ref={messageContent.ref}
                         className={`mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${messageContent.clampClassName}`}
                       >
                         {fields.message ?? "—"}
-                      </p>
+                      </div>
                       {messageContent.isOverflowing && (
                         <ShowMoreToggle isExpanded={messageContent.isExpanded} onToggle={messageContent.toggle} />
                       )}

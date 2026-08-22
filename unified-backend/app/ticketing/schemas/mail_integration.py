@@ -141,6 +141,16 @@ class GraphAttachmentPayload(BaseModel):
     contentType: str | None = None
     size: int | None = None
     isInline: bool = False
+    contentId: str | None = Field(
+        default=None,
+        description=(
+            "Graph's own contentId — only meaningful when isInline is "
+            "True (e.g. a screenshot pasted directly into the message "
+            "body), and is what a body's own <img src=\"cid:...\"> "
+            "reference actually matches against. Never present on a "
+            "genuine downloadable file attachment."
+        ),
+    )
     contentBytes: str | None = Field(
         default=None,
         description="Base64-encoded file content — only present on a fileAttachment.",

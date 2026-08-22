@@ -49,6 +49,17 @@ class OpenEmailResponse(BaseModel):
 
     body: str
 
+    # The sanitized-on-ingest HTML counterpart to `body` (see
+    # mail_mapping_service.map_external_email_to_interaction and
+    # EmailPayload.html_body) — set for any HTML-content-type inbound
+    # email (the common case for real-world senders), not just an
+    # agent-authored outbound send. None falls back to the existing
+    # plain-text rendering exactly as before this field was exposed
+    # here (it was already being stored, just never read back out of
+    # this response). Never re-sanitized again on the way out — this
+    # is the exact value stored at ingest time.
+    body_html: str | None = None
+
     message_id: str | None
 
     received_at: datetime

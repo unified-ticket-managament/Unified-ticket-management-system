@@ -92,9 +92,11 @@ from app.ticketing.services.audit_to_interaction import (
 from app.ticketing.services.assignment_service import STAFF_ROLE_NAME
 from app.ticketing.services.email_envelope import (
     build_agent_signature,
+    build_agent_signature_html,
     build_compose_envelope,
     build_reply_envelope,
 )
+from app.ticketing.utils.html_sanitizer import sanitize_outbound_html
 from app.ticketing.services.email_service import resolve_shared_mailbox_address
 from app.ticketing.services.escalation_service import EscalationService, _to_assignable_group
 from app.ticketing.services.interaction_summary import trim_payload_for_list
@@ -119,9 +121,14 @@ from app.ticketing.enums import (
 )
 
 from typing import Any
+from app.ticketing.models.attachment import Attachment
 from app.ticketing.models.interaction import Interaction
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
-from app.ticketing.schemas.attachment import AttachmentMetadata, TicketAttachmentItem
+from app.ticketing.schemas.attachment import (
+    AttachmentMetadata,
+    InlineImageUploadResponse,
+    TicketAttachmentItem,
+)
 from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
 from app.ticketing.schemas.forward import (
     ForwardToInternalUserRequest,
@@ -819,6 +826,123 @@ class InteractionService:
 
         return envelope
 
+    async def _reassign_inline_image_interactions(
+        self,
+        interaction: Interaction,
+        source_interaction_ids: list[UUID],
+        *,
+        expected_ticket_id: UUID | None = None,
+    ) -> list[Attachment]:
+        """
+        Unlike _merge_existing_attachments_into_envelope (which leaves
+        a regular file attachment on its own separate upload
+        interaction — a deliberate, pre-existing "Attachment uploaded"
+        timeline entry, distinct from the reply/note that references
+        it), a pasted inline image is conceptually PART OF this
+        message's own body, not a distinct attachment — so its
+        Attachment row is REASSIGNED onto `interaction` itself (same
+        primitive send_draft already uses when a draft becomes a real
+        reply), and the now-empty standalone ATTACHMENT interaction it
+        was first recorded under (see AttachmentService.
+        upload_inline_image — one dedicated interaction is minted per
+        pasted image, since a ticket reply/note composer has no
+        pre-existing draft interaction to attach to the way Mail's
+        pre-ticket flow does) is hidden, since it was only ever
+        internal upload-staging, never visible content of its own.
+
+        Reassigning (rather than only merging into the envelope, the
+        way _merge_existing_attachments_into_envelope does) is what
+        lets the image show up in `interaction.attachments` for
+        cid: resolution when this message is displayed back in the
+        app's own read views, not just when it's sent as a real email.
+
+        `expected_ticket_id`, when given (the ticket-scoped ReplyCreate/
+        InternalNoteCreate callers), is a real authorization check —
+        `inline_image_interaction_ids` is client-supplied, so each id
+        must be verified to actually be one of *this* ticket's own
+        inline-image-upload interactions before its files are pulled
+        in, exactly mirroring _merge_existing_attachments_into_
+        envelope's own attachment_source_interaction_id check. Without
+        it, a crafted request could reference another ticket's pasted
+        image and have it silently embedded (and emailed out) here.
+
+        Returns the reassigned Attachment rows (empty list if none)
+        so callers building an outbound envelope can embed them
+        without a second query.
+        """
+
+        if self.attachment_repository is None or not source_interaction_ids:
+            return []
+
+        reassigned: list[Attachment] = []
+
+        for source_id in source_interaction_ids:
+            if expected_ticket_id is not None:
+                source_interaction_for_check = await self.interaction_repository.get_by_id(
+                    source_id
+                )
+                if (
+                    source_interaction_for_check is None
+                    or source_interaction_for_check.ticket_id != expected_ticket_id
+                ):
+                    raise HTTPException(
+                        status_code=http_status.HTTP_400_BAD_REQUEST,
+                        detail="inline_image_interaction_ids contains an interaction "
+                        "that does not belong to this ticket.",
+                    )
+
+            stored = await self.attachment_repository.list_by_interaction_id(source_id)
+            if not stored:
+                continue
+
+            await self.attachment_repository.reassign_interaction(
+                source_id, interaction.interaction_id
+            )
+            reassigned.extend(stored)
+
+            source_interaction = await self.interaction_repository.get_by_id(source_id)
+            if source_interaction is not None:
+                await self.interaction_repository.update(
+                    source_interaction, InteractionUpdate(is_visible=False)
+                )
+
+        return reassigned
+
+    async def _merge_inline_images_into_envelope(
+        self,
+        interaction: Interaction,
+        envelope: OutboundEnvelope,
+        inline_image_interaction_ids: list[UUID],
+        *,
+        expected_ticket_id: UUID | None = None,
+    ) -> OutboundEnvelope:
+        """
+        Reassigns every pasted inline image's Attachment row onto
+        `interaction` (see _reassign_inline_image_interactions) and
+        embeds it in `envelope`/`interaction.payload["envelope"]` —
+        the send-time counterpart for inline images that
+        _merge_existing_attachments_into_envelope already provides for
+        ordinary file attachments. A no-op if nothing was reassigned
+        or attachment storage isn't configured.
+        """
+
+        if self.storage_service is None:
+            return envelope
+
+        reassigned = await self._reassign_inline_image_interactions(
+            interaction, inline_image_interaction_ids, expected_ticket_id=expected_ticket_id
+        )
+        if not reassigned:
+            return envelope
+
+        loaded = await load_envelope_attachments(reassigned, self.storage_service)
+        envelope = envelope.model_copy(
+            update={"attachments": [*envelope.attachments, *loaded]}
+        )
+        interaction.payload["envelope"] = envelope.model_dump()
+
+        return envelope
+
     async def _create_ticket_interaction(
         self,
         *,
@@ -950,6 +1074,8 @@ class InteractionService:
             recipient_names.append(candidate.name)
 
         payload: dict[str, Any] = {"note": request.note}
+        if request.body_html:
+            payload["body_html"] = sanitize_outbound_html(request.body_html)
         if recipient_ids:
             payload["recipient_user_ids"] = [str(uid) for uid in recipient_ids]
             payload["recipient_names"] = recipient_names
@@ -962,6 +1088,18 @@ class InteractionService:
             performed_by=actor_id,
             subject=request.subject,
         )
+
+        if request.inline_image_interaction_ids:
+            # Internal notes are never emailed (no envelope/Graph send
+            # at all) — this is reassignment only, purely so a pasted
+            # screenshot shows up in this note's own `.attachments`
+            # for cid: resolution when the note is displayed. See
+            # _reassign_inline_image_interactions's own docstring.
+            await self._reassign_inline_image_interactions(
+                interaction,
+                request.inline_image_interaction_ids,
+                expected_ticket_id=ticket_id,
+            )
 
         # Metadata only — the note text itself is never written to
         # the audit trail. Recipient ids are metadata (who it was
@@ -1169,6 +1307,11 @@ class InteractionService:
             # principle compose_email already established for a
             # brand-new message.
             signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
+            signed_body_html = (
+                f"{request.body_html}{build_agent_signature_html(current_user)}"
+                if request.body_html
+                else None
+            )
 
             if reply_from_email:
                 envelope = build_reply_envelope(
@@ -1183,12 +1326,15 @@ class InteractionService:
                     to_email_override=request.to_email,
                     reply_to_provider_message_id=inbound_payload.provider_message_id,
                     reply_all=request.reply_all,
+                    body_html=signed_body_html,
                 )
 
         payload: dict[str, Any] = {"message": signed_message if envelope is not None else request.message}
         if envelope is not None:
             payload["envelope"] = envelope.model_dump()
             payload["dispatch_status"] = "PENDING_SEND"
+            if envelope.body_html:
+                payload["body_html"] = envelope.body_html
         else:
             payload["dispatch_status"] = "NO_RECIPIENT"
 
@@ -1234,6 +1380,14 @@ class InteractionService:
 
             envelope = await self._merge_existing_attachments_into_envelope(
                 interaction, envelope, request.attachment_source_interaction_id
+            )
+
+        if envelope is not None and request.inline_image_interaction_ids:
+            envelope = await self._merge_inline_images_into_envelope(
+                interaction,
+                envelope,
+                request.inline_image_interaction_ids,
+                expected_ticket_id=ticket_id,
             )
 
         if envelope is not None:
@@ -1336,6 +1490,11 @@ class InteractionService:
         # principle compose_email already established for a brand-new
         # message, now shared across every reply path too.
         signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
+        signed_body_html = (
+            f"{request.body_html}{build_agent_signature_html(current_user)}"
+            if request.body_html
+            else None
+        )
 
         envelope = None
         if reply_from_email:
@@ -1351,12 +1510,15 @@ class InteractionService:
                 to_email_override=request.to_email,
                 reply_to_provider_message_id=inbound_payload.provider_message_id,
                 reply_all=request.reply_all,
+                body_html=signed_body_html,
             )
 
         payload: dict[str, Any] = {"message": signed_message if envelope is not None else request.message}
         if envelope is not None:
             payload["envelope"] = envelope.model_dump()
             payload["dispatch_status"] = "PENDING_SEND"
+            if envelope.body_html:
+                payload["body_html"] = envelope.body_html
         else:
             payload["dispatch_status"] = "NO_RECIPIENT"
 
@@ -1492,6 +1654,11 @@ class InteractionService:
         # then reflects exactly what was sent, same principle as
         # attachments (see _attach_outbound_files).
         signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
+        signed_body_html = (
+            f"{request.body_html}{build_agent_signature_html(current_user)}"
+            if request.body_html
+            else None
+        )
 
         envelope = build_compose_envelope(
             from_email=mailbox_address,
@@ -1502,6 +1669,7 @@ class InteractionService:
             bcc=request.bcc,
             agent_name=current_user.name,
             account_manager_email=am_email,
+            body_html=signed_body_html,
         )
 
         email_payload = EmailPayload(
@@ -1516,6 +1684,14 @@ class InteractionService:
             bcc=request.bcc,
         )
 
+        interaction_payload = {
+            **email_payload.model_dump(mode="json"),
+            "envelope": envelope.model_dump(),
+            "dispatch_status": "PENDING_SEND",
+        }
+        if envelope.body_html:
+            interaction_payload["body_html"] = envelope.body_html
+
         interaction = await self.interaction_repository.create(
             InteractionCreate(
                 ticket_id=None,
@@ -1523,11 +1699,7 @@ class InteractionService:
                 direction=InteractionDirection.OUTBOUND,
                 status=InteractionStatus.ASSIGNED,
                 performed_by=actor_id,
-                payload={
-                    **email_payload.model_dump(mode="json"),
-                    "envelope": envelope.model_dump(),
-                    "dispatch_status": "PENDING_SEND",
-                },
+                payload=interaction_payload,
                 is_visible=True,
                 message_id=envelope.message_id,
                 client_id=client.client_id,
@@ -1697,6 +1869,11 @@ class InteractionService:
         )
 
         signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
+        signed_body_html = (
+            f"{request.body_html}{build_agent_signature_html(current_user)}"
+            if request.body_html
+            else None
+        )
 
         envelope = build_compose_envelope(
             from_email=mailbox_address,
@@ -1706,6 +1883,7 @@ class InteractionService:
             cc=request.cc,
             bcc=request.bcc,
             agent_name=current_user.name,
+            body_html=signed_body_html,
         )
 
         payload: dict = {
@@ -1720,6 +1898,8 @@ class InteractionService:
             payload["recipient_name"] = recipient.name
         else:
             payload["recipient_email"] = recipient_email
+        if envelope.body_html:
+            payload["body_html"] = envelope.body_html
 
         interaction = await self.interaction_repository.create(
             InteractionCreate(
@@ -3186,6 +3366,7 @@ class InteractionService:
         message: str = "",
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        body_html: str | None = None,
     ) -> Interaction:
         """
         Fetches current_user's existing draft on this thread, or
@@ -3224,6 +3405,7 @@ class InteractionService:
                             "message": message,
                             "cc": cc or [],
                             "bcc": bcc or [],
+                            "body_html": body_html,
                             "dispatch_status": "DRAFT",
                         },
                         is_visible=True,
@@ -3272,7 +3454,11 @@ class InteractionService:
 
         if existing is not None:
             draft = await self.interaction_repository.update_draft_message(
-                existing, request.message, cc=request.cc, bcc=request.bcc
+                existing,
+                request.message,
+                cc=request.cc,
+                bcc=request.bcc,
+                body_html=request.body_html,
             )
         else:
             draft = await self._get_or_create_draft(
@@ -3281,6 +3467,7 @@ class InteractionService:
                 message=request.message,
                 cc=request.cc,
                 bcc=request.bcc,
+                body_html=request.body_html,
             )
 
         attachments = await self._fetch_draft_attachments(draft.interaction_id)
@@ -3289,6 +3476,7 @@ class InteractionService:
             interaction_id=draft.interaction_id,
             root_interaction_id=root.interaction_id,
             message=request.message,
+            body_html=request.body_html,
             cc=request.cc,
             bcc=request.bcc,
             attachments=attachments,
@@ -3343,6 +3531,63 @@ class InteractionService:
 
         return await attachments_to_metadata(stored, self.storage_service)
 
+    async def upload_draft_inline_image(
+        self,
+        interaction_id: UUID,
+        file: UploadFile,
+        current_user: User,
+    ) -> InlineImageUploadResponse:
+        """
+        Pre-ticket counterpart of upload_draft_attachment, for a
+        single pasted-into-the-body screenshot instead of a batch of
+        ordinary file attachments — see AttachmentService.
+        create_inline_image for why this is a separate method rather
+        than a flag on the batch path.
+        """
+
+        if self.attachment_repository is None or self.storage_service is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Attachment storage is not configured.",
+            )
+
+        root = await self._resolve_pending_thread_root(interaction_id)
+        await self._ensure_can_act_on_pending_interaction(root, current_user)
+
+        draft = await self._get_or_create_draft(root, current_user)
+
+        attachment_service = AttachmentService(
+            attachment_repository=self.attachment_repository,
+            interaction_repository=self.interaction_repository,
+            ticket_repository=self.ticket_repository,
+            storage_service=self.storage_service,
+        )
+
+        attachment = await attachment_service.create_inline_image(
+            file, draft.interaction_id
+        )
+
+        is_image = (attachment.mime_type or "").startswith("image/")
+        preview_url = (
+            await self.storage_service.presigned_get_url(
+                object_key=attachment.storage_key,
+                filename=attachment.filename,
+                inline=True,
+            )
+            if is_image
+            else None
+        )
+
+        return InlineImageUploadResponse(
+            id=attachment.attachment_id,
+            content_id=attachment.content_id,
+            filename=attachment.filename,
+            mime_type=attachment.mime_type,
+            size=attachment.size_bytes,
+            preview_url=preview_url,
+            interaction_id=draft.interaction_id,
+        )
+
     async def send_draft(
         self,
         interaction_id: UUID,
@@ -3386,12 +3631,17 @@ class InteractionService:
         message = payload.get("message", "")
         cc = payload.get("cc") or []
         bcc = payload.get("bcc") or []
+        body_html = payload.get("body_html")
         draft_interaction_id = draft.interaction_id
 
         reply = await self.add_interaction_reply(
             interaction_id=root.interaction_id,
             request=InteractionReplyRequest(
-                message=message, cc=cc, bcc=bcc, to_email=to_email
+                message=message,
+                cc=cc,
+                bcc=bcc,
+                to_email=to_email,
+                body_html=body_html,
             ),
             current_user=current_user,
             existing_attachment_source_interaction_id=draft_interaction_id,

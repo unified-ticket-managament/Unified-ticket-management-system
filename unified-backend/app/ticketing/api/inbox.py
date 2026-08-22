@@ -11,7 +11,7 @@ from app.notifications.service import NotificationService
 from app.ticketing.enums import TicketPriority
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.repositories.client_repository import ClientRepository
-from app.ticketing.schemas.attachment import AttachmentMetadata
+from app.ticketing.schemas.attachment import AttachmentMetadata, InlineImageUploadResponse
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
@@ -298,6 +298,7 @@ async def compose_email(
     message: str = Form(...),
     cc: str = Form(default=""),
     bcc: str = Form(default=""),
+    body_html: str | None = Form(default=None),
     files: list[UploadFile] = File(default=[]),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
@@ -335,6 +336,7 @@ async def compose_email(
             message=message,
             cc=_split_emails(cc),
             bcc=_split_emails(bcc),
+            body_html=body_html,
         ),
         current_user=current_user,
         files=files,
@@ -698,6 +700,47 @@ async def upload_draft_attachment(
     return await service.upload_draft_attachment(
         interaction_id=interaction_id,
         files=files,
+        current_user=current_user,
+    )
+
+
+@router.post(
+    "/{interaction_id}/draft/attachments/inline-image",
+    response_model=InlineImageUploadResponse,
+    status_code=201,
+)
+async def upload_draft_inline_image(
+    interaction_id: UUID,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Uploads a single pasted-into-the-body screenshot to the current
+    user's in-progress draft on this thread — the pre-ticket
+    counterpart of POST /tickets/{id}/attachments/inline-image, same
+    "always keyed on interaction_id, never ticket_id" rule every other
+    draft-attachment route already follows.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+    attachment_repository = AttachmentRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+        attachment_repository=attachment_repository,
+        storage_service=get_storage_service(),
+    )
+
+    return await service.upload_draft_inline_image(
+        interaction_id=interaction_id,
+        file=file,
         current_user=current_user,
     )
 

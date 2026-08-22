@@ -9,6 +9,7 @@ import type {
   InboxResponse,
   InboxScope,
   InboxView,
+  InlineImageUploadResponse,
   InteractionArchiveResponse,
   InteractionClaimResponse,
   InteractionFolderResponse,
@@ -111,11 +112,12 @@ export async function saveDraft(
   interactionId: string,
   message: string,
   cc: string[] = [],
-  bcc: string[] = []
+  bcc: string[] = [],
+  bodyHtml?: string | null
 ): Promise<DraftSaveResponse> {
   const { data } = await apiClient.put<DraftSaveResponse>(
     `/inbox/${interactionId}/draft`,
-    { message, cc, bcc }
+    { message, cc, bcc, body_html: bodyHtml ?? undefined }
   );
   return data;
 }
@@ -134,6 +136,24 @@ export async function uploadDraftAttachment(
 
   const { data } = await apiClient.post<AttachmentMeta[]>(
     `/inbox/${interactionId}/draft/attachments`,
+    formData
+  );
+  return data;
+}
+
+// POST /inbox/{interaction_id}/draft/attachments/inline-image — the
+// pre-ticket counterpart of uploadTicketInlineImage
+// (api/interaction.ts), for a single pasted-into-the-body screenshot
+// on a draft that hasn't become a ticket yet.
+export async function uploadDraftInlineImage(
+  interactionId: string,
+  file: File
+): Promise<InlineImageUploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const { data } = await apiClient.post<InlineImageUploadResponse>(
+    `/inbox/${interactionId}/draft/attachments/inline-image`,
     formData
   );
   return data;
@@ -279,6 +299,10 @@ export interface ComposeEmailPayload {
   cc?: string[];
   bcc?: string[];
   files?: File[];
+  // Optional sanitized-on-the-backend HTML counterpart to `message`
+  // (Outlook-style clipboard paste — pasted rich text/tables/inline
+  // images). Omit to send exactly like before this field existed.
+  bodyHtml?: string | null;
 }
 
 // POST /inbox/compose — author a brand-new outbound email to one of
@@ -295,6 +319,7 @@ export async function composeEmail(
   formData.append("message", payload.message);
   if (payload.cc?.length) formData.append("cc", payload.cc.join(","));
   if (payload.bcc?.length) formData.append("bcc", payload.bcc.join(","));
+  if (payload.bodyHtml) formData.append("body_html", payload.bodyHtml);
   payload.files?.forEach((file) => formData.append("files", file));
 
   const { data } = await apiClient.post<ComposeEmailResponse>(
@@ -319,6 +344,10 @@ export interface ForwardToInternalUserPayload {
   // already stored against the original interaction, subject to the
   // 10-attachment total (see InteractionService.forward_to_internal_user).
   files?: File[];
+  // Optional sanitized-on-the-backend HTML counterpart to `message`
+  // (Outlook-style clipboard paste — see ComposeEmailPayload.bodyHtml
+  // above for the same additive contract).
+  bodyHtml?: string | null;
 }
 
 // POST /inbox/{interaction_id}/forward — forward an existing client
@@ -338,6 +367,7 @@ export async function forwardToInternalUser(
   if (payload.bcc?.length) formData.append("bcc", payload.bcc.join(","));
   formData.append("subject", payload.subject);
   formData.append("message", payload.message);
+  if (payload.bodyHtml) formData.append("body_html", payload.bodyHtml);
   payload.files?.forEach((file) => formData.append("files", file));
 
   const { data } = await apiClient.post<ForwardToInternalUserResponse>(

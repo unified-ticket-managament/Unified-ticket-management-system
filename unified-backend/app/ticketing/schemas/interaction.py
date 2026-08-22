@@ -169,6 +169,11 @@ class DraftSaveRequest(BaseModel):
     message: str = Field(..., min_length=1)
     cc: list[str] = Field(default_factory=list)
     bcc: list[str] = Field(default_factory=list)
+    # Optional sanitized-on-the-backend HTML counterpart to `message`
+    # (Outlook-style clipboard paste). See ReplyCreate.body_html
+    # (schemas/ticket_action.py) for the same additive contract —
+    # None (the default) autosaves exactly like before this existed.
+    body_html: str | None = None
 
 
 class DraftSendRequest(BaseModel):
@@ -192,6 +197,7 @@ class DraftResponse(ORMBase):
     interaction_id: UUID
     root_interaction_id: UUID
     message: str
+    body_html: str | None = None
     cc: list[str] = Field(default_factory=list)
     bcc: list[str] = Field(default_factory=list)
     attachments: list[AttachmentMetadata] = Field(default_factory=list)

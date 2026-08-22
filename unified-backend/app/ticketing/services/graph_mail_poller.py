@@ -34,6 +34,7 @@ from app.ticketing.services.attachment_service import AttachmentService
 from app.ticketing.services.email_service import EmailService
 from app.ticketing.services.graph_client import GraphAPIError
 from app.ticketing.services.mail_mapping_service import (
+    body_references_inline_attachment,
     build_upload_files_from_graph_attachments,
     map_external_email_to_interaction,
 )
@@ -233,7 +234,9 @@ async def _poll_one_mailbox(
         email_request = map_external_email_to_interaction(payload)
 
         files = None
-        if payload.hasAttachments and payload.id:
+        if payload.id and (
+            payload.hasAttachments or body_references_inline_attachment(payload.body.content)
+        ):
             try:
                 attachments = await mail_provider_client.fetch_message_attachments(payload.id)
                 files = build_upload_files_from_graph_attachments(attachments)

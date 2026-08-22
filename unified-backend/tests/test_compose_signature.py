@@ -10,7 +10,10 @@
 
 from types import SimpleNamespace
 
-from app.ticketing.services.email_envelope import build_agent_signature
+from app.ticketing.services.email_envelope import (
+    build_agent_signature,
+    build_agent_signature_html,
+)
 
 
 def _user(
@@ -100,3 +103,48 @@ def test_build_agent_signature_includes_department_and_phone_when_set():
             "-" * 40,
         ]
     )
+
+
+# ---------------------------------------------------------------
+# build_agent_signature_html — HTML counterpart used when an outbound
+# body_html is present (Outlook-style clipboard paste). Same fields/
+# wording as build_agent_signature, just <br>-joined instead of
+# \n-joined, and safe against a name/department containing HTML
+# metacharacters.
+# ---------------------------------------------------------------
+
+
+def test_build_agent_signature_html_contains_same_fields_as_plain():
+    user = _user(
+        name="Jane Doe",
+        role_name="Team Lead",
+        designation="Team Lead - AR",
+        department="Accounts Receivable",
+        phone_number="+1-555-0100",
+    )
+
+    html_signature = build_agent_signature_html(user)
+
+    assert "Jane Doe" in html_signature
+    assert "Team Lead - AR" in html_signature
+    assert "Probe Practice Solutions" in html_signature
+    assert "Accounts Receivable" in html_signature
+    assert "+1-555-0100" in html_signature
+
+
+def test_build_agent_signature_html_uses_br_not_raw_newlines():
+    html_signature = build_agent_signature_html(_user(name="Jane Doe"))
+
+    # The whole point of this function: a plain \n has no visual
+    # meaning in HTML, so every line break must be a real <br>.
+    assert "\n" not in html_signature
+    assert "<br>" in html_signature
+
+
+def test_build_agent_signature_html_escapes_unsafe_characters():
+    html_signature = build_agent_signature_html(
+        _user(name="Jane <script>alert(1)</script>")
+    )
+
+    assert "<script>" not in html_signature
+    assert "&lt;script&gt;" in html_signature

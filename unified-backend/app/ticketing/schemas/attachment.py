@@ -18,6 +18,11 @@ class AttachmentCreate(BaseModel):
     scan_status: str = Field(default="pending", max_length=20)
     external_url: str | None = Field(default=None, min_length=1)
     is_external_link: bool = False
+    # content_id is server-minted (see AttachmentService.create_inline_image)
+    # — never accepted from outside that one call path — and is_inline
+    # marks a pasted-into-the-body image, distinct from is_external_link.
+    content_id: str | None = Field(default=None, max_length=64)
+    is_inline: bool = False
 
 
 class AttachmentResponse(ORMBase):
@@ -34,6 +39,8 @@ class AttachmentResponse(ORMBase):
     updated_at: datetime | None
     external_url: str | None
     is_external_link: bool
+    content_id: str | None
+    is_inline: bool
 
 
 class AttachmentMetadata(BaseModel):
@@ -53,6 +60,42 @@ class AttachmentMetadata(BaseModel):
     # stored bytes — download_url is then the original external URL
     # (opens in a new tab), not a presigned link to our own storage.
     is_external_link: bool = False
+    # Set only for a pasted-into-the-body inline image (see
+    # AttachmentService.create_inline_image) — lets a caller
+    # reconstruct which stored attachment a `cid:` reference inside a
+    # reopened draft's body_html corresponds to.
+    content_id: str | None = None
+    is_inline: bool = False
+
+
+class InlineImageUploadResponse(BaseModel):
+    """
+    Response for the dedicated single-file inline-image upload
+    endpoints (POST .../attachments/inline-image) — a paste event
+    uploads exactly one image at a time and needs its content_id back
+    immediately so the composer can reference it as `cid:{content_id}`
+    in the HTML body it will eventually submit, with no second round
+    trip.
+    """
+
+    id: UUID
+    content_id: str
+    filename: str
+    mime_type: str | None
+    size: int | None
+    preview_url: str | None = None
+    # The interaction this attachment is currently stored against —
+    # for the ticket-scoped endpoint, a fresh, dedicated ATTACHMENT
+    # interaction created just for this one paste (see
+    # AttachmentService.upload_inline_image); for the pre-ticket draft
+    # endpoint, the draft's own interaction (already correctly
+    # reassigned onto the eventual reply by send_draft's existing
+    # mechanism, so callers of that endpoint don't need to do anything
+    # further with this value). Ticketed callers must collect this
+    # and submit it back as one of ReplyCreate/InternalNoteCreate's
+    # `inline_image_interaction_ids` at Send time, or the pasted image
+    # never reaches the actual outbound email / the note's own display.
+    interaction_id: UUID
 
 
 class TicketAttachmentItem(BaseModel):

@@ -22,7 +22,7 @@ import { RecipientCombobox } from "@tw/components/common/RecipientCombobox";
 import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
-import { htmlToPlainText } from "@tw/lib/richText";
+import { htmlToPlainText, isRichContent, resolveInlineImageSources } from "@tw/lib/richText";
 import { isValidEmailAddress } from "@tw/lib/validation";
 import { MAX_ATTACHMENT_FILES } from "@tw/lib/attachmentMeta";
 import type { ClientContact, ClientResponse, InternalNoteRecipientCandidate } from "@tw/types";
@@ -106,6 +106,7 @@ interface ComposeViewProps {
     toEmail: string;
     subject: string;
     message: string;
+    bodyHtml?: string;
     cc: string[];
     bcc: string[];
     files: File[];
@@ -128,6 +129,7 @@ interface ComposeViewProps {
     subject: string;
     message: string;
     files: File[];
+    bodyHtml?: string;
   }) => Promise<unknown>;
   onDiscard: () => void;
   // Only rendered (as a "← Back" control) when this view is in
@@ -232,6 +234,7 @@ export function ComposeView({
   const [subject, setSubject] = useState(initialValues?.subject ?? localDraft?.subject ?? "");
   const [bodyHtml, setBodyHtml] = useState(initialValues?.bodyHtml ?? localDraft?.bodyHtml ?? "");
   const [files, setFiles] = useState<File[]>([]);
+  const [hasPendingImageUploads, setHasPendingImageUploads] = useState(false);
 
   // Forward's "To" data source — every active internal user. Fetched
   // only in Forward mode (Compose's own client picker needs none of
@@ -434,6 +437,15 @@ export function ComposeView({
   async function handleSend() {
     if (!canSend) return;
 
+    // A composer-agnostic gate: don't send while a pasted screenshot
+    // is still uploading. Always false here today (see RichTextEditor
+    // usage below — this composer has no onImageUpload wired, so
+    // hasPendingImageUploads never actually becomes true), kept for
+    // parity/safety if that gap is ever closed.
+    if (hasPendingImageUploads) return;
+
+    const richBodyHtml = isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined;
+
     if (isForward) {
       if (!onForwardSend || !initialValues?.interactionId || !toRecipient.email) return;
       const result = await onForwardSend({
@@ -446,6 +458,7 @@ export function ComposeView({
         subject: subject.trim(),
         message: htmlToPlainText(bodyHtml),
         files,
+        bodyHtml: richBodyHtml,
       });
       if (result) {
         clearLocalDraft();
@@ -464,6 +477,7 @@ export function ComposeView({
       toEmail: primaryTo,
       subject: subject.trim(),
       message: htmlToPlainText(bodyHtml),
+      bodyHtml: richBodyHtml,
       cc: Array.from(new Set([...extraTo, ...parseEmails(cc)])),
       bcc: parseEmails(bcc),
       files,
@@ -708,7 +722,13 @@ export function ComposeView({
 
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Message</label>
-              <RichTextEditor value={bodyHtml} onChange={setBodyHtml} placeholder="Write your message..." minHeight="12rem" />
+              <RichTextEditor
+                value={bodyHtml}
+                onChange={setBodyHtml}
+                placeholder="Write your message..."
+                minHeight="12rem"
+                onPendingImageUploadsChange={setHasPendingImageUploads}
+              />
             </div>
 
             <div>
@@ -732,7 +752,11 @@ export function ComposeView({
             <Save className="h-3.5 w-3.5" />
             Save Draft
           </Button>
-          <Button onClick={handleSend} disabled={!canSend || isSending} className="gap-1.5">
+          <Button
+            onClick={handleSend}
+            disabled={!canSend || isSending || hasPendingImageUploads}
+            className="gap-1.5"
+          >
             <Send className="h-3.5 w-3.5" />
             Send
           </Button>

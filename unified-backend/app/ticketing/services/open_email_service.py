@@ -233,6 +233,7 @@ class OpenEmailService:
             to_recipients=payload.to_recipients,
             subject=payload.subject,
             body=payload.body,
+            body_html=payload.html_body,
             message_id=interaction.message_id,
             received_at=interaction.received_at or interaction.created_at,
             status=interaction.status,

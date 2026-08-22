@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -41,6 +42,21 @@ engine = create_async_engine(
 # see app/database/timing.py for why this needs a ContextVar rather
 # than a plain accumulator.
 register_db_timing(engine)
+
+
+# Some Neon projects' pooled (-pooler/PgBouncer) endpoint silently drops
+# the `search_path` startup parameter (confirmed live: a role-level
+# `ALTER ROLE ... SET search_path = public` is honored on the direct
+# endpoint but not through the pooler), leaving every unqualified table
+# reference on a fresh connection unresolvable ("relation does not
+# exist") even though the table genuinely exists in `public`. Issuing
+# it as a real SQL statement right after connect works around this —
+# confirmed live against the same pooler that drops the startup param.
+@event.listens_for(engine.sync_engine, "connect")
+def _set_search_path(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("SET search_path TO public")
+    cursor.close()
 
 AsyncSessionLocal = async_sessionmaker(
     engine,

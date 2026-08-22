@@ -34,6 +34,10 @@ class ForwardToInternalUserRequest(BaseModel):
     bcc: list[EmailStr] = Field(default_factory=list)
     subject: str = Field(..., min_length=1, max_length=500)
     message: str = Field(..., min_length=1, max_length=20000)
+    # Optional sanitized-on-the-backend HTML counterpart to `message`
+    # (Outlook-style clipboard paste). See ReplyCreate.body_html
+    # (schemas/ticket_action.py) for the same additive contract.
+    body_html: str | None = None
 
     @model_validator(mode="after")
     def _require_exactly_one_recipient(self) -> "ForwardToInternalUserRequest":

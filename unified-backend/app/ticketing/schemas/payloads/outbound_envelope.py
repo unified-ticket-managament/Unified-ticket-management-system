@@ -16,6 +16,17 @@ class EnvelopeAttachment(BaseModel):
     content_type: str
     content_base64: str
 
+    # Only set for a pasted-inline-image attachment (see
+    # attachment_service.create_inline_image) — content_id is the
+    # value referenced as `cid:{content_id}` inside the envelope's own
+    # body_html, and is_inline tells graph_client.py to mark the
+    # resulting Graph attachment dict isInline=True so it renders
+    # embedded in the body instead of as a separate downloadable file.
+    # None/False (the default) for every ordinary attachment — the
+    # exact same 3-field shape as before this pair existed.
+    content_id: str | None = None
+    is_inline: bool = False
+
 
 class OutboundEnvelope(BaseModel):
     """
@@ -51,6 +62,17 @@ class OutboundEnvelope(BaseModel):
     references: list[str] = Field(default_factory=list)
 
     body: str
+
+    # Optional sanitized HTML counterpart to `body` (Outlook-style
+    # clipboard paste — pasted rich text/tables/inline images) — see
+    # email_envelope.py, the one place this is populated (via
+    # html_sanitizer.sanitize_outbound_html) and graph_client.py, the
+    # one place that reads it. None (the default) means "send exactly
+    # like every send before this field existed" — a plain-text-only
+    # message, body.contentType="Text". `body` itself is still always
+    # populated as the real plain-text fallback (e.g. for a mail
+    # client that renders text/plain, or a future non-Graph provider).
+    body_html: str | None = None
 
     attachments: list[EnvelopeAttachment] = Field(default_factory=list)
 

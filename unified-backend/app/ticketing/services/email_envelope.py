@@ -1,10 +1,12 @@
 # email_envelope.py
 
+import html
 from uuid import uuid4
 
 from shared_models.models import User
 
 from app.ticketing.schemas.payloads import EmailPayload, OutboundEnvelope
+from app.ticketing.utils.html_sanitizer import sanitize_outbound_html
 
 
 def _reply_subject(original_subject: str) -> str:
@@ -71,6 +73,23 @@ def build_agent_signature(current_user: User) -> str:
     return "\n".join(lines)
 
 
+def build_agent_signature_html(current_user: User) -> str:
+    """
+    HTML counterpart to build_agent_signature, for appending to a
+    body_html rather than a plain-text body — without this, the
+    plain-text signature's real newlines would render collapsed onto
+    one line once composited into an HTML-content-type message (see
+    graph_client.py's own _plain_text_to_html_comment docstring for
+    the identical underlying reason). Reuses that same escape-then-
+    <br>-ify approach rather than a second implementation, and is
+    intentionally the *same* fields/wording as build_agent_signature —
+    this is a rendering-format counterpart, not a different signature.
+    """
+
+    plain = build_agent_signature(current_user)
+    return f'<div>{html.escape(plain).replace(chr(10), "<br>")}</div>'
+
+
 def _merge_cc(account_manager_email: str | None, extra_cc: list[str] | None) -> list[str]:
     """
     Combines the auto-added Account Manager Cc with whatever the
@@ -97,6 +116,7 @@ def build_reply_envelope(
     to_email_override: str | None = None,
     reply_to_provider_message_id: str | None = None,
     reply_all: bool = False,
+    body_html: str | None = None,
 ) -> OutboundEnvelope | None:
     """
     Builds the outbound envelope for a reply: From is always the
@@ -139,6 +159,12 @@ def build_reply_envelope(
     Returns None if there's no sender to reply to (e.g. a reply on a
     ticket whose originating email is unknown) — callers should treat
     that as "nothing to dispatch" rather than an error.
+
+    `body_html`, when supplied (Outlook-style clipboard paste — see
+    the composer's own paste feature), is sanitized here (the one
+    choke point, via html_sanitizer.sanitize_outbound_html) before
+    ever reaching the envelope. None (the default) reproduces this
+    function's exact pre-existing behavior — a plain-text-only send.
     """
 
     recipient = to_email_override or inbound_payload.from_email
@@ -160,6 +186,7 @@ def build_reply_envelope(
         in_reply_to=inbound_message_id,
         references=references,
         body=body,
+        body_html=sanitize_outbound_html(body_html) if body_html else None,
         reply_to_provider_message_id=reply_to_provider_message_id,
         reply_all=reply_all,
     )
@@ -174,6 +201,7 @@ def build_compose_envelope(
     bcc: list[str] | None = None,
     agent_name: str | None = None,
     account_manager_email: str | None = None,
+    body_html: str | None = None,
 ) -> OutboundEnvelope:
     """
     Builds the outbound envelope for a brand-new Compose message —
@@ -201,4 +229,5 @@ def build_compose_envelope(
         in_reply_to=None,
         references=[],
         body=body,
+        body_html=sanitize_outbound_html(body_html) if body_html else None,
     )

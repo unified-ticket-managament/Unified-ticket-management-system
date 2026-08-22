@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 from app.ticketing.schemas.email import EmailRequest, LinkedAttachmentCandidate
 from app.ticketing.schemas.mail_integration import GraphAttachmentPayload, IncomingMailPayload
 from app.ticketing.utils.constants import MAX_ATTACHMENT_FILES, MAX_ATTACHMENT_SIZE_BYTES
+from app.ticketing.utils.html_sanitizer import sanitize_outbound_html
 from app.ticketing.utils.validators import sanitize_filename, validate_attachment_type
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,33 @@ def extract_cloud_link_attachments(html: str) -> list[LinkedAttachmentCandidate]
             break
 
     return candidates
+
+
+def body_references_inline_attachment(html: str) -> bool:
+    """
+    True if the raw HTML body contains a `cid:` reference (e.g.
+    `<img src="cid:...">`) — a pasted-into-the-body screenshot's own
+    attachment.
+
+    Exists because Graph's `hasAttachments` field is confirmed live
+    (via a real self-sent test message: a genuine fileAttachment with
+    isInline=True/contentId set and real contentBytes, still present
+    in the `/attachments` collection) to come back `False` for a
+    message whose *only* attachment is an inline one — unlike the
+    cloud-link case above, where hasAttachments=False correctly
+    reflects a genuinely empty attachments collection. Both inbound
+    transports (graph_mail_poller.py, mail_integration.py's webhook
+    route) gated the entire fetch_message_attachments call behind
+    `payload.hasAttachments` alone, so every such message silently
+    never fetched its own inline image — the stored body's `cid:`
+    reference then has nothing to resolve against, rendering as a
+    broken image in the frontend. Checked here as a plain substring
+    test, not a full parse: a false positive (body text literally
+    containing "cid:" with no real reference) only costs one harmless
+    extra Graph call that returns nothing new to store.
+    """
+
+    return "cid:" in html
 
 
 def _extract_header(
@@ -163,16 +191,13 @@ def map_external_email_to_interaction(payload: IncomingMailPayload) -> EmailRequ
     references = references_header.split() if references_header else []
 
     is_html = payload.body.contentType == "html"
+    raw_html = payload.body.content
     # Falls back to the raw HTML on the rare case get_text() yields
     # nothing (e.g. an image-only body with no visible text at all) —
     # EmailRequest.body requires min_length=1, so an empty extraction
     # would otherwise crash the whole message rather than degrade to
     # the pre-fix "shows raw HTML" behavior for just that one message.
-    plain_body = (
-        (_html_to_plain_text(payload.body.content) or payload.body.content)
-        if is_html
-        else payload.body.content
-    )
+    plain_body = (_html_to_plain_text(raw_html) or raw_html) if is_html else raw_html
 
     return EmailRequest(
         to_email=to_recipient.address,
@@ -180,9 +205,21 @@ def map_external_email_to_interaction(payload: IncomingMailPayload) -> EmailRequ
         from_name=payload.from_.emailAddress.name,
         subject=payload.subject or "(no subject)",
         body=plain_body,
-        html_body=payload.body.content if is_html else None,
+        # Sanitized through the same choke point body_html already
+        # goes through for an agent-authored outbound send
+        # (email_envelope.py) — reused here rather than duplicated,
+        # since an inbound sender's raw HTML is no more trustworthy
+        # than a pasted one: script/iframe/event-handler attributes/
+        # javascript: URLs are stripped, and <img src> is restricted to
+        # cid: references only (an inline image this platform itself
+        # stored — see build_upload_files_from_graph_attachments below
+        # — never an arbitrary remote image/tracking pixel). Extraction
+        # above (plain-text, cloud links) still runs against the raw,
+        # unsanitized HTML — sanitization only applies to what gets
+        # stored/rendered as body_html itself.
+        html_body=sanitize_outbound_html(raw_html) if is_html else None,
         linked_attachments=(
-            extract_cloud_link_attachments(payload.body.content) if is_html else []
+            extract_cloud_link_attachments(raw_html) if is_html else []
         ),
         cc=[recipient.emailAddress.address for recipient in payload.ccRecipients],
         to_recipients=[recipient.emailAddress.address for recipient in payload.toRecipients],
@@ -207,10 +244,24 @@ class _GraphAttachmentUploadFile:
     needs anything beyond these three members.
     """
 
-    def __init__(self, filename: str, content: bytes, content_type: str | None):
+    def __init__(
+        self,
+        filename: str,
+        content: bytes,
+        content_type: str | None,
+        content_id: str | None = None,
+        is_inline: bool = False,
+    ):
         self.filename = filename
         self.content_type = content_type
         self._content = content
+        # Read via getattr(file, "content_id"/"is_inline", <default>)
+        # by AttachmentService.validate_and_store_files — absent/False
+        # here (every attachment before this feature, and every plain
+        # fastapi.UploadFile passed by any other caller of that method)
+        # reproduces the exact pre-existing AttachmentCreate() call.
+        self.content_id = content_id
+        self.is_inline = is_inline
 
     async def read(self) -> bytes:
         return self._content
@@ -231,8 +282,19 @@ def build_upload_files_from_graph_attachments(
 
     Filters out (each logged individually, and counted in the
     `dropped` summary below):
-    - `isInline` attachments — typically embedded signature/logo
-      images, not something a user is trying to send as a file.
+    - an `isInline` attachment with no resolvable `contentId`, or
+      whose `contentType` isn't an image — nothing in the body's own
+      HTML could ever reference it via `cid:`, so there's no way to
+      display it and no reason to store it as a downloadable file
+      either (Outlook's isInline images are body content, not
+      attachments a recipient would expect in an attachment list).
+      An isInline attachment that *does* have both is kept — see
+      below, this used to be dropped unconditionally, which silently
+      discarded every pasted-into-the-body screenshot along with
+      genuine signature/logo images, since Graph represents both the
+      same way (a real fileAttachment with isInline=True/contentId
+      set, referenced from the HTML body as
+      `<img src="cid:{contentId}">`).
     - anything with an `@odata.type` that's explicitly present but
       not `#microsoft.graph.fileAttachment` (e.g. a forwarded message
       attached as an item, or a reference attachment) — a genuinely
@@ -241,6 +303,18 @@ def build_upload_files_from_graph_attachments(
       when it's named in the request's own `$select` list.
     - anything with no actual content (contentBytes) — nothing to
       store.
+
+    An accepted inline image is stored with `is_inline=True` and
+    `content_id` set to Graph's own `contentId` value, UNCHANGED (never
+    re-minted the way AttachmentService.create_inline_image mints one
+    for an outbound composer paste) — the inbound body's own
+    `cid:{contentId}` reference has to match it exactly for the
+    frontend's resolveCidImagesForDisplay (lib/richText.ts) to resolve
+    it. AttachmentService.validate_and_store_files reads content_id/
+    is_inline off each file object (see _GraphAttachmentUploadFile
+    above) and persists them on the resulting Attachment row exactly
+    like any other of its fields — no second, parallel attachment
+    mechanism for this case.
 
     Defensively pre-validates size/type against AttachmentService's
     own existing limits and drops (logging) anything that would fail
@@ -258,9 +332,17 @@ def build_upload_files_from_graph_attachments(
     for attachment in attachments:
         display_name = attachment.name or "attachment"
 
-        if attachment.isInline:
+        is_inline_image = bool(
+            attachment.isInline
+            and attachment.contentId
+            and (attachment.contentType or "").startswith("image/")
+        )
+
+        if attachment.isInline and not is_inline_image:
             logger.warning(
-                "Dropping Graph attachment %r — inline attachment", display_name
+                "Dropping Graph attachment %r — inline attachment with no "
+                "resolvable contentId, or not an image",
+                display_name,
             )
             dropped += 1
             continue
@@ -321,6 +403,8 @@ def build_upload_files_from_graph_attachments(
         files.append(
             _GraphAttachmentUploadFile(
                 filename=filename,
+                content_id=attachment.contentId if is_inline_image else None,
+                is_inline=is_inline_image,
                 content=content,
                 content_type=attachment.contentType,
             )

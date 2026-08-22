@@ -58,6 +58,7 @@ from app.ticketing.schemas.attach_interaction import (
 )
 from app.ticketing.schemas.attachment import (
     AttachmentUploadResponse,
+    InlineImageUploadResponse,
     TicketAttachmentItem,
 )
 from app.ticketing.schemas.audit_log import AuditLogResponse, TicketAuditLogResponse
@@ -619,6 +620,47 @@ async def upload_ticket_attachment(
     return await service.upload_attachment(
         ticket_id=ticket_id,
         files=files,
+        current_user=current_user,
+    )
+
+
+@router.post(
+    "/{ticket_id}/attachments/inline-image",
+    response_model=InlineImageUploadResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_ticket_inline_image(
+    ticket_id: UUID,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Uploads a single pasted-into-the-body screenshot (Outlook-style
+    clipboard paste) as an inline image — distinct from the batch
+    `/attachments` upload above: single file, always inline, and the
+    response carries a `content_id` the composer references as
+    `cid:{content_id}` inside the HTML body it submits at send time.
+    """
+
+    attachment_repository = AttachmentRepository(db)
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    client_repository = ClientRepository(db)
+
+    service = AttachmentService(
+        attachment_repository=attachment_repository,
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        storage_service=get_storage_service(),
+        client_repository=client_repository,
+        escalation_repository=TicketEscalationRepository(db),
+        escalation_handling_sla_repository=EscalationHandlingSlaRepository(db),
+    )
+
+    return await service.upload_inline_image(
+        ticket_id=ticket_id,
+        file=file,
         current_user=current_user,
     )
 

@@ -52,6 +52,27 @@ class ReplyCreate(BaseModel):
     # known — see build_reply_envelope's reply_to_provider_message_id.
     reply_all: bool = False
 
+    # Optional sanitized-on-the-backend HTML counterpart to `message`
+    # (Outlook-style clipboard paste — pasted rich text/tables/inline
+    # images). `message` is still always required as the real
+    # plain-text fallback; body_html is a pure addition — omitting it
+    # (the default) sends exactly like every reply before this field
+    # existed. See email_envelope.build_reply_envelope/
+    # app.ticketing.utils.html_sanitizer.
+    body_html: str | None = None
+
+    # Every interaction_id an inline-image-paste upload
+    # (POST /tickets/{id}/attachments/inline-image) returned during
+    # this compose session — unlike attachment_source_interaction_id
+    # (one regular-file-upload batch, kept on its own separate
+    # ATTACHMENT timeline entry), each of these gets its Attachment
+    # row REASSIGNED onto this new reply's own interaction (an inline
+    # image is part of the message body itself, not a distinct
+    # attachment) and merged into the outbound envelope — see
+    # InteractionService._merge_inline_images_into_envelope. Empty
+    # list (the default) is a pure no-op.
+    inline_image_interaction_ids: list[UUID] = Field(default_factory=list)
+
 
 class InteractionReplyRequest(BaseModel):
     """
@@ -76,6 +97,19 @@ class InteractionReplyRequest(BaseModel):
 
     # See ReplyCreate.reply_all above — same meaning, same reason.
     reply_all: bool = False
+
+    # See ReplyCreate.body_html above — same meaning, same reason.
+    body_html: str | None = None
+
+    # Deliberately no inline_image_interaction_ids field here, unlike
+    # ReplyCreate — this request type has exactly one caller that can
+    # ever carry a pasted inline image (Mail's pre-ticket
+    # ReplyComposer), and it always sends via send_draft, whose own
+    # existing draft-attachment reassignment (a draft's pasted images
+    # already share the draft's own interaction_id from the start —
+    # see InteractionService.upload_draft_inline_image) already
+    # covers it. Adding an unused, client-suppliable field here would
+    # just be unvalidated attack surface with no real caller.
 
 
 class InteractionReplyResponse(ORMBase):

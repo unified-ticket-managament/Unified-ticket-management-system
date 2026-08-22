@@ -11,12 +11,14 @@ import { getInteractionThread } from "@tw/api/interaction";
 import { openInboxThread } from "@tw/api/inbox";
 import {
   messageBody,
+  messageBodyHtml,
   messageDirectionLabel,
   messageRecipients,
   messageSender,
   metaFor,
   summarize,
 } from "@tw/lib/interactionMeta";
+import { RENDERED_MESSAGE_HTML_CLASS, resolveCidImagesForDisplay } from "@tw/lib/richText";
 import { shortId, formatDateTime } from "@tw/lib/format";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import type { InteractionResponse, InteractionStatus, OpenEmailResponse, ThreadResponse } from "@tw/types";
@@ -60,6 +62,7 @@ function emailToMessage(email: OpenEmailResponse): InteractionResponse {
       to_email: email.to_email,
       subject: email.subject,
       body: email.body,
+      html_body: email.body_html ?? null,
     },
     is_visible: true,
     removed_by: null,
@@ -103,9 +106,11 @@ function ConversationItem({ message }: { message: InteractionResponse }) {
   const meta = metaFor(message.interaction_type);
   const sender = messageSender(message);
   const body = messageBody(message);
-  const timestamp = formatDateTime(message.created_at);
   const attachments = message.attachments ?? [];
-  const collapsible = useCollapsibleMessage<HTMLParagraphElement>([body]);
+  const rawBodyHtml = messageBodyHtml(message);
+  const bodyHtml = rawBodyHtml ? resolveCidImagesForDisplay(rawBodyHtml, attachments) : null;
+  const timestamp = formatDateTime(message.created_at);
+  const collapsible = useCollapsibleMessage<HTMLDivElement>([body, bodyHtml]);
 
   if (align === "system") {
     return (
@@ -136,13 +141,21 @@ function ConversationItem({ message }: { message: InteractionResponse }) {
           <span className="text-[11px] text-muted">{timestamp}</span>
         </div>
         {sender && <p className="text-[11px] font-medium text-slate-600">{sender}</p>}
-        {body && (
-          <p
+        {bodyHtml ? (
+          <div
             ref={collapsible.ref}
-            className={`whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${collapsible.clampClassName}`}
-          >
-            {body}
-          </p>
+            className={`text-[13px] leading-relaxed text-slate-700 ${RENDERED_MESSAGE_HTML_CLASS} ${collapsible.clampClassName}`}
+            dangerouslySetInnerHTML={{ __html: bodyHtml }}
+          />
+        ) : (
+          body && (
+            <div
+              ref={collapsible.ref}
+              className={`whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${collapsible.clampClassName}`}
+            >
+              {body}
+            </div>
+          )
         )}
         {collapsible.isOverflowing && <ShowMoreToggle isExpanded={collapsible.isExpanded} onToggle={collapsible.toggle} />}
         {attachments.length > 0 && <AttachmentList attachments={attachments} className="mt-1" />}
@@ -197,10 +210,18 @@ function ConversationItem({ message }: { message: InteractionResponse }) {
             isRight ? "border-accent/20 bg-accent/10 text-slate-800" : "border-border bg-surface text-slate-800"
           }`}
         >
-          {body && (
-            <p ref={collapsible.ref} className={`whitespace-pre-wrap ${collapsible.clampClassName}`}>
-              {body}
-            </p>
+          {bodyHtml ? (
+            <div
+              ref={collapsible.ref}
+              className={`${RENDERED_MESSAGE_HTML_CLASS} ${collapsible.clampClassName}`}
+              dangerouslySetInnerHTML={{ __html: bodyHtml }}
+            />
+          ) : (
+            body && (
+              <div ref={collapsible.ref} className={`whitespace-pre-wrap ${collapsible.clampClassName}`}>
+                {body}
+              </div>
+            )
           )}
           {collapsible.isOverflowing && (
             <ShowMoreToggle isExpanded={collapsible.isExpanded} onToggle={collapsible.toggle} />

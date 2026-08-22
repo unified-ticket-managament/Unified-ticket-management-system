@@ -117,6 +117,35 @@ export interface AttachmentMeta {
   // stored bytes — download_url is the original external URL (opens
   // in a new tab), not a link to our own storage.
   is_external_link?: boolean;
+  // Set only for a pasted-into-the-body inline image (Outlook-style
+  // clipboard paste) — the value referenced as `cid:{content_id}` in
+  // the composer's HTML body. Absent/undefined for an ordinary
+  // attachment.
+  content_id?: string | null;
+  is_inline?: boolean;
+}
+
+// Response for the dedicated single-file inline-image upload
+// endpoints (POST .../attachments/inline-image) — a paste event
+// uploads exactly one image at a time and needs its content_id back
+// immediately to build `cid:{content_id}` client-side, with no
+// second round trip.
+export interface InlineImageUploadResponse {
+  id: string;
+  content_id: string;
+  filename: string;
+  mime_type: string | null;
+  size: number | null;
+  preview_url?: string | null;
+  // The interaction this attachment is currently stored against — a
+  // fresh, dedicated interaction for the ticket-scoped endpoint (see
+  // AttachmentService.upload_inline_image), or the draft's own
+  // interaction for the pre-ticket endpoint (already handled by
+  // send_draft's existing reassignment — no action needed for that
+  // case). Ticket-scoped callers must collect this and submit it back
+  // as one of ReplyRequest/InternalNoteRequest's
+  // inline_image_interaction_ids at Send time.
+  interaction_id: string;
 }
 
 // One row of a ticket's complete attachment history (GET
@@ -292,6 +321,11 @@ export interface OpenEmailResponse {
   to_recipients: string[];
   subject: string;
   body: string;
+  // The sanitized-on-ingest HTML counterpart to `body`, set for any
+  // HTML-content-type inbound email (not just an agent-authored
+  // outbound send) — see the backend's OpenEmailResponse.body_html.
+  // null/undefined falls back to the existing plain-text rendering.
+  body_html?: string | null;
   message_id: string | null;
   received_at: string;
   status: InteractionStatus;
@@ -373,6 +407,7 @@ export interface DraftSaveResponse {
   interaction_id: string;
   root_interaction_id: string;
   message: string;
+  body_html?: string | null;
   cc: string[];
   bcc: string[];
   attachments: AttachmentMeta[];
@@ -394,6 +429,10 @@ export interface InteractionReplyRequest {
   // plain sendMail-based send when the backend has no Graph id to
   // reply against.
   reply_all?: boolean;
+  // Optional sanitized-on-the-backend HTML counterpart to `message`
+  // (Outlook-style clipboard paste — pasted rich text/tables/inline
+  // images). Omit to send exactly like before this field existed.
+  body_html?: string | null;
 }
 
 export interface InteractionReplyResponse {
@@ -610,6 +649,13 @@ export interface InternalNoteRequest {
   // empty/omitted list falls back to the backend's pre-existing
   // stakeholder-notification behavior.
   recipient_user_ids?: string[];
+  // Optional sanitized-on-the-backend HTML counterpart to `note`
+  // (Outlook-style clipboard paste) — internal notes are never
+  // emailed, this only affects Timeline/System Mail rendering.
+  body_html?: string | null;
+  // See ReplyRequest.inline_image_interaction_ids above — same
+  // meaning, same reason.
+  inline_image_interaction_ids?: string[];
 }
 
 export interface InternalNoteResponse {
@@ -647,6 +693,16 @@ export interface ReplyRequest {
   // See InteractionReplyRequest.reply_all above — same meaning, same
   // reason.
   reply_all?: boolean;
+  // See InteractionReplyRequest.body_html above — same meaning, same
+  // reason.
+  body_html?: string | null;
+  // Every interaction_id an inline-image-paste upload
+  // (POST /tickets/{id}/attachments/inline-image) returned during
+  // this compose session — each gets reassigned onto this reply's own
+  // interaction and merged into the outbound envelope server-side
+  // (see InteractionService._merge_inline_images_into_envelope).
+  // Omit/empty when nothing was pasted.
+  inline_image_interaction_ids?: string[];
 }
 
 // ==========================================================

@@ -78,6 +78,30 @@ class Attachment(Base):
         nullable=False,
     )
 
+    # Only set for an attachment explicitly uploaded as a pasted
+    # inline image (see AttachmentService.create_inline_image) — a
+    # short, server-generated token embedded as `cid:<content_id>` in
+    # the composer's HTML body and cross-referenced back to this exact
+    # row at send time (see email_envelope.py/graph_client.py). NULL
+    # for every ordinary attachment, including a real photo a user
+    # deliberately attaches as a downloadable file rather than pasting
+    # inline. Never client-supplied — minted server-side to avoid one
+    # upload spoofing/colliding with another's cid: reference.
+    content_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    # True only for the inline-pasted-image case above; False
+    # (default) for every other attachment, including images attached
+    # as ordinary downloadable files. Distinct from is_external_link —
+    # an inline image always has real stored bytes.
+    is_inline: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
     scan_status: Mapped[str] = mapped_column(
         String(20),
         default="pending",

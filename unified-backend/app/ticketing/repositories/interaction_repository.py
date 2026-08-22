@@ -984,14 +984,21 @@ class InteractionRepository:
         message: str,
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        body_html: str | None = None,
     ) -> Interaction:
-        """Overwrites a draft's saved text (and Cc/Bcc) in place — upsert's "update" half."""
+        """Overwrites a draft's saved text (and Cc/Bcc/body_html) in place — upsert's "update" half."""
 
         interaction.payload = {
             **interaction.payload,
             "message": message,
             "cc": cc if cc is not None else interaction.payload.get("cc", []),
             "bcc": bcc if bcc is not None else interaction.payload.get("bcc", []),
+            # None means "no rich HTML for this save" — deliberately
+            # overwrites any previously-saved body_html rather than
+            # preserving it, mirroring how `message` itself is always
+            # overwritten wholesale on every save (this is the same
+            # upsert-the-whole-draft semantics, not a partial patch).
+            "body_html": body_html,
         }
 
         await self.db.flush()

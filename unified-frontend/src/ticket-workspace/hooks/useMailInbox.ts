@@ -1076,9 +1076,10 @@ export function useMailInbox() {
     interactionId: string,
     message: string,
     cc: string[] = [],
-    bcc: string[] = []
+    bcc: string[] = [],
+    bodyHtml?: string
   ) {
-    const result = await runSaveDraft(interactionId, message, cc, bcc);
+    const result = await runSaveDraft(interactionId, message, cc, bcc, bodyHtml);
     if (result && selectedEmail?.interaction_id === interactionId) {
       setSelectedEmail({
         ...selectedEmail,

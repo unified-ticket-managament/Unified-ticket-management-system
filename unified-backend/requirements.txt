@@ -32,6 +32,12 @@ msal==1.37.0
 # html.parser backend only, no lxml dependency needed.
 beautifulsoup4==4.15.0
 
+# Server-side HTML sanitization for agent-authored body_html
+# (Outlook-style clipboard paste — app/ticketing/utils/html_sanitizer.py)
+# before it's embedded in a real outbound Graph HTML email. Rust-backed
+# (ammonia), no other sanitizer existed in this backend before this.
+nh3==0.2.18
+
 # In-process SLA sweep scheduler (app/core/sla_scheduler.py) — replaces
 # the external GitHub Actions cron trigger. 3.x is the stable,
 # production-proven line; 4.x is still a pre-release rewrite.

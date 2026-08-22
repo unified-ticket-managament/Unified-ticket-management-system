@@ -12,7 +12,12 @@
 # inbound message's own arrival address when there's no Client.
 
 from app.ticketing.schemas.payloads import EmailPayload
-from app.ticketing.services.email_envelope import build_compose_envelope, build_reply_envelope
+from app.ticketing.services.email_envelope import (
+    build_agent_signature,
+    build_agent_signature_html,
+    build_compose_envelope,
+    build_reply_envelope,
+)
 
 
 def _inbound_payload(**overrides) -> EmailPayload:
@@ -126,6 +131,62 @@ def test_build_reply_envelope_defaults_reply_fields_to_sendmail_behavior():
     assert envelope is not None
     assert envelope.reply_to_provider_message_id is None
     assert envelope.reply_all is False
+
+
+# ---------------------------------------------------------------
+# body_html — Outlook-style clipboard paste. Additive: None (the
+# default) must leave every pre-existing envelope shape untouched;
+# when given, it's sanitized (via app.ticketing.utils.html_sanitizer)
+# before landing on the envelope.
+# ---------------------------------------------------------------
+
+
+def test_build_reply_envelope_body_html_none_when_omitted():
+    envelope = build_reply_envelope(
+        from_email="ticketing@probeps.com",
+        inbound_payload=_inbound_payload(),
+        inbound_message_id="<original@example.com>",
+        body="Reply body.",
+    )
+
+    assert envelope is not None
+    assert envelope.body_html is None
+
+
+def test_build_reply_envelope_carries_sanitized_body_html_when_given():
+    envelope = build_reply_envelope(
+        from_email="ticketing@probeps.com",
+        inbound_payload=_inbound_payload(),
+        inbound_message_id="<original@example.com>",
+        body="Reply body.",
+        body_html="<p>Hello</p><script>alert(1)</script>",
+    )
+
+    assert envelope is not None
+    assert envelope.body_html == "<p>Hello</p>"
+
+
+def test_build_compose_envelope_body_html_none_when_omitted():
+    envelope = build_compose_envelope(
+        from_email="ticketing@probeps.com",
+        to_email="patient@example.com",
+        subject="Following up",
+        body="Hello!",
+    )
+
+    assert envelope.body_html is None
+
+
+def test_build_compose_envelope_carries_sanitized_body_html_when_given():
+    envelope = build_compose_envelope(
+        from_email="ticketing@probeps.com",
+        to_email="patient@example.com",
+        subject="Following up",
+        body="Hello!",
+        body_html='<p onclick="evil()">Hi</p><img src="https://evil.com/x.png">',
+    )
+
+    assert envelope.body_html == "<p>Hi</p>"
 
 
 def test_build_compose_envelope_uses_shared_mailbox_as_from_not_client_address():

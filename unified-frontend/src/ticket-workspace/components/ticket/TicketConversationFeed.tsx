@@ -7,9 +7,11 @@ import { useCollapsibleMessage } from "@tw/hooks/useCollapsibleMessage";
 import {
   RETIRED_INTERACTION_TYPES,
   internalNoteRecipientNames,
+  messageBodyHtml,
   metaFor,
   summarize,
 } from "@tw/lib/interactionMeta";
+import { RENDERED_MESSAGE_HTML_CLASS, resolveCidImagesForDisplay } from "@tw/lib/richText";
 import { shortId } from "@tw/lib/format";
 import type { InteractionResponse } from "@tw/types";
 
@@ -56,9 +58,12 @@ interface FeedItemProps {
 function FeedItem({ item, isLast, onHide, isHiding, onItemClick }: FeedItemProps) {
   const meta = metaFor(item.interaction_type);
   const summary = summarize(item);
+  const rawBodyHtml = messageBodyHtml(item);
+  const bodyHtml = rawBodyHtml ? resolveCidImagesForDisplay(rawBodyHtml, item.attachments ?? []) : null;
   const recipientNames = internalNoteRecipientNames(item);
-  const { ref, isExpanded, isOverflowing, toggle, clampClassName } = useCollapsibleMessage<HTMLParagraphElement>([
+  const { ref, isExpanded, isOverflowing, toggle, clampClassName } = useCollapsibleMessage<HTMLDivElement>([
     summary,
+    bodyHtml,
   ]);
 
   return (
@@ -98,9 +103,17 @@ function FeedItem({ item, isLast, onHide, isHiding, onItemClick }: FeedItemProps
           </p>
         </div>
 
-        <p ref={ref} className={`mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${clampClassName}`}>
-          {summary}
-        </p>
+        {bodyHtml ? (
+          <div
+            ref={ref}
+            className={`mt-2 text-[13px] leading-relaxed text-slate-700 ${RENDERED_MESSAGE_HTML_CLASS} ${clampClassName}`}
+            dangerouslySetInnerHTML={{ __html: bodyHtml }}
+          />
+        ) : (
+          <div ref={ref} className={`mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${clampClassName}`}>
+            {summary}
+          </div>
+        )}
         {isOverflowing && <ShowMoreToggle isExpanded={isExpanded} onToggle={toggle} className="inline-block" />}
 
         {item.attachments && item.attachments.length > 0 && (

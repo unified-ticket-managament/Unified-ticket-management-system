@@ -38,6 +38,22 @@ class InternalNoteCreate(BaseModel):
         ),
     )
 
+    # Optional sanitized-on-the-backend HTML counterpart to `note`
+    # (Outlook-style clipboard paste — pasted rich text/tables/inline
+    # images). Internal notes are never emailed, so there's no Graph
+    # body/signature concern here — this exists purely so the
+    # Timeline/System Mail can render the richer version. None (the
+    # default) behaves exactly as before this field existed.
+    body_html: str | None = None
+
+    # See ReplyCreate.inline_image_interaction_ids (ticket_action.py)
+    # — same meaning: every interaction_id a pasted-screenshot upload
+    # returned during this compose session, reassigned onto this
+    # note's own interaction so the image shows up in the note's own
+    # `.attachments` for cid: resolution when displayed. Empty list
+    # (the default) is a pure no-op.
+    inline_image_interaction_ids: list[UUID] = Field(default_factory=list)
+
 
 class InternalNoteResponse(ORMBase):
     """

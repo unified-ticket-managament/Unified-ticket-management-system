@@ -162,6 +162,32 @@ export function messageRecipients(message: InteractionResponse): MessageRecipien
   };
 }
 
+// The rich, sanitized-on-the-backend HTML counterpart to `message`/
+// `note`/`body` — for REPLY/INTERNAL_NOTE (Outlook-style clipboard
+// paste — pasted tables/images/formatting, see interaction_service.py's
+// add_reply/add_interaction_reply/add_internal_note) the payload key
+// is `body_html`; for an inbound EMAIL interaction (a client's own
+// real HTML email — tables/inline screenshots/formatting, see
+// mail_mapping_service.map_external_email_to_interaction and
+// email_service.py's stored payload) the key is `html_body` instead,
+// matching each side's own already-established field name. null for
+// every other type, and for any of these three when no rich body was
+// actually captured — callers should fall back to their existing
+// plain-text rendering in that case, exactly as before this field
+// existed.
+export function messageBodyHtml(message: InteractionResponse): string | null {
+  const payload = message.payload as Record<string, unknown> | undefined;
+  const key =
+    message.interaction_type === "EMAIL"
+      ? "html_body"
+      : message.interaction_type === "REPLY" || message.interaction_type === "INTERNAL_NOTE"
+        ? "body_html"
+        : null;
+  if (!key) return null;
+  const html = payload?.[key];
+  return typeof html === "string" && html.trim().length > 0 ? html : null;
+}
+
 export function messageBody(message: InteractionResponse): string {
   const payload = message.payload ?? {};
   switch (message.interaction_type) {
