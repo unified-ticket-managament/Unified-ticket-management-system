@@ -16,8 +16,12 @@ export function isValidDateRange(from: string, to: string): boolean {
 // login form (a bare `z.string().email()` check) — centralized here
 // (moved from ComposeView.tsx, which used to define this locally) so
 // every "To" recipient field shares one implementation rather than
-// each defining its own.
-const emailAddressSchema = z.string().trim().email();
+// each defining its own. The 254-char cap is RFC 5321's own practical
+// total-address limit — zod's `.email()` already correctly rejects
+// every malformed-syntax shape (missing/extra @, empty local/domain
+// part, spaces, malformed dots, invalid domain labels) but has no
+// length bound of its own.
+const emailAddressSchema = z.string().trim().max(254).email();
 
 export function isValidEmailAddress(value: string): boolean {
   return emailAddressSchema.safeParse(value).success;

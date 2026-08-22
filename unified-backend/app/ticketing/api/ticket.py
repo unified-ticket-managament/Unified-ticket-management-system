@@ -373,6 +373,17 @@ async def add_internal_note(
         # service is not None` was always False for every real request
         # through this route.
         notification_service=NotificationService(NotificationRepository(db)),
+        # Also previously missing: without these, add_internal_note's
+        # call to _reassign_inline_image_interactions silently no-oped
+        # (guarded by `if self.attachment_repository is None`), so a
+        # pasted screenshot's Attachment row was never moved off its
+        # staging ATTACHMENT interaction onto the note's own
+        # interaction_id — the note's body_html still referenced the
+        # image via cid:, but its own `.attachments` stayed empty, so
+        # cid: resolution had nothing to match and rendered
+        # "[image unavailable]" everywhere the note was read back.
+        attachment_repository=AttachmentRepository(db),
+        storage_service=get_storage_service(),
     )
 
     return await service.add_internal_note(

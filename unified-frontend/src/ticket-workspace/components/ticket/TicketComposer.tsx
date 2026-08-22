@@ -108,6 +108,22 @@ export function TicketComposer({
   // just exposes fields the UI never surfaced before).
   const [replyCc, setReplyCc] = useState("");
   const [replyBcc, setReplyBcc] = useState("");
+  // A non-empty Cc/Bcc entry must still be a real address — this used
+  // to have no frontend validation at all (an invalid entry only ever
+  // got caught by the backend's own EmailStr rejection, with no
+  // visible error and no Send-button gating), matching the same gap
+  // Compose's own Cc/Bcc fields had before ComposeView.tsx's canSend
+  // was fixed.
+  const replyCcEntries = useMemo(() => parseEmails(replyCc), [replyCc]);
+  const replyBccEntries = useMemo(() => parseEmails(replyBcc), [replyBcc]);
+  const invalidReplyCcEntries = useMemo(
+    () => replyCcEntries.filter((entry) => !isValidEmailAddress(entry)),
+    [replyCcEntries]
+  );
+  const invalidReplyBccEntries = useMemo(
+    () => replyBccEntries.filter((entry) => !isValidEmailAddress(entry)),
+    [replyBccEntries]
+  );
   // Reply attachments — local File[] only, uploaded via the existing
   // ticket attachment endpoint right after the reply itself succeeds
   // (same "upload only at Send" pattern Mail's own ticketed
@@ -259,6 +275,7 @@ export function TicketComposer({
     // Send rather than silently reaching the backend's own EmailStr
     // rejection.
     if (isReply && selectedTo && !isValidEmailAddress(selectedTo)) return;
+    if (isReply && (invalidReplyCcEntries.length > 0 || invalidReplyBccEntries.length > 0)) return;
     // A pasted screenshot's upload is still in flight — block Send
     // rather than silently sending the message without it.
     if (hasPendingImageUploads) return;
@@ -396,6 +413,11 @@ export function TicketComposer({
               resetKey={activeTicket.ticket_id}
               placeholder="Select a contact or type an email…"
             />
+            {selectedTo && !isValidEmailAddress(selectedTo) && (
+              <p className="-mt-1 text-[11px] text-red-600">
+                Enter a valid email address. &quot;{selectedTo}&quot; isn&apos;t valid.
+              </p>
+            )}
             <EnvelopePreview
               senderName={currentUser?.name ?? "you"}
               viaEmail={toEmail}
@@ -408,12 +430,26 @@ export function TicketComposer({
               onChange={(e) => setReplyCc(e.target.value)}
               placeholder="cc@example.com, ..."
             />
+            {invalidReplyCcEntries.length > 0 && (
+              <p className="-mt-1 text-[11px] text-red-600">
+                {invalidReplyCcEntries.length === 1
+                  ? `Enter a valid email address. "${invalidReplyCcEntries[0]}" isn't valid.`
+                  : "Enter a valid email address for every entry, separated by commas."}
+              </p>
+            )}
             <TextInput
               label="BCC (Optional)"
               value={replyBcc}
               onChange={(e) => setReplyBcc(e.target.value)}
               placeholder="bcc@example.com, ..."
             />
+            {invalidReplyBccEntries.length > 0 && (
+              <p className="-mt-1 text-[11px] text-red-600">
+                {invalidReplyBccEntries.length === 1
+                  ? `Enter a valid email address. "${invalidReplyBccEntries[0]}" isn't valid.`
+                  : "Enter a valid email address for every entry, separated by commas."}
+              </p>
+            )}
           </>
         ) : (
           <>
@@ -523,6 +559,8 @@ export function TicketComposer({
               !hasComposePermission ||
               isRichTextEmpty(messageHtml) ||
               (!isReply && !noteSubject.trim()) ||
+              (isReply && Boolean(selectedTo) && !isValidEmailAddress(selectedTo)) ||
+              (isReply && (invalidReplyCcEntries.length > 0 || invalidReplyBccEntries.length > 0)) ||
               hasPendingImageUploads
             }
             onClick={handleSend}

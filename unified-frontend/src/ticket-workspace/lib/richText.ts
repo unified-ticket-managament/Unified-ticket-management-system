@@ -366,11 +366,21 @@ export function buildForwardHtml(params: {
   dateLabel: string;
   subject: string;
   body: string;
+  // The original message's real HTML body (already sanitized server-
+  // side), when one exists — preferred verbatim over `body` (the
+  // plain-text-flattened field) so tables/formatting survive into the
+  // forwarded message, mirroring MessageDetailsView's own Bubble
+  // rendering, which already prefers body_html over body the same
+  // way. Falls back to escaping `body` as plain text when absent.
+  bodyHtml?: string;
 }): string {
-  const { fromLabel, dateLabel, subject, body } = params;
+  const { fromLabel, dateLabel, subject, body, bodyHtml } = params;
+  const quotedContent = bodyHtml
+    ? bodyHtml
+    : escapeHtml(body).replace(/\n/g, "<br/>");
   return (
     `<p></p><p>---------- Forwarded message ----------</p>` +
     `<p>From: ${escapeHtml(fromLabel)}<br/>Date: ${escapeHtml(dateLabel)}<br/>Subject: ${escapeHtml(subject)}</p>` +
-    `<blockquote>${escapeHtml(body).replace(/\n/g, "<br/>")}</blockquote>`
+    `<blockquote>${quotedContent}</blockquote>`
   );
 }

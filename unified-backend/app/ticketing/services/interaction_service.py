@@ -97,6 +97,7 @@ from app.ticketing.services.email_envelope import (
     build_reply_envelope,
 )
 from app.ticketing.utils.html_sanitizer import sanitize_outbound_html
+from app.ticketing.utils.recipient_validation import ensure_recipients_are_valid
 from app.ticketing.services.email_service import resolve_shared_mailbox_address
 from app.ticketing.services.escalation_service import EscalationService, _to_assignable_group
 from app.ticketing.services.interaction_summary import trim_payload_for_list
@@ -832,6 +833,7 @@ class InteractionService:
         source_interaction_ids: list[UUID],
         *,
         expected_ticket_id: UUID | None = None,
+        expected_performed_by: UUID | None = None,
     ) -> list[Attachment]:
         """
         Unlike _merge_existing_attachments_into_envelope (which leaves
@@ -866,6 +868,11 @@ class InteractionService:
         it, a crafted request could reference another ticket's pasted
         image and have it silently embedded (and emailed out) here.
 
+        `expected_performed_by` is the Compose/Forward equivalent for
+        callers with no ticket to scope against at all (see
+        upload_compose_inline_image) — the staged interaction must
+        have been created by this same caller.
+
         Returns the reassigned Attachment rows (empty list if none)
         so callers building an outbound envelope can embed them
         without a second query.
@@ -877,18 +884,25 @@ class InteractionService:
         reassigned: list[Attachment] = []
 
         for source_id in source_interaction_ids:
-            if expected_ticket_id is not None:
+            if expected_ticket_id is not None or expected_performed_by is not None:
                 source_interaction_for_check = await self.interaction_repository.get_by_id(
                     source_id
                 )
                 if (
                     source_interaction_for_check is None
-                    or source_interaction_for_check.ticket_id != expected_ticket_id
+                    or (
+                        expected_ticket_id is not None
+                        and source_interaction_for_check.ticket_id != expected_ticket_id
+                    )
+                    or (
+                        expected_performed_by is not None
+                        and source_interaction_for_check.performed_by != expected_performed_by
+                    )
                 ):
                     raise HTTPException(
                         status_code=http_status.HTTP_400_BAD_REQUEST,
                         detail="inline_image_interaction_ids contains an interaction "
-                        "that does not belong to this ticket.",
+                        "that does not belong to this ticket or user.",
                     )
 
             stored = await self.attachment_repository.list_by_interaction_id(source_id)
@@ -915,6 +929,7 @@ class InteractionService:
         inline_image_interaction_ids: list[UUID],
         *,
         expected_ticket_id: UUID | None = None,
+        expected_performed_by: UUID | None = None,
     ) -> OutboundEnvelope:
         """
         Reassigns every pasted inline image's Attachment row onto
@@ -930,7 +945,10 @@ class InteractionService:
             return envelope
 
         reassigned = await self._reassign_inline_image_interactions(
-            interaction, inline_image_interaction_ids, expected_ticket_id=expected_ticket_id
+            interaction,
+            inline_image_interaction_ids,
+            expected_ticket_id=expected_ticket_id,
+            expected_performed_by=expected_performed_by,
         )
         if not reassigned:
             return envelope
@@ -1257,6 +1275,18 @@ class InteractionService:
         ensure_has_permission(current_user, "ticket:reply")
         ensure_has_permission(current_user, "communication:reply_external")
 
+        # request.to_email/cc/bcc are already EmailStr-validated for
+        # syntax by Pydantic before this method ever runs — this adds
+        # the domain-deliverability layer syntax alone can't catch
+        # (e.g. a typo'd TLD like "painmedpa.cm"). to_email is only
+        # ever the agent's own manually-picked override (see
+        # ReplyCreate.to_email) — the default recipient (the ticket's
+        # latest inbound sender) is never re-validated, since it isn't
+        # new user input.
+        ensure_recipients_are_valid(
+            to=request.to_email, cc=request.cc, bcc=request.bcc
+        )
+
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
         )
@@ -1464,6 +1494,13 @@ class InteractionService:
         await self._ensure_can_act_on_pending_interaction(root, current_user)
         ensure_has_permission(current_user, "communication:reply_external")
 
+        # See add_reply's identical call for the full rationale — the
+        # domain-deliverability layer syntax-only EmailStr validation
+        # can't catch.
+        ensure_recipients_are_valid(
+            to=request.to_email, cc=request.cc, bcc=request.bcc
+        )
+
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
         )
@@ -1588,11 +1625,86 @@ class InteractionService:
     # Compose — brand-new outbound email, no prior thread
     # ---------------------------------------------------------
 
+    async def upload_compose_inline_image(
+        self,
+        file: UploadFile,
+        current_user: User,
+    ) -> InlineImageUploadResponse:
+        """
+        Compose/Forward counterpart of upload_draft_inline_image — a
+        pasted screenshot has nowhere to attach to yet, since neither
+        Compose nor Forward has a pre-existing interaction before Send
+        (see CLAUDE.md's "Compose... has no existing thread row for a
+        server-side draft to attach to yet"). Mints a minimal, this-
+        user-owned staging Interaction (no ticket_id — see
+        AttachmentService.upload_inline_image's ticket-scoped
+        equivalent) purely to hold the Attachment row via the existing
+        create_inline_image, until compose_email/forward_to_internal_
+        user reassigns it onto the real outbound interaction via
+        _merge_inline_images_into_envelope(expected_performed_by=...).
+        """
+
+        if self.attachment_repository is None or self.storage_service is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Attachment storage is not configured.",
+            )
+
+        actor_id, _actor_name, _actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        interaction = await self.interaction_repository.create(
+            InteractionCreate(
+                ticket_id=None,
+                interaction_type="ATTACHMENT",
+                direction=InteractionDirection.INTERNAL,
+                status=InteractionStatus.ASSIGNED,
+                performed_by=actor_id,
+                payload={"file_count": 1, "is_inline": True},
+                is_visible=True,
+                message_id=None,
+            )
+        )
+
+        attachment_service = AttachmentService(
+            attachment_repository=self.attachment_repository,
+            interaction_repository=self.interaction_repository,
+            ticket_repository=self.ticket_repository,
+            storage_service=self.storage_service,
+        )
+
+        attachment = await attachment_service.create_inline_image(
+            file, interaction.interaction_id
+        )
+
+        is_image = (attachment.mime_type or "").startswith("image/")
+        preview_url = (
+            await self.storage_service.presigned_get_url(
+                object_key=attachment.storage_key,
+                filename=attachment.filename,
+                inline=True,
+            )
+            if is_image
+            else None
+        )
+
+        return InlineImageUploadResponse(
+            id=attachment.attachment_id,
+            content_id=attachment.content_id,
+            filename=attachment.filename,
+            mime_type=attachment.mime_type,
+            size=attachment.size_bytes,
+            preview_url=preview_url,
+            interaction_id=interaction.interaction_id,
+        )
+
     async def compose_email(
         self,
         request: ComposeEmailRequest,
         current_user: User,
         files: list[UploadFile] | None = None,
+        inline_image_interaction_ids: list[UUID] | None = None,
     ) -> ComposeEmailResponse:
         """
         Authors a brand-new outbound email to one of the platform's
@@ -1729,6 +1841,14 @@ class InteractionService:
 
         envelope = await self._attach_outbound_files(interaction, envelope, files)
 
+        if envelope is not None and inline_image_interaction_ids:
+            envelope = await self._merge_inline_images_into_envelope(
+                interaction,
+                envelope,
+                inline_image_interaction_ids,
+                expected_performed_by=current_user.user_id,
+            )
+
         await self._schedule_delayed_send(interaction, envelope)
 
         return ComposeEmailResponse(
@@ -1747,6 +1867,7 @@ class InteractionService:
         request: ForwardToInternalUserRequest,
         current_user: User,
         files: list[UploadFile] | None = None,
+        inline_image_interaction_ids: list[UUID] | None = None,
     ) -> ForwardToInternalUserResponse:
         """
         Forwards an existing client email/interaction — distinct from
@@ -1945,6 +2066,14 @@ class InteractionService:
         envelope = await self._merge_existing_attachments_into_envelope(
             interaction, envelope, interaction_id
         )
+
+        if envelope is not None and inline_image_interaction_ids:
+            envelope = await self._merge_inline_images_into_envelope(
+                interaction,
+                envelope,
+                inline_image_interaction_ids,
+                expected_performed_by=current_user.user_id,
+            )
 
         await self._schedule_delayed_send(interaction, envelope)
 

@@ -303,6 +303,32 @@ export interface ComposeEmailPayload {
   // (Outlook-style clipboard paste — pasted rich text/tables/inline
   // images). Omit to send exactly like before this field existed.
   bodyHtml?: string | null;
+  // Interaction ids returned by uploadComposeInlineImage for any
+  // screenshot pasted into the editor before Send — reassigned onto
+  // this message's own interaction server-side and embedded as a real
+  // cid: inline image (see InteractionService.upload_compose_inline_
+  // image / _merge_inline_images_into_envelope).
+  inlineImageInteractionIds?: string[];
+}
+
+// POST /inbox/compose/attachments/inline-image — stages a single
+// pasted-into-the-body screenshot for a Compose or Forward message
+// that hasn't been sent yet (neither has a pre-existing interaction
+// to upload against the way a ticket reply/note does). Returns the
+// same shape as uploadDraftInlineImage/uploadTicketInlineImage; the
+// composer pushes result.interaction_id into inlineImageInteractionIds
+// for the eventual composeEmail/forwardToInternalUser call.
+export async function uploadComposeInlineImage(
+  file: File
+): Promise<InlineImageUploadResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const { data } = await apiClient.post<InlineImageUploadResponse>(
+    "/inbox/compose/attachments/inline-image",
+    formData
+  );
+  return data;
 }
 
 // POST /inbox/compose — author a brand-new outbound email to one of
@@ -321,6 +347,12 @@ export async function composeEmail(
   if (payload.bcc?.length) formData.append("bcc", payload.bcc.join(","));
   if (payload.bodyHtml) formData.append("body_html", payload.bodyHtml);
   payload.files?.forEach((file) => formData.append("files", file));
+  if (payload.inlineImageInteractionIds?.length) {
+    formData.append(
+      "inline_image_interaction_ids",
+      payload.inlineImageInteractionIds.join(",")
+    );
+  }
 
   const { data } = await apiClient.post<ComposeEmailResponse>(
     "/inbox/compose",
@@ -348,6 +380,10 @@ export interface ForwardToInternalUserPayload {
   // (Outlook-style clipboard paste — see ComposeEmailPayload.bodyHtml
   // above for the same additive contract).
   bodyHtml?: string | null;
+  // See ComposeEmailPayload.inlineImageInteractionIds — the same
+  // staging mechanism (and the same uploadComposeInlineImage call) is
+  // reused for Forward's own paste-a-screenshot case.
+  inlineImageInteractionIds?: string[];
 }
 
 // POST /inbox/{interaction_id}/forward — forward an existing client
@@ -369,6 +405,12 @@ export async function forwardToInternalUser(
   formData.append("message", payload.message);
   if (payload.bodyHtml) formData.append("body_html", payload.bodyHtml);
   payload.files?.forEach((file) => formData.append("files", file));
+  if (payload.inlineImageInteractionIds?.length) {
+    formData.append(
+      "inline_image_interaction_ids",
+      payload.inlineImageInteractionIds.join(",")
+    );
+  }
 
   const { data } = await apiClient.post<ForwardToInternalUserResponse>(
     `/inbox/${payload.interactionId}/forward`,

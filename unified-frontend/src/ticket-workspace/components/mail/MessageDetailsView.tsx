@@ -681,6 +681,7 @@ export function MessageDetailsView({
       dateLabel: formatDateTime(email.received_at),
       subject: email.subject,
       body: email.body,
+      bodyHtml: email.body_html ?? undefined,
     });
     onForward({
       clientId: email.client_id,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Save, Send, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
 import { listInternalNoteRecipients } from "@tw/api/interaction";
+import { uploadComposeInlineImage } from "@tw/api/inbox";
 import { listClientContacts } from "@tw/api/clients";
 import { RecipientCombobox } from "@tw/components/common/RecipientCombobox";
 import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
@@ -110,6 +111,7 @@ interface ComposeViewProps {
     cc: string[];
     bcc: string[];
     files: File[];
+    inlineImageInteractionIds?: string[];
   }) => Promise<unknown>;
   // Forward mode's own Send path — distinct from onSend since
   // forwarding can address either an internal organization user (by
@@ -130,6 +132,7 @@ interface ComposeViewProps {
     message: string;
     files: File[];
     bodyHtml?: string;
+    inlineImageInteractionIds?: string[];
   }) => Promise<unknown>;
   onDiscard: () => void;
   // Only rendered (as a "← Back" control) when this view is in
@@ -235,6 +238,18 @@ export function ComposeView({
   const [bodyHtml, setBodyHtml] = useState(initialValues?.bodyHtml ?? localDraft?.bodyHtml ?? "");
   const [files, setFiles] = useState<File[]>([]);
   const [hasPendingImageUploads, setHasPendingImageUploads] = useState(false);
+  // Interaction ids of any screenshot pasted/dropped into the editor,
+  // staged via uploadComposeInlineImage (see RichTextEditor's
+  // onImageUpload below) and reassigned onto the real outbound
+  // message at Send time — same pattern TicketComposer.tsx already
+  // uses via pastedImageInteractionIdsRef for Reply/Note.
+  const pastedImageInteractionIdsRef = useRef<string[]>([]);
+
+  async function handleComposeImageUpload(file: File) {
+    const res = await uploadComposeInlineImage(file);
+    pastedImageInteractionIdsRef.current.push(res.interaction_id);
+    return { attachmentId: res.id, contentId: res.content_id };
+  }
 
   // Forward's "To" data source — every active internal user. Fetched
   // only in Forward mode (Compose's own client picker needs none of
@@ -335,8 +350,12 @@ export function ComposeView({
   );
   // Cc/Bcc are optional everywhere (an empty value is never an error),
   // but a non-empty entry must still be a real address — validated
-  // here only for Forward (see canSend below): Compose/Reply's own
-  // Cc/Bcc handling is unrelated and deliberately left as-is.
+  // for both Compose and Forward (see canSend below). This used to be
+  // Forward-only, which meant a malformed Cc/Bcc address silently sent
+  // successfully from plain Compose — a real gap, not intentional
+  // scoping (Reply's own Cc/Bcc, a separate hand-rolled implementation
+  // in TicketComposer.tsx/MessageDetailsView.tsx, is unrelated and
+  // untouched here).
   const ccEntries = useMemo(() => parseEmails(cc), [cc]);
   const bccEntries = useMemo(() => parseEmails(bcc), [bcc]);
   const invalidCcEntries = useMemo(
@@ -362,7 +381,8 @@ export function ComposeView({
       invalidToEntries.length === 0 &&
       subject.trim() &&
       !isEmpty &&
-      (!isForward || (invalidCcEntries.length === 0 && invalidBccEntries.length === 0))
+      invalidCcEntries.length === 0 &&
+      invalidBccEntries.length === 0
   );
 
   // The "To" field is a single text input (never a separate field —
@@ -438,10 +458,8 @@ export function ComposeView({
     if (!canSend) return;
 
     // A composer-agnostic gate: don't send while a pasted screenshot
-    // is still uploading. Always false here today (see RichTextEditor
-    // usage below — this composer has no onImageUpload wired, so
-    // hasPendingImageUploads never actually becomes true), kept for
-    // parity/safety if that gap is ever closed.
+    // is still uploading (or failed to upload) — see RichTextEditor's
+    // onImageUpload wiring below (handleComposeImageUpload).
     if (hasPendingImageUploads) return;
 
     const richBodyHtml = isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined;
@@ -459,6 +477,7 @@ export function ComposeView({
         message: htmlToPlainText(bodyHtml),
         files,
         bodyHtml: richBodyHtml,
+        inlineImageInteractionIds: pastedImageInteractionIdsRef.current,
       });
       if (result) {
         clearLocalDraft();
@@ -481,6 +500,7 @@ export function ComposeView({
       cc: Array.from(new Set([...extraTo, ...parseEmails(cc)])),
       bcc: parseEmails(bcc),
       files,
+      inlineImageInteractionIds: pastedImageInteractionIdsRef.current,
     });
     if (result) {
       clearLocalDraft();
@@ -661,8 +681,8 @@ export function ComposeView({
               {invalidToEntries.length > 0 && (
                 <p className="mt-1 text-[11px] text-destructive">
                   {invalidToEntries.length === 1
-                    ? `"${invalidToEntries[0]}" isn't a valid email address.`
-                    : "Enter valid email addresses, separated by commas."}
+                    ? `Enter a valid email address. "${invalidToEntries[0]}" isn't valid.`
+                    : "Enter a valid email address for every entry, separated by commas."}
                 </p>
               )}
               {isForward && (
@@ -687,13 +707,13 @@ export function ComposeView({
                   value={cc}
                   onChange={(e) => setCc(e.target.value)}
                   placeholder="cc@example.com, ..."
-                  aria-invalid={isForward && invalidCcEntries.length > 0}
+                  aria-invalid={invalidCcEntries.length > 0}
                 />
-                {isForward && invalidCcEntries.length > 0 && (
+                {invalidCcEntries.length > 0 && (
                   <p className="mt-1 text-[11px] text-destructive">
                     {invalidCcEntries.length === 1
-                      ? `"${invalidCcEntries[0]}" isn't a valid email address.`
-                      : "Enter valid email addresses, separated by commas."}
+                      ? `Enter a valid email address. "${invalidCcEntries[0]}" isn't valid.`
+                      : "Enter a valid email address for every entry, separated by commas."}
                   </p>
                 )}
               </div>
@@ -703,13 +723,13 @@ export function ComposeView({
                   value={bcc}
                   onChange={(e) => setBcc(e.target.value)}
                   placeholder="bcc@example.com, ..."
-                  aria-invalid={isForward && invalidBccEntries.length > 0}
+                  aria-invalid={invalidBccEntries.length > 0}
                 />
-                {isForward && invalidBccEntries.length > 0 && (
+                {invalidBccEntries.length > 0 && (
                   <p className="mt-1 text-[11px] text-destructive">
                     {invalidBccEntries.length === 1
-                      ? `"${invalidBccEntries[0]}" isn't a valid email address.`
-                      : "Enter valid email addresses, separated by commas."}
+                      ? `Enter a valid email address. "${invalidBccEntries[0]}" isn't valid.`
+                      : "Enter a valid email address for every entry, separated by commas."}
                   </p>
                 )}
               </div>
@@ -727,6 +747,7 @@ export function ComposeView({
                 onChange={setBodyHtml}
                 placeholder="Write your message..."
                 minHeight="12rem"
+                onImageUpload={handleComposeImageUpload}
                 onPendingImageUploadsChange={setHasPendingImageUploads}
               />
             </div>

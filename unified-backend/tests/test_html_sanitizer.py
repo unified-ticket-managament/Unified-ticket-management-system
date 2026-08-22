@@ -22,9 +22,22 @@ def test_allows_lists():
 
 
 def test_allows_a_real_table():
+    """
+    The table's structure/content survives unchanged — border styling
+    (see the _style_email_tables tests below) is layered on top of
+    this, not a replacement for it, so this only asserts shape/content,
+    not a byte-for-byte match (see test_table_border_styling.py-style
+    assertions further down for the actual styling behavior).
+    """
+
     html = "<table><tbody><tr><td>Name</td><td>Status</td></tr></tbody></table>"
 
-    assert sanitize_outbound_html(html) == html
+    result = sanitize_outbound_html(html)
+
+    assert "<tbody><tr>" in result
+    assert "Name</td>" in result
+    assert "Status</td>" in result
+    assert "</tr></tbody></table>" in result
 
 
 def test_strips_script_tags_entirely():
@@ -114,9 +127,8 @@ def test_table_structure_survives_excel_style_verbose_markup():
 
     result = sanitize_outbound_html(html)
 
-    assert "<table>" in result
-    assert "<td>Raju</td>" in result
-    assert "<td>Open</td>" in result
+    assert "Raju</td>" in result
+    assert "Open</td>" in result
     assert "colgroup" not in result
     assert "mso-" not in result
 
@@ -124,3 +136,60 @@ def test_table_structure_survives_excel_style_verbose_markup():
 def test_empty_and_plain_text_only_html_pass_through_unchanged():
     assert sanitize_outbound_html("") == ""
     assert sanitize_outbound_html("<p>Just plain text.</p>") == "<p>Just plain text.</p>"
+
+
+# ---------------------------------------------------------
+# Outlook table border styling (_style_email_tables)
+# ---------------------------------------------------------
+#
+# Outlook (and most real email clients) render a <table> with no
+# border styling at all as a borderless grid, even though nh3's
+# allow-list never lets a pasted style/border attribute survive in the
+# first place — so this app must apply its own fixed inline styling
+# rather than trust/preserve anything the agent pasted.
+
+
+def test_table_gets_border_collapse_style():
+    html = "<table><tr><td>a</td></tr></table>"
+
+    result = sanitize_outbound_html(html)
+
+    assert '<table style="border-collapse:collapse;width:100%;">' in result
+
+
+def test_td_and_th_get_visible_border_and_padding():
+    html = "<table><thead><tr><th>Role</th></tr></thead><tbody><tr><td>Staff</td></tr></tbody></table>"
+
+    result = sanitize_outbound_html(html)
+
+    assert '<th style="border:1px solid #888888;padding:6px 8px;text-align:left;">Role</th>' in result
+    assert '<td style="border:1px solid #888888;padding:6px 8px;text-align:left;">Staff</td>' in result
+
+
+def test_table_styling_preserves_colspan_rowspan():
+    html = '<table><tr><td colspan="2">merged</td></tr></table>'
+
+    result = sanitize_outbound_html(html)
+
+    assert 'colspan="2"' in result
+    assert "merged" in result
+
+
+def test_table_styling_does_not_touch_non_table_tags():
+    html = "<p>hi</p><ul><li>one</li></ul>"
+
+    result = sanitize_outbound_html(html)
+
+    assert result == html
+
+
+def test_table_styling_and_cid_image_coexist():
+    html = (
+        "<table><tr><td>Screenshot</td></tr></table>"
+        '<img src="cid:abc123" alt="screenshot">'
+    )
+
+    result = sanitize_outbound_html(html)
+
+    assert 'src="cid:abc123"' in result
+    assert "border-collapse:collapse" in result

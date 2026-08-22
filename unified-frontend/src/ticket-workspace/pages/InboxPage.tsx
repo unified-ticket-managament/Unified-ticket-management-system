@@ -203,6 +203,7 @@ export function InboxPage() {
     message: string;
     files: File[];
     bodyHtml?: string;
+    inlineImageInteractionIds?: string[];
   }) {
     const result = await mail.forwardToInternalUser(payload);
     if (result) closeCompose();
@@ -218,6 +219,7 @@ export function InboxPage() {
     cc: string[];
     bcc: string[];
     files: File[];
+    inlineImageInteractionIds?: string[];
   }) {
     const result = await mail.composeEmail(payload);
     if (result) closeCompose();

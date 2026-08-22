@@ -62,7 +62,7 @@ def sanitize_outbound_html(html: str) -> str:
         link_rel=None,
     )
 
-    return _strip_non_cid_images(cleaned)
+    return _style_email_tables(_strip_non_cid_images(cleaned))
 
 
 def _strip_non_cid_images(html: str) -> str:
@@ -85,3 +85,27 @@ def _strip_non_cid_images(html: str) -> str:
         return ""
 
     return re.sub(r"<img\b[^>]*/?>", _drop_if_not_cid, html, flags=re.IGNORECASE)
+
+
+# Outlook (and most real email clients) render a <table> with no
+# border styling at all as a borderless grid, even though this app's
+# own read-view CSS makes the exact same markup look fine in-app — the
+# gap only shows up once a message actually reaches a real inbox.
+# Inline styles are required (not a <style> block) for Outlook
+# compatibility. Applied unconditionally, not merged with any existing
+# style attribute — nh3.clean above never allows one through in the
+# first place (see _ALLOWED_ATTRIBUTES), so there is never a pasted
+# style attribute here to preserve or conflict with.
+_TABLE_STYLE = "border-collapse:collapse;width:100%;"
+_CELL_STYLE = "border:1px solid #888888;padding:6px 8px;text-align:left;"
+
+
+def _style_email_tables(html: str) -> str:
+    html = re.sub(r"<table\b", f'<table style="{_TABLE_STYLE}"', html, flags=re.IGNORECASE)
+    html = re.sub(
+        r"<(td|th)\b",
+        lambda match: f'<{match.group(1)} style="{_CELL_STYLE}"',
+        html,
+        flags=re.IGNORECASE,
+    )
+    return html

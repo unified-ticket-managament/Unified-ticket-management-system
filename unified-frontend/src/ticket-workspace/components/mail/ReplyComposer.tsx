@@ -16,6 +16,7 @@ import {
   validateFiles,
 } from "@tw/lib/attachmentMeta";
 import { escapeHtml, htmlToPlainText, isRichContent, resolveInlineImageSources } from "@tw/lib/richText";
+import { isValidEmailAddress } from "@tw/lib/validation";
 import type { AttachmentMeta, ClientContact } from "@tw/types";
 
 function parseEmails(value: string): string[] {
@@ -131,6 +132,20 @@ export function ReplyComposer({
   const isEmpty = isRichTextEmpty(bodyHtml);
   const displaySubject = /^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`;
 
+  // A non-empty Cc/Bcc entry must still be a real address — this had
+  // no frontend validation at all before (an invalid entry only ever
+  // got caught by the backend's own EmailStr rejection on send, with
+  // no visible error and no Send-button gating).
+  const invalidCcEntries = useMemo(
+    () => parseEmails(cc).filter((entry) => !isValidEmailAddress(entry)),
+    [cc]
+  );
+  const invalidBccEntries = useMemo(
+    () => parseEmails(bcc).filter((entry) => !isValidEmailAddress(entry)),
+    [bcc]
+  );
+  const hasInvalidRecipient = invalidCcEntries.length > 0 || invalidBccEntries.length > 0;
+
   const toOptions = useMemo(() => {
     const seen = new Set<string>();
     const options: ClientContact[] = [];
@@ -187,6 +202,7 @@ export function ReplyComposer({
 
   async function handleSend() {
     if (hasPendingImageUploads) return;
+    if (hasInvalidRecipient) return;
 
     if (isTicketed) {
       onSend({
@@ -283,6 +299,7 @@ export function ReplyComposer({
             onChange={(e) => setCc(e.target.value)}
             placeholder="cc@example.com, ..."
             className="h-8 flex-1 text-xs"
+            aria-invalid={invalidCcEntries.length > 0}
           />
           {!showBcc && (
             <button
@@ -294,6 +311,13 @@ export function ReplyComposer({
             </button>
           )}
         </div>
+        {invalidCcEntries.length > 0 && (
+          <p className="pl-12 text-[11px] text-destructive">
+            {invalidCcEntries.length === 1
+              ? `Enter a valid email address. "${invalidCcEntries[0]}" isn't valid.`
+              : "Enter a valid email address for every entry, separated by commas."}
+          </p>
+        )}
         {showBcc && (
           <div className="flex items-center gap-2 text-xs">
             <span className="w-10 flex-none text-muted-foreground">Bcc</span>
@@ -302,8 +326,16 @@ export function ReplyComposer({
               onChange={(e) => setBcc(e.target.value)}
               placeholder="bcc@example.com, ..."
               className="h-8 flex-1 text-xs"
+              aria-invalid={invalidBccEntries.length > 0}
             />
           </div>
+        )}
+        {showBcc && invalidBccEntries.length > 0 && (
+          <p className="pl-12 text-[11px] text-destructive">
+            {invalidBccEntries.length === 1
+              ? `Enter a valid email address. "${invalidBccEntries[0]}" isn't valid.`
+              : "Enter a valid email address for every entry, separated by commas."}
+          </p>
         )}
         <div className="flex items-center gap-2 text-xs">
           <span className="w-10 flex-none text-muted-foreground">Subject</span>
@@ -345,7 +377,7 @@ export function ReplyComposer({
             <Button
               size="sm"
               className="gap-1.5"
-              disabled={isEmpty || isSending || hasPendingImageUploads}
+              disabled={isEmpty || isSending || hasPendingImageUploads || hasInvalidRecipient}
               onClick={handleSend}
             >
               <Send className="h-3.5 w-3.5" />
@@ -457,7 +489,7 @@ export function ReplyComposer({
               <Button
                 size="sm"
                 className="gap-1.5"
-                disabled={isEmpty || isSending || isSendingDraft || hasPendingImageUploads}
+                disabled={isEmpty || isSending || isSendingDraft || hasPendingImageUploads || hasInvalidRecipient}
                 onClick={handleSend}
               >
                 {isSendingDraft ? (

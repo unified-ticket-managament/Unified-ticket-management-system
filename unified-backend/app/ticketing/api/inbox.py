@@ -51,6 +51,7 @@ from app.ticketing.schemas.ticket_action import (
     InteractionReplyResponse,
 )
 from app.ticketing.services.attachment_service import AttachmentService, attachments_to_metadata
+from app.ticketing.utils.recipient_validation import ensure_recipients_are_valid
 from app.ticketing.services.inbox_service import InboxService
 from app.ticketing.services.mail_folder_service import MailFolderService
 from app.ticketing.services.message_read_status_service import (
@@ -79,6 +80,25 @@ def _split_emails(raw: str | None) -> list[str]:
     if not raw:
         return []
     return [email.strip() for email in raw.split(",") if email.strip()]
+
+
+def _split_uuids(raw: str | None) -> list[UUID]:
+    """
+    Same comma-separated-Form-field convention as _split_emails above,
+    for a Compose/Forward request's inline_image_interaction_ids — the
+    staging interaction ids minted by POST /inbox/compose/attachments/
+    inline-image (see InteractionService.upload_compose_inline_image).
+    """
+
+    if not raw:
+        return []
+    try:
+        return [UUID(value.strip()) for value in raw.split(",") if value.strip()]
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="inline_image_interaction_ids must be a comma-separated list of UUIDs.",
+        )
 
 
 # ---------------------------------------------------------
@@ -319,6 +339,7 @@ async def compose_email(
     bcc: str = Form(default=""),
     body_html: str | None = Form(default=None),
     files: list[UploadFile] = File(default=[]),
+    inline_image_interaction_ids: str = Form(default=""),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
@@ -329,7 +350,22 @@ async def compose_email(
     plain JSON body, like every other Mail endpoint) purely so
     attachments can ride along in the same request, mirroring
     POST /tickets/{id}/attachments.
+
+    `inline_image_interaction_ids` carries the staging interaction
+    ids minted by POST /inbox/compose/attachments/inline-image for
+    any screenshot pasted into the body before Send — see
+    InteractionService.upload_compose_inline_image.
     """
+
+    # Validated before ComposeEmailRequest is ever constructed — that
+    # constructor's fields are EmailStr-typed, so a malformed address
+    # reaching it directly would raise an unhandled pydantic.
+    # ValidationError (no handler registered for it — see app/main.py)
+    # rather than a clean 400. See recipient_validation.py's own
+    # module docstring for the full syntax+domain rationale.
+    parsed_cc = _split_emails(cc)
+    parsed_bcc = _split_emails(bcc)
+    ensure_recipients_are_valid(to=to_email, cc=parsed_cc, bcc=parsed_bcc)
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
@@ -353,25 +389,75 @@ async def compose_email(
             to_email=to_email,
             subject=subject,
             message=message,
-            cc=_split_emails(cc),
-            bcc=_split_emails(bcc),
+            cc=parsed_cc,
+            bcc=parsed_bcc,
             body_html=body_html,
         ),
         current_user=current_user,
         files=files,
+        inline_image_interaction_ids=_split_uuids(inline_image_interaction_ids),
     )
 
-    if files:
-        # compose_email already stored these (before dispatch, so they
-        # actually ride along on the real outbound email — see
-        # InteractionService._attach_outbound_files) — just re-fetch
-        # for the response's attachment metadata.
+    if files or inline_image_interaction_ids:
+        # compose_email already stored/reassigned these (before
+        # dispatch, so they actually ride along on the real outbound
+        # email — see InteractionService._attach_outbound_files/
+        # _merge_inline_images_into_envelope) — just re-fetch for the
+        # response's attachment metadata.
         stored = await attachment_repository.list_by_interaction_id(
             composed.interaction_id
         )
         composed.attachments = await attachments_to_metadata(stored, storage_service)
 
     return composed
+
+
+# ---------------------------------------------------------
+# Compose/Forward inline image staging — no interaction exists yet
+# ---------------------------------------------------------
+#
+# Registered before "/{interaction_id}" for the same reason /compose
+# itself is above.
+
+@router.post(
+    "/compose/attachments/inline-image",
+    response_model=InlineImageUploadResponse,
+    status_code=201,
+)
+async def upload_compose_inline_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Uploads a single pasted-into-the-body screenshot for a Compose or
+    Forward message that hasn't been sent yet — neither has a pre-
+    existing interaction to stage against the way a ticket reply/note
+    or a pre-ticket draft reply does (see InteractionService.
+    upload_compose_inline_image). The returned interaction_id is sent
+    back as one of compose_email's/forward_to_internal_user's
+    inline_image_interaction_ids at Send time.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
+    attachment_repository = AttachmentRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+        client_repository=client_repository,
+        attachment_repository=attachment_repository,
+        storage_service=get_storage_service(),
+    )
+
+    return await service.upload_compose_inline_image(
+        file=file,
+        current_user=current_user,
+    )
 
 
 # ---------------------------------------------------------
@@ -393,7 +479,9 @@ async def forward_to_internal_user(
     bcc: str = Form(default=""),
     subject: str = Form(...),
     message: str = Form(...),
+    body_html: str | None = Form(default=None),
     files: list[UploadFile] = File(default=[]),
+    inline_image_interaction_ids: str = Form(default=""),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
@@ -405,16 +493,42 @@ async def forward_to_internal_user(
     stored against `interaction_id` are always carried over, and any
     newly uploaded `files` ride along too, subject to the combined
     10-attachment total enforced in the service layer.
+
+    `body_html` — the frontend has sent this field for a while (see
+    api/inbox.ts's ForwardToInternalUserPayload), and
+    ForwardToInternalUserRequest already declares it, but this route
+    never actually accepted/parsed it as a Form field until now — a
+    real, previously-silent gap: any HTML the composer sent was
+    dropped before ever reaching the service, regardless of what the
+    editor produced.
+
+    `inline_image_interaction_ids` — see compose_email's identical
+    param above; the same POST /inbox/compose/attachments/inline-image
+    staging endpoint is reused for Forward's own paste-a-screenshot
+    case, since neither Compose nor Forward has a pre-existing
+    interaction to stage against before Send.
     """
+
+    # See compose_email's identical call above — validated before
+    # ForwardToInternalUserRequest (EmailStr-typed) is constructed, so
+    # a malformed recipient_email/cc/bcc 400s cleanly instead of
+    # raising an unhandled pydantic.ValidationError. recipient_user_id
+    # (the internal-recipient branch) is a real, already-stored
+    # platform user's own email — not new user input — so it's never
+    # re-validated here.
+    parsed_cc = _split_emails(cc)
+    parsed_bcc = _split_emails(bcc)
+    ensure_recipients_are_valid(to=recipient_email, cc=parsed_cc, bcc=parsed_bcc)
 
     request = ForwardToInternalUserRequest(
         client_id=client_id,
         recipient_user_id=recipient_user_id,
         recipient_email=recipient_email,
-        cc=_split_emails(cc),
-        bcc=_split_emails(bcc),
+        cc=parsed_cc,
+        bcc=parsed_bcc,
         subject=subject,
         message=message,
+        body_html=body_html,
     )
 
     interaction_repository = InteractionRepository(db)
@@ -440,6 +554,7 @@ async def forward_to_internal_user(
         request=request,
         current_user=current_user,
         files=files,
+        inline_image_interaction_ids=_split_uuids(inline_image_interaction_ids),
     )
 
 

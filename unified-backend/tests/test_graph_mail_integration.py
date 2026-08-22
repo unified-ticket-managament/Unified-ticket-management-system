@@ -1089,3 +1089,6 @@ def test_map_external_email_to_interaction_landed_mailbox_none_by_default():
     email = map_external_email_to_interaction(payload)
 
     assert email.landed_mailbox is None
+    assert "<table" in email.html_body
+    assert "Raju</td>" in email.html_body
+    assert "Status</td>" in email.html_body

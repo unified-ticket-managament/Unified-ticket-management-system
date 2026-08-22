@@ -181,7 +181,8 @@ function resolveFromToSubject(
 
 function resolveFields(
   row: InteractionDrawerRow,
-  email?: InteractionDrawerEmail | null
+  email?: InteractionDrawerEmail | null,
+  thread?: ThreadResponse | null
 ): ResolvedFields {
   // Pending inbox row — only the list summary is known until the
   // full email is fetched on demand.
@@ -203,12 +204,22 @@ function resolveFields(
     };
   }
 
-  const payload = row.raw?.payload ?? {};
+  // `row.raw` is the timeline list's own deliberately trimmed summary
+  // snapshot (see interaction_summary.trim_payload_for_list) — it
+  // strips body_html entirely and always reports attachments: []
+  // (e.g. for an INTERNAL_NOTE, which is never part of a real thread
+  // and so always takes this single-item branch). The same click
+  // handler that populated `row` already separately fetches the full,
+  // untrimmed interaction via getInteractionThread into `thread` —
+  // prefer that once it's loaded, falling back to `row.raw` only for
+  // the brief window before it resolves.
+  const full = thread?.ordered_thread?.[0] ?? row.raw;
+  const payload = full?.payload ?? {};
   const message =
     (payload.body ?? payload.message ?? payload.note) as string | undefined ??
     (row.raw ? summarize(row.raw) : row.summaryText);
-  const attachments = row.raw?.attachments ?? [];
-  const rawMessageHtml = row.raw ? messageBodyHtml(row.raw) : null;
+  const attachments = full?.attachments ?? [];
+  const rawMessageHtml = full ? messageBodyHtml(full) : null;
   const messageHtml = rawMessageHtml ? resolveCidImagesForDisplay(rawMessageHtml, attachments) : null;
   const extra = Object.entries(payload).filter(
     ([key, value]) => !HIDDEN_PAYLOAD_KEYS.has(key) && value !== null && value !== undefined
@@ -308,7 +319,7 @@ export function InteractionDetailsDrawer({
   }, [open]);
 
   const meta = row ? metaFor(row.type) : null;
-  const fields = row ? resolveFields(row, email) : null;
+  const fields = row ? resolveFields(row, email, thread) : null;
   // A thread of exactly one message (no real parent/children) falls
   // back to the plain single-item rendering below instead of the
   // full conversation list — same information, no redundant "1
