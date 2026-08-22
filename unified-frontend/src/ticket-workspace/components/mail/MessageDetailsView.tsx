@@ -303,7 +303,8 @@ interface MessageDetailsViewProps {
   ) => Promise<DraftSaveResponse | null>;
   onSendDraft: (
     interactionId: string,
-    toEmail?: string | null
+    toEmail?: string | null,
+    distributionListIds?: string[]
   ) => Promise<InteractionReplyResponse | null>;
   onDiscardDraft: (interactionId: string) => Promise<boolean>;
   onUploadDraftAttachment: (interactionId: string, files: File[]) => Promise<AttachmentMeta[] | null>;
@@ -535,6 +536,7 @@ export function MessageDetailsView({
     bcc: string[];
     files: File[];
     to: string | null;
+    distributionListIds: string[];
   }) {
     if (isTicketed && email.ticket_id) {
       // Files are uploaded *before* the reply is sent (not after) so
@@ -555,6 +557,7 @@ export function MessageDetailsView({
         cc: payload.cc,
         bcc: payload.bcc,
         to_email: payload.to,
+        distribution_list_ids: payload.distributionListIds,
         attachment_source_interaction_id: attachmentSourceInteractionId,
         reply_all: replyMode === "replyAll",
         inline_image_interaction_ids: pastedImageInteractionIdsRef.current,
@@ -601,6 +604,7 @@ export function MessageDetailsView({
       cc: payload.cc,
       bcc: payload.bcc,
       to_email: payload.to,
+      distribution_list_ids: payload.distributionListIds,
       reply_all: replyMode === "replyAll",
     });
     if (result) {
@@ -652,8 +656,8 @@ export function MessageDetailsView({
     return { attachmentId: result.id, contentId: result.content_id };
   }
 
-  async function handleSendDraft(toEmail?: string | null) {
-    const result = await onSendDraft(email.interaction_id, toEmail);
+  async function handleSendDraft(toEmail?: string | null, distributionListIds?: string[]) {
+    const result = await onSendDraft(email.interaction_id, toEmail, distributionListIds);
     if (result) {
       setReplyMode(null);
       onRefreshList();

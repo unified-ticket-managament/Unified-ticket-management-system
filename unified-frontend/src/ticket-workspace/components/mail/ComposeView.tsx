@@ -21,6 +21,7 @@ import { uploadComposeInlineImage } from "@tw/api/inbox";
 import { listClientContacts } from "@tw/api/clients";
 import { RecipientCombobox } from "@tw/components/common/RecipientCombobox";
 import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
+import { DistributionListMultiSelect } from "@tw/components/common/DistributionListMultiSelect";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { htmlToPlainText, isRichContent, resolveInlineImageSources } from "@tw/lib/richText";
@@ -104,7 +105,7 @@ interface ComposeViewProps {
   isSending: boolean;
   onSend: (payload: {
     clientId: string;
-    toEmail: string;
+    toEmail?: string;
     subject: string;
     message: string;
     bodyHtml?: string;
@@ -112,20 +113,22 @@ interface ComposeViewProps {
     bcc: string[];
     files: File[];
     inlineImageInteractionIds?: string[];
+    distributionListIds?: string[];
   }) => Promise<unknown>;
   // Forward mode's own Send path — distinct from onSend since
-  // forwarding can address either an internal organization user (by
-  // user_id, resolved server-side to their real email) or an
-  // arbitrary external address (recipientEmail, e.g. another
-  // client's mailbox), and creates a different kind of communication
-  // (see InteractionService.forward_to_internal_user). Exactly one of
-  // recipientUserId/recipientEmail is set. Only required when
+  // forwarding can address a mix of internal organization users (by
+  // user_id, resolved server-side to their real email), arbitrary
+  // external addresses, and Distribution Lists (resolved server-side
+  // to their current active members), and creates a different kind
+  // of communication (see InteractionService.forward_to_internal_user).
+  // At least one of the three must be non-empty. Only required when
   // initialValues.mode === "forward".
   onForwardSend?: (payload: {
     interactionId: string;
     clientId: string;
-    recipientUserId?: string;
-    recipientEmail?: string;
+    recipientUserIds?: string[];
+    recipientEmails?: string[];
+    distributionListIds?: string[];
     cc?: string[];
     bcc?: string[];
     subject: string;
@@ -234,6 +237,13 @@ export function ComposeView({
   const [clientContacts, setClientContacts] = useState<ClientContact[]>([]);
   const [cc, setCc] = useState(localDraft?.cc ?? "");
   const [bcc, setBcc] = useState(localDraft?.bcc ?? "");
+  // Distribution Lists to include as recipients — a genuine
+  // additional "To" recipient in both modes (Forward and Compose
+  // alike have no fixed thread), resolved server-side to current
+  // active members. Always its own, additional field — never folded
+  // into the "To" input's own suggestion list, since a list expands
+  // to N members at send time, not one value.
+  const [distributionListIds, setDistributionListIds] = useState<string[]>([]);
   const [subject, setSubject] = useState(initialValues?.subject ?? localDraft?.subject ?? "");
   const [bodyHtml, setBodyHtml] = useState(initialValues?.bodyHtml ?? localDraft?.bodyHtml ?? "");
   const [files, setFiles] = useState<File[]>([]);
@@ -377,7 +387,7 @@ export function ComposeView({
 
   const canSend = Boolean(
     clientId &&
-      toEntries.length > 0 &&
+      (toEntries.length > 0 || distributionListIds.length > 0) &&
       invalidToEntries.length === 0 &&
       subject.trim() &&
       !isEmpty &&
@@ -465,12 +475,14 @@ export function ComposeView({
     const richBodyHtml = isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined;
 
     if (isForward) {
-      if (!onForwardSend || !initialValues?.interactionId || !toRecipient.email) return;
+      if (!onForwardSend || !initialValues?.interactionId) return;
+      if (!toRecipient.email && distributionListIds.length === 0) return;
       const result = await onForwardSend({
         interactionId: initialValues.interactionId,
         clientId,
-        recipientUserId: toRecipient.userId,
-        recipientEmail: toRecipient.userId ? undefined : toRecipient.email,
+        recipientUserIds: toRecipient.userId ? [toRecipient.userId] : [],
+        recipientEmails: !toRecipient.userId && toRecipient.email ? [toRecipient.email] : [],
+        distributionListIds,
         cc: ccEntries,
         bcc: bccEntries,
         subject: subject.trim(),
@@ -501,6 +513,7 @@ export function ComposeView({
       bcc: parseEmails(bcc),
       files,
       inlineImageInteractionIds: pastedImageInteractionIdsRef.current,
+      distributionListIds,
     });
     if (result) {
       clearLocalDraft();
@@ -698,6 +711,15 @@ export function ComposeView({
                     : "Select a client in the From field above, then pick a contact or type any external address (separate multiple with commas)."}
                 </p>
               )}
+            </div>
+
+            <div>
+              <DistributionListMultiSelect
+                label="Distribution Lists"
+                hint="Each active member is added as a real additional To recipient."
+                selectedIds={distributionListIds}
+                onChange={setDistributionListIds}
+              />
             </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

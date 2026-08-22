@@ -45,6 +45,19 @@ class OutboundEnvelope(BaseModel):
 
     to_email: EmailStr
 
+    # Full multi-recipient "To" list for a genuinely multi-recipient
+    # send (Manual Forward and Compose, both of which can resolve
+    # multiple internal users/external emails/Distribution List
+    # members into one send). None (the default) means "send to
+    # to_email alone, exactly as before this field existed" — every
+    # other envelope builder (build_reply_envelope, and Compose/
+    # Forward's own single-recipient case) leaves this unset and is
+    # completely unaffected. When set, graph_client.py's
+    # _build_send_mail_message uses this in place of [to_email] for
+    # Graph's toRecipients — Microsoft Graph's sendMail already
+    # natively supports multiple toRecipients in one call.
+    to_emails: list[EmailStr] | None = None
+
     # The client's Account Manager, auto-added so they see every
     # reply in their real inbox without checking the platform, plus
     # whatever the agent themselves added via the reply/compose form.

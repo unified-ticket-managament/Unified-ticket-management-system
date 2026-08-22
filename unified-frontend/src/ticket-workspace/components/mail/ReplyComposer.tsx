@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
+import { DistributionListMultiSelect } from "@tw/components/common/DistributionListMultiSelect";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
 import {
   ATTACHMENT_ACCEPT_ATTR,
@@ -50,6 +51,7 @@ interface ReplyComposerProps {
     bcc: string[];
     files: File[];
     to: string | null;
+    distributionListIds: string[];
   }) => void;
   // Pre-ticket path: every field is continuously auto-saved as a
   // real server-side Draft (interaction-scoped, so it works with no
@@ -62,7 +64,7 @@ interface ReplyComposerProps {
   // deliberately not part of the auto-saved draft (see ReplyComposer's
   // own "To" dropdown, chosen at send time, and InteractionService.
   // send_draft on the backend).
-  onSendDraft: (toEmail?: string | null) => Promise<unknown>;
+  onSendDraft: (toEmail?: string | null, distributionListIds?: string[]) => Promise<unknown>;
   onDiscardDraft: () => Promise<unknown>;
   onUploadDraftAttachment: (files: File[]) => Promise<AttachmentMeta[] | null>;
   onRemoveDraftAttachment: (attachmentId: string) => Promise<boolean>;
@@ -117,6 +119,7 @@ export function ReplyComposer({
   const [cc, setCc] = useState(initialCc.join(", "));
   const [bcc, setBcc] = useState(initialBcc.join(", "));
   const [showBcc, setShowBcc] = useState(initialBcc.length > 0);
+  const [distributionListIds, setDistributionListIds] = useState<string[]>([]);
   const [files, setFiles] = useState<File[]>([]);
   const [showAttachments, setShowAttachments] = useState(false);
 
@@ -212,6 +215,7 @@ export function ReplyComposer({
         bcc: parseEmails(bcc),
         files,
         to: selectedTo || null,
+        distributionListIds,
       });
       return;
     }
@@ -221,7 +225,7 @@ export function ReplyComposer({
     // yet if the user clicks Send quickly after typing.
     setIsSendingDraft(true);
     await persistDraft();
-    await onSendDraft(selectedTo || null);
+    await onSendDraft(selectedTo || null, distributionListIds);
     setIsSendingDraft(false);
   }
 
@@ -337,6 +341,13 @@ export function ReplyComposer({
               : "Enter a valid email address for every entry, separated by commas."}
           </p>
         )}
+        <div className="pt-1">
+          <DistributionListMultiSelect
+            label="Distribution Lists (Cc)"
+            selectedIds={distributionListIds}
+            onChange={setDistributionListIds}
+          />
+        </div>
         <div className="flex items-center gap-2 text-xs">
           <span className="w-10 flex-none text-muted-foreground">Subject</span>
           <span className="truncate text-foreground/80">{displaySubject}</span>

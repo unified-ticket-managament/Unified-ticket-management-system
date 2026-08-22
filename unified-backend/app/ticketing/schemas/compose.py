@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 from app.ticketing.schemas.attachment import AttachmentMetadata
 
@@ -15,11 +15,20 @@ class ComposeEmailRequest(BaseModel):
     interaction to reply onto yet; `to_email` is the external
     recipient the agent typed in themselves rather than a sender
     resolved from an inbound email.
+
+    `to_email` is optional — the primary/only recipient can instead
+    come entirely from `distribution_list_ids` (Compose has no fixed
+    thread, so a picked Distribution List becomes a genuine additional
+    "To" recipient, not downgraded to Cc — resolved server-side and
+    merged via the same additive OutboundEnvelope.to_emails mechanism
+    Forward uses). At least one of the two must be present.
     """
 
     client_id: UUID
 
-    to_email: EmailStr
+    to_email: EmailStr | None = None
+
+    distribution_list_ids: list[UUID] = Field(default_factory=list)
 
     cc: list[EmailStr] = Field(default_factory=list)
 
@@ -33,6 +42,12 @@ class ComposeEmailRequest(BaseModel):
     # (Outlook-style clipboard paste). See ReplyCreate.body_html
     # (schemas/ticket_action.py) for the same additive contract.
     body_html: str | None = None
+
+    @model_validator(mode="after")
+    def _require_a_recipient_source(self) -> "ComposeEmailRequest":
+        if not self.to_email and not self.distribution_list_ids:
+            raise ValueError("Either to_email or distribution_list_ids is required.")
+        return self
 
 
 class ComposeEmailResponse(BaseModel):

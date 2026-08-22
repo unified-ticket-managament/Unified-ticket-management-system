@@ -18,6 +18,7 @@ from .message_read_receipt import MessageReadReceipt
 from .ticket_escalation import TicketEscalation
 from .escalation_handling_sla import EscalationHandlingSLA
 from .rule import Rule
+from .distribution_list import DistributionList, DistributionListMember
 
 __all__ = [
     "Base",
@@ -39,4 +40,6 @@ __all__ = [
     "TicketEscalation",
     "EscalationHandlingSLA",
     "Rule",
+    "DistributionList",
+    "DistributionListMember",
 ]

@@ -8,9 +8,11 @@
 #
 # Focus: the two things that must never be trusted from the frontend
 # alone — (1) is the caller actually authorized to send from the
-# selected client's mailbox, (2) does the selected recipient resolve
+# selected client's mailbox, (2) does each selected recipient resolve
 # to a real, active internal agent — plus the happy path's mailbox
-# resolution and notification delivery.
+# resolution, notification delivery, and the multi-recipient
+# resolution/dedup/one-envelope behavior (mixed internal user/external
+# email/Distribution List sources).
 
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -134,6 +136,23 @@ class _FakeUserRepository:
     async def get_by_id(self, user_id):
         return self._users_by_id.get(user_id)
 
+    async def get_names_by_ids(self, user_ids):
+        return {
+            uid: self._users_by_id[uid].name
+            for uid in user_ids
+            if uid in self._users_by_id
+        }
+
+
+class _FakeDistributionListRepository:
+    def __init__(self, by_list_id=None):
+        self._by_list_id = by_list_id or {}
+
+    async def get_active_member_emails_by_list_ids(self, distribution_list_ids):
+        return {
+            list_id: self._by_list_id.get(list_id, {}) for list_id in distribution_list_ids
+        }
+
 
 class _FakeNotificationService:
     def __init__(self):
@@ -143,13 +162,21 @@ class _FakeNotificationService:
         self.calls.append((set(user_ids), notification_type, kwargs))
 
 
-def _build_service(*, original, clients_by_id, users_by_id, notification_service=None):
+def _build_service(
+    *,
+    original,
+    clients_by_id,
+    users_by_id,
+    notification_service=None,
+    distribution_list_repository=None,
+):
     return InteractionService(
         interaction_repository=_FakeInteractionRepository(original),
         ticket_repository=None,
         user_repository=_FakeUserRepository(users_by_id),
         client_repository=_FakeClientRepository(clients_by_id),
         notification_service=notification_service or _FakeNotificationService(),
+        distribution_list_repository=distribution_list_repository,
     )
 
 
@@ -208,7 +235,7 @@ async def test_forward_rejects_client_the_manager_does_not_own():
             interaction_id=original.interaction_id,
             request=ForwardToInternalUserRequest(
                 client_id=unauthorized_client.client_id,
-                recipient_user_id=recipient.user_id,
+                recipient_user_ids=[recipient.user_id],
                 subject="Fwd: test",
                 message="forwarded content",
             ),
@@ -235,7 +262,7 @@ async def test_forward_rejects_invalid_recipient():
     service = _build_service(
         original=original,
         clients_by_id={client.client_id: client},
-        users_by_id={},  # recipient_user_id resolves to nothing
+        users_by_id={},  # recipient_user_ids resolves to nothing
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -243,7 +270,7 @@ async def test_forward_rejects_invalid_recipient():
             interaction_id=original.interaction_id,
             request=ForwardToInternalUserRequest(
                 client_id=client.client_id,
-                recipient_user_id=uuid4(),
+                recipient_user_ids=[uuid4()],
                 subject="Fwd: test",
                 message="forwarded content",
             ),
@@ -279,7 +306,7 @@ async def test_forward_rejects_non_agent_recipient():
             interaction_id=original.interaction_id,
             request=ForwardToInternalUserRequest(
                 client_id=client.client_id,
-                recipient_user_id=client_role_user.user_id,
+                recipient_user_ids=[client_role_user.user_id],
                 subject="Fwd: test",
                 message="forwarded content",
             ),
@@ -321,21 +348,23 @@ async def test_forward_happy_path_uses_client_mailbox_and_notifies_recipient():
         interaction_id=original.interaction_id,
         request=ForwardToInternalUserRequest(
             client_id=client.client_id,
-            recipient_user_id=recipient.user_id,
+            recipient_user_ids=[recipient.user_id],
             subject="Fwd: Billing question",
             message="Please handle this one.",
         ),
         current_user=current_user,
     )
 
-    assert response.recipient_user_id == recipient.user_id
-    assert response.recipient_email == recipient.email
+    assert len(response.recipients) == 1
+    assert response.recipients[0].user_id == recipient.user_id
+    assert response.recipients[0].email == recipient.email
 
     created = service.interaction_repository.created
     assert created.client_id == client.client_id
     assert created.parent_interaction_id == original.interaction_id
     assert created.payload["envelope"]["from_email"] == "familyfirst@probeps.com"
     assert created.payload["envelope"]["to_email"] == recipient.email
+    assert created.payload["envelope"].get("to_emails") is None
     assert "Please handle this one." in created.payload["message"]
     # Signature is present (build_agent_signature always includes the
     # sender's own name).
@@ -370,7 +399,7 @@ async def test_forward_falls_back_to_shared_mailbox_when_client_has_none():
         interaction_id=original.interaction_id,
         request=ForwardToInternalUserRequest(
             client_id=client.client_id,
-            recipient_user_id=recipient.user_id,
+            recipient_user_ids=[recipient.user_id],
             subject="Fwd: test",
             message="content",
         ),
@@ -384,24 +413,27 @@ async def test_forward_falls_back_to_shared_mailbox_when_client_has_none():
     assert created.payload["envelope"]["from_email"] != ""
 
 
-def test_forward_request_rejects_both_recipient_fields():
-    """Exactly one of recipient_user_id/recipient_email is allowed —
-    supplying both must be rejected at the schema layer, before any
-    service logic runs."""
+def test_forward_request_allows_multiple_recipient_sources_together():
+    """
+    Unlike the old scalar recipient_user_id XOR recipient_email
+    contract, the request now genuinely supports combining all three
+    sources (internal users, external emails, Distribution Lists) in
+    one send — this must NOT raise.
+    """
 
-    with pytest.raises(ValidationError):
-        ForwardToInternalUserRequest(
-            client_id=uuid4(),
-            recipient_user_id=uuid4(),
-            recipient_email="external@example.com",
-            subject="Fwd: test",
-            message="content",
-        )
+    ForwardToInternalUserRequest(
+        client_id=uuid4(),
+        recipient_user_ids=[uuid4()],
+        recipient_emails=["external@example.com"],
+        distribution_list_ids=[uuid4()],
+        subject="Fwd: test",
+        message="content",
+    )
 
 
-def test_forward_request_rejects_neither_recipient_field():
-    """Supplying neither recipient field must also be rejected — the
-    request must always pick exactly one recipient kind."""
+def test_forward_request_rejects_no_recipient_source_at_all():
+    """Supplying none of the three recipient sources must be
+    rejected — the request must always name at least one source."""
 
     with pytest.raises(ValidationError):
         ForwardToInternalUserRequest(
@@ -413,12 +445,12 @@ def test_forward_request_rejects_neither_recipient_field():
 
 async def test_forward_to_external_email_sends_real_outbound_with_no_notification():
     """
-    A recipient_email (e.g. another client's mailbox) must be accepted
-    without any internal-identity lookup/check, must produce a real
-    outbound envelope addressed to that literal address, must never
-    call notification_service.notify (there's no platform user to
-    notify), and the response must carry recipient_user_id=None
-    alongside the literal recipient_email.
+    A recipient_emails entry (e.g. another client's mailbox) must be
+    accepted without any internal-identity lookup/check, must produce
+    a real outbound envelope addressed to that literal address, must
+    never call notification_service.notify (there's no platform user
+    to notify), and the response must carry a recipient with
+    user_id=None alongside the literal email.
     """
 
     manager_id = uuid4()
@@ -445,22 +477,23 @@ async def test_forward_to_external_email_sends_real_outbound_with_no_notificatio
         interaction_id=original.interaction_id,
         request=ForwardToInternalUserRequest(
             client_id=client.client_id,
-            recipient_email="client2@example.com",
+            recipient_emails=["client2@example.com"],
             subject="Fwd: Billing question",
             message="Please see the attached billing question.",
         ),
         current_user=current_user,
     )
 
-    assert response.recipient_user_id is None
-    assert response.recipient_email == "client2@example.com"
+    assert len(response.recipients) == 1
+    assert response.recipients[0].user_id is None
+    assert response.recipients[0].email == "client2@example.com"
 
     created = service.interaction_repository.created
     assert created.payload["envelope"]["from_email"] == "familyfirst@probeps.com"
     assert created.payload["envelope"]["to_email"] == "client2@example.com"
-    assert created.payload["recipient_kind"] == "external_email"
-    assert created.payload["recipient_email"] == "client2@example.com"
-    assert "recipient_user_id" not in created.payload
+    assert created.payload["recipients"] == [
+        {"user_id": None, "name": None, "email": "client2@example.com"}
+    ]
 
     # No platform user exists to notify for an external address.
     assert notification_service.calls == []
@@ -503,7 +536,7 @@ async def test_forward_to_external_email_still_enforces_client_authorization():
             interaction_id=original.interaction_id,
             request=ForwardToInternalUserRequest(
                 client_id=unauthorized_client.client_id,
-                recipient_email="client2@example.com",
+                recipient_emails=["client2@example.com"],
                 subject="Fwd: test",
                 message="forwarded content",
             ),
@@ -543,7 +576,7 @@ async def test_forward_to_only_defaults_cc_and_bcc_to_empty():
         interaction_id=original.interaction_id,
         request=ForwardToInternalUserRequest(
             client_id=client.client_id,
-            recipient_email="client@example.com",
+            recipient_emails=["client@example.com"],
             subject="Fwd: test",
             message="content",
         ),
@@ -579,7 +612,7 @@ async def test_forward_to_plus_cc_includes_cc_recipient():
         interaction_id=original.interaction_id,
         request=ForwardToInternalUserRequest(
             client_id=client.client_id,
-            recipient_email="client@example.com",
+            recipient_emails=["client@example.com"],
             cc=["manager@example.com"],
             subject="Fwd: test",
             message="content",
@@ -618,7 +651,7 @@ async def test_forward_to_plus_bcc_includes_bcc_recipient():
         interaction_id=original.interaction_id,
         request=ForwardToInternalUserRequest(
             client_id=client.client_id,
-            recipient_email="client@example.com",
+            recipient_emails=["client@example.com"],
             bcc=["audit@example.com"],
             subject="Fwd: test",
             message="content",
@@ -657,7 +690,7 @@ async def test_forward_to_plus_cc_plus_bcc_includes_all_recipients():
         interaction_id=original.interaction_id,
         request=ForwardToInternalUserRequest(
             client_id=client.client_id,
-            recipient_email="client@example.com",
+            recipient_emails=["client@example.com"],
             cc=["manager@example.com", "anotherclient@example.com"],
             bcc=["audit@example.com"],
             subject="Fwd: test",
@@ -674,12 +707,12 @@ async def test_forward_to_plus_cc_plus_bcc_includes_all_recipients():
 
 def test_forward_request_rejects_invalid_cc_email():
     """An invalid Cc address must be rejected at the schema layer, the
-    same way an invalid recipient_email already is."""
+    same way an invalid recipient email already is."""
 
     with pytest.raises(ValidationError):
         ForwardToInternalUserRequest(
             client_id=uuid4(),
-            recipient_email="client@example.com",
+            recipient_emails=["client@example.com"],
             cc=["not-an-email"],
             subject="Fwd: test",
             message="content",
@@ -692,8 +725,142 @@ def test_forward_request_rejects_invalid_bcc_email():
     with pytest.raises(ValidationError):
         ForwardToInternalUserRequest(
             client_id=uuid4(),
-            recipient_email="client@example.com",
+            recipient_emails=["client@example.com"],
             bcc=["not-an-email"],
             subject="Fwd: test",
             message="content",
         )
+
+
+# ---------------------------------------------------------
+# Multi-recipient resolution: mixed sources, dedup, Distribution Lists
+# ---------------------------------------------------------
+
+
+async def test_forward_mixed_user_and_external_email_sends_one_deduplicated_envelope():
+    """TEST 6/7-shaped: a Distribution List (here, a directly-picked
+    internal user standing in for a resolved DL member) plus an
+    external email in one send must produce exactly one Interaction/
+    envelope carrying both as the final `to_emails` list, and exactly
+    one notify() call for the internal recipient."""
+
+    manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="FamilyFirst",
+        inbox_email="familyfirst@probeps.com",
+        account_manager_id=manager_id,
+    )
+    original = _FakeInteraction(interaction_id=uuid4(), client_id=client.client_id)
+    recipient = _FakeUser(uuid4(), "Employee X", "employee.x@probeps.com", "Staff")
+    current_user = _FakeUser(manager_id, "Some Manager", "manager@probeps.com", "Account Manager")
+    notification_service = _FakeNotificationService()
+
+    service = _build_service(
+        original=original,
+        clients_by_id={client.client_id: client},
+        users_by_id={recipient.user_id: recipient},
+        notification_service=notification_service,
+    )
+
+    response = await service.forward_to_internal_user(
+        interaction_id=original.interaction_id,
+        request=ForwardToInternalUserRequest(
+            client_id=client.client_id,
+            recipient_user_ids=[recipient.user_id],
+            recipient_emails=["external@example.com"],
+            subject="Fwd: test",
+            message="content",
+        ),
+        current_user=current_user,
+    )
+
+    assert {r.email for r in response.recipients} == {recipient.email, "external@example.com"}
+
+    envelope = service.interaction_repository.created.payload["envelope"]
+    assert set(envelope["to_emails"]) == {recipient.email, "external@example.com"}
+
+    assert len(notification_service.calls) == 1
+    recipient_ids, _, _ = notification_service.calls[0]
+    assert recipient_ids == {recipient.user_id}
+
+
+async def test_forward_distribution_list_member_deduped_against_directly_picked_user():
+    """TEST 6: if a directly-picked internal user is ALSO a member of
+    a selected Distribution List, they must receive exactly one email,
+    not two."""
+
+    manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="FamilyFirst",
+        inbox_email="familyfirst@probeps.com",
+        account_manager_id=manager_id,
+    )
+    original = _FakeInteraction(interaction_id=uuid4(), client_id=client.client_id)
+    recipient = _FakeUser(uuid4(), "Employee X", "employee.x@probeps.com", "Staff")
+    current_user = _FakeUser(manager_id, "Some Manager", "manager@probeps.com", "Account Manager")
+    distribution_list_id = uuid4()
+
+    service = _build_service(
+        original=original,
+        clients_by_id={client.client_id: client},
+        users_by_id={recipient.user_id: recipient},
+        distribution_list_repository=_FakeDistributionListRepository(
+            {distribution_list_id: {recipient.user_id: recipient.email}}
+        ),
+    )
+
+    response = await service.forward_to_internal_user(
+        interaction_id=original.interaction_id,
+        request=ForwardToInternalUserRequest(
+            client_id=client.client_id,
+            recipient_user_ids=[recipient.user_id],
+            distribution_list_ids=[distribution_list_id],
+            subject="Fwd: test",
+            message="content",
+        ),
+        current_user=current_user,
+    )
+
+    assert len(response.recipients) == 1
+    assert response.recipients[0].email == recipient.email
+
+
+async def test_forward_distribution_list_with_no_active_members_and_no_other_source_400s():
+    """TEST 9-shaped: a Distribution List that resolves to zero active
+    members, with no other recipient source given, must 400 with a
+    clear message — never silently send to nobody."""
+
+    manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="FamilyFirst",
+        inbox_email="familyfirst@probeps.com",
+        account_manager_id=manager_id,
+    )
+    original = _FakeInteraction(interaction_id=uuid4(), client_id=client.client_id)
+    current_user = _FakeUser(manager_id, "Some Manager", "manager@probeps.com", "Account Manager")
+    distribution_list_id = uuid4()
+
+    service = _build_service(
+        original=original,
+        clients_by_id={client.client_id: client},
+        users_by_id={},
+        distribution_list_repository=_FakeDistributionListRepository({}),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.forward_to_internal_user(
+            interaction_id=original.interaction_id,
+            request=ForwardToInternalUserRequest(
+                client_id=client.client_id,
+                distribution_list_ids=[distribution_list_id],
+                subject="Fwd: test",
+                message="content",
+            ),
+            current_user=current_user,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "no active members" in exc_info.value.detail

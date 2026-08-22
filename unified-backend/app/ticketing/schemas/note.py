@@ -38,6 +38,17 @@ class InternalNoteCreate(BaseModel):
         ),
     )
 
+    distribution_list_ids: list[UUID] = Field(
+        default_factory=list,
+        description=(
+            "Distribution Lists to include as note recipients, "
+            "resolved to their current active members and unioned "
+            "into recipient_user_ids at send time — the same union "
+            "pattern RuleActionItem.distribution_list_ids uses for "
+            "forward_to (see rule_engine_service.py)."
+        ),
+    )
+
     # Optional sanitized-on-the-backend HTML counterpart to `note`
     # (Outlook-style clipboard paste — pasted rich text/tables/inline
     # images). Internal notes are never emailed, so there's no Graph

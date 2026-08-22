@@ -24,6 +24,11 @@ export interface RuleActionItem {
   type: RuleActionType;
   folder_name?: string | null;
   employee_user_ids?: string[] | null;
+  // Distribution Lists to forward to, resolved to their current
+  // active members fresh at every execution — never a snapshot. Only
+  // meaningful for forward_to; merged with employee_user_ids at
+  // execution time (RuleEngineService), not at save time.
+  distribution_list_ids?: string[] | null;
 }
 
 export interface RulePayload {

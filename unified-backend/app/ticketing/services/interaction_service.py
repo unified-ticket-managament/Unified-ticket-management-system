@@ -17,6 +17,9 @@ from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.ticketing.repositories.distribution_list_repository import (
+    DistributionListRepository,
+)
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.ticket_escalation_repository import (
     TicketEscalationRepository,
@@ -98,6 +101,12 @@ from app.ticketing.services.email_envelope import (
 )
 from app.ticketing.utils.html_sanitizer import sanitize_outbound_html
 from app.ticketing.utils.recipient_validation import ensure_recipients_are_valid
+from app.ticketing.utils.recipient_merge import (
+    dedupe_emails_case_insensitive,
+    merge_recipients_with_priority,
+    resolve_distribution_list_emails,
+    resolve_distribution_list_members,
+)
 from app.ticketing.services.email_service import resolve_shared_mailbox_address
 from app.ticketing.services.escalation_service import EscalationService, _to_assignable_group
 from app.ticketing.services.interaction_summary import trim_payload_for_list
@@ -134,6 +143,7 @@ from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailRespo
 from app.ticketing.schemas.forward import (
     ForwardToInternalUserRequest,
     ForwardToInternalUserResponse,
+    ResolvedForwardRecipient,
 )
 from app.ticketing.schemas.payloads import EmailPayload, EnvelopeAttachment, OutboundEnvelope
 from app.ticketing.services.attachment_service import (
@@ -212,6 +222,7 @@ class InteractionService:
         sla_service: SLAService | None = None,
         escalation_service: EscalationService | None = None,
         ticket_escalation_repository: TicketEscalationRepository | None = None,
+        distribution_list_repository: DistributionListRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
@@ -231,6 +242,13 @@ class InteractionService:
         # narrower ensure_agent_can_view_ticket check, matching this
         # class's existing optional-repository convention.
         self.ticket_escalation_repository = ticket_escalation_repository
+        # Optional — resolves Distribution List references into their
+        # current active members' emails/user_ids for
+        # forward_to_internal_user/add_reply/add_interaction_reply/
+        # compose_email/add_internal_note. A caller that omits it gets
+        # an empty resolution (see recipient_merge.py's own
+        # never-raise convention) rather than an error.
+        self.distribution_list_repository = distribution_list_repository
 
     def _escalation_handling_sla_repository_or_none(self):
         """
@@ -1078,10 +1096,20 @@ class InteractionService:
         # "who this was sent to, in the order the sender picked them"
         # survives on the Interaction even if a recipient is later
         # renamed/deactivated.
+        # Distribution List members are unioned into the same candidate
+        # list a bare recipient_user_ids entry would go through — the
+        # loop below already handles dedup (seen_recipient_ids),
+        # self-exclusion, and inactive-user filtering, so no other line
+        # here needs to change.
+        resolved_dl_members = await resolve_distribution_list_members(
+            self.distribution_list_repository, request.distribution_list_ids
+        )
+        candidate_ids = list(request.recipient_user_ids) + list(resolved_dl_members.keys())
+
         recipient_ids: list[UUID] = []
         recipient_names: list[str] = []
         seen_recipient_ids: set[UUID] = set()
-        for candidate_id in request.recipient_user_ids:
+        for candidate_id in candidate_ids:
             if candidate_id in seen_recipient_ids or candidate_id == current_user.user_id:
                 continue
             seen_recipient_ids.add(candidate_id)
@@ -1287,6 +1315,21 @@ class InteractionService:
             to=request.to_email, cc=request.cc, bcc=request.bcc
         )
 
+        # Distribution Lists loop members in on Cc, resolved server-
+        # side to their current active members — never into `to`,
+        # since a reply always targets the real thread participant.
+        # Resolved (and merged/deduped) *after* ensure_recipients_are_
+        # valid runs, so a resolved-DL address (already a known-good
+        # internal user email) never triggers a deliverability check.
+        resolved_dl_emails = await resolve_distribution_list_emails(
+            self.distribution_list_repository, request.distribution_list_ids
+        )
+        _, effective_cc, effective_bcc = merge_recipients_with_priority(
+            to=[request.to_email] if request.to_email else [],
+            cc=dedupe_emails_case_insensitive(request.cc, resolved_dl_emails),
+            bcc=request.bcc,
+        )
+
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
         )
@@ -1351,8 +1394,8 @@ class InteractionService:
                     body=signed_message,
                     agent_name=current_user.name,
                     account_manager_email=am_email,
-                    cc=request.cc,
-                    bcc=request.bcc,
+                    cc=effective_cc,
+                    bcc=effective_bcc,
                     to_email_override=request.to_email,
                     reply_to_provider_message_id=inbound_payload.provider_message_id,
                     reply_all=request.reply_all,
@@ -1501,6 +1544,18 @@ class InteractionService:
             to=request.to_email, cc=request.cc, bcc=request.bcc
         )
 
+        # See add_reply's identical block — Distribution Lists loop
+        # members in on Cc only, resolved/merged after validation so a
+        # resolved-DL address never triggers a deliverability check.
+        resolved_dl_emails = await resolve_distribution_list_emails(
+            self.distribution_list_repository, request.distribution_list_ids
+        )
+        _, effective_cc, effective_bcc = merge_recipients_with_priority(
+            to=[request.to_email] if request.to_email else [],
+            cc=dedupe_emails_case_insensitive(request.cc, resolved_dl_emails),
+            bcc=request.bcc,
+        )
+
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
         )
@@ -1542,8 +1597,8 @@ class InteractionService:
                 body=signed_message,
                 agent_name=current_user.name,
                 account_manager_email=am_email,
-                cc=request.cc,
-                bcc=request.bcc,
+                cc=effective_cc,
+                bcc=effective_bcc,
                 to_email_override=request.to_email,
                 reply_to_provider_message_id=inbound_payload.provider_message_id,
                 reply_all=request.reply_all,
@@ -1742,6 +1797,30 @@ class InteractionService:
 
         ensure_can_compose_for_client(client, current_user)
 
+        # Compose has no fixed thread, so a picked Distribution List
+        # becomes a genuine additional "To" recipient (not downgraded
+        # to Cc) — resolved server-side, merged case-insensitively
+        # with request.to_email, and 400s only if literally nothing
+        # resolves (every selected list empty/inactive AND no to_email
+        # typed) — ComposeEmailRequest's own model_validator already
+        # guarantees at least one *source* was given, but not that it
+        # actually resolves to anyone live.
+        resolved_dl_emails = await resolve_distribution_list_emails(
+            self.distribution_list_repository, request.distribution_list_ids
+        )
+        effective_to = dedupe_emails_case_insensitive(
+            [request.to_email] if request.to_email else [], resolved_dl_emails
+        )
+        if not effective_to:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "No resolvable recipient — every selected distribution "
+                    "list is empty/inactive and no To address was entered."
+                ),
+            )
+        primary_to_email = effective_to[0]
+
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
         )
@@ -1774,7 +1853,7 @@ class InteractionService:
 
         envelope = build_compose_envelope(
             from_email=mailbox_address,
-            to_email=request.to_email,
+            to_email=primary_to_email,
             subject=request.subject,
             body=signed_message,
             cc=request.cc,
@@ -1783,11 +1862,13 @@ class InteractionService:
             account_manager_email=am_email,
             body_html=signed_body_html,
         )
+        if len(effective_to) > 1:
+            envelope = envelope.model_copy(update={"to_emails": effective_to})
 
         email_payload = EmailPayload(
             client_id=client.client_id,
             client_name=client.name,
-            to_email=request.to_email,
+            to_email=primary_to_email,
             from_email=mailbox_address,
             from_name=current_user.name,
             subject=request.subject,
@@ -1800,6 +1881,8 @@ class InteractionService:
             **email_payload.model_dump(mode="json"),
             "envelope": envelope.model_dump(),
             "dispatch_status": "PENDING_SEND",
+            "to_emails": effective_to,
+            "distribution_list_ids": [str(i) for i in request.distribution_list_ids],
         }
         if envelope.body_html:
             interaction_payload["body_html"] = envelope.body_html
@@ -1836,7 +1919,11 @@ class InteractionService:
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            new_values={"client_id": client.client_id, "to_email": request.to_email},
+            new_values={
+                "client_id": client.client_id,
+                "to_emails": effective_to,
+                "distribution_list_ids": list(request.distribution_list_ids),
+            },
         )
 
         envelope = await self._attach_outbound_files(interaction, envelope, files)
@@ -1873,28 +1960,45 @@ class InteractionService:
         Forwards an existing client email/interaction — distinct from
         compose_email, which always addresses an external client
         contact and creates a brand-new client conversation thread.
-        The recipient is either:
-        - an internal organization user (request.recipient_user_id):
-          the communication is delivered via the existing Notification
-          mechanism (see NotificationType.MAIL_FORWARDED) so it
-          appears in that employee's own dashboard Inbox, in addition
-          to the real outbound Graph send every branch performs; or
-        - an arbitrary external address (request.recipient_email,
+        The recipient set is the union of up to three sources:
+        - internal organization users (request.recipient_user_ids):
+          each is delivered via the existing Notification mechanism
+          (NotificationType.MAIL_FORWARDED) so it appears in that
+          employee's own dashboard Inbox, in addition to the real
+          outbound Graph send;
+        - arbitrary external addresses (request.recipient_emails,
           e.g. another client's mailbox): no platform user exists to
-          notify, so only the real outbound send happens.
+          notify, so only the real outbound send reaches them; and
+        - Distribution Lists (request.distribution_list_ids), resolved
+          server-side to their current active members — never trusted
+          from the client, and never a stale snapshot.
 
-        Both the sending mailbox (client_id) and an internal recipient
-        are independently re-validated here, server-side — never
-        trusted just because the frontend submitted them:
+        All three sources are combined into ONE case-insensitive-by-
+        email-deduplicated final recipient list and sent as ONE
+        outbound email — one Interaction row, one OutboundEnvelope
+        (via the additive OutboundEnvelope.to_emails field), one
+        Undo-Send window, one audit entry — never one send per
+        recipient. This is deliberate: attachments/inline images are
+        only ever uploaded/merged once regardless of recipient count,
+        and Undo-Send cancels delivery to everyone at once, matching
+        what a user forwarding "to a group" actually expects.
+
+        Both the sending mailbox (client_id) and every internal
+        recipient are independently re-validated here, server-side —
+        never trusted just because the frontend submitted them:
         - client_id must be a real, active Client this current_user is
           actually authorized to compose for (ensure_can_compose_for_client
           — the exact same rule Compose already enforces).
-        - recipient_user_id, when supplied, must resolve to a real,
-          active internal agent (a role in AGENT_ROLE_NAMES) — never a
-          Client/Viewer account. recipient_email, when supplied
-          instead, is trusted as-is (any syntactically valid address,
-          exactly like Reply/Compose's own to_email) — it is never
-          cross-matched against an existing internal user's address.
+        - Each recipient_user_id must resolve to a real, active
+          internal agent (a role in AGENT_ROLE_NAMES) — never a
+          Client/Viewer account. recipient_emails are trusted as-is
+          (any syntactically valid address, exactly like Reply/
+          Compose's own to_email) — never cross-matched against an
+          existing internal user's address. distribution_list_ids are
+          resolved via DistributionListRepository.
+          get_active_member_emails_by_list_ids — a stale/deactivated
+          list simply contributes nothing, it never errors the whole
+          request unless it was the only source given.
         """
 
         original = await self.interaction_repository.get_by_id(interaction_id)
@@ -1954,32 +2058,73 @@ class InteractionService:
                 detail=f"A maximum of {MAX_ATTACHMENT_FILES} attachments can be included in a single email.",
             )
 
-        recipient: User | None = None
-        recipient_kind: str
-        recipient_email: str
-
-        if request.recipient_user_id is not None:
-            recipient = await self.user_repository.get_by_id(request.recipient_user_id)
-
+        validated_internal_users: list[User] = []
+        for user_id in dict.fromkeys(request.recipient_user_ids):
+            candidate = await self.user_repository.get_by_id(user_id)
             if (
-                recipient is None
-                or not recipient.is_active
-                or recipient.role is None
-                or recipient.role.name not in AGENT_ROLE_NAMES
+                candidate is None
+                or not candidate.is_active
+                or candidate.role is None
+                or candidate.role.name not in AGENT_ROLE_NAMES
             ):
                 raise HTTPException(
                     status_code=http_status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid internal recipient.",
+                    detail=f"Invalid internal recipient: {user_id}.",
                 )
-            recipient_kind = "internal_user"
-            recipient_email = recipient.email
-        else:
-            # Enforced by ForwardToInternalUserRequest's own
-            # model_validator — exactly one of recipient_user_id/
-            # recipient_email is always present.
-            assert request.recipient_email is not None
-            recipient_kind = "external_email"
-            recipient_email = request.recipient_email
+            validated_internal_users.append(candidate)
+
+        dl_members: dict[UUID, dict[UUID, str]] = (
+            await self.distribution_list_repository.get_active_member_emails_by_list_ids(
+                request.distribution_list_ids
+            )
+            if self.distribution_list_repository is not None and request.distribution_list_ids
+            else {}
+        )
+        dl_names_by_id = await self.user_repository.get_names_by_ids(
+            [uid for members in dl_members.values() for uid in members]
+        )
+
+        # user_id/name -> email, in source-priority order (internal
+        # users, then DL members, then bare external emails) so a case-
+        # insensitive dedupe keeps the "richest" (name-carrying) entry
+        # for an address reachable through more than one source.
+        candidates: list[ResolvedForwardRecipient] = [
+            ResolvedForwardRecipient(user_id=u.user_id, name=u.name, email=u.email)
+            for u in validated_internal_users
+        ]
+        for members in dl_members.values():
+            for uid, email in members.items():
+                candidates.append(
+                    ResolvedForwardRecipient(
+                        user_id=uid, name=dl_names_by_id.get(uid), email=email
+                    )
+                )
+        candidates.extend(
+            ResolvedForwardRecipient(user_id=None, name=None, email=email)
+            for email in request.recipient_emails
+        )
+
+        seen_emails: set[str] = set()
+        recipients: list[ResolvedForwardRecipient] = []
+        for candidate in candidates:
+            key = candidate.email.strip().lower()
+            if key in seen_emails:
+                continue
+            seen_emails.add(key)
+            recipients.append(candidate)
+
+        if not recipients:
+            if request.distribution_list_ids and not (
+                request.recipient_user_ids or request.recipient_emails
+            ):
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="This distribution list has no active members.",
+                )
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="No valid recipients to forward to.",
+            )
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -1998,7 +2143,7 @@ class InteractionService:
 
         envelope = build_compose_envelope(
             from_email=mailbox_address,
-            to_email=recipient_email,
+            to_email=recipients[0].email,
             subject=request.subject,
             body=signed_message,
             cc=request.cc,
@@ -2006,19 +2151,19 @@ class InteractionService:
             agent_name=current_user.name,
             body_html=signed_body_html,
         )
+        if len(recipients) > 1:
+            envelope = envelope.model_copy(
+                update={"to_emails": [r.email for r in recipients]}
+            )
 
         payload: dict = {
             "message": signed_message,
             "envelope": envelope.model_dump(),
             "dispatch_status": "PENDING_SEND",
-            "recipient_kind": recipient_kind,
             "forwarded_interaction_id": str(original.interaction_id),
+            "recipients": [r.model_dump(mode="json") for r in recipients],
+            "distribution_list_ids": [str(i) for i in request.distribution_list_ids],
         }
-        if recipient is not None:
-            payload["recipient_user_id"] = str(recipient.user_id)
-            payload["recipient_name"] = recipient.name
-        else:
-            payload["recipient_email"] = recipient_email
         if envelope.body_html:
             payload["body_html"] = envelope.body_html
 
@@ -2041,11 +2186,10 @@ class InteractionService:
         audit_new_values: dict = {
             "forwarded_interaction_id": original.interaction_id,
             "client_id": client.client_id,
+            "recipient_user_ids": [r.user_id for r in recipients if r.user_id is not None],
+            "recipient_emails": [r.email for r in recipients if r.user_id is None],
+            "distribution_list_ids": list(request.distribution_list_ids),
         }
-        if recipient is not None:
-            audit_new_values["recipient_user_id"] = recipient.user_id
-        else:
-            audit_new_values["recipient_email"] = recipient_email
 
         await AuditLogService.log_event(
             self.interaction_repository.db,
@@ -2077,12 +2221,16 @@ class InteractionService:
 
         await self._schedule_delayed_send(interaction, envelope)
 
-        # No platform user to notify for an external-email recipient —
-        # the real outbound send above is that recipient's only
-        # delivery mechanism.
-        if recipient is not None and self.notification_service is not None:
+        # No platform user to notify for an external-email-only
+        # recipient — the real outbound send above is their only
+        # delivery mechanism. Every internal user among the final
+        # recipients (individually picked or resolved via a
+        # Distribution List) gets one notify() call covering the
+        # whole set.
+        internal_recipient_ids = [r.user_id for r in recipients if r.user_id is not None]
+        if internal_recipient_ids and self.notification_service is not None:
             await self.notification_service.notify(
-                [recipient.user_id],
+                internal_recipient_ids,
                 NotificationType.MAIL_FORWARDED,
                 title=request.subject,
                 message=signed_message,
@@ -2093,10 +2241,9 @@ class InteractionService:
 
         return ForwardToInternalUserResponse(
             interaction_id=interaction.interaction_id,
-            recipient_user_id=recipient.user_id if recipient is not None else None,
-            recipient_email=recipient_email,
             dispatch_status="PENDING_SEND",
             created_at=interaction.created_at,
+            recipients=recipients,
         )
 
     # ---------------------------------------------------------
@@ -3722,6 +3869,7 @@ class InteractionService:
         interaction_id: UUID,
         current_user: User,
         to_email: str | None = None,
+        distribution_list_ids: list[UUID] | None = None,
     ) -> InteractionReplyResponse:
         """
         Sends current_user's draft on this thread — hands its saved
@@ -3770,6 +3918,7 @@ class InteractionService:
                 cc=cc,
                 bcc=bcc,
                 to_email=to_email,
+                distribution_list_ids=distribution_list_ids or [],
                 body_html=body_html,
             ),
             current_user=current_user,

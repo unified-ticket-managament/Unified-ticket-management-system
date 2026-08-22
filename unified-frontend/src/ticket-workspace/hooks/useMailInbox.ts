@@ -1128,8 +1128,12 @@ export function useMailInbox() {
   // reply locally) so the sent reply's attachments — reassigned
   // server-side from the now-deleted draft onto it — actually show
   // up immediately, instead of only after the thread is reopened.
-  async function sendDraftMessage(interactionId: string, toEmail?: string | null) {
-    const result = await runSendDraft(interactionId, toEmail);
+  async function sendDraftMessage(
+    interactionId: string,
+    toEmail?: string | null,
+    distributionListIds?: string[]
+  ) {
+    const result = await runSendDraft(interactionId, toEmail, distributionListIds);
     if (result && selectedEmail?.interaction_id === interactionId) {
       // Sending a reply isn't "opening to read" — don't let this
       // refresh silently re-mark an explicitly-unread thread as read.

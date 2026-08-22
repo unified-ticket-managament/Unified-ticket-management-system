@@ -9,6 +9,7 @@ import { RecipientCombobox } from "@tw/components/common/RecipientCombobox";
 import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
 import { UserMultiSelect } from "@tw/components/common/UserMultiSelect";
+import { DistributionListMultiSelect } from "@tw/components/common/DistributionListMultiSelect";
 import { validateFiles } from "@tw/lib/attachmentMeta";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { listClientContacts } from "@tw/api/clients";
@@ -108,6 +109,7 @@ export function TicketComposer({
   // just exposes fields the UI never surfaced before).
   const [replyCc, setReplyCc] = useState("");
   const [replyBcc, setReplyBcc] = useState("");
+  const [replyDistributionListIds, setReplyDistributionListIds] = useState<string[]>([]);
   // A non-empty Cc/Bcc entry must still be a real address — this used
   // to have no frontend validation at all (an invalid entry only ever
   // got caught by the backend's own EmailStr rejection, with no
@@ -141,6 +143,7 @@ export function TicketComposer({
   const [noteToIds, setNoteToIds] = useState<string[]>([]);
   const [noteCcIds, setNoteCcIds] = useState<string[]>([]);
   const [noteBccIds, setNoteBccIds] = useState<string[]>([]);
+  const [noteDistributionListIds, setNoteDistributionListIds] = useState<string[]>([]);
 
   // Internal Note "Attach Files" — reuses the exact same ticket
   // attachment upload the "Upload Attachment" action already uses,
@@ -306,6 +309,7 @@ export function TicketComposer({
           to_email: selectedTo || undefined,
           cc: parseEmails(replyCc),
           bcc: parseEmails(replyBcc),
+          distribution_list_ids: replyDistributionListIds,
           attachment_source_interaction_id: attachmentSourceInteractionId,
           inline_image_interaction_ids: pastedImageInteractionIdsRef.current,
         })
@@ -314,6 +318,7 @@ export function TicketComposer({
           body_html: bodyHtml,
           subject: noteSubject,
           recipient_user_ids: noteToIds,
+          distribution_list_ids: noteDistributionListIds,
           inline_image_interaction_ids: pastedImageInteractionIdsRef.current,
         });
 
@@ -332,10 +337,12 @@ export function TicketComposer({
       setNoteSubject("");
       setReplyCc("");
       setReplyBcc("");
+      setReplyDistributionListIds([]);
       setReplyFiles([]);
       setNoteToIds([]);
       setNoteCcIds([]);
       setNoteBccIds([]);
+      setNoteDistributionListIds([]);
       onSent();
     }
   }
@@ -450,6 +457,11 @@ export function TicketComposer({
                   : "Enter a valid email address for every entry, separated by commas."}
               </p>
             )}
+            <DistributionListMultiSelect
+              label="Distribution Lists (Cc)"
+              selectedIds={replyDistributionListIds}
+              onChange={setReplyDistributionListIds}
+            />
           </>
         ) : (
           <>
@@ -467,6 +479,12 @@ export function TicketComposer({
               roleOrder={TO_ROLE_ORDER}
               selectedIds={noteToIds}
               onChange={setNoteToIds}
+            />
+            <DistributionListMultiSelect
+              label="Distribution Lists (To)"
+              hint="Each active member is added as a note recipient, same as an individually-picked user."
+              selectedIds={noteDistributionListIds}
+              onChange={setNoteDistributionListIds}
             />
             <UserMultiSelect
               label="CC (Optional)"

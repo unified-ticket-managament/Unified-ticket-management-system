@@ -103,7 +103,7 @@ def _build_send_mail_message(envelope: OutboundEnvelope) -> dict:
             if envelope.body_html
             else {"contentType": "Text", "content": envelope.body}
         ),
-        "toRecipients": _build_recipients([envelope.to_email]),
+        "toRecipients": _build_recipients(envelope.to_emails or [envelope.to_email]),
     }
 
     if envelope.cc:

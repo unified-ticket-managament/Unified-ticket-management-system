@@ -11,6 +11,9 @@ from app.notifications.service import NotificationService
 from app.ticketing.enums import TicketPriority
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.repositories.client_repository import ClientRepository
+from app.ticketing.repositories.distribution_list_repository import (
+    DistributionListRepository,
+)
 from app.ticketing.schemas.attachment import AttachmentMetadata, InlineImageUploadResponse
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
@@ -332,7 +335,8 @@ async def get_drafts(
 )
 async def compose_email(
     client_id: UUID = Form(...),
-    to_email: str = Form(...),
+    to_email: str = Form(default=""),
+    distribution_list_ids: list[UUID] = Form(default=[]),
     subject: str = Form(...),
     message: str = Form(...),
     cc: str = Form(default=""),
@@ -351,6 +355,12 @@ async def compose_email(
     attachments can ride along in the same request, mirroring
     POST /tickets/{id}/attachments.
 
+    `to_email` is now optional — the primary recipient can come
+    entirely from `distribution_list_ids` (resolved server-side to
+    real "To" recipients, merged into one send via the same additive
+    OutboundEnvelope.to_emails mechanism Forward uses); at least one
+    of the two must resolve to a real address or the service 400s.
+
     `inline_image_interaction_ids` carries the staging interaction
     ids minted by POST /inbox/compose/attachments/inline-image for
     any screenshot pasted into the body before Send — see
@@ -363,9 +373,10 @@ async def compose_email(
     # ValidationError (no handler registered for it — see app/main.py)
     # rather than a clean 400. See recipient_validation.py's own
     # module docstring for the full syntax+domain rationale.
+    parsed_to_email = to_email.strip() or None
     parsed_cc = _split_emails(cc)
     parsed_bcc = _split_emails(bcc)
-    ensure_recipients_are_valid(to=to_email, cc=parsed_cc, bcc=parsed_bcc)
+    ensure_recipients_are_valid(to=parsed_to_email, cc=parsed_cc, bcc=parsed_bcc)
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
@@ -381,12 +392,14 @@ async def compose_email(
         client_repository=client_repository,
         attachment_repository=attachment_repository,
         storage_service=storage_service,
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     composed = await interaction_service.compose_email(
         request=ComposeEmailRequest(
             client_id=client_id,
-            to_email=to_email,
+            to_email=parsed_to_email,
+            distribution_list_ids=distribution_list_ids,
             subject=subject,
             message=message,
             cc=parsed_cc,
@@ -473,8 +486,9 @@ async def upload_compose_inline_image(
 async def forward_to_internal_user(
     interaction_id: UUID,
     client_id: UUID = Form(...),
-    recipient_user_id: UUID | None = Form(default=None),
-    recipient_email: str | None = Form(default=None),
+    recipient_user_ids: list[UUID] = Form(default=[]),
+    recipient_emails: list[str] = Form(default=[]),
+    distribution_list_ids: list[UUID] = Form(default=[]),
     cc: str = Form(default=""),
     bcc: str = Form(default=""),
     subject: str = Form(...),
@@ -486,13 +500,19 @@ async def forward_to_internal_user(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Forwards an existing client email/interaction to an internal
-    organization user — see InteractionService.forward_to_internal_user
-    for the full authorization/delivery mechanics. Multipart (like
-    /compose), not a plain JSON body: original attachments already
-    stored against `interaction_id` are always carried over, and any
-    newly uploaded `files` ride along too, subject to the combined
-    10-attachment total enforced in the service layer.
+    Forwards an existing client email/interaction to a mix of internal
+    organization users, external addresses, and/or Distribution
+    Lists — see InteractionService.forward_to_internal_user for the
+    full authorization/delivery mechanics. Multipart (like /compose),
+    not a plain JSON body: original attachments already stored against
+    `interaction_id` are always carried over, and any newly uploaded
+    `files` ride along too, subject to the combined 10-attachment
+    total enforced in the service layer.
+
+    `recipient_user_ids`/`recipient_emails`/`distribution_list_ids` are
+    each a repeated Form field (the frontend appends the same key once
+    per value) — FastAPI/Starlette binds repeated same-key multipart
+    fields to a `list[...]` parameter natively.
 
     `body_html` — the frontend has sent this field for a while (see
     api/inbox.ts's ForwardToInternalUserPayload), and
@@ -511,19 +531,21 @@ async def forward_to_internal_user(
 
     # See compose_email's identical call above — validated before
     # ForwardToInternalUserRequest (EmailStr-typed) is constructed, so
-    # a malformed recipient_email/cc/bcc 400s cleanly instead of
-    # raising an unhandled pydantic.ValidationError. recipient_user_id
-    # (the internal-recipient branch) is a real, already-stored
-    # platform user's own email — not new user input — so it's never
-    # re-validated here.
+    # a malformed recipient_emails/cc/bcc entry 400s cleanly instead of
+    # raising an unhandled pydantic.ValidationError. recipient_user_ids
+    # (the internal-recipient branch) are real, already-stored platform
+    # users' own emails — not new user input — so they're never
+    # re-validated here; distribution_list_ids resolve to internal
+    # users too and are validated the same way, inside the service.
     parsed_cc = _split_emails(cc)
     parsed_bcc = _split_emails(bcc)
-    ensure_recipients_are_valid(to=recipient_email, cc=parsed_cc, bcc=parsed_bcc)
+    ensure_recipients_are_valid(to=recipient_emails, cc=parsed_cc, bcc=parsed_bcc)
 
     request = ForwardToInternalUserRequest(
         client_id=client_id,
-        recipient_user_id=recipient_user_id,
-        recipient_email=recipient_email,
+        recipient_user_ids=recipient_user_ids,
+        recipient_emails=recipient_emails,
+        distribution_list_ids=distribution_list_ids,
         cc=parsed_cc,
         bcc=parsed_bcc,
         subject=subject,
@@ -547,6 +569,7 @@ async def forward_to_internal_user(
         attachment_repository=attachment_repository,
         storage_service=storage_service,
         notification_service=notification_service,
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await interaction_service.forward_to_internal_user(
@@ -905,12 +928,14 @@ async def send_draft(
         client_repository=client_repository,
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.send_draft(
         interaction_id=interaction_id,
         current_user=current_user,
         to_email=body.to_email if body else None,
+        distribution_list_ids=body.distribution_list_ids if body else [],
     )
 
 
@@ -1031,6 +1056,7 @@ async def reply_to_interaction(
         sla_service=build_sla_service(
             db, notification_service=NotificationService(NotificationRepository(db))
         ),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.add_interaction_reply(

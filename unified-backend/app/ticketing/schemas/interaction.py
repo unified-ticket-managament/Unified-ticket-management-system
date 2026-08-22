@@ -179,12 +179,13 @@ class DraftSaveRequest(BaseModel):
 class DraftSendRequest(BaseModel):
     """
     Optional body for sending a draft — lets the agent pick a
-    recipient from the "To" dropdown at send time without that choice
-    being part of the auto-saved draft itself (see
-    InteractionService.send_draft).
+    recipient from the "To" dropdown, and/or Distribution Lists to
+    loop in on Cc, at send time without either choice being part of
+    the auto-saved draft itself (see InteractionService.send_draft).
     """
 
     to_email: EmailStr | None = None
+    distribution_list_ids: list[UUID] = Field(default_factory=list)
 
 
 class DraftResponse(ORMBase):

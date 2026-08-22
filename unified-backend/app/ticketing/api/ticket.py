@@ -37,6 +37,9 @@ from app.ticketing.repositories.audit_log_repository import (
     AuditLogRepository,
 )
 from app.ticketing.repositories.client_repository import ClientRepository
+from app.ticketing.repositories.distribution_list_repository import (
+    DistributionListRepository,
+)
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
@@ -384,6 +387,7 @@ async def add_internal_note(
         # "[image unavailable]" everywhere the note was read back.
         attachment_repository=AttachmentRepository(db),
         storage_service=get_storage_service(),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.add_internal_note(
@@ -456,6 +460,7 @@ async def reply_to_client(
         escalation_service=build_escalation_service(db),
         attachment_repository=AttachmentRepository(db),
         storage_service=get_storage_service(),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.add_reply(

@@ -63,6 +63,11 @@ class RuleActionItem(BaseModel):
     folder_name: str | None = None
     # forward_to:
     employee_user_ids: list[UUID] | None = None
+    # forward_to — Distribution List references, resolved fresh to
+    # their current active members at every execution (never a
+    # snapshot) — see RuleEngineService._execute_action. Merged with
+    # employee_user_ids at execution time, not at save time.
+    distribution_list_ids: list[UUID] | None = None
 
     @model_validator(mode="after")
     def _check_action_shape(self) -> "RuleActionItem":
@@ -73,8 +78,11 @@ class RuleActionItem(BaseModel):
             if not self.folder_name or not self.folder_name.strip():
                 raise ValueError(f"'{self.type}' requires a non-empty folder_name.")
         elif self.type == RuleActionType.FORWARD_TO:
-            if not self.employee_user_ids:
-                raise ValueError("'forward_to' requires at least one employee_user_ids entry.")
+            if not self.employee_user_ids and not self.distribution_list_ids:
+                raise ValueError(
+                    "'forward_to' requires at least one employee_user_ids or "
+                    "distribution_list_ids entry."
+                )
 
         return self
 

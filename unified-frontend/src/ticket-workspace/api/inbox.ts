@@ -165,11 +165,12 @@ export async function uploadDraftInlineImage(
 // recipient for this send only (not persisted onto the draft).
 export async function sendDraft(
   interactionId: string,
-  toEmail?: string | null
+  toEmail?: string | null,
+  distributionListIds?: string[]
 ): Promise<InteractionReplyResponse> {
   const { data } = await apiClient.post<InteractionReplyResponse>(
     `/inbox/${interactionId}/draft/send`,
-    { to_email: toEmail ?? null }
+    { to_email: toEmail ?? null, distribution_list_ids: distributionListIds ?? [] }
   );
   return data;
 }
@@ -293,7 +294,13 @@ export async function updateInteractionFolder(
 
 export interface ComposeEmailPayload {
   clientId: string;
-  toEmail: string;
+  // Optional — the primary/only recipient can instead come entirely
+  // from distributionListIds (Compose has no fixed thread, so a
+  // picked Distribution List becomes a genuine additional "To"
+  // recipient). At least one of the two must resolve to a real
+  // address or the backend 400s.
+  toEmail?: string;
+  distributionListIds?: string[];
   subject: string;
   message: string;
   cc?: string[];
@@ -340,7 +347,8 @@ export async function composeEmail(
 ): Promise<ComposeEmailResponse> {
   const formData = new FormData();
   formData.append("client_id", payload.clientId);
-  formData.append("to_email", payload.toEmail);
+  if (payload.toEmail) formData.append("to_email", payload.toEmail);
+  payload.distributionListIds?.forEach((id) => formData.append("distribution_list_ids", id));
   formData.append("subject", payload.subject);
   formData.append("message", payload.message);
   if (payload.cc?.length) formData.append("cc", payload.cc.join(","));
@@ -364,10 +372,13 @@ export async function composeEmail(
 export interface ForwardToInternalUserPayload {
   interactionId: string;
   clientId: string;
-  // Exactly one of these two is set — an internal user (resolved
-  // server-side to their own email) or an arbitrary external address.
-  recipientUserId?: string;
-  recipientEmail?: string;
+  // The union of all three is resolved/deduplicated server-side into
+  // one final recipient list, sent as one send (see
+  // InteractionService.forward_to_internal_user) — at least one of
+  // the three must be non-empty.
+  recipientUserIds?: string[];
+  recipientEmails?: string[];
+  distributionListIds?: string[];
   cc?: string[];
   bcc?: string[];
   subject: string;
@@ -397,8 +408,9 @@ export async function forwardToInternalUser(
 ): Promise<ForwardToInternalUserResponse> {
   const formData = new FormData();
   formData.append("client_id", payload.clientId);
-  if (payload.recipientUserId) formData.append("recipient_user_id", payload.recipientUserId);
-  if (payload.recipientEmail) formData.append("recipient_email", payload.recipientEmail);
+  payload.recipientUserIds?.forEach((id) => formData.append("recipient_user_ids", id));
+  payload.recipientEmails?.forEach((email) => formData.append("recipient_emails", email));
+  payload.distributionListIds?.forEach((id) => formData.append("distribution_list_ids", id));
   if (payload.cc?.length) formData.append("cc", payload.cc.join(","));
   if (payload.bcc?.length) formData.append("bcc", payload.bcc.join(","));
   formData.append("subject", payload.subject);

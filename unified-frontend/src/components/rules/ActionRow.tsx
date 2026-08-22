@@ -18,6 +18,7 @@ import type { RuleActionItem, RuleActionType, RuleCategory } from "@tw/api/rules
 
 import { ACTION_TYPES_BY_CATEGORY } from "./ruleCatalog";
 import { EmployeeMultiSelect } from "./EmployeeMultiSelect";
+import { DistributionListMultiSelect } from "@tw/components/common/DistributionListMultiSelect";
 
 interface ActionRowProps {
   category: RuleCategory;
@@ -38,7 +39,7 @@ export function ActionRow({ category, action, onChange, onRemove }: ActionRowPro
 
   function setType(type: RuleActionType) {
     if (type === "forward_to") {
-      onChange({ type, employee_user_ids: [] });
+      onChange({ type, employee_user_ids: [], distribution_list_ids: [] });
     } else {
       onChange({ type, folder_name: "" });
     }
@@ -61,12 +62,19 @@ export function ActionRow({ category, action, onChange, onRemove }: ActionRowPro
         </Select>
       </div>
 
-      <div className="min-w-[220px] flex-1">
+      <div className="min-w-[220px] flex-1 space-y-2">
         {action.type === "forward_to" ? (
-          <EmployeeMultiSelect
-            selectedIds={action.employee_user_ids ?? []}
-            onChange={(ids) => onChange({ ...action, employee_user_ids: ids })}
-          />
+          <>
+            <EmployeeMultiSelect
+              selectedIds={action.employee_user_ids ?? []}
+              onChange={(ids) => onChange({ ...action, employee_user_ids: ids })}
+            />
+            <DistributionListMultiSelect
+              label="Or Forward To Distribution Lists"
+              selectedIds={action.distribution_list_ids ?? []}
+              onChange={(ids) => onChange({ ...action, distribution_list_ids: ids })}
+            />
+          </>
         ) : (
           <>
             <Input

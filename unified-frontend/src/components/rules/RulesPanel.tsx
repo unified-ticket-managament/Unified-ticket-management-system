@@ -41,6 +41,7 @@ import {
 } from "@tw/api/rules";
 
 import { RuleBuilderDialog } from "@/components/rules/RuleBuilderDialog";
+import { DistributionListsPanel } from "@/components/rules/DistributionListsPanel";
 import { CATEGORY_LABELS } from "@/components/rules/ruleCatalog";
 
 const CONDITION_FIELD_LABELS: Record<string, string> = {
@@ -64,7 +65,14 @@ function summarizeActions(rule: RuleResponse): string {
   return (
     rule.actions
       .map((a) => {
-        if (a.type === "forward_to") return `Forward to ${(a.employee_user_ids ?? []).length} employee(s)`;
+        if (a.type === "forward_to") {
+          const parts: string[] = [];
+          const employeeCount = (a.employee_user_ids ?? []).length;
+          const listCount = (a.distribution_list_ids ?? []).length;
+          if (employeeCount > 0) parts.push(`${employeeCount} employee(s)`);
+          if (listCount > 0) parts.push(`${listCount} distribution list(s)`);
+          return `Forward to ${parts.join(" + ") || "0 recipients"}`;
+        }
         if (a.type === "create_folder") return `Create Folder "${a.folder_name}"`;
         return `Move to Folder "${a.folder_name}"`;
       })
@@ -354,6 +362,8 @@ export function RulesPanel({
               )}
             </CardContent>
           </Card>
+
+          <DistributionListsPanel />
         </>
       )}
 

@@ -27,6 +27,17 @@ class ReplyCreate(BaseModel):
 
     bcc: list[EmailStr] = Field(default_factory=list)
 
+    # Distribution Lists to loop in on Cc, resolved to their current
+    # active members at send time and merged into `cc` alongside the
+    # agent's own typed Cc — never into `to_email`, since a reply
+    # always targets the real thread participant (see `to_email`'s
+    # own docstring below). Deduplicated case-insensitively against
+    # the rest of the To/Cc/Bcc picture (see recipient_merge.
+    # merge_recipients_with_priority) so a member who's also already
+    # in `to_email`/`cc`/`bcc` is never sent to twice, and never
+    # promoted out of a deliberate Bcc.
+    distribution_list_ids: list[UUID] = Field(default_factory=list)
+
     # Overrides the recipient the envelope would otherwise default to
     # (the ticket's latest inbound sender) — lets an agent pick any
     # personal address this client has previously contacted the
@@ -91,6 +102,10 @@ class InteractionReplyRequest(BaseModel):
     cc: list[EmailStr] = Field(default_factory=list)
 
     bcc: list[EmailStr] = Field(default_factory=list)
+
+    # See ReplyCreate.distribution_list_ids above — same Cc-only
+    # merge, same reason.
+    distribution_list_ids: list[UUID] = Field(default_factory=list)
 
     # See ReplyCreate.to_email above — same override, same reason.
     to_email: EmailStr | None = None

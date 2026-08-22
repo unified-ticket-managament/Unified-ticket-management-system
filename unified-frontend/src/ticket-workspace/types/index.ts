@@ -422,6 +422,11 @@ export interface InteractionReplyRequest {
   message: string;
   cc?: string[];
   bcc?: string[];
+  // Distribution Lists to loop in on Cc, resolved server-side to
+  // their current active members and merged in — never into
+  // to_email. See ReplyCreate.distribution_list_ids (backend) for the
+  // same field on the ticketed-reply counterpart.
+  distribution_list_ids?: string[];
   to_email?: string | null;
   // Selects Graph's native replyAll action over reply when the
   // message being replied to has a known Graph message id — mirrors
@@ -649,6 +654,11 @@ export interface InternalNoteRequest {
   // empty/omitted list falls back to the backend's pre-existing
   // stakeholder-notification behavior.
   recipient_user_ids?: string[];
+  // Distribution Lists to include as note recipients, resolved to
+  // their current active members and unioned into recipient_user_ids
+  // at send time — same pattern RuleActionItem.distribution_list_ids
+  // uses for forward_to.
+  distribution_list_ids?: string[];
   // Optional sanitized-on-the-backend HTML counterpart to `note`
   // (Outlook-style clipboard paste) — internal notes are never
   // emailed, this only affects Timeline/System Mail rendering.
@@ -684,6 +694,10 @@ export interface ReplyRequest {
   message: string;
   cc?: string[];
   bcc?: string[];
+  // See InternalNoteRequest.distribution_list_ids above for the
+  // general pattern — here, merged into `cc` server-side, never
+  // `to_email` (a reply always targets the real thread participant).
+  distribution_list_ids?: string[];
   to_email?: string | null;
   // Points at the interaction_id an immediately-preceding
   // POST /tickets/{id}/attachments upload returned — set this so
@@ -718,16 +732,23 @@ export interface ComposeEmailResponse {
 }
 
 // POST /inbox/{interaction_id}/forward — forwarding an existing
-// client email to either an internal organization user or an
-// arbitrary external address, distinct from ComposeEmailResponse
-// (which always addresses an external client contact from scratch).
-// recipient_user_id is null for an external-email recipient.
+// client email to a mix of internal organization users, external
+// addresses, and/or Distribution Lists, distinct from
+// ComposeEmailResponse (which always addresses an external client
+// contact from scratch). user_id is null for an external-email
+// recipient (directly typed, or a source Distribution List had none
+// to attribute).
+export interface ForwardedRecipient {
+  user_id: string | null;
+  name: string | null;
+  email: string;
+}
+
 export interface ForwardToInternalUserResponse {
   interaction_id: string;
-  recipient_user_id: string | null;
-  recipient_email: string;
   dispatch_status: string;
   created_at: string;
+  recipients: ForwardedRecipient[];
 }
 
 export interface StatusChangeRequest {

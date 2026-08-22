@@ -9,6 +9,9 @@ from app.notifications.service import NotificationService, NotificationType
 from app.ticketing.enums.rule_enums import RuleActionType, RuleCategory
 from app.ticketing.models.interaction import Interaction
 from app.ticketing.models.rule import Rule
+from app.ticketing.repositories.distribution_list_repository import (
+    DistributionListRepository,
+)
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
@@ -49,12 +52,14 @@ class RuleEngineService:
         interaction_repository: InteractionRepository,
         user_repository: UserRepository,
         notification_service: NotificationService,
+        distribution_list_repository: DistributionListRepository | None = None,
     ):
         self.rule_repository = rule_repository
         self.mail_folder_repository = mail_folder_repository
         self.interaction_repository = interaction_repository
         self.user_repository = user_repository
         self.notification_service = notification_service
+        self.distribution_list_repository = distribution_list_repository
 
     async def evaluate_and_execute_for_email(
         self,
@@ -153,8 +158,15 @@ class RuleEngineService:
             await self.interaction_repository.set_folder(interaction, folder.folder_id)
 
         elif action.type == RuleActionType.FORWARD_TO:
+            employee_ids: set[UUID] = set(action.employee_user_ids or [])
+            if action.distribution_list_ids and self.distribution_list_repository is not None:
+                dl_members = await self.distribution_list_repository.get_active_member_emails_by_list_ids(
+                    action.distribution_list_ids
+                )
+                for members in dl_members.values():
+                    employee_ids |= set(members.keys())
             await self._forward_to_employees(
-                action.employee_user_ids or [],
+                list(employee_ids),
                 interaction=interaction,
                 rule_category=rule.category,
             )
@@ -282,4 +294,5 @@ def build_rule_engine_service(db: AsyncSession) -> RuleEngineService:
         interaction_repository=InteractionRepository(db),
         user_repository=UserRepository(db),
         notification_service=NotificationService(NotificationRepository(db)),
+        distribution_list_repository=DistributionListRepository(db),
     )

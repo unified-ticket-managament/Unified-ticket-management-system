@@ -31,6 +31,7 @@ from app.ticketing.api.interaction import router as ticketing_interaction_router
 from app.ticketing.api.mail_folder import router as ticketing_mail_folder_router
 from app.ticketing.api.mail_integration import router as ticketing_mail_integration_router
 from app.ticketing.api.rule import router as ticketing_rule_router
+from app.ticketing.api.distribution_list import router as ticketing_distribution_list_router
 from app.ticketing.api.sla import ticket_sla_router as ticketing_sla_ticket_router
 from app.ticketing.api.sla import sla_policy_router as ticketing_sla_policy_router
 from app.ticketing.api.sla_internal import router as ticketing_sla_internal_router
@@ -175,6 +176,7 @@ app.include_router(ticketing_inbox_router)
 app.include_router(ticketing_mail_folder_router)
 app.include_router(ticketing_mail_integration_router)
 app.include_router(ticketing_rule_router)
+app.include_router(ticketing_distribution_list_router)
 app.include_router(ticketing_ticket_router)
 app.include_router(ticketing_interaction_router)
 app.include_router(ticketing_attachment_router)

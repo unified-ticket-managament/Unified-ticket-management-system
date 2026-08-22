@@ -11,6 +11,7 @@ class AuditEntityType(str, Enum):
     ATTACHMENT = "ATTACHMENT"
     CLIENT = "CLIENT"
     USER = "USER"
+    DISTRIBUTION_LIST = "DISTRIBUTION_LIST"
 
 
 class AuditEventType(str, Enum):
@@ -73,6 +74,15 @@ class AuditEventType(str, Enum):
     ESCALATION_ACKNOWLEDGED = "ESCALATION_ACKNOWLEDGED"
     ESCALATION_ADVANCED = "ESCALATION_ADVANCED"
     ESCALATION_CLOSED = "ESCALATION_CLOSED"
+    # Distribution List (internal group) lifecycle — DISTRIBUTION_LIST
+    # entity events, one dedicated event per mutation kind so a
+    # membership change is distinguishable from a metadata edit in the
+    # Audit Log without inspecting new_values.
+    DISTRIBUTION_LIST_CREATED = "DISTRIBUTION_LIST_CREATED"
+    DISTRIBUTION_LIST_UPDATED = "DISTRIBUTION_LIST_UPDATED"
+    DISTRIBUTION_LIST_MEMBER_ADDED = "DISTRIBUTION_LIST_MEMBER_ADDED"
+    DISTRIBUTION_LIST_MEMBER_REMOVED = "DISTRIBUTION_LIST_MEMBER_REMOVED"
+    DISTRIBUTION_LIST_DEACTIVATED = "DISTRIBUTION_LIST_DEACTIVATED"
 
 
 class ActorRole(str, Enum):

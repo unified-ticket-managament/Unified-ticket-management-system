@@ -195,8 +195,9 @@ export function InboxPage() {
   async function handleForwardSend(payload: {
     interactionId: string;
     clientId: string;
-    recipientUserId?: string;
-    recipientEmail?: string;
+    recipientUserIds?: string[];
+    recipientEmails?: string[];
+    distributionListIds?: string[];
     cc?: string[];
     bcc?: string[];
     subject: string;
@@ -212,7 +213,7 @@ export function InboxPage() {
 
   async function handleComposeSend(payload: {
     clientId: string;
-    toEmail: string;
+    toEmail?: string;
     subject: string;
     message: string;
     bodyHtml?: string;
@@ -220,6 +221,7 @@ export function InboxPage() {
     bcc: string[];
     files: File[];
     inlineImageInteractionIds?: string[];
+    distributionListIds?: string[];
   }) {
     const result = await mail.composeEmail(payload);
     if (result) closeCompose();
