@@ -1071,7 +1071,6 @@ export function useMailInbox() {
         next.add(interactionId);
         return next;
       });
-      // GET /inbox/{id} (runOpen above) already persisted the read
       // receipt server-side as its own side effect when markRead is
       // true — this just makes the already-loaded list rows reflect
       // it immediately too, without waiting for their own next

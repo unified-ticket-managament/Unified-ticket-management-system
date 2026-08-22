@@ -429,6 +429,7 @@ class InteractionRepository:
         cursor: tuple[datetime, UUID] | None = None,
         category_filter: str | None = None,
         priority_filter: TicketPriority | None = None,
+        account_manager_category_ids: list[UUID] | None = None,
     ) -> tuple[list[Interaction], int]:
         """
         The role-scoped inbox query — always over thread ROOTS
@@ -437,9 +438,13 @@ class InteractionRepository:
         is opened.
 
         - `account_manager_id` set: only mail belonging to clients
-          that AM owns (a join against `clients`). None (and
-          `ticket_types`/`assigned_agent_id` also None) means "every
-          client" — the Site Lead/Super Admin global inbox.
+          that AM owns (a join against `clients`), OR'd with
+          `account_manager_category_ids` when given (every CATEGORY-
+          mailbox interaction — client_id IS NULL — whose category_id
+          is one this Account Manager is Reporting Manager for, see
+          ReportingManagerTeam). None (and `ticket_types`/
+          `assigned_agent_id` also None) means "every client" — the
+          Site Lead/Super Admin global inbox.
         - `client_id` set: further narrows to one client (the
           per-client filter on the inbox UI).
         - `folder_id` set: further narrows to one custom folder —
@@ -500,10 +505,23 @@ class InteractionRepository:
         query = select(Interaction)
 
         if account_manager_id is not None or client_id is not None:
-            query = query.join(Client, Client.client_id == Interaction.client_id)
+            # outerjoin (not join): a CATEGORY-mailbox interaction has
+            # client_id IS NULL and therefore no matching `clients`
+            # row at all — an INNER JOIN would silently drop it before
+            # the account_manager_category_ids OR-condition below ever
+            # gets a chance to match it. Harmless for every other
+            # caller (client_id is still filtered by an explicit WHERE
+            # below regardless of join type).
+            query = query.outerjoin(Client, Client.client_id == Interaction.client_id)
 
         if account_manager_id is not None:
-            query = query.where(Client.account_manager_id == account_manager_id)
+            account_manager_condition = Client.account_manager_id == account_manager_id
+            if account_manager_category_ids:
+                account_manager_condition = or_(
+                    account_manager_condition,
+                    Interaction.category_id.in_(account_manager_category_ids),
+                )
+            query = query.where(account_manager_condition)
 
         if client_id is not None:
             query = query.where(Interaction.client_id == client_id)
@@ -624,6 +642,7 @@ class InteractionRepository:
         ticket_types: list[str] | None = None,
         assigned_agent_id: UUID | None = None,
         extra_ticket_ids: list[UUID] | None = None,
+        account_manager_category_ids: list[UUID] | None = None,
     ) -> dict[UUID, int]:
         """
         One grouped COUNT per custom folder, under the exact same
@@ -636,10 +655,16 @@ class InteractionRepository:
         query = select(Interaction.folder_id, func.count(Interaction.interaction_id))
 
         if account_manager_id is not None or client_id is not None:
-            query = query.join(Client, Client.client_id == Interaction.client_id)
+            query = query.outerjoin(Client, Client.client_id == Interaction.client_id)
 
         if account_manager_id is not None:
-            query = query.where(Client.account_manager_id == account_manager_id)
+            account_manager_condition = Client.account_manager_id == account_manager_id
+            if account_manager_category_ids:
+                account_manager_condition = or_(
+                    account_manager_condition,
+                    Interaction.category_id.in_(account_manager_category_ids),
+                )
+            query = query.where(account_manager_condition)
 
         if client_id is not None:
             query = query.where(Interaction.client_id == client_id)
@@ -679,6 +704,7 @@ class InteractionRepository:
         ticket_types: list[str] | None = None,
         assigned_agent_id: UUID | None = None,
         extra_ticket_ids: list[UUID] | None = None,
+        account_manager_category_ids: list[UUID] | None = None,
     ) -> dict[str, int]:
         """
         One query, five conditional counts (Postgres FILTER) — the
@@ -714,10 +740,16 @@ class InteractionRepository:
         )
 
         if account_manager_id is not None or client_id is not None:
-            query = query.join(Client, Client.client_id == Interaction.client_id)
+            query = query.outerjoin(Client, Client.client_id == Interaction.client_id)
 
         if account_manager_id is not None:
-            query = query.where(Client.account_manager_id == account_manager_id)
+            account_manager_condition = Client.account_manager_id == account_manager_id
+            if account_manager_category_ids:
+                account_manager_condition = or_(
+                    account_manager_condition,
+                    Interaction.category_id.in_(account_manager_category_ids),
+                )
+            query = query.where(account_manager_condition)
 
         if client_id is not None:
             query = query.where(Interaction.client_id == client_id)

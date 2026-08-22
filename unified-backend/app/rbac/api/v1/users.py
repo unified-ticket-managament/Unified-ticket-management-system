@@ -53,6 +53,7 @@ def get_user_service(
     client_service = ClientService(
         client_repository=client_repository,
         user_repository=TicketingUserRepository(db),
+        category_repository=category_repository,
     )
     organization_service = OrganizationService(
         user_repository=user_repository,

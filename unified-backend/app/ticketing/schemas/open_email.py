@@ -24,6 +24,12 @@ class OpenEmailResponse(BaseModel):
 
     client_name: str
 
+    # Set instead of client_id/client_name for a CATEGORY-mailbox
+    # item (never both) — see InboxItemResponse's matching fields.
+    category_id: UUID | None = None
+
+    category_name: str | None = None
+
     to_email: str | None
 
     from_email: str | None

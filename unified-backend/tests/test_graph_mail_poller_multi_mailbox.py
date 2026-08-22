@@ -43,6 +43,14 @@ class _FakeClientRepository:
         return self._inbox_emails
 
 
+class _FakeCategoryRepository:
+    def __init__(self, db, inbox_emails=None):
+        self._inbox_emails = inbox_emails or []
+
+    async def list_active_inbox_emails(self):
+        return self._inbox_emails
+
+
 def setup_function(function):
     # Fresh per-mailbox checkpoint state for every test — this module
     # state is otherwise shared/mutated across the whole test process.
@@ -59,6 +67,11 @@ async def test_resolve_mailboxes_to_poll_includes_shared_and_client_mailboxes(mo
         lambda db: _FakeClientRepository(
             db, inbox_emails=["FamilyFirst@Probeps.com", "apm@probeps.com"]
         ),
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "CategoryRepository",
+        lambda db: _FakeCategoryRepository(db, inbox_emails=[]),
     )
 
     mailboxes = await graph_mail_poller_module._resolve_mailboxes_to_poll(settings)
@@ -79,10 +92,49 @@ async def test_resolve_mailboxes_to_poll_dedupes_when_client_matches_shared_mail
         "ClientRepository",
         lambda db: _FakeClientRepository(db, inbox_emails=["shared@probeps.com", "apm@probeps.com"]),
     )
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "CategoryRepository",
+        lambda db: _FakeCategoryRepository(db, inbox_emails=[]),
+    )
 
     mailboxes = await graph_mail_poller_module._resolve_mailboxes_to_poll(settings)
 
     assert set(mailboxes) == {"shared@probeps.com", "apm@probeps.com"}
+
+
+async def test_resolve_mailboxes_to_poll_includes_category_mailboxes(monkeypatch):
+    """
+    New behavior: an active category's own inbox_email (e.g.
+    apm@probeps.com, mapped to the APM category rather than any
+    client) is unioned into the poll set alongside the shared mailbox
+    and every client's own inbox_email.
+    """
+
+    settings = _settings()
+
+    monkeypatch.setattr(graph_mail_poller_module, "AsyncSessionLocal", lambda: _FakeDBSession())
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "ClientRepository",
+        lambda db: _FakeClientRepository(db, inbox_emails=["familyfirst@probeps.com"]),
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "CategoryRepository",
+        lambda db: _FakeCategoryRepository(
+            db, inbox_emails=["APM@Probeps.com", "patientoutreach@probeps.com"]
+        ),
+    )
+
+    mailboxes = await graph_mail_poller_module._resolve_mailboxes_to_poll(settings)
+
+    assert set(mailboxes) == {
+        "ticketing@probeps.com",
+        "familyfirst@probeps.com",
+        "apm@probeps.com",
+        "patientoutreach@probeps.com",
+    }
 
 
 class _FakeGraphMailProviderClient:

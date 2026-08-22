@@ -25,6 +25,10 @@ from app.core.config import Settings
 from app.database.session import AsyncSessionLocal
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
+from app.rbac.repositories.category_repository import CategoryRepository
+from app.rbac.repositories.reporting_manager_repository import (
+    ReportingManagerRepository,
+)
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import InteractionRepository
@@ -102,6 +106,8 @@ def _build_email_service(db) -> EmailService:
         notification_service=notification_service,
         sla_service=build_sla_service(db, notification_service=notification_service),
         rule_engine_service=build_rule_engine_service(db),
+        category_repository=CategoryRepository(db),
+        reporting_manager_repository=ReportingManagerRepository(db),
     )
 
 
@@ -127,10 +133,11 @@ def is_ready_to_poll(settings: Settings) -> bool:
 async def _resolve_mailboxes_to_poll(settings: Settings) -> list[str]:
     """
     The full set of mailboxes this tick attempts: the one configured
-    shared mailbox plus every active client's own inbox_email (see
-    ClientRepository.list_active_inbox_emails) — deduped/lowercased,
-    so a client whose inbox_email happens to equal the shared mailbox
-    doesn't get polled twice. Not every address returned here is
+    shared mailbox, every active client's own inbox_email (see
+    ClientRepository.list_active_inbox_emails), and every category's
+    own inbox_email (CategoryRepository.list_active_inbox_emails) —
+    deduped/lowercased, so an address configured on more than one of
+    these doesn't get polled twice. Not every address returned here is
     necessarily a real, Graph-accessible mailbox yet (some may still
     be awaiting Azure app-access approval, or be a legacy non-Graph
     address) — that's discovered per-mailbox in _poll_one_mailbox,
@@ -141,9 +148,13 @@ async def _resolve_mailboxes_to_poll(settings: Settings) -> list[str]:
 
     async with AsyncSessionLocal() as db:
         client_inbox_emails = await ClientRepository(db).list_active_inbox_emails()
+        category_inbox_emails = await CategoryRepository(db).list_active_inbox_emails()
 
     mailboxes.update(
         email.strip().lower() for email in client_inbox_emails if email
+    )
+    mailboxes.update(
+        email.strip().lower() for email in category_inbox_emails if email
     )
 
     return sorted(mailboxes)

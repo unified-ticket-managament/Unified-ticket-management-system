@@ -65,21 +65,24 @@ async def assign_reporting_manager(
 )
 async def list_reporting_managers(
     account_manager_id: UUID | None = None,
+    category_id: UUID | None = None,
     service: ReportingManagerService = Depends(get_reporting_manager_service),
     current_user=Depends(get_current_active_user),
 ):
     """
     Every Reporting Manager <-> category assignment, optionally
-    filtered to one Account Manager.
+    filtered to one Account Manager or one category. If both filters
+    are supplied, category_id takes precedence.
     """
 
     ensure_has_permission(current_user, "org:manage_reporting_managers")
 
-    items = (
-        await service.list_by_account_manager(account_manager_id)
-        if account_manager_id is not None
-        else await service.list_all()
-    )
+    if category_id is not None:
+        items = await service.list_by_category(category_id)
+    elif account_manager_id is not None:
+        items = await service.list_by_account_manager(account_manager_id)
+    else:
+        items = await service.list_all()
 
     return ReportingManagerListResponse(items=items)
 

@@ -16,6 +16,7 @@ from app.rbac.schemas.category import (
 )
 from app.rbac.services.access_control import ensure_has_permission
 from app.rbac.services.category_service import CategoryService
+from app.ticketing.repositories.client_repository import ClientRepository
 
 router = APIRouter(
     prefix="/categories",
@@ -37,10 +38,12 @@ def get_category_service(
 
     category_repository = CategoryRepository(db)
     user_repository = UserRepository(db)
+    client_repository = ClientRepository(db)
 
     return CategoryService(
         category_repository=category_repository,
         user_repository=user_repository,
+        client_repository=client_repository,
     )
 
 

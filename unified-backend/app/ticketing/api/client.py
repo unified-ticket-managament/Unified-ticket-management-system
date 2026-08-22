@@ -17,6 +17,7 @@ from app.ticketing.schemas.client import (
 )
 from app.ticketing.services.access_control import ensure_can_view_client_details
 from app.ticketing.services.client_service import ClientService
+from app.rbac.repositories.category_repository import CategoryRepository
 
 router = APIRouter(
     prefix="/clients",
@@ -42,6 +43,7 @@ async def create_client(
     service = ClientService(
         client_repository=ClientRepository(db),
         user_repository=UserRepository(db),
+        category_repository=CategoryRepository(db),
     )
 
     return await service.create(request, current_user=current_user)

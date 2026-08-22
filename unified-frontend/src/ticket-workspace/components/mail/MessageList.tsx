@@ -259,7 +259,11 @@ export function MessageList({
     }
 
     return [...rows].sort((a, b) => {
-      if (sort === "sender") return a.client_name.localeCompare(b.client_name);
+      if (sort === "sender") {
+        const aName = a.category_id ? a.category_name || "" : a.client_name;
+        const bName = b.category_id ? b.category_name || "" : b.client_name;
+        return aName.localeCompare(bName);
+      }
       const aTime = new Date(a.latest_at ?? a.received_at).getTime();
       const bTime = new Date(b.latest_at ?? b.received_at).getTime();
       return sort === "oldest" ? aTime - bTime : bTime - aTime;
@@ -460,6 +464,10 @@ export function MessageList({
               const preview = previewOf(item.latest_message);
               const slaTier = firstResponseTierFor(item);
               const isSelected = selectedId != null && openId === selectedId;
+              // A CATEGORY-mailbox row has no client — category_id is
+              // set instead (see InboxItem's own docstring).
+              const isCategoryInbox = !!item.category_id;
+              const displayName = isCategoryInbox ? item.category_name || "Category" : item.client_name;
 
               return (
                 <li key={item.interaction_id}>
@@ -482,7 +490,7 @@ export function MessageList({
                     )}
                   >
                     <div className="flex h-9 w-9 flex-none items-center justify-center rounded-full bg-primary/10 text-[12px] font-semibold text-primary">
-                      {initialsOf(item.client_name)}
+                      {initialsOf(displayName)}
                     </div>
 
                     <div className="min-w-0 flex-1">
@@ -494,8 +502,13 @@ export function MessageList({
                             isUnread ? "font-semibold text-foreground" : "font-medium text-foreground/90"
                           )}
                         >
-                          {item.client_name}
+                          {displayName}
                         </span>
+                        {isCategoryInbox && (
+                          <span className="flex-none rounded border border-border px-1 py-px text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                            Category
+                          </span>
+                        )}
                         {item.has_attachments && <Paperclip className="h-3 w-3 flex-none text-muted-foreground" />}
                         <span className="ml-auto flex-none whitespace-nowrap text-[11px] text-muted-foreground">
                           {formatRelativeTime(item.latest_at ?? item.received_at)}

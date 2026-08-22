@@ -43,6 +43,19 @@ class Category(Base):
         index=True,
     )
 
+    # The category's own shared mailbox address (e.g. apm@company.com),
+    # mirroring Client.inbox_email's existing pattern — a CATEGORY
+    # shared inbox routes to this category (and, via
+    # ReportingManagerTeam, its Account Manager(s)) the same way a
+    # CLIENT shared inbox routes to a Client via Client.inbox_email.
+    # Nullable/optional: most categories have no mailbox of their own.
+    # Lowercased on write (see CategoryRepository/CategoryService).
+    inbox_email: Mapped[str | None] = mapped_column(
+        String(255),
+        unique=True,
+        nullable=True,
+    )
+
     users: Mapped[list["User"]] = relationship(
         "User",
         back_populates="category",

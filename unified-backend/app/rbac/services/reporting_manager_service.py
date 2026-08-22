@@ -107,6 +107,10 @@ class ReportingManagerService:
         )
         return [_to_response(row) for row in rows]
 
+    async def list_by_category(self, category_id: UUID) -> list[ReportingManagerResponse]:
+        rows = await self.reporting_manager_repository.list_by_category(category_id)
+        return [_to_response(row) for row in rows]
+
     async def revoke(self, mapping_id: UUID) -> None:
         row = await self.reporting_manager_repository.get_by_id(mapping_id)
 

@@ -26,6 +26,14 @@ class EmailPayload(BaseModel):
 
     client_name: str | None = Field(default=None, min_length=1)
 
+    # The Category this email belongs to, resolved from a CATEGORY
+    # shared inbox (Category.inbox_email) at receive time — mutually
+    # exclusive with client_id/client_name above (an email is either
+    # client-routed or category-routed, never both).
+    category_id: UUID | None = None
+
+    category_name: str | None = Field(default=None, min_length=1)
+
     # The shared inbox address the email arrived at.
     to_email: EmailStr | None = None
 

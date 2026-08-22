@@ -796,6 +796,9 @@ export function MessageDetailsView({
           <h2 className="min-w-0 truncate text-[16px] font-semibold text-foreground">{email.subject}</h2>
           <div className="flex flex-none flex-wrap items-center gap-1.5">
             <Badge variant={status.variant}>{status.label}</Badge>
+            {email.category_id && (
+              <Badge variant="outline">Category Inbox · {email.category_name || "Unknown"}</Badge>
+            )}
             {email.ticket_priority && (
               <Badge variant={PRIORITY_VARIANT[email.ticket_priority as TicketPriority]}>{email.ticket_priority}</Badge>
             )}
@@ -833,7 +836,7 @@ export function MessageDetailsView({
               <div className="flex gap-2">
                 <span className="w-12 flex-none font-medium text-muted-foreground">From</span>
                 <span className="min-w-0 flex-1 truncate text-foreground">
-                  {email.from_name || email.client_name}
+                  {email.from_name || (email.category_id ? email.category_name : email.client_name)}
                   {email.from_email && <span className="text-muted-foreground"> &lt;{email.from_email}&gt;</span>}
                 </span>
               </div>

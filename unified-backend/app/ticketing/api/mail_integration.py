@@ -39,6 +39,10 @@ from app.database.session import AsyncSessionLocal, get_db
 from app.dependencies.auth import get_current_agent
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService
+from app.rbac.repositories.category_repository import CategoryRepository
+from app.rbac.repositories.reporting_manager_repository import (
+    ReportingManagerRepository,
+)
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import InteractionRepository
@@ -113,6 +117,8 @@ def _build_email_service(db: AsyncSession) -> EmailService:
         notification_service=notification_service,
         sla_service=build_sla_service(db, notification_service=notification_service),
         rule_engine_service=build_rule_engine_service(db),
+        category_repository=CategoryRepository(db),
+        reporting_manager_repository=ReportingManagerRepository(db),
     )
 
 

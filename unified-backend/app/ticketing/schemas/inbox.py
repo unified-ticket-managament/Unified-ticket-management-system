@@ -21,6 +21,13 @@ class InboxItemResponse(BaseModel):
 
     client_name: str
 
+    # Set instead of client_id/client_name for a CATEGORY-mailbox
+    # item (never both) — distinguishes a "Category Inbox" item from
+    # a "Client Inbox" one in the Mail UI.
+    category_id: UUID | None = None
+
+    category_name: str | None = None
+
     from_email: str | None
 
     to_email: str | None

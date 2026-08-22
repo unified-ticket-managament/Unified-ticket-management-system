@@ -16,12 +16,14 @@ import { Label } from "@/components/ui/label";
 import { UserMultiSelect } from "@/components/users/UserMultiSelect";
 import { useToast } from "@/hooks/use-toast";
 import { getApiErrorMessage } from "@/lib/utils";
-import { categoryService } from "@/services";
+import { categoryService, reportingManagerService } from "@/services";
+import { useAuthStore } from "@/store/auth-store";
 import { Category } from "@/types";
 import { listInternalNoteRecipients } from "@tw/api/interaction";
 
 const TEAM_LEAD_ROLE_NAME = "Team Lead";
 const STAFF_ROLE_NAME = "Staff";
+const ACCOUNT_MANAGER_ROLE_NAME = "Account Manager";
 
 interface CategoryFormDialogProps {
   open: boolean;
@@ -47,8 +49,15 @@ export function CategoryFormDialog({ open, onOpenChange, category }: CategoryFor
   const mode: "create" | "edit" = category ? "edit" : "create";
 
   const [categoryName, setCategoryName] = useState("");
+  const [inboxEmail, setInboxEmail] = useState("");
   const [teamLeadIds, setTeamLeadIds] = useState<string[]>([]);
   const [staffIds, setStaffIds] = useState<string[]>([]);
+  const [accountManagerIds, setAccountManagerIds] = useState<string[]>([]);
+  const [originalAccountManagerId, setOriginalAccountManagerId] = useState<string | null>(null);
+  const [originalMappingId, setOriginalMappingId] = useState<string | null>(null);
+
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+  const canManageAccountManager = hasPermission("org:manage_reporting_managers");
 
   const recipientsQuery = useQuery({
     queryKey: ["category-picker-recipients"],
@@ -62,12 +71,25 @@ export function CategoryFormDialog({ open, onOpenChange, category }: CategoryFor
     enabled: open && mode === "edit" && !!category,
   });
 
+  // Reads the existing Reporting Manager mapping for this category —
+  // gated on the permission this dialog otherwise never needs, so a
+  // user who can't manage Reporting Managers never fires a doomed 403.
+  const reportingManagerQuery = useQuery({
+    queryKey: ["category-reporting-manager", category?.category_id],
+    queryFn: () => reportingManagerService.list({ categoryId: category!.category_id }),
+    enabled: open && mode === "edit" && !!category && canManageAccountManager,
+  });
+
   useEffect(() => {
     if (!open) return;
     setCategoryName(category?.category_name ?? "");
+    setInboxEmail(category?.inbox_email ?? "");
     if (mode === "create") {
       setTeamLeadIds([]);
       setStaffIds([]);
+      setAccountManagerIds([]);
+      setOriginalAccountManagerId(null);
+      setOriginalMappingId(null);
     }
   }, [open, category, mode]);
 
@@ -77,6 +99,17 @@ export function CategoryFormDialog({ open, onOpenChange, category }: CategoryFor
     setTeamLeadIds(members.filter((m) => m.role_name === TEAM_LEAD_ROLE_NAME).map((m) => m.user_id));
     setStaffIds(members.filter((m) => m.role_name === STAFF_ROLE_NAME).map((m) => m.user_id));
   }, [mode, membersQuery.data]);
+
+  useEffect(() => {
+    if (mode !== "edit" || !reportingManagerQuery.data) return;
+    // A category can genuinely have more than one Reporting Manager
+    // (the underlying mapping is many-to-many) but this dialog only
+    // ever shows/manages the first one — never touch the rest.
+    const first = reportingManagerQuery.data[0] ?? null;
+    setAccountManagerIds(first ? [first.account_manager_id] : []);
+    setOriginalAccountManagerId(first ? first.account_manager_id : null);
+    setOriginalMappingId(first ? first.id : null);
+  }, [mode, reportingManagerQuery.data]);
 
   const allCandidates = recipientsQuery.data ?? [];
   const teamLeadOptions = useMemo(
@@ -93,28 +126,77 @@ export function CategoryFormDialog({ open, onOpenChange, category }: CategoryFor
         .map((u) => ({ user_id: u.user_id, name: u.name, email: u.email })),
     [allCandidates]
   );
+  const accountManagerOptions = useMemo(
+    () =>
+      allCandidates
+        .filter((u) => u.role_name === ACCOUNT_MANAGER_ROLE_NAME)
+        .map((u) => ({ user_id: u.user_id, name: u.name, email: u.email })),
+    [allCandidates]
+  );
+
+  function handleAccountManagerChange(ids: string[]) {
+    // Cap to a single selection — picking a second person replaces the
+    // first rather than adding to it; UserMultiSelect itself has no
+    // single-select mode, so this is enforced here instead.
+    setAccountManagerIds(ids.slice(-1));
+  }
 
   const pickersUnavailable = recipientsQuery.isError || (mode === "edit" && membersQuery.isError);
 
   const mutation = useMutation({
     mutationFn: async () => {
       const name = categoryName.trim();
+      const email = inboxEmail.trim() || null;
       const memberIds = [...teamLeadIds, ...staffIds];
+      let categoryId: string;
 
       if (mode === "create") {
-        return categoryService.create({ category_name: name, user_ids: memberIds });
+        const created = await categoryService.create({ category_name: name, user_ids: memberIds, inbox_email: email });
+        categoryId = created.category_id;
+      } else {
+        if (name !== category!.category_name || email !== (category!.inbox_email ?? null)) {
+          await categoryService.update(category!.category_id, { category_name: name, inbox_email: email });
+        }
+        await categoryService.setMembers(category!.category_id, memberIds);
+        categoryId = category!.category_id;
       }
 
-      if (name !== category!.category_name) {
-        await categoryService.update(category!.category_id, { category_name: name });
+      // Account Manager reconciliation is a separate concern from the
+      // category/members save above, and must never fail or roll it
+      // back — a permission-denied AM change still leaves the rest of
+      // the save intact, surfaced as its own toast instead.
+      const nextAccountManagerId = accountManagerIds[0] ?? null;
+      if (nextAccountManagerId !== originalAccountManagerId) {
+        try {
+          if (originalMappingId) {
+            await reportingManagerService.revoke(originalMappingId);
+          }
+          if (nextAccountManagerId) {
+            await reportingManagerService.assign({
+              account_manager_id: nextAccountManagerId,
+              category_id: categoryId,
+            });
+          }
+        } catch (amError) {
+          toast({
+            variant: "destructive",
+            title: "Account Manager not updated",
+            description: getApiErrorMessage(
+              amError,
+              "Category saved, but you don't have permission to change the Account Manager."
+            ),
+          });
+        }
       }
-      return categoryService.setMembers(category!.category_id, memberIds);
+
+      return categoryId;
     },
-    onSuccess: () => {
+    onSuccess: (categoryId) => {
       queryClient.invalidateQueries({ queryKey: ["categories-options"] });
       if (category) {
         queryClient.invalidateQueries({ queryKey: ["category-members", category.category_id] });
       }
+      queryClient.invalidateQueries({ queryKey: ["category-reporting-manager", categoryId] });
       toast({
         title: mode === "create" ? "Category created" : "Category updated",
         description:
@@ -151,6 +233,21 @@ export function CategoryFormDialog({ open, onOpenChange, category }: CategoryFor
             />
           </div>
 
+          <div className="space-y-2">
+            <Label htmlFor="category-inbox-email">Category Shared Inbox (optional)</Label>
+            <Input
+              id="category-inbox-email"
+              type="email"
+              placeholder="apm@company.com"
+              value={inboxEmail}
+              onChange={(e) => setInboxEmail(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              Mail sent to this address is routed by category, not by client — it maps to the
+              Account Manager(s) assigned as Reporting Manager for this category.
+            </p>
+          </div>
+
           {pickersUnavailable ? (
             <p className="text-sm text-destructive">
               {getApiErrorMessage(
@@ -160,6 +257,20 @@ export function CategoryFormDialog({ open, onOpenChange, category }: CategoryFor
             </p>
           ) : (
             <>
+              <div className="space-y-2">
+                <Label>Account Manager</Label>
+                <UserMultiSelect
+                  users={accountManagerOptions}
+                  selectedIds={accountManagerIds}
+                  onChange={handleAccountManagerChange}
+                  placeholder={recipientsQuery.isLoading ? "Loading account managers..." : "Search account managers…"}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Optional — the Account Manager assigned as Reporting Manager for this category.
+                  {!canManageAccountManager && " You don't have permission to change this."}
+                </p>
+              </div>
+
               <div className="space-y-2">
                 <Label>Team Leads</Label>
                 <UserMultiSelect

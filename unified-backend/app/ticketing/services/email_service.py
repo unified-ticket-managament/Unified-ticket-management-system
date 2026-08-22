@@ -16,6 +16,10 @@ from app.ticketing.repositories.interaction_repository import (
 )
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
+from app.rbac.repositories.category_repository import CategoryRepository
+from app.rbac.repositories.reporting_manager_repository import (
+    ReportingManagerRepository,
+)
 from app.ticketing.schemas.attachment import AttachmentMetadata
 from app.ticketing.schemas.email import (
     EmailRequest,
@@ -134,6 +138,8 @@ class EmailService:
         notification_service: NotificationService | None = None,
         sla_service: SLAService | None = None,
         rule_engine_service: RuleEngineService | None = None,
+        category_repository: CategoryRepository | None = None,
+        reporting_manager_repository: ReportingManagerRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.client_repository = client_repository
@@ -143,6 +149,14 @@ class EmailService:
         self.notification_service = notification_service
         self.sla_service = sla_service
         self.rule_engine_service = rule_engine_service
+        # Optional — only needed to resolve a CATEGORY shared mailbox
+        # (Category.inbox_email) and its Account Manager(s)
+        # (ReportingManagerTeam). None-safe: a caller that never
+        # constructs these simply never matches a category mailbox,
+        # falling through to the existing client/"Unknown inbox
+        # address" behavior unchanged.
+        self.category_repository = category_repository
+        self.reporting_manager_repository = reporting_manager_repository
 
     async def receive_email(
         self,
@@ -198,7 +212,29 @@ class EmailService:
             landed_mailbox or email.to_email, settings
         )
 
-        if arrived_at_shared_mailbox:
+        # ---------------------------------------
+        # Category Mailbox Lookup
+        #
+        # A CATEGORY shared inbox (Category.inbox_email) is always a
+        # dedicated address, exactly like a client's own dedicated
+        # inbox_email — never the one shared/sender-matched Graph
+        # mailbox (categories don't use that mode). Tried first, before
+        # the Client lookup below: creation-time validation
+        # (CategoryService/ClientService) keeps the two address sets
+        # disjoint, so at most one of category/client can ever match a
+        # given address — this ordering is a safe default, not a
+        # tie-break rule that actually gets exercised.
+        # ---------------------------------------
+
+        category = None
+        if not arrived_at_shared_mailbox and self.category_repository is not None:
+            category = await self.category_repository.get_active_by_inbox_email(
+                landed_mailbox or email.to_email
+            )
+
+        if category is not None:
+            client = None
+        elif arrived_at_shared_mailbox:
             # Widened match: the sender's address is checked against
             # both Client.inbox_email and every known ClientContact
             # address for that client — a company's mail may
@@ -229,7 +265,7 @@ class EmailService:
         # unconditional rejection.
         routes_to_site_lead = client is None and arrived_at_shared_mailbox
 
-        if client is None and not routes_to_site_lead:
+        if client is None and category is None and not routes_to_site_lead:
             raise ValueError(
                 "Unknown inbox address."
             )
@@ -332,6 +368,10 @@ class EmailService:
 
             "client_name": client.name if client is not None else None,
 
+            "category_id": str(category.category_id) if category is not None else None,
+
+            "category_name": category.category_name if category is not None else None,
+
             "to_email": email.to_email,
 
             "from_email": email.from_email,
@@ -389,6 +429,8 @@ class EmailService:
     message_id=email.message_id,
 
     client_id=client.client_id if client is not None else None,
+
+    category_id=category.category_id if category is not None else None,
 
     parent_interaction_id=parent_interaction_id,
 
@@ -450,6 +492,8 @@ class EmailService:
                 "message_id": email.message_id,
                 "client_id": client.client_id if client is not None else None,
                 "client_name": client.name if client is not None else None,
+                "category_id": category.category_id if category is not None else None,
+                "category_name": category.category_name if category is not None else None,
                 "ticket_id": ticket_id,
             },
         )
@@ -457,14 +501,17 @@ class EmailService:
         # ---------------------------------------
         # Notifications
         #
-        # Three distinct audiences: a brand-new pending item on a
+        # Four distinct audiences: a brand-new pending item on a
         # client's own inbox goes to that client's Account Manager
         # plus the always-global Site Lead/Super Admin inboxes; a
-        # brand-new item with no Client at all (the Graph-mailbox
-        # fallback above — routes_to_site_lead) goes to Site Lead only,
-        # since there's no Account Manager to notify; a reply on an
-        # already-ticketed thread goes to whoever is actually working
-        # that ticket (its assigned agent), not the AM.
+        # brand-new item on a category's own inbox goes to that
+        # category's Reporting Manager(s) (ReportingManagerTeam) plus
+        # the same global inboxes; a brand-new item with no Client or
+        # Category at all (the Graph-mailbox fallback above —
+        # routes_to_site_lead) goes to Site Lead only, since there's no
+        # owner to notify; a reply on an already-ticketed thread goes
+        # to whoever is actually working that ticket (its assigned
+        # agent), not the AM.
         # ---------------------------------------
 
         if self.notification_service is not None:
@@ -472,6 +519,14 @@ class EmailService:
                 if client is not None:
                     recipient_ids = {client.account_manager_id}
                     mail_source_label = client.name
+                elif category is not None:
+                    recipient_ids = set()
+                    if self.reporting_manager_repository is not None:
+                        recipient_ids.update(
+                            await self.reporting_manager_repository
+                            .list_account_manager_ids_by_category(category.category_id)
+                        )
+                    mail_source_label = category.category_name
                 else:
                     # routes_to_site_lead: no Client, so no Account
                     # Manager to seed the recipient set with — Site Lead
@@ -645,6 +700,10 @@ class EmailService:
             client_id=str(client.client_id) if client is not None else None,
 
             client_name=client.name if client is not None else None,
+
+            category_id=str(category.category_id) if category is not None else None,
+
+            category_name=category.category_name if category is not None else None,
 
             ticket_id=str(ticket_id) if ticket_id else None,
 

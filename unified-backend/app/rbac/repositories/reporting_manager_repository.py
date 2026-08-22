@@ -83,6 +83,14 @@ class ReportingManagerRepository(BaseRepository):
         )
         return result.all()
 
+    async def list_by_category(self, category_id: UUID):
+        result = await self.db.execute(
+            self._select_with_names()
+            .where(ReportingManagerTeam.category_id == category_id)
+            .order_by(User.name)
+        )
+        return result.all()
+
     async def list_category_ids_by_account_manager(
         self, account_manager_id: UUID
     ) -> list[UUID]:

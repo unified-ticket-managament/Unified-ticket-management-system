@@ -235,6 +235,11 @@ export interface InboxItem {
   open_interaction_id?: string;
   client_id: string | null;
   client_name: string;
+  // Set instead of client_id/client_name for a CATEGORY-mailbox item
+  // (never both) — distinguishes a "Category Inbox" row from a
+  // "Client Inbox" one.
+  category_id?: string | null;
+  category_name?: string | null;
   from_email: string | null;
   to_email: string | null;
   subject: string;
@@ -313,6 +318,10 @@ export interface OpenEmailResponse {
   ticket_id: string | null;
   client_id: string | null;
   client_name: string;
+  // See InboxItem's matching fields — set instead of client_id/
+  // client_name for a CATEGORY-mailbox thread, never both.
+  category_id?: string | null;
+  category_name?: string | null;
   to_email: string | null;
   from_email: string | null;
   from_name: string | null;

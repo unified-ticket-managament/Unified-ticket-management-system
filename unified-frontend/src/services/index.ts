@@ -183,10 +183,18 @@ export const organizationService = {
 /* -------------------------------------------------------------------------- */
 
 export const reportingManagerService = {
-  list: async (accountManagerId?: string): Promise<ReportingManagerAssignment[]> => {
+  list: async (
+    filters?: { accountManagerId?: string; categoryId?: string }
+  ): Promise<ReportingManagerAssignment[]> => {
+    const params = filters?.categoryId
+      ? { category_id: filters.categoryId }
+      : filters?.accountManagerId
+      ? { account_manager_id: filters.accountManagerId }
+      : undefined;
+
     const response = await api.get<{ items: ReportingManagerAssignment[] }>(
       "/reporting-managers",
-      { params: accountManagerId ? { account_manager_id: accountManagerId } : undefined }
+      { params }
     );
 
     return response.data.items;

@@ -20,6 +20,7 @@ class InteractionCreate(BaseModel):
     is_visible: bool = True
     message_id: str | None = Field(default=None, max_length=255)
     client_id: UUID | None = None
+    category_id: UUID | None = None
     parent_interaction_id: UUID | None = None
     received_at: datetime | None = None
     is_draft: bool = False
@@ -52,6 +53,7 @@ class InteractionResponse(ORMBase):
     removed_at: datetime | None
     message_id: str | None
     client_id: UUID | None = None
+    category_id: UUID | None = None
     parent_interaction_id: UUID | None = None
     received_at: datetime | None = None
     created_at: datetime

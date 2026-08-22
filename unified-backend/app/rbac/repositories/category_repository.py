@@ -109,6 +109,39 @@ class CategoryRepository(BaseRepository):
     # Utility Methods
     # --------------------------------------------------
 
+    async def get_active_by_inbox_email(self, inbox_email: str) -> Category | None:
+        """
+        Resolves a CATEGORY shared mailbox by its address — the
+        category-mailbox counterpart to
+        ClientRepository.get_active_by_inbox_email. Category has no
+        is_active flag (unlike Client), so "active" here just means
+        "exists with this address"; the method is named to match its
+        Client sibling for callers (email_service.py) that treat both
+        lookups uniformly.
+        """
+
+        result = await self.db.execute(
+            select(Category).where(
+                func.lower(Category.inbox_email) == inbox_email.lower()
+            )
+        )
+
+        return result.scalar_one_or_none()
+
+    async def list_active_inbox_emails(self) -> list[str]:
+        """
+        Every non-null inbox_email among categories — the category-
+        mailbox candidate set the Graph poller unions in alongside
+        Client.list_active_inbox_emails (see
+        graph_mail_poller._resolve_mailboxes_to_poll).
+        """
+
+        result = await self.db.execute(
+            select(Category.inbox_email).where(Category.inbox_email.isnot(None))
+        )
+
+        return [row[0] for row in result.all()]
+
     async def exists(self, category_name: str) -> bool:
         # Case-insensitive, same reasoning as get_by_name above.
         result = await self.db.execute(

@@ -152,6 +152,13 @@ class EmailResponse(BaseModel):
 
     client_name: str | None = None
 
+    # Set instead of client_id/client_name when this email landed at a
+    # CATEGORY shared mailbox (Category.inbox_email) rather than a
+    # client's — never both at once.
+    category_id: str | None = None
+
+    category_name: str | None = None
+
     # Set when the header match landed this email directly on an
     # existing ticket.
     ticket_id: str | None = None

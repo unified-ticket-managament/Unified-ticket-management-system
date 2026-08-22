@@ -106,6 +106,22 @@ class ClientRepository:
         )
         return result.scalar_one_or_none()
 
+    async def exists_by_inbox_email(self, inbox_email: str) -> bool:
+        """
+        Existence-only check (any status, including inactive) used by
+        CategoryService's cross-table validation — a CATEGORY
+        mailbox's address must never collide with an existing CLIENT
+        mailbox's address, keeping the two kinds mutually exclusive by
+        construction rather than by inference at mail-arrival time.
+        """
+
+        result = await self.db.execute(
+            select(Client.client_id).where(
+                func.lower(Client.inbox_email) == inbox_email.lower()
+            )
+        )
+        return result.scalar_one_or_none() is not None
+
     async def list_all(self) -> list[Client]:
         result = await self.db.execute(
             select(Client).order_by(Client.created_at.desc())

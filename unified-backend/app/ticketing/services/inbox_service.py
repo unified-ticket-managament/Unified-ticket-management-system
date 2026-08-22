@@ -90,13 +90,24 @@ class InboxService:
 
     async def _resolve_scope(
         self, current_user: User, *, assigned_to_me: bool = False
-    ) -> tuple[UUID | None, list[str] | None, UUID | None, list[UUID] | None]:
+    ) -> tuple[UUID | None, list[str] | None, UUID | None, list[UUID] | None, list[UUID] | None]:
         """
         Resolves the same role-based scoping tuple
         (account_manager_id, ticket_types, assigned_agent_id,
-        extra_ticket_ids) `get_inbox` and `get_folder_counts` both
-        need, so the two can never drift into applying different
-        visibility rules for the same user.
+        extra_ticket_ids, category_ids) `get_inbox` and
+        `get_folder_counts` both need, so the two can never drift into
+        applying different visibility rules for the same user.
+
+        `category_ids` (new) is the CATEGORY-mailbox counterpart to
+        `account_manager_id`'s client-ownership scoping: for an
+        Account Manager, every category they're a Reporting Manager
+        for (ReportingManagerTeam) — a still-pending CATEGORY-mailbox
+        interaction has no client, so `account_manager_id`'s own
+        `Client.account_manager_id` join can never match it on its
+        own. Empty for every other role (Team Lead/Staff visibility
+        into a pending, pre-ticket item is unaffected by this feature
+        — see ensure_agent_can_view_pending_interaction's own
+        docstring for why that stays role-excluded either way).
 
         `assigned_to_me` layers an additional "assigned_agent_id = me"
         condition on top of whatever the role already resolved (never
@@ -114,6 +125,7 @@ class InboxService:
         ticket_types: list[str] | None = None
         assigned_agent_id: UUID | None = None
         extra_ticket_ids: list[UUID] | None = None
+        category_ids: list[UUID] | None = None
 
         if role_name in GLOBAL_INBOX_ROLE_NAMES:
             # No filter at all when they've asked to see everything;
@@ -122,6 +134,22 @@ class InboxService:
             pass
         elif role_name == ACCOUNT_MANAGER_ROLE_NAME:
             account_manager_id = current_user.user_id
+            # Lazily built from the same session interaction_repository
+            # already holds, same reasoning as
+            # ensure_agent_can_view_pending_interaction's own category
+            # branch — avoids a new constructor param threaded through
+            # every InboxService construction site for one narrow
+            # lookup.
+            from app.rbac.repositories.reporting_manager_repository import (
+                ReportingManagerRepository,
+            )
+
+            reporting_manager_repository = ReportingManagerRepository(
+                self.interaction_repository.db
+            )
+            category_ids = await reporting_manager_repository.list_category_ids_by_account_manager(
+                current_user.user_id
+            )
         elif role_name == TEAM_LEAD_ROLE_NAME:
             # A Team Lead may belong to more than one category — the
             # shared pool now spans all of them, not just one (see
@@ -162,7 +190,7 @@ class InboxService:
         if assigned_to_me:
             assigned_agent_id = current_user.user_id
 
-        return account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids
+        return account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids, category_ids
 
     async def get_inbox(
         self,
@@ -233,7 +261,7 @@ class InboxService:
                     detail="Invalid pagination cursor.",
                 ) from exc
 
-        account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids = (
+        account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids, category_ids = (
             await self._resolve_scope(current_user, assigned_to_me=assigned_to_me)
         )
 
@@ -251,6 +279,7 @@ class InboxService:
             cursor=decoded_cursor,
             category_filter=category_filter,
             priority_filter=priority_filter,
+            account_manager_category_ids=category_ids,
         )
 
         interactions_with_attachments: set = set()
@@ -396,6 +425,10 @@ class InboxService:
 
                     client_name=payload.client_name or "Unknown",
 
+                    category_id=interaction.category_id,
+
+                    category_name=payload.category_name,
+
                     from_email=payload.from_email,
 
                     to_email=payload.to_email,
@@ -492,7 +525,7 @@ class InboxService:
         lookups) purely to display a number.
         """
 
-        account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids = (
+        account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids, category_ids = (
             await self._resolve_scope(current_user)
         )
 
@@ -502,6 +535,7 @@ class InboxService:
             ticket_types=ticket_types,
             assigned_agent_id=assigned_agent_id,
             extra_ticket_ids=extra_ticket_ids,
+            account_manager_category_ids=category_ids,
         )
 
     async def get_view_counts(
@@ -517,7 +551,7 @@ class InboxService:
         once the agent actually opens it.
         """
 
-        account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids = (
+        account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids, category_ids = (
             await self._resolve_scope(current_user)
         )
 
@@ -527,6 +561,7 @@ class InboxService:
             ticket_types=ticket_types,
             assigned_agent_id=assigned_agent_id,
             extra_ticket_ids=extra_ticket_ids,
+            account_manager_category_ids=category_ids,
         )
 
     async def get_sent(self, current_user: User) -> SentResponse:

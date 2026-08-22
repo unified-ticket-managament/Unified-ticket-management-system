@@ -454,6 +454,15 @@ class UserService:
                     detail="Email already exists.",
                 )
 
+            existing_category = await self.category_repository.get_active_by_inbox_email(
+                update_data["email"]
+            )
+            if existing_category is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This address is already configured as a category mailbox.",
+                )
+
         effective_manager_id = update_data.get("manager_id", client.account_manager_id)
         if effective_manager_id is None:
             raise HTTPException(

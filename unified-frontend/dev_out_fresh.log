@@ -1,0 +1,117 @@
+
+> frontend@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.9 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.0.19:3000
+✓ Ready in 1858ms
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+
+○ Compiling /login ...
+ GET / 307 in 15.9s (next.js: 13.9s, proxy.ts: 9ms, application-code: 2.0s)
+ GET /login 200 in 22.2s (next.js: 20.8s, proxy.ts: 534ms, application-code: 865ms)
+ GET /login 200 in 292ms (next.js: 54ms, proxy.ts: 39ms, application-code: 198ms)
+○ Compiling /dashboard/[[...slug]] ...
+✓ Finished writing to filesystem cache in 11.7s
+ GET /dashboard 200 in 26.0s (next.js: 17.8s, proxy.ts: 9ms, application-code: 8.1s)
+○ Compiling /users ...
+ GET /users 200 in 9.5s (next.js: 8.9s, proxy.ts: 54ms, application-code: 583ms)
+[browser] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. This won't be patched up. This can happen if a SSR-ed Client Component used:
+
+- A server/client branch `if (typeof window !== 'undefined')`.
+- Variable input such as `Date.now()` or `Math.random()` which changes each time it's called.
+- Date formatting in a user's locale which doesn't match the server.
+- External changing data without sending a snapshot of it along with the HTML.
+- Invalid HTML tag nesting.
+
+It can also happen if the client has a browser extension installed which messes with the HTML before React loaded.
+
+https://react.dev/link/hydration-mismatch
+
+  ...
+    <motion.div initial={{opacity:0,y:20}} animate={{opacity:1,y:0}} transition={{duration:0.4}} ...>
+      <div className="mx-auto w-..." style={{opacity:0, ...}} ref={function useMotionRef.useCallback}>
+        <AnimatePresence mode="wait">
+          <PresenceChild isPresent={true} initial={undefined} custom={undefined} presenceAffectsLayout={true} mode="wait" ...>
+            <PopChild pop={false} isPresent={true} anchorX="left" anchorY="top" root={undefined}>
+              <PopChildMeasure isPresent={true} childRef={{current:null}} sizeRef={{...}} pop={false}>
+                <motion.div initial={{opacity:0}} animate={{opacity:1}} exit={{opacity:0, ...}} ...>
+                  <div style={{opacity:0}} ref={function useMotionRef.useCallback}>
+                    <_c className="rounded-2x...">
+                      <div ref={null} className="border bor...">
+                        <div className="flex flex-...">
+                          <div>
+                          <form onSubmit={function} className="space-y-5" noValidate={true}>
+                            <div className="space-y-2">
+                              <_c>
+                              <_c id="email" type="email" placeholder="Enter your..." disabled={false} className="" ...>
+                                <input
+                                  type="email"
+                                  className="flex h-11 w-full rounded-lg border border-border bg-card px-4 py-2.5 text..."
+                                  ref={function ref}
+                                  id="email"
+                                  placeholder="Enter your email"
+                                  disabled={false}
+                                  name="email"
+                                  onChange={function onChange}
+                                  onBlur={function onChange}
+-                                 fdprocessedid="cmfgwp"
+                                >
+                            <div className="space-y-2">
+                              <_c>
+                              <div className="relative">
+                                <_c id="password" type="password" placeholder="Enter your..." disabled={false} ...>
+                                  <input
+                                    type="password"
+                                    className="flex h-11 w-full rounded-lg border border-border bg-card px-4 py-2.5 te..."
+                                    ref={function ref}
+                                    id="password"
+                                    placeholder="Enter your password"
+                                    disabled={false}
+                                    name="password"
+                                    onChange={function onChange}
+                                    onBlur={function onChange}
+-                                   fdprocessedid="iz2dn"
+                                  >
+                                ...
+                            ...
+                              <CheckboxTrigger className="peer h-[18..." id="remember-me" ref={null} ...>
+                                <Primitive.button type="button" role="checkbox" aria-checked={false} ...>
+                                  <button
+                                    type="button"
+                                    role="checkbox"
+                                    aria-checked={false}
+                                    aria-required={undefined}
+                                    data-state="unchecked"
+                                    data-disabled={undefined}
+                                    disabled={false}
+                                    value="on"
+                                    className="peer h-[18px] w-[18px] shrink-0 rounded-[6px] border border-border ring..."
+                                    id="remember-me"
+                                    onKeyDown={function handleEvent}
+                                    onClick={function handleEvent}
+                                    ref={function}
+-                                   fdprocessedid="loh2e4"
+                                  >
+                              ...
+                            <_c type="submit" className="w-full" disabled={false}>
+                              <button
+                                className="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl ..."
+                                ref={null}
+                                type="submit"
+                                disabled={false}
+-                               fdprocessedid="53s9bv"
+                              >
++                               Login
+                            <AnimatePresence>
+                            <button
+                              type="button"
+                              onClick={function handleForgotPassword}
+                              className="block w-full text-center text-sm font-medium text-primary hover:underline"
+-                             fdprocessedid="8t7z85"
+                            >
++                             Forgot Password?
+ 
+ GET /login 200 in 2.2s (next.js: 165ms, proxy.ts: 347ms, application-code: 1680ms)
+[?25h

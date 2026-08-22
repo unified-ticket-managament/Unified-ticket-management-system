@@ -107,6 +107,9 @@ export interface Role {
 export interface Category {
   category_id: string;
   category_name: string;
+  // This category's own shared inbox address (e.g. apm@company.com),
+  // if one is configured — null/undefined for most categories.
+  inbox_email?: string | null;
   assigned_user_count?: number;
 }
 
@@ -250,6 +253,8 @@ export interface CategoryForm {
   // Staff/Team Lead users assigned at once (see
   // CategoryFormDialog's "Create Category" form).
   user_ids?: string[];
+  // Optional CATEGORY shared-inbox address — see Category.inbox_email.
+  inbox_email?: string | null;
 }
 
 export interface ProfileForm {

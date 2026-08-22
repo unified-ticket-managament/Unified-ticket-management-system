@@ -458,11 +458,25 @@ async def ensure_agent_can_view_pending_interaction(
 ) -> None:
     """
     Gates a still-pending (pre-ticket) Mail item the same way
-    InboxService.get_inbox already scopes the list view: the Account
-    Manager who owns the item's client, or a global-inbox role (Site
-    Lead/Super Admin). Team Lead/Staff are deliberately excluded —
-    they never see a pending item in their own inbox list either, so
-    a crafted request for its interaction_id shouldn't work either.
+    InboxService.get_inbox already scopes the list view: for a
+    CLIENT-mailbox item, the Account Manager who owns the item's
+    client; for a CATEGORY-mailbox item (client_id is None,
+    category_id is set), the Account Manager(s) who are Reporting
+    Manager for that category (ReportingManagerTeam — see
+    reporting_manager_repository); or, either way, a global-inbox role
+    (Site Lead/Super Admin). Team Lead/Staff are deliberately excluded
+    from both — they never see a pending item in their own inbox list
+    either, so a crafted request for its interaction_id shouldn't work
+    either.
+
+    The category-mailbox check reuses `client_repository`'s own DB
+    session (`client_repository.db`) to build a ReportingManagerRepository
+    on demand, rather than requiring every one of this function's many
+    callers to separately construct and thread through a dedicated
+    repository param — `client_repository is None` (the same "caller
+    didn't wire this up" case client_id-based access already handles)
+    simply falls through to "no access" for a category-mailbox item
+    unless the caller holds a global-inbox role.
 
     Shared by InteractionService (claim/archive/snooze/tags/folder/
     drafts) and OpenEmailService (opening the thread itself) so
@@ -494,6 +508,29 @@ async def ensure_agent_can_view_pending_interaction(
 
     if view_only and has_permission(current_user, "communication:view_all"):
         return
+
+    if interaction.client_id is None and getattr(interaction, "category_id", None) is not None:
+        if client_repository is not None:
+            # Lazily built from the same session client_repository
+            # already holds — see this function's own docstring for
+            # why this isn't a separately-threaded parameter.
+            from app.rbac.repositories.reporting_manager_repository import (
+                ReportingManagerRepository,
+            )
+
+            reporting_manager_repository = ReportingManagerRepository(client_repository.db)
+            category_account_manager_ids = (
+                await reporting_manager_repository.list_account_manager_ids_by_category(
+                    interaction.category_id
+                )
+            )
+            if current_user.user_id in category_account_manager_ids:
+                return
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have access to this item.",
+        )
 
     client = (
         await client_repository.get_by_id(interaction.client_id)

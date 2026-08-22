@@ -172,6 +172,21 @@ class Interaction(Base):
         index=True,
     )
 
+    # Which category this interaction belongs to — the CATEGORY-
+    # mailbox counterpart to client_id above, set on every inbound
+    # email that landed at a category's own shared inbox
+    # (Category.inbox_email) rather than a client's. Mutually
+    # exclusive with client_id in practice (an inbox address is either
+    # a client mailbox or a category mailbox, never both — enforced at
+    # mailbox-creation time), but not DB-constrained as such since
+    # nothing here needs to enforce it beyond that creation-time check.
+    category_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("categories.category_id"),
+        nullable=True,
+        index=True,
+    )
+
     # Self-referencing thread link: a reply or a follow-up email
     # points at the root interaction of its conversation. NULL means
     # "this interaction is itself a thread root" (or doesn't belong

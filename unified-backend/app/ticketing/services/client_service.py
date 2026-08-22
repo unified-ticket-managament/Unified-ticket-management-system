@@ -16,6 +16,7 @@ from app.ticketing.schemas.client import (
 from app.ticketing.schemas.payloads.email_payload import EmailPayload
 from app.ticketing.services.access_control import ACCOUNT_MANAGER_ROLE_NAME
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.rbac.repositories.category_repository import CategoryRepository
 
 
 class ClientService:
@@ -32,10 +33,16 @@ class ClientService:
         client_repository: ClientRepository,
         user_repository: UserRepository,
         interaction_repository: InteractionRepository | None = None,
+        category_repository: CategoryRepository | None = None,
     ):
         self.client_repository = client_repository
         self.user_repository = user_repository
         self.interaction_repository = interaction_repository
+        # Optional — only needed for the cross-table mailbox-address
+        # uniqueness check below, keeping CLIENT and CATEGORY shared
+        # inboxes mutually exclusive by construction. None-safe like
+        # every other optional collaborator in this codebase.
+        self.category_repository = category_repository
 
     async def create(
         self,
@@ -50,6 +57,16 @@ class ClientService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="This inbox address is already assigned to a client.",
             )
+
+        if self.category_repository is not None:
+            existing_category = await self.category_repository.get_active_by_inbox_email(
+                request.inbox_email
+            )
+            if existing_category is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="This address is already configured as a category mailbox.",
+                )
 
         manager = await self.user_repository.get_by_id(request.account_manager_id)
         if (

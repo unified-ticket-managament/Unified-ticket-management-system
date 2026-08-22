@@ -10,6 +10,7 @@ from app.rbac.schemas.category import (
     CategoryMemberResponse,
     CategoryUpdate,
 )
+from app.ticketing.repositories.client_repository import ClientRepository
 
 
 class CategoryService:
@@ -24,9 +25,64 @@ class CategoryService:
         self,
         category_repository: CategoryRepository,
         user_repository: UserRepository,
+        client_repository: ClientRepository | None = None,
     ):
         self.category_repository = category_repository
         self.user_repository = user_repository
+        # Optional — only needed for the inbox_email cross-table
+        # uniqueness check below, mirrors this codebase's existing
+        # optional-dependency convention (e.g. EmailService's own
+        # None-safe collaborators).
+        self.client_repository = client_repository
+
+    async def _normalize_and_validate_inbox_email(
+        self, inbox_email: str | None, *, category_id: UUID | None = None
+    ) -> str | None:
+        """
+        Normalizes a submitted CATEGORY mailbox address and enforces
+        that it never collides with an existing CATEGORY mailbox (a
+        different category) or an ACTIVE CLIENT's mailbox
+        (Client.inbox_email) — keeping the two kinds of shared inbox
+        mutually exclusive by construction, never inferred from the
+        address string itself at mail-arrival time. Only active
+        clients block a category mailbox: a client deactivated after
+        its email was mistakenly used (e.g. a shared-mailbox address
+        accidentally entered as a client's email) must not permanently
+        block that address from ever being used as a category mailbox
+        going forward — see get_active_by_inbox_email's own docstring.
+        """
+
+        if inbox_email is None:
+            return None
+
+        normalized = inbox_email.strip().lower()
+        if not normalized:
+            return None
+
+        existing_category = await self.category_repository.get_active_by_inbox_email(
+            normalized
+        )
+        if existing_category is not None and existing_category.category_id != category_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This address is already configured as a category mailbox.",
+            )
+
+        if self.client_repository is not None:
+            active_client = await self.client_repository.get_active_by_inbox_email(
+                normalized
+            )
+            if active_client is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "This shared mailbox is already associated with an active "
+                        "client and cannot be assigned to a category. Please use a "
+                        "different mailbox."
+                    ),
+                )
+
+        return normalized
 
     # --------------------------------------------------
     # Create Category
@@ -53,6 +109,10 @@ class CategoryService:
                 detail="Category already exists.",
             )
 
+        inbox_email = await self._normalize_and_validate_inbox_email(
+            category_data.inbox_email
+        )
+
         # Assigning users is optional — an empty/omitted user_ids is a
         # normal, valid case (a category with zero members). Ids that
         # ARE submitted must resolve to real users, never trusted
@@ -66,7 +126,7 @@ class CategoryService:
                     detail="One or more users were not found.",
                 )
 
-        category = Category(category_name=name)
+        category = Category(category_name=name, inbox_email=inbox_email)
         category = await self.category_repository.create(category)
 
         await self.user_repository.add_users_to_category(
@@ -157,6 +217,11 @@ class CategoryService:
                 )
 
             update_data["category_name"] = name
+
+        if "inbox_email" in update_data:
+            update_data["inbox_email"] = await self._normalize_and_validate_inbox_email(
+                update_data["inbox_email"], category_id=category.category_id
+            )
 
         for field, value in update_data.items():
             setattr(category, field, value)

@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 from app.rbac.schemas.common import ORMBase
 
@@ -16,6 +16,11 @@ class CategoryBase(BaseModel):
     # trimming/blank/duplicate checks happen in CategoryService, since
     # a duplicate check needs a DB round trip Pydantic can't do here.
     category_name: str = Field(min_length=1, max_length=150)
+    # This category's own CATEGORY shared inbox address (e.g.
+    # apm@company.com) — optional, mirrors Client.inbox_email. Cross-
+    # table uniqueness against Client.inbox_email and normalization
+    # (strip/lowercase) both happen in CategoryService, not here.
+    inbox_email: EmailStr | None = Field(default=None)
 
 
 # --------------------------------------------------
@@ -40,6 +45,7 @@ class CategoryCreate(CategoryBase):
 
 class CategoryUpdate(BaseModel):
     category_name: str | None = Field(default=None, min_length=1, max_length=150)
+    inbox_email: EmailStr | None = Field(default=None)
 
 
 # --------------------------------------------------
@@ -50,6 +56,7 @@ class CategoryUpdate(BaseModel):
 class CategoryResponse(ORMBase):
     category_id: UUID
     category_name: str
+    inbox_email: str | None = None
     # Live count of users holding this category via user_categories —
     # populated by CategoryService (batch query, not per-row), 0 when
     # not computed by a given caller. Purely for display (the Category
