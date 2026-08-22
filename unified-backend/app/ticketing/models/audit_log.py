@@ -117,6 +117,25 @@ class AuditLog(Base):
         nullable=True,
     )
 
+    # Set only when this row was written during an active "Login as
+    # User" impersonation session (app/core/impersonation_context.py,
+    # AuditLogRepository.create) — the real, physically-authenticated
+    # Super Admin, distinct from actor_id/actor_name above, which
+    # continue to mean whoever's identity/permissions actually
+    # governed the request (the target — unchanged business meaning,
+    # e.g. Ticket.assigned_by still reads from actor_id). NULL for
+    # every ordinary, non-impersonated row.
+    impersonator_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id"),
+        nullable=True,
+    )
+
+    impersonator_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

@@ -4,6 +4,19 @@ export interface TokenResponse {
   token_type: string;
 }
 
+// "Login as User" impersonation — POST /admin/impersonation/start.
+export interface ImpersonationStartResponse {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_at: string;
+  target_user: {
+    user_id: string;
+    name: string;
+    role: string;
+  };
+}
+
 export interface AuthUser {
   user_id: string;
   name: string;

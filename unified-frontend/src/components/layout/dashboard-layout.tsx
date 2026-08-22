@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { Menu, Shield } from "lucide-react";
 
+import { ImpersonationBanner } from "./ImpersonationBanner";
 import { Sidebar, SidebarContent } from "./sidebar";
 import { TopNavbar } from "./top-navbar";
 
@@ -48,6 +49,10 @@ export function DashboardLayout({
       {/* Main Section */}
 
       <div className="flex flex-1 flex-col overflow-hidden">
+
+        {/* Impersonation banner — visible above both mobile and desktop chrome */}
+
+        <ImpersonationBanner />
 
         {/* Mobile Header */}
 

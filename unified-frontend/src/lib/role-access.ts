@@ -191,6 +191,29 @@ export function canManageRoles(role: string | undefined): boolean {
   return role === ROLE_NAMES.SUPER_ADMIN;
 }
 
+// "Login as User" impersonation row action on the Users page. The
+// backend (POST /admin/impersonation/start) is the real enforcement —
+// this is purely a frontend convenience so the button never renders
+// where it would just 403/400 on click. Mirrors the backend's own
+// rules exactly: `user:impersonate` (checked separately via
+// PermissionGuard, same as every other gated action on this page),
+// never a Super Admin target, never targeting yourself, never an
+// inactive target.
+export function canImpersonate(
+  currentUserId: string | undefined,
+  targetUserId: string,
+  targetRoleName: string,
+  targetIsActive: boolean
+): boolean {
+  if (!currentUserId || targetUserId === currentUserId) {
+    return false;
+  }
+  if (targetRoleName === ROLE_NAMES.SUPER_ADMIN) {
+    return false;
+  }
+  return targetIsActive;
+}
+
 // Roles that a given logged-in role is permitted to assign when creating a
 // new user. `undefined` means no restriction (all roles are selectable).
 // Mirrors unified-backend/app/rbac/services/access_control.py's

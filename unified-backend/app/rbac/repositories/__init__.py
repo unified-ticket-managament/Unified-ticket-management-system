@@ -13,6 +13,7 @@ Repositories:
     - PermissionOverrideRepository
     - PermissionRequestRepository
     - ReportingManagerRepository
+    - ImpersonationSessionRepository
 """
 
 from .user_repository import UserRepository
@@ -24,6 +25,7 @@ from .role_permission_repository import RolePermissionRepository
 from .permission_override_repository import PermissionOverrideRepository
 from .permission_request_repository import PermissionRequestRepository
 from .reporting_manager_repository import ReportingManagerRepository
+from .impersonation_session_repository import ImpersonationSessionRepository
 
 __all__ = [
     "UserRepository",
@@ -35,4 +37,5 @@ __all__ = [
     "PermissionOverrideRepository",
     "PermissionRequestRepository",
     "ReportingManagerRepository",
+    "ImpersonationSessionRepository",
 ]

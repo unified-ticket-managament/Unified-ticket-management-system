@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.impersonation_context import get_impersonator
 from app.ticketing.enums import ActorRole, AuditEntityType, AuditEventType
 from app.ticketing.models.audit_log import AuditLog
 from app.ticketing.models.client import Client
@@ -73,6 +74,15 @@ class AuditLogRepository:
         old_values: dict[str, Any] | None,
         new_values: dict[str, Any] | None,
     ) -> AuditLog:
+        # If the request that triggered this write is an impersonated
+        # session (see app/core/impersonation_context.py), stamp the
+        # real actor here — actor_id/actor_name above stay whatever
+        # the caller already resolved (the target/effective performer,
+        # unchanged business meaning), while these two columns
+        # separately record who was really behind it. No caller of
+        # log_event()/this method needs to know this happens.
+        impersonator = get_impersonator()
+
         audit_log = AuditLog(
             entity_type=entity_type,
             entity_id=entity_id,
@@ -83,6 +93,8 @@ class AuditLogRepository:
             old_values=old_values,
             new_values=new_values,
             ticket_id=self._derive_ticket_id(entity_type, entity_id, new_values),
+            impersonator_id=impersonator[0] if impersonator else None,
+            impersonator_name=impersonator[1] if impersonator else None,
         )
 
         self.db.add(audit_log)

@@ -6,9 +6,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import Category, Role, User
 
 from app.auth.jwt import decode_token
+from app.core.impersonation_context import set_impersonator
 from app.core.rbac_cache import get_rbac_cache, resolution_lock
 from app.core.request_timing import timed_stage
 from app.database.session import AsyncSessionLocal, get_db
+# Deliberately rbac's own repository, not a re-implementation here:
+# app/dependencies/auth.py already crosses the rbac/ticketing module
+# boundary for shared auth concerns (see the ticketing UserRepository
+# import below) — this is the one place both domains' tokens are
+# actually verified, so it's the correct place for the one extra,
+# impersonation-specific DB check too.
+from app.rbac.repositories.impersonation_session_repository import (
+    ImpersonationSessionRepository,
+)
 # Deliberately ticketing's UserRepository, not rbac's, for this one
 # shared dependency: its get_by_id eager-loads both User.role AND
 # User.category (rbac's own UserRepository only loads .role). Every
@@ -138,6 +148,18 @@ async def _authenticate_token(token: str, db: AsyncSession) -> User:
             detail="Invalid access token.",
         )
 
+    # Set (or explicitly clear) on every request, impersonated or not —
+    # never only inside the impersonating branch below. This is what
+    # lets AuditLogRepository.create() (both rbac's and ticketing's)
+    # stamp "who was really behind this" onto an audit row with zero
+    # changes to any of the ~30+ existing log_event()/create_log()
+    # call sites — see app/core/impersonation_context.py's own
+    # docstring for the full rationale. Cleared here first, then
+    # re-set below only once the session itself has been validated —
+    # a request must never be able to make an audit row claim an
+    # impersonator whose session turned out to be invalid.
+    set_impersonator(None, None)
+
     user_id = payload.get("user_id")
 
     if user_id is None:
@@ -196,6 +218,45 @@ async def _authenticate_token(token: str, db: AsyncSession) -> User:
 
                     if permission_version is not None:
                         cache.mark_valid(user_id, permission_version)
+
+    # Impersonation: one extra, always-fresh (never cached) DB check
+    # for any token carrying an impersonation_session_id claim — see
+    # ImpersonationSessionRepository.get_valid's own docstring for
+    # exactly what it requires (session ACTIVE and not expired, both
+    # parties' live is_active, and both identity claims matching the
+    # session row) and app/core/impersonation_context.py for why this
+    # can't be folded into the (user_id, permission_version) cache
+    # above: that cache is correctly shared with the target's own
+    # concurrent, non-impersonated session, and knows nothing about
+    # impersonation-session status — folding validity into it would
+    # let a just-ended session ("Exit Impersonation") keep working
+    # for up to the cache's TTL instead of failing on the very next
+    # request.
+    impersonation_session_id = payload.get("impersonation_session_id")
+    impersonator_id_claim = payload.get("impersonator_id")
+
+    if impersonation_session_id is not None:
+        session = await ImpersonationSessionRepository(db).get_valid(
+            UUID(impersonation_session_id),
+            actor_user_id=UUID(impersonator_id_claim) if impersonator_id_claim else None,
+            target_user_id=UUID(user_id),
+        )
+
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Impersonation session is no longer valid.",
+            )
+
+        user.impersonation_session_id = UUID(impersonation_session_id)
+        user.impersonator_id = UUID(impersonator_id_claim) if impersonator_id_claim else None
+        user.impersonator_name = payload.get("impersonator_name")
+
+        set_impersonator(user.impersonator_id, user.impersonator_name)
+    else:
+        user.impersonation_session_id = None
+        user.impersonator_id = None
+        user.impersonator_name = None
 
     # Transient attribute, not a mapped column — same pattern as
     # TicketService._attach_names, so SQLAlchemy never tries to

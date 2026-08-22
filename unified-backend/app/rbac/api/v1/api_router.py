@@ -10,6 +10,7 @@ from app.rbac.api.v1.audit_logs import router as audit_logs_router
 from app.rbac.api.v1.permission_overrides import router as permission_overrides_router
 from app.rbac.api.v1.permission_requests import router as permission_requests_router
 from app.rbac.api.v1.reporting_managers import router as reporting_managers_router
+from app.rbac.api.v1.impersonation import router as impersonation_router
 
 api_router = APIRouter()
 
@@ -23,3 +24,4 @@ api_router.include_router(audit_logs_router)
 api_router.include_router(permission_overrides_router)
 api_router.include_router(permission_requests_router)
 api_router.include_router(reporting_managers_router)
+api_router.include_router(impersonation_router)

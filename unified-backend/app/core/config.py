@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # correctness knob.
     rbac_cache_max_size: int = 10_000
 
+    # "Login as User" impersonation session lifetime — bounded and
+    # deliberately short. Both the impersonation access and refresh
+    # tokens (app/rbac/services/impersonation_service.py) are capped at
+    # this, and a refresh mid-session (AuthService.refresh_token) can
+    # never re-mint a token that extends past the *original*
+    # started_at + this value, even if refreshed repeatedly.
+    impersonation_max_minutes: int = 30
+
     # Shared secret for POST /internal/sla/sweep — the Render Cron Job
     # is the only caller, and there's no "user" behind a cron tick to
     # issue it a JWT, so this is a plain shared-secret header instead

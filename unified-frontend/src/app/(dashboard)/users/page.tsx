@@ -16,6 +16,7 @@ import {
   Download,
   Eye,
   KeyRound,
+  LogIn,
   Pencil,
   Plus,
   RefreshCw,
@@ -61,10 +62,11 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { formatDate, getApiErrorMessage } from "@/lib/utils";
-import { canDeleteRecords, dedupeRolesByName, ROLE_NAMES } from "@/lib/role-access";
+import { canDeleteRecords, canImpersonate, dedupeRolesByName, ROLE_NAMES } from "@/lib/role-access";
 import { categoryService, roleService, userService } from "@/services";
 import { PermissionGuard } from "@/components/auth/PermissionGuard";
 import { useAuthStore } from "@/store/auth-store";
+import { useImpersonationStore } from "@/store/impersonation-store";
 import { Category, Role, User } from "@/types";
 
 type UserRow = User & { roleName: string; categoryNames: string[] };
@@ -111,6 +113,8 @@ export default function UsersPage() {
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [deletingUser, setDeletingUser] = useState<User | null>(null);
   const [viewingUser, setViewingUser] = useState<User | null>(null);
+  const [impersonatingUser, setImpersonatingUser] = useState<UserRow | null>(null);
+  const startImpersonation = useImpersonationStore((s) => s.startImpersonation);
 
   const usersQuery = useQuery({
     // Distinct from the plain ["users-table"] key shared by Audit Logs
@@ -237,6 +241,23 @@ export default function UsersPage() {
     },
     onError: () => {
       toast({ variant: "destructive", title: "Failed to update user status" });
+    },
+  });
+
+  const impersonateMutation = useMutation({
+    mutationFn: (targetUserId: string) => startImpersonation(targetUserId, currentUser),
+    onSuccess: () => {
+      // startImpersonation itself hard-navigates on success — nothing
+      // further to do here, but onSuccess still fires first if the
+      // navigation is momentarily deferred by the browser.
+      setImpersonatingUser(null);
+    },
+    onError: (error) => {
+      toast({
+        variant: "destructive",
+        title: "Failed to start impersonation",
+        description: getApiErrorMessage(error, "Please try again."),
+      });
     },
   });
 
@@ -420,12 +441,25 @@ export default function UsersPage() {
                   </Button>
                 </PermissionGuard>
               )}
+              {canImpersonate(currentUser?.user_id, user.user_id, user.roleName, user.is_active) && (
+                <PermissionGuard permission="user:impersonate">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    aria-label="Login as user"
+                    onClick={() => setImpersonatingUser(user)}
+                  >
+                    <LogIn className="h-4 w-4" />
+                  </Button>
+                </PermissionGuard>
+              )}
             </div>
           );
         },
       },
     ],
-    [statusMutation, canDelete]
+    [statusMutation, canDelete, currentUser]
   );
 
   const table = useReactTable({
@@ -623,6 +657,38 @@ export default function UsersPage() {
               onClick={() => deletingUser && deleteMutation.mutate(deletingUser.user_id)}
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={!!impersonatingUser}
+        onOpenChange={(open) => !open && setImpersonatingUser(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <LogIn className="h-5 w-5 text-warning" />
+              Login as User
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              You will act as <strong>{impersonatingUser?.name}</strong> (
+              {impersonatingUser?.roleName}) for up to 30 minutes. Every action you
+              take will be recorded in the audit trail as performed by them, with
+              your own account attributed as the impersonator. You can exit at any
+              time from the banner shown while impersonating.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={impersonateMutation.isPending}
+              onClick={() =>
+                impersonatingUser && impersonateMutation.mutate(impersonatingUser.user_id)
+              }
+            >
+              {impersonateMutation.isPending ? "Starting..." : "Login as User"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

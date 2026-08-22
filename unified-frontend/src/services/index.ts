@@ -5,6 +5,7 @@ import {
   CategoryForm,
   CategoryMember,
   EligibleApproverUser,
+  ImpersonationStartResponse,
   LoginForm,
   OrganizationNode,
   Permission,
@@ -68,6 +69,33 @@ export const authService = {
     const response = await api.post<{ message: string }>(
       "/auth/change-password",
       data
+    );
+
+    return response.data;
+  },
+};
+
+/* -------------------------------------------------------------------------- */
+/*                    IMPERSONATION ("LOGIN AS USER")                         */
+/* -------------------------------------------------------------------------- */
+
+export const impersonationService = {
+  start: async (targetUserId: string) => {
+    const response = await api.post<ImpersonationStartResponse>(
+      "/admin/impersonation/start",
+      { target_user_id: targetUserId }
+    );
+
+    return response.data;
+  },
+
+  // Must be called while the impersonation-shaped access token (from
+  // start() above) is the one currently attached — see
+  // store/impersonation-store.ts, which calls this before restoring
+  // the admin's own original tokens.
+  end: async () => {
+    const response = await api.post<{ message: string }>(
+      "/admin/impersonation/end"
     );
 
     return response.data;

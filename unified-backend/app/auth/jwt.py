@@ -36,6 +36,9 @@ class JWTManager:
         categories: list[str] | None = None,
         permission_version: int | None = None,
         expires_delta: timedelta | None = None,
+        impersonator_id: UUID | None = None,
+        impersonator_name: str | None = None,
+        impersonation_session_id: UUID | None = None,
     ) -> str:
 
         expire = datetime.now(timezone.utc) + (
@@ -92,6 +95,19 @@ class JWTManager:
         if permission_version is not None:
             payload["permission_version"] = permission_version
 
+        # Impersonation claims — see app/rbac/services/impersonation_service.py.
+        # Optional/additive: a token minted by an ordinary login/refresh
+        # never carries these, and every consumer (app/dependencies/
+        # auth.py, app/core/impersonation_context.py) treats their
+        # absence as "not an impersonated session," the same
+        # degrade-safe convention every other optional claim here uses.
+        if impersonator_id is not None:
+            payload["impersonator_id"] = str(impersonator_id)
+        if impersonator_name is not None:
+            payload["impersonator_name"] = impersonator_name
+        if impersonation_session_id is not None:
+            payload["impersonation_session_id"] = str(impersonation_session_id)
+
         return jwt.encode(
             payload,
             settings.jwt_secret_key,
@@ -103,6 +119,7 @@ class JWTManager:
         *,
         user_id: UUID,
         expires_delta: timedelta | None = None,
+        impersonation_session_id: UUID | None = None,
     ) -> str:
 
         expire = datetime.now(timezone.utc) + (
@@ -118,6 +135,14 @@ class JWTManager:
             "type": "refresh",
             "exp": expire,
         }
+
+        # See create_access_token's own comment above — carried on the
+        # refresh token too so AuthService.refresh_token can tell an
+        # impersonation session's refresh apart from a normal one and
+        # cap the re-minted access token's lifetime at the original
+        # session's expires_at rather than a fresh full-length token.
+        if impersonation_session_id is not None:
+            payload["impersonation_session_id"] = str(impersonation_session_id)
 
         return jwt.encode(
             payload,

@@ -25,6 +25,15 @@ class AuditLogResponse(ORMBase):
     new_values: dict[str, Any] | None
     created_at: datetime
 
+    # Set only for a row written during an active "Login as User"
+    # session — the real, physically-authenticated Super Admin,
+    # distinct from actor_id/actor_name above (which stay whoever's
+    # identity actually governed the request). None for every
+    # ordinary row — see root CLAUDE.md's impersonation plan /
+    # app/core/impersonation_context.py.
+    impersonator_id: UUID | None = None
+    impersonator_name: str | None = None
+
 
 class TicketAuditLogResponse(AuditLogResponse):
     """

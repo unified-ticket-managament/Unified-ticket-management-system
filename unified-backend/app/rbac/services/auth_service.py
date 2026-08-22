@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -14,11 +15,17 @@ from app.auth.password import (
     get_password_hash,
     verify_password,
 )
+from app.core.config import get_settings
+from app.rbac.repositories.impersonation_session_repository import (
+    ImpersonationSessionRepository,
+)
 from app.rbac.repositories.role_permission_repository import RolePermissionRepository
 from app.rbac.repositories.user_repository import UserRepository
 from app.rbac.schemas.audit_log import AuditLogCreate
 from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.permission_resolver import PermissionResolverService
+
+settings = get_settings()
 from app.rbac.schemas.auth import (
     ChangePasswordRequest,
     CurrentUser,
@@ -199,6 +206,20 @@ class AuthService:
                 detail="Invalid token payload.",
             )
 
+        # An impersonation refresh token (see
+        # ImpersonationService.start) needs different handling: it
+        # must re-validate the impersonation session itself (not just
+        # the target's own is_active/password state) and must never
+        # let a refresh extend the session past its *original*
+        # expires_at — otherwise repeatedly refreshing shortly before
+        # each expiry would make a "bounded, 30-minute" session
+        # effectively unlimited.
+        impersonation_session_id = payload.get("impersonation_session_id")
+        if impersonation_session_id is not None:
+            return await self._refresh_impersonation_token(
+                UUID(user_id), UUID(impersonation_session_id)
+            )
+
         user = await self.user_repository.get_by_id(
             UUID(user_id),
         )
@@ -235,6 +256,95 @@ class AuthService:
 
         refresh_token = create_refresh_token(
             user_id=user.user_id,
+        )
+
+        return TokenResponse(
+            access_token=access_token,
+            refresh_token=refresh_token,
+        )
+
+    async def _refresh_impersonation_token(
+        self,
+        target_user_id: UUID,
+        impersonation_session_id: UUID,
+    ) -> TokenResponse:
+        """
+        Re-validates the impersonation session (same rule as
+        app/dependencies/auth.py's per-request check — ACTIVE, not
+        expired, both parties still active) and re-mints a target-
+        shaped token pair, `exp` capped at the *original*
+        `session.expires_at`, never a fresh full-length window.
+        """
+
+        session_repository = ImpersonationSessionRepository(self.user_repository.db)
+
+        # The refresh token itself carries no impersonator_id claim
+        # (see create_refresh_token) — fetch the row first to learn
+        # its real actor_user_id, then re-run the exact same validity
+        # check app/dependencies/auth.py uses on every request
+        # (ACTIVE, not expired, both parties active, and — via the
+        # `target_user_id` filter below — that the id this refresh
+        # token claims still matches the session's own target).
+        unvalidated = await session_repository.get_by_id(impersonation_session_id)
+        if unvalidated is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Impersonation session is no longer valid.",
+            )
+
+        session = await session_repository.get_valid(
+            impersonation_session_id,
+            actor_user_id=unvalidated.actor_user_id,
+            target_user_id=target_user_id,
+        )
+
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Impersonation session is no longer valid.",
+            )
+
+        target = await self.user_repository.get_by_id(target_user_id)
+        actor = await self.user_repository.get_by_id(session.actor_user_id)
+
+        if target is None or actor is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Impersonation session is no longer valid.",
+            )
+
+        permissions, _, scoped_permissions = (
+            await self.permission_resolver.get_effective_permissions(target)
+        )
+
+        now = datetime.now(timezone.utc)
+        remaining = session.expires_at - now
+        capped_delta = min(
+            remaining, timedelta(minutes=settings.access_token_expire_minutes)
+        )
+
+        token_kwargs = dict(
+            user_id=target.user_id,
+            email=target.email,
+            role=target.role.name,
+            permissions=permissions,
+            scoped_permissions=scoped_permissions,
+            name=target.name,
+            role_id=target.role_id,
+            category_id=target.category_id,
+            category=target.category.category_name if target.category else None,
+            categories=[c.category_name for c in target.categories],
+            permission_version=target.permission_version,
+            impersonator_id=actor.user_id,
+            impersonator_name=actor.name,
+            impersonation_session_id=session.id,
+        )
+
+        access_token = create_access_token(expires_delta=capped_delta, **token_kwargs)
+        refresh_token = create_refresh_token(
+            user_id=target.user_id,
+            expires_delta=remaining,
+            impersonation_session_id=session.id,
         )
 
         return TokenResponse(

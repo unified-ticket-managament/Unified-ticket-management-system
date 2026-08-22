@@ -2,6 +2,7 @@ from uuid import UUID
 
 from sqlalchemy import func, select
 
+from app.core.impersonation_context import get_impersonator
 from app.rbac.models.audit_log import AuditLog
 
 from .base import BaseRepository
@@ -16,6 +17,17 @@ class AuditLogRepository(BaseRepository):
         self,
         audit_log: AuditLog,
     ) -> AuditLog:
+        # See app/ticketing/repositories/audit_log_repository.py's
+        # identical addition for the full rationale — both audit
+        # systems need this, since either can write a row during an
+        # impersonated session (e.g. this table's own
+        # user_impersonation.started/ended rows aside, a Super Admin
+        # impersonating a role that holds user:update/permission:update
+        # etc. can still trigger a user.*/role.*/permission.* row here).
+        impersonator = get_impersonator()
+        if impersonator is not None:
+            audit_log.impersonator_id = impersonator[0]
+            audit_log.impersonator_name = impersonator[1]
 
         self.db.add(audit_log)
 

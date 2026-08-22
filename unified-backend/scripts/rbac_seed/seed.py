@@ -21,6 +21,7 @@ DEFAULT_PERMISSIONS = [
     ("user:delete", "Delete users"),
     ("user:disable", "Activate or deactivate a user account"),
     ("user:reset_password", "Force-reset another user's password"),
+    ("user:impersonate", "Temporarily act as another user (Login as User)"),
     ("category:create", "Create a new work-specialization category"),
     ("role:create", "Create roles"),
     ("role:view", "View roles"),
@@ -158,7 +159,20 @@ _ALL_PERMISSION_NAMES = [name for name, _ in DEFAULT_PERMISSIONS]
 # by design: deep system/infrastructure configuration and compliance
 # audit export. Computed from the full list (rather than hand-listed)
 # so it can never silently drift out of sync as permissions are added.
-_SITE_LEAD_EXCLUDED = {"ticket:system_config", "audit:export"}
+_SITE_LEAD_EXCLUDED = {
+    "ticket:system_config",
+    "audit:export",
+    # "Login as User" impersonation — per explicit product decision,
+    # granted ONLY to Super Admin, unlike every other permission in
+    # this "all except two" computation. Site Lead does not get this
+    # via any wildcard, ever — see
+    # app/rbac/services/access_control.py's
+    # IMPERSONATION_FORBIDDEN_TARGET_ROLE_NAMES for the matching
+    # backend enforcement (a Super Admin also can't impersonate a
+    # Site Lead as a target, but that's a separate rule from this
+    # grant).
+    "user:impersonate",
+}
 SITE_LEAD_PERMISSIONS = [
     name for name in _ALL_PERMISSION_NAMES if name not in _SITE_LEAD_EXCLUDED
 ]
@@ -344,6 +358,14 @@ DEPRECATED_PERMISSIONS = [
 # by design — so these particular, deliberate downgrades need an
 # explicit one-time revocation instead of relying on that loop.
 REVOKED_GRANTS = [
+    # Site Lead picked this up once, automatically, via
+    # SITE_LEAD_PERMISSIONS' "every permission except N" computation —
+    # before "user:impersonate" was added to _SITE_LEAD_EXCLUDED above.
+    # That exclusion prevents it on every future reseed; this explicit
+    # revocation claws back the one grant that already landed before
+    # the exclusion existed (the main seeding loop is additive-only,
+    # same reasoning as every other entry in this list).
+    ("Site Lead", "user:impersonate"),
     ("Staff", "ticket:create"),
     ("Staff", "ticket:transfer"),
     ("Staff", "ticket:reopen"),

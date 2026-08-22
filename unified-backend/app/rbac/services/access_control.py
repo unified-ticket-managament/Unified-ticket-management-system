@@ -125,6 +125,33 @@ def ensure_can_create_role(actor: User, target_role_name: str) -> None:
         )
 
 
+# --------------------------------------------------------------------
+# Impersonation ("Login as User"): who an actor may target. Mirrors
+# this file's own role-vs-role idiom above rather than introducing a
+# new pattern. Confirmed product decision: a Super Admin may impersonate
+# any active, non-Super-Admin user — impersonation is for troubleshooting
+# a lower-privileged view, not for one admin to quietly act as another
+# admin's account. Self-targeting is checked separately in
+# ImpersonationService (it's an identity comparison, not a role rule).
+IMPERSONATION_FORBIDDEN_TARGET_ROLE_NAMES: set[str] = {"Super Admin"}
+
+
+def ensure_can_impersonate(actor: User, target: User) -> None:
+    """
+    403s if `actor` (already known to hold `user:impersonate`, checked
+    by the caller) is not permitted to impersonate `target`, based
+    purely on the target's role. Self-targeting and nested-session
+    checks live in ImpersonationService.start, since they depend on
+    the caller's own session state, not a static role table.
+    """
+
+    if target.role.name in IMPERSONATION_FORBIDDEN_TARGET_ROLE_NAMES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"You are not permitted to impersonate a {target.role.name}.",
+        )
+
+
 def ensure_can_grant_role_permissions(actor: User, newly_granted_names: list[str]) -> None:
     """
     For PERMISSION_OWNERSHIP_SCOPED_ROLE only: 403s if any of the
