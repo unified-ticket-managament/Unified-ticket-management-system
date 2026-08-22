@@ -41,6 +41,20 @@ class EmailRequest(BaseModel):
         description="The inbox address this email arrived at.",
     )
 
+    # The physical Graph mailbox this message was actually retrieved
+    # from, when known — set only by the polling transport
+    # (graph_mail_poller.py's _poll_one_mailbox knows exactly which
+    # mailbox's /messages endpoint produced this payload). Absent
+    # (None) for the webhook transport, the N8N/legacy transport, and
+    # any interaction ingested before this field existed. When
+    # present, EmailService.receive_email treats this as authoritative
+    # over `to_email` for client resolution — the message physically
+    # landed in this mailbox's Inbox regardless of whether the mailbox
+    # appears in To, Cc, or Bcc (Graph doesn't expose Bcc to the
+    # recipient's own copy at all, so to_email/cc can be silent on
+    # this even though the mailbox unambiguously received it).
+    landed_mailbox: EmailStr | None = Field(default=None)
+
     from_email: EmailStr
 
     from_name: str | None = Field(default=None, max_length=255)

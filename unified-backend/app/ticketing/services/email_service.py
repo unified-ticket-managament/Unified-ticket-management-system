@@ -177,10 +177,26 @@ class EmailService:
         # than the configured shared mailbox — e.g. a still-dummy demo
         # client, or another transport that hands each client its own
         # arrival address) keeps the original to_email-based match.
+        #
+        # `landed_mailbox` (set only by the Graph polling transport —
+        # see graph_mail_poller.py/EmailRequest.landed_mailbox's own
+        # docstrings) is which mailbox's Inbox Graph actually returned
+        # this message from, independent of how the message addressed
+        # itself. When present it's authoritative over `to_email` for
+        # BOTH checks below — this is what makes a message that only
+        # Cc'd, or even Bcc'd (invisible in to_email/cc entirely), a
+        # configured mailbox still route correctly: the message
+        # physically landed there regardless of its own header
+        # contents. Absent for the webhook transport, so that path is
+        # completely unchanged by this.
         # ---------------------------------------
 
         settings = get_settings()
-        arrived_at_shared_mailbox = is_configured_graph_mailbox(email.to_email, settings)
+        landed_mailbox = (email.landed_mailbox or "").strip().lower() or None
+
+        arrived_at_shared_mailbox = is_configured_graph_mailbox(
+            landed_mailbox or email.to_email, settings
+        )
 
         if arrived_at_shared_mailbox:
             # Widened match: the sender's address is checked against
@@ -193,6 +209,10 @@ class EmailService:
                 await self.client_repository.get_active_by_any_email(email.from_email)
                 if email.from_email
                 else None
+            )
+        elif landed_mailbox:
+            client = await self.client_repository.get_active_by_inbox_email(
+                landed_mailbox
             )
         else:
             client = await self.client_repository.get_active_by_inbox_email(

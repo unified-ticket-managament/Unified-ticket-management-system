@@ -176,13 +176,22 @@ def _html_to_plain_text(html: str) -> str:
     return soup.get_text(separator="\n").strip()
 
 
-def map_external_email_to_interaction(payload: IncomingMailPayload) -> EmailRequest:
+def map_external_email_to_interaction(
+    payload: IncomingMailPayload, landed_mailbox: str | None = None
+) -> EmailRequest:
     """
     Maps an external provider's email payload into the internal
     EmailRequest shape. Named to match this integration layer's
     receive-side placeholder — the actual Interaction row is still
     created by the existing, unmodified EmailService.receive_email,
     which this function's output is handed to.
+
+    `landed_mailbox`: the physical mailbox address this payload was
+    actually fetched from, when the caller knows it (only
+    graph_mail_poller.py does, since it polls one mailbox at a time —
+    see its own docstring). Passed straight through onto
+    EmailRequest.landed_mailbox; omitted (None) for every other
+    caller, unchanged from before this parameter existed.
     """
 
     to_recipient = payload.toRecipients[0].emailAddress
@@ -229,6 +238,7 @@ def map_external_email_to_interaction(payload: IncomingMailPayload) -> EmailRequ
         references=references,
         conversation_id=payload.conversationId,
         provider_message_id=payload.id,
+        landed_mailbox=landed_mailbox,
     )
 
 

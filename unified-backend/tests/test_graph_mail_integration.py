@@ -1062,3 +1062,30 @@ def test_map_external_email_to_interaction_preserves_a_real_table():
     assert "<table>" in email.html_body
     assert "<td>Raju</td>" in email.html_body
     assert "<td>Status</td>" in email.html_body
+
+
+def test_map_external_email_to_interaction_passes_through_landed_mailbox():
+    # landed_mailbox is the Graph-poller-only signal for which mailbox
+    # this payload was actually fetched from (see
+    # graph_mail_poller.py's _poll_one_mailbox and
+    # EmailRequest.landed_mailbox's own docstring) — confirms the
+    # mapping function forwards it onto EmailRequest untouched.
+    payload = _graph_payload("hello", "text")
+
+    email = map_external_email_to_interaction(
+        payload, landed_mailbox="credentialing@probeps.com"
+    )
+
+    assert email.landed_mailbox == "credentialing@probeps.com"
+
+
+def test_map_external_email_to_interaction_landed_mailbox_none_by_default():
+    # Every non-poller caller (the webhook transport, tests predating
+    # this parameter) omits landed_mailbox entirely — must stay None,
+    # not default to some inferred value, so EmailService.receive_email
+    # correctly falls back to its original to_email-based resolution.
+    payload = _graph_payload("hello", "text")
+
+    email = map_external_email_to_interaction(payload)
+
+    assert email.landed_mailbox is None

@@ -231,7 +231,9 @@ async def _poll_one_mailbox(
     processed = 0
 
     for payload in messages:
-        email_request = map_external_email_to_interaction(payload)
+        email_request = map_external_email_to_interaction(
+            payload, landed_mailbox=mailbox_address
+        )
 
         files = None
         if payload.id and (

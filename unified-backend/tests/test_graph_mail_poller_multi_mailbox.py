@@ -181,3 +181,89 @@ async def test_per_mailbox_checkpoints_are_independent(monkeypatch):
         > stale_checkpoint
     )
     assert "familyfirst@probeps.com" in graph_mail_poller_module._state.checkpoints
+
+
+class _CommittableFakeDBSession(_FakeDBSession):
+    async def commit(self):
+        pass
+
+    async def rollback(self):
+        pass
+
+
+class _FakePayload:
+    """
+    A minimal IncomingMailPayload stand-in whose own to/cc fields (had
+    map_external_email_to_interaction actually run against it) would
+    say nothing about which mailbox this landed in — mirroring a real
+    Bcc delivery, where the only way to know which configured mailbox
+    received the message is which mailbox's Inbox Graph returned it
+    from in the first place.
+    """
+
+    id = "msg-1"
+    internetMessageId = "<msg-1@example.com>"
+    hasAttachments = False
+
+    class body:
+        content = ""
+
+
+async def test_poll_one_mailbox_threads_mailbox_address_into_email_mapping(monkeypatch):
+    """
+    The poller-level half of the landed_mailbox fix (see
+    test_email_service_client_matching.py for the service-level
+    resolution logic this feeds): _poll_one_mailbox must pass the
+    mailbox it actually polled into map_external_email_to_interaction
+    as `landed_mailbox`, not just fetch messages and forget which
+    mailbox they came from. Spies on map_external_email_to_interaction
+    itself (rather than re-mocking EmailService.receive_email away
+    entirely) so this test fails if a future edit ever drops the
+    landed_mailbox= keyword from that call site.
+    """
+
+    settings = _settings()
+    mail_provider_client = _FakeGraphMailProviderClient(messages=[_FakePayload()])
+
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "get_mail_provider_client",
+        lambda settings, mailbox_address=None: mail_provider_client,
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
+    )
+
+    class _FakeEmailService:
+        async def receive_email(self, email_request, files=None):
+            class _Response:
+                pass
+
+            return _Response()
+
+    monkeypatch.setattr(
+        graph_mail_poller_module, "_build_email_service", lambda db: _FakeEmailService()
+    )
+
+    # Spies on the call rather than invoking the real mapping function
+    # — _FakePayload above deliberately only carries the handful of
+    # attributes _poll_one_mailbox itself reads (id/internetMessageId/
+    # hasAttachments/body.content), not the full IncomingMailPayload
+    # shape map_external_email_to_interaction would need; the fake
+    # EmailService above doesn't care what the resulting "EmailRequest"
+    # actually is.
+    calls = []
+
+    def _spying_map(payload, landed_mailbox=None):
+        calls.append(landed_mailbox)
+        return object()
+
+    monkeypatch.setattr(
+        graph_mail_poller_module, "map_external_email_to_interaction", _spying_map
+    )
+
+    await graph_mail_poller_module._poll_one_mailbox(
+        settings, "credentialing@probeps.com", datetime.now(timezone.utc)
+    )
+
+    assert calls == ["credentialing@probeps.com"]

@@ -341,3 +341,259 @@ async def test_receive_email_matches_client_by_dedicated_mailbox_arrival(monkeyp
 
     assert response.client_id == str(client.client_id)
     assert response.client_name == "FamilyFirst"
+
+
+# ---------------------------------------------------------------------
+# landed_mailbox: the Graph-poller-only signal for "which mailbox did
+# this message actually land in" (see EmailRequest.landed_mailbox's
+# own docstring) — fixes a real bug where a message Cc'd/Bcc'd to a
+# configured mailbox, with some unrelated address in To:, was
+# misidentified as arriving at that unrelated address and rejected as
+# "Unknown inbox address." even though Graph genuinely delivered it
+# into the configured mailbox's own Inbox.
+# ---------------------------------------------------------------------
+
+
+async def test_receive_email_landed_mailbox_direct_to_still_works(monkeypatch):
+    """
+    (a) No regression: the real poller always supplies landed_mailbox
+    alongside a normal direct-To arrival — the two signals agree, and
+    resolution is unchanged from the pre-existing to_email-only case.
+    """
+
+    account_manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="Credentialing",
+        inbox_email="credentialing@probeps.com",
+        account_manager_id=account_manager_id,
+    )
+
+    monkeypatch.setattr(
+        "app.ticketing.services.email_service.get_settings",
+        lambda: _settings(),
+    )
+
+    service = EmailService(
+        interaction_repository=_FakeInteractionRepository(),
+        client_repository=_FakeClientRepository({"credentialing@probeps.com": client}),
+        attachment_service=None,
+    )
+
+    response = await service.receive_email(
+        _email_request(
+            to_email="credentialing@probeps.com",
+            from_email="customer@example.com",
+            landed_mailbox="credentialing@probeps.com",
+        )
+    )
+
+    assert response.client_id == str(client.client_id)
+    assert response.client_name == "Credentialing"
+
+
+async def test_receive_email_landed_mailbox_matches_cc_recipient(monkeypatch):
+    """
+    (b) The bug this feature fixes: the configured mailbox appears only
+    in Cc, with an unrelated address in To: — landed_mailbox (what the
+    poller actually polled) must win over the irrelevant to_email
+    header.
+    """
+
+    account_manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="Credentialing",
+        inbox_email="credentialing@probeps.com",
+        account_manager_id=account_manager_id,
+    )
+
+    monkeypatch.setattr(
+        "app.ticketing.services.email_service.get_settings",
+        lambda: _settings(),
+    )
+
+    service = EmailService(
+        interaction_repository=_FakeInteractionRepository(),
+        client_repository=_FakeClientRepository({"credentialing@probeps.com": client}),
+        attachment_service=None,
+    )
+
+    response = await service.receive_email(
+        _email_request(
+            to_email="some-other-address@example.com",
+            cc=["credentialing@probeps.com"],
+            from_email="customer@example.com",
+            landed_mailbox="credentialing@probeps.com",
+        )
+    )
+
+    assert response.client_id == str(client.client_id)
+    assert response.client_name == "Credentialing"
+
+
+async def test_receive_email_landed_mailbox_matches_bcc_delivery(monkeypatch):
+    """
+    (c) Bcc delivery: Graph never surfaces Bcc in toRecipients/
+    ccRecipients on the recipient's own copy at all, so neither
+    to_email nor cc mentions the configured mailbox anywhere — only
+    landed_mailbox (which mailbox's Inbox Graph actually returned this
+    message from) carries the signal.
+    """
+
+    account_manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="Credentialing",
+        inbox_email="credentialing@probeps.com",
+        account_manager_id=account_manager_id,
+    )
+
+    monkeypatch.setattr(
+        "app.ticketing.services.email_service.get_settings",
+        lambda: _settings(),
+    )
+
+    service = EmailService(
+        interaction_repository=_FakeInteractionRepository(),
+        client_repository=_FakeClientRepository({"credentialing@probeps.com": client}),
+        attachment_service=None,
+    )
+
+    response = await service.receive_email(
+        _email_request(
+            to_email="some-other-address@example.com",
+            cc=[],
+            from_email="customer@example.com",
+            landed_mailbox="credentialing@probeps.com",
+        )
+    )
+
+    assert response.client_id == str(client.client_id)
+    assert response.client_name == "Credentialing"
+
+
+async def test_receive_email_landed_mailbox_generic_for_another_client_mailbox(monkeypatch):
+    """
+    (d) The fix is generic, not Credentialing-specific: a different
+    configured client mailbox (familyfirst@probeps.com) reached via Cc
+    resolves the same way.
+    """
+
+    account_manager_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="FamilyFirst",
+        inbox_email="familyfirst@probeps.com",
+        account_manager_id=account_manager_id,
+    )
+
+    monkeypatch.setattr(
+        "app.ticketing.services.email_service.get_settings",
+        lambda: _settings(),
+    )
+
+    service = EmailService(
+        interaction_repository=_FakeInteractionRepository(),
+        client_repository=_FakeClientRepository({"familyfirst@probeps.com": client}),
+        attachment_service=None,
+    )
+
+    response = await service.receive_email(
+        _email_request(
+            to_email="someone-else@example.com",
+            cc=["familyfirst@probeps.com"],
+            from_email="patient@example.com",
+            landed_mailbox="familyfirst@probeps.com",
+        )
+    )
+
+    assert response.client_id == str(client.client_id)
+    assert response.client_name == "FamilyFirst"
+
+
+async def test_receive_email_landed_mailbox_shared_mailbox_unchanged(monkeypatch):
+    """
+    (e) landed_mailbox equal to the configured shared mailbox still
+    resolves by sender (get_active_by_any_email), exactly like today's
+    to_email-based shared-mailbox detection — proves the shared-mailbox
+    path (and its Site-Lead fallback) is unaffected by this fix, even
+    when the shared mailbox itself was only Cc'd rather than being the
+    literal To: address.
+    """
+
+    account_manager_id = uuid4()
+    site_lead_id = uuid4()
+    client = _FakeClient(
+        client_id=uuid4(),
+        name="Gogineni Clinic",
+        inbox_email="gogineni@painmedpa.com",
+        account_manager_id=account_manager_id,
+    )
+
+    monkeypatch.setattr(
+        "app.ticketing.services.email_service.get_settings",
+        lambda: _settings(),
+    )
+
+    notification_service = _FakeNotificationService()
+
+    service = EmailService(
+        interaction_repository=_FakeInteractionRepository(),
+        client_repository=_FakeClientRepository({"gogineni@painmedpa.com": client}),
+        attachment_service=None,
+        user_repository=_FakeUserRepository({"Site Lead": [_FakeUser(site_lead_id)]}),
+        notification_service=notification_service,
+    )
+
+    response = await service.receive_email(
+        _email_request(
+            to_email="someone-else@example.com",
+            cc=["ticketing@probeps.com"],
+            from_email="gogineni@painmedpa.com",
+            landed_mailbox="ticketing@probeps.com",
+        )
+    )
+
+    assert response.client_id == str(client.client_id)
+
+    recipient_ids, _, _ = notification_service.calls[0]
+    assert account_manager_id in recipient_ids
+    assert site_lead_id in recipient_ids
+
+
+async def test_receive_email_landed_mailbox_unconfigured_still_rejected(monkeypatch):
+    """
+    (f) Defensive case: a landed_mailbox that matches neither the
+    shared mailbox nor any active client's inbox_email still raises
+    "Unknown inbox address." — this shouldn't happen structurally
+    (graph_mail_poller.py only ever passes an address it resolved from
+    _resolve_mailboxes_to_poll), but the fix must never start trusting
+    an arbitrary landed_mailbox value as if it were configured.
+    """
+
+    monkeypatch.setattr(
+        "app.ticketing.services.email_service.get_settings",
+        lambda: _settings(),
+    )
+
+    service = EmailService(
+        interaction_repository=_FakeInteractionRepository(),
+        client_repository=_FakeClientRepository({}),
+        attachment_service=None,
+    )
+
+    raised = None
+    try:
+        await service.receive_email(
+            _email_request(
+                to_email="whatever@example.com",
+                from_email="someone@example.com",
+                landed_mailbox="not-a-configured-mailbox@example.com",
+            )
+        )
+    except ValueError as exc:
+        raised = exc
+
+    assert raised is not None
+    assert str(raised) == "Unknown inbox address."
