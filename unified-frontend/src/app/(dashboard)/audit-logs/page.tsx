@@ -35,6 +35,11 @@ type AuditRow = AuditLog & {
   userName: string;
   userEmail: string | null;
   userRole: string | null;
+  // See root CLAUDE.md's impersonation section — resolved the same
+  // way userName is, via a live userMap join on impersonator_id,
+  // falling back to the row's own denormalized impersonator_name if
+  // that account no longer exists.
+  impersonatorName: string | null;
 };
 
 // The only outcome this system currently distinguishes is a failed
@@ -95,11 +100,13 @@ export default function AuditLogsPage() {
     const logs: AuditLog[] = auditQuery.data?.logs ?? [];
     return logs.map((log) => {
       const user = log.user_id ? userMap.get(log.user_id) : undefined;
+      const impersonator = log.impersonator_id ? userMap.get(log.impersonator_id) : undefined;
       return {
         ...log,
         userName: user?.name ?? (log.user_id ? "Unknown User" : "System"),
         userEmail: user?.email ?? null,
         userRole: user ? roleMap.get(user.role_id)?.name ?? null : null,
+        impersonatorName: impersonator?.name ?? log.impersonator_name ?? null,
       };
     });
   }, [auditQuery.data, userMap, roleMap]);
@@ -149,6 +156,11 @@ export default function AuditLogsPage() {
               <p className="truncate text-sm font-medium">{row.original.userName}</p>
               {row.original.userEmail && (
                 <p className="truncate text-xs text-muted-foreground">{row.original.userEmail}</p>
+              )}
+              {row.original.impersonatorName && (
+                <p className="truncate text-xs font-medium text-amber-600">
+                  Impersonated by {row.original.impersonatorName} (Super Admin)
+                </p>
               )}
             </div>
           </div>
@@ -366,6 +378,11 @@ export default function AuditLogsPage() {
                         {log.userRole && (
                           <Badge variant="outline" className="text-xs">
                             {log.userRole}
+                          </Badge>
+                        )}
+                        {log.impersonatorName && (
+                          <Badge variant="outline" className="gap-1 text-xs text-amber-600 border-amber-300">
+                            Impersonated by {log.impersonatorName} (Super Admin)
                           </Badge>
                         )}
                         <Badge variant={actionBadgeVariant(log.action)} className="gap-1.5">

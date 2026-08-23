@@ -125,6 +125,9 @@ function FeedItem({ item, isLast, onHide, isHiding, onItemClick }: FeedItemProps
             {item.performed_by
               ? `Performed by ${item.performed_by_name ?? shortId(item.performed_by)}`
               : ""}
+            {item.impersonator_name
+              ? ` (Impersonated by ${item.impersonator_name} — Super Admin)`
+              : ""}
             {recipientNames.length > 0
               ? `${item.performed_by ? " · " : ""}To: ${recipientNames.join(", ")}`
               : ""}

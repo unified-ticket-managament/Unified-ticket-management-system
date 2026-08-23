@@ -205,6 +205,13 @@ export interface AuditLog {
   ip_address: string | null;
   user_agent: string | null;
   timestamp: string;
+  // Set only when this row was written during an active "Login as
+  // User" impersonation session — the real, physically-authenticated
+  // Super Admin, distinct from user_id above (which stays whoever's
+  // identity actually governed the request). Undefined/null for every
+  // ordinary row — see root CLAUDE.md's impersonation section.
+  impersonator_id?: string | null;
+  impersonator_name?: string | null;
 }
 
 export interface LoginForm {

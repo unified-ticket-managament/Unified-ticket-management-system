@@ -184,6 +184,8 @@ def _to_response(
         direction=interaction.direction,
         performed_by=interaction.performed_by,
         performed_by_name=performed_by_name,
+        impersonator_id=interaction.impersonator_id,
+        impersonator_name=interaction.impersonator_name,
         payload=trim_payload_for_list(interaction) if trim else interaction.payload,
         is_visible=interaction.is_visible,
         removed_by=interaction.removed_by,

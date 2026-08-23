@@ -24,6 +24,9 @@ interface AuditRow {
   eventType: AuditEventType;
   actorName: string;
   actorRole: ActorRole;
+  // See root CLAUDE.md's impersonation section — set only when this
+  // row was written during an active "Login as User" session.
+  impersonatorName: string | null;
   ticketId: string;
   ticketTitle: string;
   clientCompanyName: string | null;
@@ -147,6 +150,7 @@ export function AuditLogPage() {
           eventType: log.event_type,
           actorName: log.actor_name,
           actorRole: log.actor_role,
+          impersonatorName: log.impersonator_name ?? null,
           ticketId: log.ticket_id,
           ticketTitle: log.ticket_title,
           clientCompanyName: log.client_company_name,
@@ -475,12 +479,21 @@ export function AuditLogPage() {
                         <div className="flex-none text-right">
                           <p className="text-xs font-medium text-slate-600">{formatDateTime(row.createdAt)}</p>
                           <p
-                            className="mt-0.5 max-w-[180px] truncate text-[11px] text-muted"
-                            title={`${row.actorName} · ${ACTOR_ROLE_LABEL[row.actorRole]}`}
+                            className="mt-0.5 max-w-[220px] truncate text-[11px] text-muted"
+                            title={
+                              row.impersonatorName
+                                ? `${row.actorName} · ${ACTOR_ROLE_LABEL[row.actorRole]} · Impersonated by ${row.impersonatorName} (Super Admin)`
+                                : `${row.actorName} · ${ACTOR_ROLE_LABEL[row.actorRole]}`
+                            }
                           >
                             {row.actorName}
                             <span className="text-muted/70"> · {ACTOR_ROLE_LABEL[row.actorRole]}</span>
                           </p>
+                          {row.impersonatorName && (
+                            <p className="mt-0.5 max-w-[220px] truncate text-[11px] text-warning">
+                              Impersonated by {row.impersonatorName} (Super Admin)
+                            </p>
+                          )}
                         </div>
                       </button>
                     </li>
