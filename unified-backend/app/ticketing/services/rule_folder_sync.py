@@ -38,7 +38,12 @@ async def ensure_folder(
     existing = await mail_folder_repository.get_by_name(name)
     if existing is not None:
         return existing
-    return await mail_folder_repository.create(name, created_by=created_by)
+    # This function's only callers are rule-driven (see module
+    # docstring) — a folder actually created here is always eligible
+    # for RuleService.delete's auto-cleanup, unlike one a user creates
+    # by hand via MailFolderService.create (POST /folders), which
+    # never sets this flag.
+    return await mail_folder_repository.create(name, created_by=created_by, is_rule_created=True)
 
 
 def folder_names_from_actions(actions) -> set[str]:

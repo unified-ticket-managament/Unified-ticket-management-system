@@ -26,6 +26,8 @@ import {
   type RuleResponse,
 } from "@tw/api/rules";
 
+import { DistributionListMultiSelect } from "@tw/components/common/DistributionListMultiSelect";
+
 import { ActionRow } from "./ActionRow";
 import { ConditionRow } from "./ConditionRow";
 import { EmployeeMultiSelect } from "./EmployeeMultiSelect";
@@ -70,6 +72,7 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
   const [actions, setActions] = useState<RuleActionItem[]>([]);
   const [stopProcessing, setStopProcessing] = useState(false);
   const [sharedUserIds, setSharedUserIds] = useState<string[]>([]);
+  const [sharedDistributionListIds, setSharedDistributionListIds] = useState<string[]>([]);
   const [isSaving, setIsSaving] = useState(false);
 
   // Re-seed local state every time the dialog opens, for either a
@@ -85,6 +88,7 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
       setActions(rule.actions);
       setStopProcessing(rule.stop_processing);
       setSharedUserIds(rule.shared_user_ids ?? []);
+      setSharedDistributionListIds(rule.shared_distribution_list_ids ?? []);
     } else {
       setCategory("mail_rule");
       setName("");
@@ -94,6 +98,7 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
       setActions([]);
       setStopProcessing(false);
       setSharedUserIds([]);
+      setSharedDistributionListIds([]);
     }
   }, [open, rule]);
 
@@ -140,6 +145,7 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
           actions,
           stop_processing: stopProcessing,
           shared_user_ids: sharedUserIds,
+          shared_distribution_list_ids: sharedDistributionListIds,
         });
         toast({ title: "Rule updated" });
       } else {
@@ -152,6 +158,7 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
           actions,
           stop_processing: stopProcessing,
           shared_user_ids: sharedUserIds,
+          shared_distribution_list_ids: sharedDistributionListIds,
         });
         toast({ title: "Rule created" });
       }
@@ -207,20 +214,28 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
             />
           </div>
 
-          {/* Shared With — explicitly added/shared/assigned users. An
-              empty list (the default) means this rule and its
-              associated folder are private to the creator; adding a
-              user here grants them the same view/manage access as the
-              creator. Distinct from a forward_to action's own
-              recipient picker below — forwarding is never itself a
-              grant of rule access. */}
+          {/* Shared With — explicitly added/shared/assigned users and/or
+              Distribution Lists. An empty selection (the default) means
+              this rule and its associated folder are private to the
+              creator; adding a person or list here grants the same
+              view/manage access the creator has — for a Distribution
+              List, to every one of its current, active members,
+              re-resolved live rather than snapshotted, so a later
+              membership change takes effect with no rule edit needed.
+              Distinct from a forward_to action's own recipient picker
+              below — forwarding is never itself a grant of rule access. */}
           <div className="space-y-2">
             <Label>Shared With</Label>
             <p className="text-xs text-muted-foreground">
               Leave empty to keep this rule (and the folder it files mail into) private to you.
-              Add people here to let them view and manage it too.
+              Add people or Distribution Lists here to let them view and manage it too.
             </p>
             <EmployeeMultiSelect selectedIds={sharedUserIds} onChange={setSharedUserIds} />
+            <DistributionListMultiSelect
+              label="Or Share With Distribution Lists"
+              selectedIds={sharedDistributionListIds}
+              onChange={setSharedDistributionListIds}
+            />
           </div>
 
           {/* Trigger — fixed, not user-selectable. */}

@@ -6,6 +6,9 @@ from shared_models.models import User
 
 from app.database.session import get_db
 from app.dependencies.auth import get_current_agent
+from app.ticketing.repositories.distribution_list_repository import (
+    DistributionListRepository,
+)
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
@@ -39,7 +42,7 @@ async def list_rules(
     permission (Super Admin, Site Lead, Account Manager, Team Lead).
     """
 
-    service = RuleService(RuleRepository(db), MailFolderRepository(db), InteractionRepository(db))
+    service = RuleService(RuleRepository(db), MailFolderRepository(db), DistributionListRepository(db), InteractionRepository(db))
     return await service.list_all(current_user=current_user)
 
 
@@ -52,7 +55,7 @@ async def get_rule(
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
-    service = RuleService(RuleRepository(db), MailFolderRepository(db), InteractionRepository(db))
+    service = RuleService(RuleRepository(db), MailFolderRepository(db), DistributionListRepository(db), InteractionRepository(db))
     return await service.get(rule_id, current_user=current_user)
 
 
@@ -66,7 +69,7 @@ async def create_rule(
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
-    service = RuleService(RuleRepository(db), MailFolderRepository(db), InteractionRepository(db))
+    service = RuleService(RuleRepository(db), MailFolderRepository(db), DistributionListRepository(db), InteractionRepository(db))
     return await service.create(request, current_user=current_user)
 
 
@@ -80,7 +83,7 @@ async def update_rule(
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
-    service = RuleService(RuleRepository(db), MailFolderRepository(db), InteractionRepository(db))
+    service = RuleService(RuleRepository(db), MailFolderRepository(db), DistributionListRepository(db), InteractionRepository(db))
     return await service.update(rule_id, request, current_user=current_user)
 
 
@@ -96,7 +99,7 @@ async def set_rule_enabled(
 ):
     """Backs the Rules list page's Enabled toggle switch."""
 
-    service = RuleService(RuleRepository(db), MailFolderRepository(db), InteractionRepository(db))
+    service = RuleService(RuleRepository(db), MailFolderRepository(db), DistributionListRepository(db), InteractionRepository(db))
     return await service.set_enabled(rule_id, request.is_enabled, current_user=current_user)
 
 
@@ -116,7 +119,7 @@ async def reorder_rule(
     Returns the affected category's rules in their new order.
     """
 
-    service = RuleService(RuleRepository(db), MailFolderRepository(db), InteractionRepository(db))
+    service = RuleService(RuleRepository(db), MailFolderRepository(db), DistributionListRepository(db), InteractionRepository(db))
     return await service.reorder(rule_id, request, current_user=current_user)
 
 
@@ -129,5 +132,5 @@ async def delete_rule(
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
-    service = RuleService(RuleRepository(db), MailFolderRepository(db), InteractionRepository(db))
+    service = RuleService(RuleRepository(db), MailFolderRepository(db), DistributionListRepository(db), InteractionRepository(db))
     await service.delete(rule_id, current_user=current_user)

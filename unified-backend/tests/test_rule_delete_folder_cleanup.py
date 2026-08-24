@@ -1,18 +1,29 @@
 # test_rule_delete_folder_cleanup.py
 #
-# Regression coverage for a real reported bug: deleting a Mail/OTP
-# Rule whose action files mail into a folder that still holds real
-# Interaction rows crashed with an unhandled 500
-# (asyncpg.exceptions.ForeignKeyViolationError on
-# interactions_folder_id_fkey) — the browser reported this as a CORS
-# failure (no error-response CORS headers), masking the real cause.
+# Regression coverage for two related bugs in Mail Rule deletion:
 #
-# RuleService.delete's folder-cleanup step deleted a no-longer-
-# referenced folder unconditionally, never checking whether any real
-# message was still filed into it. Fixed by guarding that delete with
-# InteractionRepository.has_any_interaction_in_folder — a folder still
-# holding real messages is now left in place (an ordinary, rule-less
-# folder) instead of crashing the whole rule-delete request.
+# 1. (Original bug) Deleting a Mail/OTP Rule whose action files mail
+#    into a folder that still holds real Interaction rows crashed with
+#    an unhandled 500 (asyncpg.exceptions.ForeignKeyViolationError on
+#    interactions_folder_id_fkey) — the browser reported this as a
+#    CORS failure (no error-response CORS headers), masking the real
+#    cause.
+#
+# 2. (This pass) The original fix for #1 was to simply leave the
+#    folder in place forever whenever it still held messages — correct
+#    for data safety, but wrong product behavior: the rule is gone,
+#    yet its folder lingers indefinitely as an orphaned, rule-less
+#    folder, and the routed emails never rejoin the normal Inbox. The
+#    actual required behavior: delete a rule-EXCLUSIVELY-owned folder
+#    unconditionally, but first clear folder_id (never delete the
+#    interaction/ticket/attachment/audit data) so those emails become
+#    ordinary Inbox items again.
+#
+# `MailFolder.is_rule_created` (set only by rule_folder_sync.ensure_folder,
+# never by MailFolderService.create's manual POST /folders path) is the
+# real ownership signal RuleService.delete's cleanup now uses — plain
+# `created_by` can't tell a rule-created folder apart from a manually-
+# created one, since both get a non-null created_by.
 #
 # Runs against the real (dev) database inside a transaction that is
 # always rolled back at the end — same convention as
@@ -26,9 +37,13 @@ from sqlalchemy import select
 from shared_models.models import Role, User
 
 from app.database.session import AsyncSessionLocal, engine
-from app.ticketing.enums import InteractionDirection, InteractionStatus
+from app.ticketing.enums import InteractionDirection, InteractionStatus, TicketPriority
 from app.ticketing.models.client import Client
 from app.ticketing.models.interaction import Interaction
+from app.ticketing.models.ticket import Ticket
+from app.ticketing.repositories.distribution_list_repository import (
+    DistributionListRepository,
+)
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
@@ -71,7 +86,7 @@ async def _make_client(session, *, account_manager_id) -> Client:
     return client
 
 
-async def _make_email(session, *, client_id, folder_id) -> Interaction:
+async def _make_email(session, *, client_id, folder_id, ticket_id=None) -> Interaction:
     interaction = Interaction(
         interaction_id=uuid.uuid4(),
         interaction_type="EMAIL",
@@ -85,7 +100,7 @@ async def _make_email(session, *, client_id, folder_id) -> Interaction:
             "client_name": "Rule Delete Test Client",
         },
         parent_interaction_id=None,
-        ticket_id=None,
+        ticket_id=ticket_id,
         client_id=client_id,
         folder_id=folder_id,
         is_visible=True,
@@ -97,10 +112,26 @@ async def _make_email(session, *, client_id, folder_id) -> Interaction:
     return interaction
 
 
+async def _make_ticket(session, *, client_id) -> Ticket:
+    ticket = Ticket(
+        ticket_id=uuid.uuid4(),
+        client_company_id=client_id,
+        title="Rule Delete Test Ticket",
+        ticket_type="AR",
+        current_status="OPEN",
+        current_priority=TicketPriority.MEDIUM,
+        custom_fields={},
+    )
+    session.add(ticket)
+    await session.flush()
+    return ticket
+
+
 def _build_service(session) -> RuleService:
     return RuleService(
         RuleRepository(session),
         MailFolderRepository(session),
+        DistributionListRepository(session),
         InteractionRepository(session),
     )
 
@@ -130,7 +161,10 @@ async def _create_folder_rule(service, *, folder_name: str, current_user: User):
     return await service.create(request, current_user=current_user)
 
 
-async def test_delete_rule_preserves_folder_still_holding_real_messages(db_session):
+async def test_delete_rule_deletes_folder_and_unfiles_its_message(db_session):
+    # Test 1 — basic case: the rule-owned folder is actually deleted,
+    # and the message it held is preserved with folder_id cleared
+    # (never deleted), so it becomes a normal Inbox item again.
     admin = await _get_super_admin(db_session)
     admin.permissions = ["rule:manage"]
     client = await _make_client(db_session, account_manager_id=admin.user_id)
@@ -142,29 +176,82 @@ async def test_delete_rule_preserves_folder_still_holding_real_messages(db_sessi
     folder_repository = MailFolderRepository(db_session)
     folder = await folder_repository.get_by_name(folder_name)
     assert folder is not None
+    assert folder.is_rule_created is True
 
-    # A real message is filed into the folder — exactly the state that
-    # used to crash delete() with a ForeignKeyViolationError.
     email = await _make_email(db_session, client_id=client.client_id, folder_id=folder.folder_id)
 
-    # Must not raise.
     await service.delete(rule.rule_id, current_user=admin)
 
-    # The rule itself is gone...
     assert await RuleRepository(db_session).get_by_id(rule.rule_id) is None
+    assert await folder_repository.get_by_name(folder_name) is None
 
-    # ...but the folder survives, since it still holds a real message.
-    surviving_folder = await folder_repository.get_by_name(folder_name)
-    assert surviving_folder is not None
-    assert surviving_folder.folder_id == folder.folder_id
-
-    # ...and the message itself was never touched.
     reloaded_email = await InteractionRepository(db_session).get_by_id(email.interaction_id)
     assert reloaded_email is not None
-    assert reloaded_email.folder_id == folder.folder_id
+    assert reloaded_email.folder_id is None
+
+
+async def test_delete_rule_unfiles_multiple_messages(db_session):
+    # Test 2 — multiple emails in the folder all get unfiled, none lost.
+    admin = await _get_super_admin(db_session)
+    admin.permissions = ["rule:manage"]
+    client = await _make_client(db_session, account_manager_id=admin.user_id)
+
+    service = _build_service(db_session)
+    folder_name = f"Rule Delete Test Multi Folder {uuid.uuid4().hex[:8]}"
+    rule = await _create_folder_rule(service, folder_name=folder_name, current_user=admin)
+
+    folder_repository = MailFolderRepository(db_session)
+    folder = await folder_repository.get_by_name(folder_name)
+    assert folder is not None
+
+    emails = [
+        await _make_email(db_session, client_id=client.client_id, folder_id=folder.folder_id)
+        for _ in range(3)
+    ]
+
+    await service.delete(rule.rule_id, current_user=admin)
+
+    assert await folder_repository.get_by_name(folder_name) is None
+    interaction_repository = InteractionRepository(db_session)
+    for email in emails:
+        reloaded = await interaction_repository.get_by_id(email.interaction_id)
+        assert reloaded is not None
+        assert reloaded.folder_id is None
+
+
+async def test_delete_rule_preserves_ticket_relationship(db_session):
+    # Test 3 — a ticketed interaction keeps its ticket_id; only
+    # folder_id is cleared.
+    admin = await _get_super_admin(db_session)
+    admin.permissions = ["rule:manage"]
+    client = await _make_client(db_session, account_manager_id=admin.user_id)
+    ticket = await _make_ticket(db_session, client_id=client.client_id)
+
+    service = _build_service(db_session)
+    folder_name = f"Rule Delete Test Ticketed Folder {uuid.uuid4().hex[:8]}"
+    rule = await _create_folder_rule(service, folder_name=folder_name, current_user=admin)
+
+    folder_repository = MailFolderRepository(db_session)
+    folder = await folder_repository.get_by_name(folder_name)
+    assert folder is not None
+
+    email = await _make_email(
+        db_session,
+        client_id=client.client_id,
+        folder_id=folder.folder_id,
+        ticket_id=ticket.ticket_id,
+    )
+
+    await service.delete(rule.rule_id, current_user=admin)
+
+    reloaded_email = await InteractionRepository(db_session).get_by_id(email.interaction_id)
+    assert reloaded_email is not None
+    assert reloaded_email.folder_id is None
+    assert reloaded_email.ticket_id == ticket.ticket_id
 
 
 async def test_delete_rule_still_removes_folder_with_no_messages(db_session):
+    # Test 9 — an empty rule-owned folder is still deleted outright.
     admin = await _get_super_admin(db_session)
     admin.permissions = ["rule:manage"]
 
@@ -177,6 +264,62 @@ async def test_delete_rule_still_removes_folder_with_no_messages(db_session):
 
     await service.delete(rule.rule_id, current_user=admin)
 
-    # No messages were ever filed into it — the original, unaffected
-    # cleanup behavior: the folder is actually deleted.
     assert await folder_repository.get_by_name(folder_name) is None
+
+
+async def test_delete_rule_preserves_folder_still_referenced_by_another_rule(db_session):
+    # Test 6 — two rules share the same folder name; deleting one must
+    # never touch the folder the other still depends on.
+    admin = await _get_super_admin(db_session)
+    admin.permissions = ["rule:manage"]
+
+    service = _build_service(db_session)
+    folder_name = f"Rule Delete Test Shared Folder {uuid.uuid4().hex[:8]}"
+    rule_a = await _create_folder_rule(service, folder_name=folder_name, current_user=admin)
+    rule_b = await _create_folder_rule(service, folder_name=folder_name, current_user=admin)
+
+    folder_repository = MailFolderRepository(db_session)
+    folder = await folder_repository.get_by_name(folder_name)
+    assert folder is not None
+
+    await service.delete(rule_a.rule_id, current_user=admin)
+
+    assert await RuleRepository(db_session).get_by_id(rule_a.rule_id) is None
+    assert await RuleRepository(db_session).get_by_id(rule_b.rule_id) is not None
+    surviving_folder = await folder_repository.get_by_name(folder_name)
+    assert surviving_folder is not None
+    assert surviving_folder.folder_id == folder.folder_id
+
+
+async def test_delete_rule_preserves_manually_created_folder_and_its_messages(db_session):
+    # Test 7 — a folder created by hand (POST /folders, is_rule_created
+    # False) that a rule's move_to_folder action merely references must
+    # never be auto-deleted, and its existing messages/filing must be
+    # left completely alone, even though this rule is its only
+    # referencing rule.
+    admin = await _get_super_admin(db_session)
+    admin.permissions = ["rule:manage"]
+    client = await _make_client(db_session, account_manager_id=admin.user_id)
+
+    folder_repository = MailFolderRepository(db_session)
+    manual_folder_name = f"Rule Delete Test Manual Folder {uuid.uuid4().hex[:8]}"
+    manual_folder = await folder_repository.create(manual_folder_name, created_by=admin.user_id)
+    assert manual_folder.is_rule_created is False
+
+    email = await _make_email(
+        db_session, client_id=client.client_id, folder_id=manual_folder.folder_id
+    )
+
+    service = _build_service(db_session)
+    rule = await _create_folder_rule(service, folder_name=manual_folder_name, current_user=admin)
+
+    await service.delete(rule.rule_id, current_user=admin)
+
+    assert await RuleRepository(db_session).get_by_id(rule.rule_id) is None
+    surviving_folder = await folder_repository.get_by_name(manual_folder_name)
+    assert surviving_folder is not None
+    assert surviving_folder.folder_id == manual_folder.folder_id
+
+    reloaded_email = await InteractionRepository(db_session).get_by_id(email.interaction_id)
+    assert reloaded_email is not None
+    assert reloaded_email.folder_id == manual_folder.folder_id

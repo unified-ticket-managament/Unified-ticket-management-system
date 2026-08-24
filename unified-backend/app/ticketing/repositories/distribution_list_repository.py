@@ -149,6 +149,55 @@ class DistributionListRepository:
         await self.db.flush()
         return True
 
+    async def list_active_list_ids_for_user(self, user_id: UUID) -> set[UUID]:
+        """
+        Every Distribution List `user_id` is a current member of, that
+        is itself still `is_active=True` — the single resolution point
+        Rule "Shared With" access checks use to decide whether a
+        viewer's DL membership (rather than a direct shared_user_ids
+        entry) grants them view/manage/folder access. Always live,
+        never cached/snapshotted, same doctrine as
+        get_active_member_emails_by_list_ids below: a membership
+        change takes effect on the member's very next request.
+        """
+
+        result = await self.db.execute(
+            select(DistributionListMember.distribution_list_id)
+            .join(
+                DistributionList,
+                DistributionList.distribution_list_id
+                == DistributionListMember.distribution_list_id,
+            )
+            .where(
+                DistributionListMember.user_id == user_id,
+                DistributionList.is_active.is_(True),
+            )
+        )
+        return set(result.scalars().all())
+
+    async def get_active_by_ids(
+        self, distribution_list_ids: list[UUID]
+    ) -> list[DistributionList]:
+        """
+        Every id in `distribution_list_ids` that resolves to a real,
+        active DistributionList — used to validate a client-submitted
+        shared_distribution_list_ids list server-side before it's ever
+        persisted as an access grant (unlike forward_to's looser
+        resolve-and-skip-if-stale behavior, since this list actually
+        grants access rather than just naming a delivery destination).
+        """
+
+        if not distribution_list_ids:
+            return []
+
+        result = await self.db.execute(
+            select(DistributionList).where(
+                DistributionList.distribution_list_id.in_(distribution_list_ids),
+                DistributionList.is_active.is_(True),
+            )
+        )
+        return list(result.scalars().all())
+
     async def get_active_member_emails_by_list_ids(
         self, distribution_list_ids: list[UUID]
     ) -> dict[UUID, dict[UUID, str]]:

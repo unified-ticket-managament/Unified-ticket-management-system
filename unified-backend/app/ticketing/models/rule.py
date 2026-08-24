@@ -78,6 +78,21 @@ class Rule(Base):
         JSONB, nullable=False, default=list
     )
 
+    # Every Distribution List (see distribution_list.py) explicitly
+    # shared on this rule, as UUID strings — same shape/semantics as
+    # shared_user_ids, just resolved against DistributionListMember
+    # instead of a literal id match: any *current, active* member of
+    # one of these lists gets the same view/manage access a directly-
+    # shared employee gets, resolved fresh on every request (never a
+    # snapshot copied onto the rule) via
+    # DistributionListRepository.list_active_list_ids_for_user. Never
+    # populated from a forward_to action's own distribution_list_ids —
+    # same "forwarding destination is not an access grant" rule
+    # shared_user_ids already documents above.
+    shared_distribution_list_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

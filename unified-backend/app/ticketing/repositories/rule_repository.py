@@ -1,3 +1,4 @@
+from typing import Iterable
 from uuid import UUID
 
 from sqlalchemy import func, or_, select
@@ -16,23 +17,32 @@ class RuleRepository:
         )
         return list(result.scalars().all())
 
-    async def list_owned_or_shared(self, user_id: UUID) -> list[Rule]:
+    async def list_owned_or_shared(
+        self, user_id: UUID, distribution_list_ids: Iterable[UUID] = ()
+    ) -> list[Rule]:
         """
         Every rule `user_id` created, plus every rule they've been
-        explicitly added/shared/assigned to — the rule:view_all-less
-        path. `shared_user_ids.contains([...])` compiles to Postgres's
-        JSONB `@>` containment operator, the same pattern this
-        codebase already uses for TicketEscalation.owner_ids.
+        explicitly added/shared/assigned to (directly, or via being a
+        current member of one of its shared_distribution_list_ids) —
+        the rule:view_all-less path. `shared_user_ids.contains([...])`
+        compiles to Postgres's JSONB `@>` containment operator, the
+        same pattern this codebase already uses for
+        TicketEscalation.owner_ids; one such clause per DL id the
+        caller belongs to, ORed in alongside it.
         """
+
+        conditions = [
+            Rule.created_by == user_id,
+            Rule.shared_user_ids.contains([str(user_id)]),
+        ]
+        conditions.extend(
+            Rule.shared_distribution_list_ids.contains([str(dl_id)])
+            for dl_id in distribution_list_ids
+        )
 
         result = await self.db.execute(
             select(Rule)
-            .where(
-                or_(
-                    Rule.created_by == user_id,
-                    Rule.shared_user_ids.contains([str(user_id)]),
-                )
-            )
+            .where(or_(*conditions))
             .order_by(Rule.category.asc(), Rule.priority.asc())
         )
         return list(result.scalars().all())

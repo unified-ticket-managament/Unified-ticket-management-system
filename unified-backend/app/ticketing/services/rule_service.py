@@ -1,10 +1,14 @@
 import logging
+from typing import Iterable
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from shared_models.models import User
 
 from app.ticketing.models.rule import Rule
+from app.ticketing.repositories.distribution_list_repository import (
+    DistributionListRepository,
+)
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
@@ -30,16 +34,20 @@ RULE_MANAGE_PERMISSION = "rule:manage"
 logger = logging.getLogger(__name__)
 
 
-def _ensure_can_view(rule: Rule, current_user: User) -> None:
-    if not can_view_rule(rule, current_user):
+def _ensure_can_view(
+    rule: Rule, current_user: User, user_distribution_list_ids: Iterable[UUID] = ()
+) -> None:
+    if not can_view_rule(rule, current_user, user_distribution_list_ids):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have access to this rule.",
         )
 
 
-def _ensure_can_manage(rule: Rule, current_user: User) -> None:
-    if not can_manage_rule(rule, current_user):
+def _ensure_can_manage(
+    rule: Rule, current_user: User, user_distribution_list_ids: Iterable[UUID] = ()
+) -> None:
+    if not can_manage_rule(rule, current_user, user_distribution_list_ids):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have access to this rule.",
@@ -64,30 +72,58 @@ class RuleService:
         self,
         rule_repository: RuleRepository,
         mail_folder_repository: MailFolderRepository,
+        distribution_list_repository: DistributionListRepository,
         interaction_repository: InteractionRepository | None = None,
     ):
         self.rule_repository = rule_repository
         self.mail_folder_repository = mail_folder_repository
+        self.distribution_list_repository = distribution_list_repository
         self.interaction_repository = interaction_repository
+
+    async def _user_distribution_list_ids(self, current_user: User) -> set[UUID]:
+        return await self.distribution_list_repository.list_active_list_ids_for_user(
+            current_user.user_id
+        )
+
+    async def _validate_shared_distribution_lists(
+        self, distribution_list_ids: list[UUID]
+    ) -> None:
+        if not distribution_list_ids:
+            return
+        found = await self.distribution_list_repository.get_active_by_ids(
+            distribution_list_ids
+        )
+        found_ids = {dl.distribution_list_id for dl in found}
+        missing = set(distribution_list_ids) - found_ids
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="One or more selected Distribution Lists are invalid or inactive.",
+            )
 
     async def list_all(self, current_user: User) -> list[RuleResponse]:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
         if has_permission(current_user, RULE_VIEW_ALL_PERMISSION):
             rules = await self.rule_repository.list_all()
         else:
+            user_dl_ids = await self._user_distribution_list_ids(current_user)
             rules = await self.rule_repository.list_owned_or_shared(
-                current_user.user_id
+                current_user.user_id, user_dl_ids
             )
         return [RuleResponse.model_validate(r) for r in rules]
 
     async def get(self, rule_id: UUID, current_user: User) -> RuleResponse:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
         rule = await self._get_or_404(rule_id)
-        _ensure_can_view(rule, current_user)
+        user_dl_ids = await self._user_distribution_list_ids(current_user)
+        _ensure_can_view(rule, current_user, user_dl_ids)
         return RuleResponse.model_validate(rule)
 
     async def create(self, request: RuleCreate, current_user: User) -> RuleResponse:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
+        await self._validate_shared_distribution_lists(
+            request.shared_distribution_list_ids
+        )
 
         priority = await self.rule_repository.get_next_priority(request.category)
 
@@ -108,6 +144,9 @@ class RuleService:
             priority=priority,
             created_by=current_user.user_id,
             shared_user_ids=[str(u) for u in request.shared_user_ids],
+            shared_distribution_list_ids=[
+                str(dl) for dl in request.shared_distribution_list_ids
+            ],
         )
 
         created = await self.rule_repository.create(rule)
@@ -129,7 +168,11 @@ class RuleService:
     async def update(self, rule_id: UUID, request: RuleUpdate, current_user: User) -> RuleResponse:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
         rule = await self._get_or_404(rule_id)
-        _ensure_can_manage(rule, current_user)
+        user_dl_ids = await self._user_distribution_list_ids(current_user)
+        _ensure_can_manage(rule, current_user, user_dl_ids)
+        await self._validate_shared_distribution_lists(
+            request.shared_distribution_list_ids
+        )
 
         rule.name = request.name
         rule.is_enabled = request.is_enabled
@@ -138,6 +181,9 @@ class RuleService:
         rule.actions = [a.model_dump(mode="json") for a in request.actions]
         rule.stop_processing = request.stop_processing
         rule.shared_user_ids = [str(u) for u in request.shared_user_ids]
+        rule.shared_distribution_list_ids = [
+            str(dl) for dl in request.shared_distribution_list_ids
+        ]
 
         saved = await self.rule_repository.save(rule)
 
@@ -157,7 +203,8 @@ class RuleService:
     async def set_enabled(self, rule_id: UUID, is_enabled: bool, current_user: User) -> RuleResponse:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
         rule = await self._get_or_404(rule_id)
-        _ensure_can_manage(rule, current_user)
+        user_dl_ids = await self._user_distribution_list_ids(current_user)
+        _ensure_can_manage(rule, current_user, user_dl_ids)
         rule.is_enabled = is_enabled
         saved = await self.rule_repository.save(rule)
         return RuleResponse.model_validate(saved)
@@ -165,7 +212,10 @@ class RuleService:
     async def delete(self, rule_id: UUID, current_user: User) -> None:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
         rule = await self._get_or_404(rule_id)
-        _ensure_can_manage(rule, current_user)
+        user_dl_ids = await self._user_distribution_list_ids(current_user)
+        _ensure_can_manage(rule, current_user, user_dl_ids)
+
+        logger.info("RULE_DELETE_STARTED rule_id=%s rule_name=%r", rule.rule_id, rule.name)
 
         folder_names = folder_names_from_actions(rule.actions)
 
@@ -173,7 +223,10 @@ class RuleService:
         # deleted, so "still needed" reflects the state the deletion
         # is about to leave behind — e.g. Rule A and Rule B both file
         # into "Claims Folder"; deleting A must not touch the folder
-        # while B still references it.
+        # while B still references it. Sharing (shared_user_ids/
+        # shared_distribution_list_ids) is irrelevant here — this is
+        # purely "does any other rule's own actions still name this
+        # folder," regardless of who can see either rule.
         still_needed: set[str] = set()
         if folder_names:
             for other in await self.rule_repository.list_all():
@@ -181,53 +234,94 @@ class RuleService:
                     continue
                 still_needed |= folder_names_from_actions(other.actions)
 
+        for name in folder_names & still_needed:
+            folder = await self.mail_folder_repository.get_by_name(name)
+            if folder is not None:
+                logger.info(
+                    "RULE_FOLDER_PRESERVED folder_id=%s folder_name=%r "
+                    'reason="referenced_by_other_rule"',
+                    folder.folder_id,
+                    name,
+                )
+
         await self.rule_repository.delete(rule)
 
-        # Same request/transaction as the rule delete above — if this
-        # raises, the whole thing (rule delete included) rolls back
-        # via get_db's own commit-on-success/rollback-on-exception,
-        # rather than leaving the rule gone but its folder orphaned.
+        # Same request/transaction as the rule delete above — if
+        # anything below raises, the whole thing (rule delete
+        # included) rolls back via get_db's own commit-on-success/
+        # rollback-on-exception, rather than leaving a partially-
+        # deleted state (rule gone but folder/messages inconsistent).
         for name in folder_names - still_needed:
             folder = await self.mail_folder_repository.get_by_name(name)
-            # created_by is None only for a folder that predates this
-            # rule ever existing (or the ownership feature itself) —
-            # never delete one of those here, no matter what named it;
-            # only a folder this rule-management flow actually owns.
-            if folder is None or folder.created_by is None:
+            if folder is None:
                 continue
 
-            # A folder still has real Interaction rows filed into it
-            # (mail_folders has no ON DELETE CASCADE from
-            # interactions.folder_id) — deleting it would raise an
-            # unhandled ForeignKeyViolationError and crash this whole
-            # request with a 500. No other rule needs the folder
-            # anymore, but its actual messages are real data; leave
-            # the folder in place (now an ordinary, rule-less folder,
-            # still visible to its own creator) rather than losing
-            # them or crashing the delete.
-            if (
-                self.interaction_repository is not None
-                and await self.interaction_repository.has_any_interaction_in_folder(
-                    folder.folder_id
-                )
-            ):
+            # The real ownership signal: only a folder rule_folder_sync.
+            # ensure_folder actually created is eligible for automatic
+            # cleanup here. A folder a user created by hand (POST
+            # /folders — created_by set, is_rule_created left False)
+            # is never auto-deleted, no matter what a rule's own
+            # actions happened to name it, or how many messages it
+            # holds — it's the user's folder, not this rule's.
+            if not folder.is_rule_created:
                 logger.info(
-                    "Skipping delete of folder %r (%s) — still referenced by "
-                    "real interactions after rule %s was deleted.",
-                    folder.name,
+                    "RULE_FOLDER_PRESERVED folder_id=%s folder_name=%r "
+                    'reason="not_rule_created"',
                     folder.folder_id,
-                    rule_id,
+                    name,
                 )
                 continue
+
+            # This folder is exclusively owned by the rule just
+            # deleted. MailFolder has no ON DELETE CASCADE from
+            # interactions.folder_id (interactions_folder_id_fkey), so
+            # deleting it while real messages are still filed under it
+            # would raise an unhandled ForeignKeyViolationError — and,
+            # more importantly, those messages must never be lost.
+            # Unfile them first (folder_id -> NULL, never touching the
+            # interaction row itself, its ticket_id, attachments, or
+            # audit history) so they fall back to the normal Inbox,
+            # then delete the now-empty folder.
+            if self.interaction_repository is None:
+                # No interaction_repository was wired into this
+                # RuleService instance — refuse to delete a folder we
+                # can't safely unfile messages from first, rather than
+                # risking either an FK crash or, worse, silently
+                # deleting messages. Every real API call site wires
+                # this in; only a caller that deliberately omits it
+                # (e.g. a narrowly-scoped test) hits this branch.
+                logger.warning(
+                    "RULE_FOLDER_PRESERVED folder_id=%s folder_name=%r "
+                    'reason="no_interaction_repository"',
+                    folder.folder_id,
+                    name,
+                )
+                continue
+
+            affected = await self.interaction_repository.clear_folder_for_folder_id(
+                folder.folder_id
+            )
+            logger.info(
+                "RULE_FOLDER_CLEANUP rule_id=%s folder_id=%s folder_name=%r "
+                "affected_interaction_count=%s",
+                rule_id,
+                folder.folder_id,
+                name,
+                affected,
+            )
 
             await self.mail_folder_repository.delete(folder)
+            logger.info("RULE_FOLDER_DELETED folder_id=%s folder_name=%r", folder.folder_id, name)
+
+        logger.info("RULE_DELETE_COMPLETED rule_id=%s", rule_id)
 
     async def reorder(
         self, rule_id: UUID, request: RuleReorderRequest, current_user: User
     ) -> list[RuleResponse]:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
         rule = await self._get_or_404(rule_id)
-        _ensure_can_manage(rule, current_user)
+        user_dl_ids = await self._user_distribution_list_ids(current_user)
+        _ensure_can_manage(rule, current_user, user_dl_ids)
         siblings = await self.rule_repository.list_by_category_ordered(rule.category)
 
         index = next(i for i, r in enumerate(siblings) if r.rule_id == rule.rule_id)

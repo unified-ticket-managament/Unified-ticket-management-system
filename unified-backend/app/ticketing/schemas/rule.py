@@ -125,6 +125,13 @@ class RuleCreate(BaseModel):
     # matching email to someone is never itself a grant of rule/folder
     # access.
     shared_user_ids: list[UUID] = Field(default_factory=list)
+    # Same grant, extended to Distribution Lists (see
+    # app.ticketing.models.distribution_list) — every current, active
+    # member of a listed Distribution List gets the same view/manage
+    # access shared_user_ids grants an individual employee, resolved
+    # fresh at every request. Validated server-side in RuleService
+    # against real, active Distribution Lists — never trusted as-is.
+    shared_distribution_list_ids: list[UUID] = Field(default_factory=list)
 
     @field_validator("conditions")
     @classmethod
@@ -147,6 +154,7 @@ class RuleUpdate(BaseModel):
     actions: list[RuleActionItem] = Field(..., min_length=1)
     stop_processing: bool = False
     shared_user_ids: list[UUID] = Field(default_factory=list)
+    shared_distribution_list_ids: list[UUID] = Field(default_factory=list)
 
     @field_validator("conditions")
     @classmethod
@@ -183,5 +191,6 @@ class RuleResponse(ORMBase):
     priority: int
     created_by: UUID | None
     shared_user_ids: list[UUID]
+    shared_distribution_list_ids: list[UUID]
     created_at: datetime
     updated_at: datetime

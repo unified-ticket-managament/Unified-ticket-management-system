@@ -193,7 +193,7 @@ async def get_inbox(
                 detail="Folder not found.",
             )
         access = await MailFolderService(folder_repository).resolve_folder_access(
-            folder, current_user, RuleRepository(db)
+            folder, current_user, RuleRepository(db), DistributionListRepository(db)
         )
         if not access.visible:
             raise HTTPException(
@@ -260,14 +260,18 @@ async def get_folder_counts(
 
     folder_repository = MailFolderRepository(db)
     rule_repository = RuleRepository(db)
+    distribution_list_repository = DistributionListRepository(db)
 
     all_folders = await folder_repository.list_all()
     all_rules = await rule_repository.list_all()
     name_to_rules = folder_name_to_rules(all_rules)
+    user_dl_ids = await distribution_list_repository.list_active_list_ids_for_user(
+        current_user.user_id
+    )
     shared_folder_ids = {
         folder.folder_id
         for folder in all_folders
-        if has_folder_share_access(folder.name, current_user, name_to_rules)
+        if has_folder_share_access(folder.name, current_user, name_to_rules, user_dl_ids)
     }
 
     repository = InteractionRepository(db)

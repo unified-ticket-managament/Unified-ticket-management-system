@@ -44,6 +44,11 @@ export interface RulePayload {
   // created_by. Distinct from a forward_to action's employee_user_ids:
   // a forward destination is never itself a grant of rule access.
   shared_user_ids?: string[];
+  // Same grant, extended to Distribution Lists — every current,
+  // active member of a listed Distribution List gets the same
+  // view/manage access shared_user_ids grants an individual employee,
+  // resolved fresh server-side on every request (never a snapshot).
+  shared_distribution_list_ids?: string[];
 }
 
 export interface RuleResponse extends RulePayload {
@@ -51,6 +56,7 @@ export interface RuleResponse extends RulePayload {
   priority: number;
   created_by: string | null;
   shared_user_ids: string[];
+  shared_distribution_list_ids: string[];
   created_at: string;
   updated_at: string;
 }

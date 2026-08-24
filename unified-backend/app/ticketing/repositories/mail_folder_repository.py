@@ -28,8 +28,10 @@ class MailFolderRepository:
         )
         return result.scalar_one_or_none()
 
-    async def create(self, name: str, created_by: UUID | None) -> MailFolder:
-        folder = MailFolder(name=name, created_by=created_by)
+    async def create(
+        self, name: str, created_by: UUID | None, *, is_rule_created: bool = False
+    ) -> MailFolder:
+        folder = MailFolder(name=name, created_by=created_by, is_rule_created=is_rule_created)
         self.db.add(folder)
         await self.db.flush()
         await self.db.refresh(folder)

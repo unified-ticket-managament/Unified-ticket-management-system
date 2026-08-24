@@ -1443,24 +1443,24 @@ class InteractionRepository:
 
         return interaction
 
-    async def has_any_interaction_in_folder(self, folder_id: UUID) -> bool:
+    async def clear_folder_for_folder_id(self, folder_id: UUID) -> int:
         """
-        Unconditional existence check (no role/visibility scoping — this
-        is an internal data-integrity guard, not a user-facing query).
-        The one caller is RuleService.delete's folder-cleanup step:
-        MailFolder has no ON DELETE CASCADE from interactions.folder_id
-        (interactions_folder_id_fkey), so deleting a folder real
-        messages are still filed under would otherwise raise an
-        unhandled ForeignKeyViolationError and crash the whole
-        rule-delete request with a 500.
+        Bulk-clears folder_id (never the interaction row itself, its
+        ticket_id, or anything else) for every interaction currently
+        filed under `folder_id` — one UPDATE statement, not a per-row
+        Python loop. The one caller is RuleService.delete's folder-
+        cleanup step: when a rule-exclusively-owned folder is deleted,
+        its messages must return to the normal Inbox (folder_id NULL)
+        rather than being lost to the FK relationship. Returns the
+        number of rows affected, for structured logging only.
         """
 
         result = await self.db.execute(
-            select(Interaction.interaction_id)
+            update(Interaction)
             .where(Interaction.folder_id == folder_id)
-            .limit(1)
+            .values(folder_id=None)
         )
-        return result.scalar_one_or_none() is not None
+        return result.rowcount or 0
 
     async def hide(
         self,

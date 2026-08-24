@@ -7,6 +7,9 @@ rule(s) that file mail into it). Do not reimplement this check a
 second time anywhere else.
 """
 
+from typing import Iterable
+from uuid import UUID
+
 from shared_models.models import User
 
 from app.ticketing.models.rule import Rule
@@ -21,18 +24,46 @@ from app.ticketing.services.rule_folder_sync import folder_names_from_actions
 RULE_VIEW_ALL_PERMISSION = "rule:view_all"
 
 
-def can_view_rule(rule: Rule, current_user: User) -> bool:
+def _shared_via_distribution_list(
+    rule: Rule, user_distribution_list_ids: Iterable[UUID]
+) -> bool:
+    """
+    True if the viewer is a current, active member of any Distribution
+    List this rule's shared_distribution_list_ids names — resolved by
+    the caller (see DistributionListRepository.list_active_list_ids_for_user)
+    and passed in as plain ids, never re-queried here, so this stays a
+    pure/no-I/O check like the rest of this module.
+    """
+
+    shared_dl_ids = rule.shared_distribution_list_ids or []
+    if not shared_dl_ids:
+        return False
+    return any(str(dl_id) in shared_dl_ids for dl_id in user_distribution_list_ids)
+
+
+def can_view_rule(
+    rule: Rule,
+    current_user: User,
+    user_distribution_list_ids: Iterable[UUID] = (),
+) -> bool:
     return (
         rule.created_by == current_user.user_id
         or str(current_user.user_id) in (rule.shared_user_ids or [])
+        or _shared_via_distribution_list(rule, user_distribution_list_ids)
         or has_permission(current_user, RULE_VIEW_ALL_PERMISSION)
     )
 
 
-def can_manage_rule(rule: Rule, current_user: User) -> bool:
-    return rule.created_by == current_user.user_id or str(
-        current_user.user_id
-    ) in (rule.shared_user_ids or [])
+def can_manage_rule(
+    rule: Rule,
+    current_user: User,
+    user_distribution_list_ids: Iterable[UUID] = (),
+) -> bool:
+    return (
+        rule.created_by == current_user.user_id
+        or str(current_user.user_id) in (rule.shared_user_ids or [])
+        or _shared_via_distribution_list(rule, user_distribution_list_ids)
+    )
 
 
 def folder_name_to_rules(all_rules: list[Rule]) -> dict[str, list[Rule]]:
@@ -56,7 +87,10 @@ def folder_name_to_rules(all_rules: list[Rule]) -> dict[str, list[Rule]]:
 
 
 def has_folder_share_access(
-    folder_name: str, current_user: User, name_to_rules: dict[str, list[Rule]]
+    folder_name: str,
+    current_user: User,
+    name_to_rules: dict[str, list[Rule]],
+    user_distribution_list_ids: Iterable[UUID] = (),
 ) -> bool:
     """
     True only when at least one rule that currently files mail into
@@ -79,4 +113,7 @@ def has_folder_share_access(
     referencing_rules = name_to_rules.get(folder_name)
     if not referencing_rules:
         return False
-    return any(can_view_rule(r, current_user) for r in referencing_rules)
+    return any(
+        can_view_rule(r, current_user, user_distribution_list_ids)
+        for r in referencing_rules
+    )

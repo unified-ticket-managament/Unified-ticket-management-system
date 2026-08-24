@@ -32,6 +32,9 @@ from app.ticketing.models.client import Client
 from app.ticketing.models.interaction import Interaction
 from app.ticketing.models.rule import Rule
 from app.ticketing.models.ticket import Ticket
+from app.ticketing.repositories.distribution_list_repository import (
+    DistributionListRepository,
+)
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
@@ -192,16 +195,17 @@ async def test_shared_folder_surfaces_messages_for_team_lead_but_not_unrelated_v
 
     mail_folder_service = MailFolderService(folder_repository)
     rule_repository = RuleRepository(db_session)
+    distribution_list_repository = DistributionListRepository(db_session)
 
     # --- Folder-existence access (rule sharing grant itself) ---
     shared_access = await mail_folder_service.resolve_folder_access(
-        folder, team_lead, rule_repository
+        folder, team_lead, rule_repository, distribution_list_repository
     )
     assert shared_access.visible is True
     assert shared_access.via_sharing is True
 
     unrelated_access = await mail_folder_service.resolve_folder_access(
-        folder, unrelated_viewer, rule_repository
+        folder, unrelated_viewer, rule_repository, distribution_list_repository
     )
     assert unrelated_access.visible is False
     assert unrelated_access.via_sharing is False

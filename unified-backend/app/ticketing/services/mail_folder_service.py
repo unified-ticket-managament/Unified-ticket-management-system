@@ -1,4 +1,4 @@
-from typing import NamedTuple
+from typing import Iterable, NamedTuple
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -6,6 +6,9 @@ from shared_models.models import User
 
 from app.ticketing.models.mail_folder import MailFolder
 from app.ticketing.models.rule import Rule
+from app.ticketing.repositories.distribution_list_repository import (
+    DistributionListRepository,
+)
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.schemas.mail_folder import MailFolderCreate, MailFolderResponse
@@ -32,6 +35,7 @@ def _is_folder_visible(
     folder: MailFolder,
     current_user: User,
     name_to_rules: dict[str, list[Rule]],
+    user_distribution_list_ids: Iterable[UUID] = (),
 ) -> bool:
     referencing_rules = name_to_rules.get(folder.name)
 
@@ -39,7 +43,10 @@ def _is_folder_visible(
         # The rule is the source of truth once one exists — a
         # folder's own created_by is never consulted here, correctly
         # or not.
-        return any(can_view_rule(r, current_user) for r in referencing_rules)
+        return any(
+            can_view_rule(r, current_user, user_distribution_list_ids)
+            for r in referencing_rules
+        )
 
     # No rule anywhere currently names this folder — a manually-
     # created (or orphaned, e.g. its creating rule was since deleted)
@@ -78,18 +85,24 @@ class MailFolderService:
         return [MailFolderResponse.model_validate(folder) for folder in folders]
 
     async def list_visible(
-        self, current_user: User, rule_repository: RuleRepository
+        self,
+        current_user: User,
+        rule_repository: RuleRepository,
+        distribution_list_repository: DistributionListRepository,
     ) -> list[MailFolderResponse]:
         if has_permission(current_user, RULE_VIEW_ALL_PERMISSION):
             folders = await self.mail_folder_repository.list_all()
         else:
             all_rules = await rule_repository.list_all()
             name_to_rules = _folder_name_to_rules(all_rules)
+            user_dl_ids = await distribution_list_repository.list_active_list_ids_for_user(
+                current_user.user_id
+            )
             all_folders = await self.mail_folder_repository.list_all()
             folders = [
                 f
                 for f in all_folders
-                if _is_folder_visible(f, current_user, name_to_rules)
+                if _is_folder_visible(f, current_user, name_to_rules, user_dl_ids)
             ]
         return [MailFolderResponse.model_validate(folder) for folder in folders]
 
@@ -98,6 +111,7 @@ class MailFolderService:
         folder: MailFolder,
         current_user: User,
         rule_repository: RuleRepository,
+        distribution_list_repository: DistributionListRepository,
     ) -> FolderAccess:
         """
         Single-query-set answer to both "can this viewer see this
@@ -115,9 +129,16 @@ class MailFolderService:
 
         all_rules = await rule_repository.list_all()
         name_to_rules = _folder_name_to_rules(all_rules)
+        user_dl_ids = await distribution_list_repository.list_active_list_ids_for_user(
+            current_user.user_id
+        )
 
-        via_sharing = has_folder_share_access(folder.name, current_user, name_to_rules)
-        visible = via_sharing or _is_folder_visible(folder, current_user, name_to_rules)
+        via_sharing = has_folder_share_access(
+            folder.name, current_user, name_to_rules, user_dl_ids
+        )
+        visible = via_sharing or _is_folder_visible(
+            folder, current_user, name_to_rules, user_dl_ids
+        )
         return FolderAccess(visible=visible, via_sharing=via_sharing)
 
     async def ensure_visible(
@@ -125,8 +146,11 @@ class MailFolderService:
         folder: MailFolder,
         current_user: User,
         rule_repository: RuleRepository,
+        distribution_list_repository: DistributionListRepository,
     ) -> None:
-        access = await self.resolve_folder_access(folder, current_user, rule_repository)
+        access = await self.resolve_folder_access(
+            folder, current_user, rule_repository, distribution_list_repository
+        )
         if access.visible:
             return
 
@@ -159,6 +183,7 @@ class MailFolderService:
         folder_id: UUID,
         current_user: User,
         rule_repository: RuleRepository,
+        distribution_list_repository: DistributionListRepository,
     ) -> None:
         folder = await self.mail_folder_repository.get_by_id(folder_id)
 
@@ -168,6 +193,8 @@ class MailFolderService:
                 detail="Folder not found.",
             )
 
-        await self.ensure_visible(folder, current_user, rule_repository)
+        await self.ensure_visible(
+            folder, current_user, rule_repository, distribution_list_repository
+        )
 
         await self.mail_folder_repository.delete(folder)

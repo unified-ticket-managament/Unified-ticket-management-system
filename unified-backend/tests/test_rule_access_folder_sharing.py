@@ -13,6 +13,8 @@ from uuid import uuid4
 
 from app.ticketing.models.rule import Rule
 from app.ticketing.services.rule_access import (
+    can_manage_rule,
+    can_view_rule,
     folder_name_to_rules,
     has_folder_share_access,
 )
@@ -30,7 +32,14 @@ class _FakeUser:
         self.permissions = permissions if permissions is not None else []
 
 
-def _rule(*, created_by, shared_user_ids=None, folder_name="apm folder", is_enabled=True):
+def _rule(
+    *,
+    created_by,
+    shared_user_ids=None,
+    shared_distribution_list_ids=None,
+    folder_name="apm folder",
+    is_enabled=True,
+):
     return Rule(
         rule_id=uuid4(),
         name="Test rule",
@@ -42,6 +51,7 @@ def _rule(*, created_by, shared_user_ids=None, folder_name="apm folder", is_enab
         priority=1,
         created_by=created_by,
         shared_user_ids=shared_user_ids or [],
+        shared_distribution_list_ids=shared_distribution_list_ids or [],
     )
 
 
@@ -142,3 +152,80 @@ class TestHasFolderShareAccess:
         viewer = _FakeUser(viewer_id)
         mapping = folder_name_to_rules([shared_rule, unrelated_rule])
         assert has_folder_share_access(folder_name, viewer, mapping) is True
+
+
+class TestDistributionListSharing:
+    # A Distribution List member gets exactly the same folder-share
+    # access a directly-listed employee would — passed in as an
+    # already-resolved id set (the caller's job — see
+    # DistributionListRepository.list_active_list_ids_for_user — this
+    # module stays pure/no-I/O), never re-resolved here.
+
+    def test_distribution_list_member_gets_access(self):
+        creator_id = uuid4()
+        member_id = uuid4()
+        dl_id = uuid4()
+        rule = _rule(created_by=creator_id, shared_distribution_list_ids=[str(dl_id)])
+        member = _FakeUser(member_id)
+        mapping = folder_name_to_rules([rule])
+        assert (
+            has_folder_share_access("apm folder", member, mapping, user_distribution_list_ids=[dl_id])
+            is True
+        )
+
+    def test_non_member_of_shared_distribution_list_denied(self):
+        creator_id = uuid4()
+        outsider_id = uuid4()
+        dl_id = uuid4()
+        other_dl_id = uuid4()
+        rule = _rule(created_by=creator_id, shared_distribution_list_ids=[str(dl_id)])
+        outsider = _FakeUser(outsider_id)
+        mapping = folder_name_to_rules([rule])
+        # Belongs to some other Distribution List, just not the one
+        # this rule actually shares with.
+        assert (
+            has_folder_share_access(
+                "apm folder", outsider, mapping, user_distribution_list_ids=[other_dl_id]
+            )
+            is False
+        )
+
+    def test_no_distribution_list_ids_passed_is_a_plain_deny(self):
+        creator_id = uuid4()
+        viewer_id = uuid4()
+        dl_id = uuid4()
+        rule = _rule(created_by=creator_id, shared_distribution_list_ids=[str(dl_id)])
+        viewer = _FakeUser(viewer_id)
+        mapping = folder_name_to_rules([rule])
+        assert has_folder_share_access("apm folder", viewer, mapping) is False
+
+    def test_mixed_direct_and_distribution_list_sharing_no_duplicate_grant_needed(self):
+        # An employee who is both directly shared AND a member of a
+        # shared Distribution List still just gets one True — the
+        # boolean OR check itself has nothing to deduplicate.
+        creator_id = uuid4()
+        viewer_id = uuid4()
+        dl_id = uuid4()
+        rule = _rule(
+            created_by=creator_id,
+            shared_user_ids=[str(viewer_id)],
+            shared_distribution_list_ids=[str(dl_id)],
+        )
+        viewer = _FakeUser(viewer_id)
+        mapping = folder_name_to_rules([rule])
+        assert (
+            has_folder_share_access("apm folder", viewer, mapping, user_distribution_list_ids=[dl_id])
+            is True
+        )
+
+    def test_can_view_and_can_manage_rule_both_grant_via_distribution_list(self):
+        creator_id = uuid4()
+        member_id = uuid4()
+        dl_id = uuid4()
+        rule = _rule(created_by=creator_id, shared_distribution_list_ids=[str(dl_id)])
+        member = _FakeUser(member_id)
+        assert can_view_rule(rule, member, [dl_id]) is True
+        assert can_manage_rule(rule, member, [dl_id]) is True
+        # And without the DL membership, denied on both.
+        assert can_view_rule(rule, member, []) is False
+        assert can_manage_rule(rule, member, []) is False
