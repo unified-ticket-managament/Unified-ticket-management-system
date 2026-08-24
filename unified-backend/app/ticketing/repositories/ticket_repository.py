@@ -12,8 +12,9 @@ from app.ticketing.enums import EscalationStatus, SLAClockStatus, TicketPriority
 from app.ticketing.models.client import Client
 from app.ticketing.models.resolution_sla import ResolutionSLA
 from app.ticketing.models.sla_policy import SLAPolicy
-from app.ticketing.models.ticket import Ticket
+from app.ticketing.models.ticket import TICKET_NUMBER_SERIES_CURRENT, Ticket
 from app.ticketing.models.ticket_escalation import TicketEscalation
+from app.ticketing.models.ticket_number_counter import TicketNumberCounter
 from app.ticketing.schemas.ticket import TicketCreate, TicketUpdate
 
 # Matches "TKT-27"/"tkt27"/"Tkt 27" etc. — the human-readable ticket
@@ -99,11 +100,43 @@ class TicketRepository:
         self.db = db
 
     async def create(self, data: TicketCreate) -> Ticket:
-        ticket = Ticket(**data.model_dump())
+        ticket_number = await self._allocate_current_ticket_number()
+        ticket = Ticket(
+            **data.model_dump(),
+            ticket_number=ticket_number,
+            ticket_number_series=TICKET_NUMBER_SERIES_CURRENT,
+        )
         self.db.add(ticket)
         await self.db.flush()
         await self.db.refresh(ticket)
         return ticket
+
+    async def _allocate_current_ticket_number(self) -> int:
+        """
+        Gapless, transactional allocation for the "current" numbering
+        series — see TicketNumberCounter's own docstring for why this
+        is a locked counter row and not a Postgres SEQUENCE. Locks the
+        single 'current' row with SELECT ... FOR UPDATE (held until
+        this request's transaction commits or rolls back — see
+        app.database.session.get_db) so concurrent ticket creations
+        serialize instead of racing, then advances it in the same
+        flush as the new ticket's INSERT: if that transaction later
+        rolls back for any reason, this increment rolls back with it,
+        and the next successful attempt gets the same number again.
+        Never MAX(ticket_number)+1, never COUNT(*), never an in-memory
+        counter, never a separately-committed counter update.
+        """
+
+        counter = (
+            await self.db.execute(
+                select(TicketNumberCounter)
+                .where(TicketNumberCounter.series == TICKET_NUMBER_SERIES_CURRENT)
+                .with_for_update()
+            )
+        ).scalar_one()
+        allocated = counter.next_number
+        counter.next_number = allocated + 1
+        return allocated
 
     async def get_by_id(self, ticket_id: UUID, *, populate_existing: bool = False) -> Ticket | None:
         """

@@ -1,19 +1,28 @@
 # test_ticket_number.py
 #
 # Regression coverage for Issue 9 (human-readable "TKT-<n>" ticket
-# reference): a persistent, sequential, never-renumbered
-# `tickets.ticket_number` column backed by a real Postgres SEQUENCE
-# (`ticket_number_seq`, added in alembic_ticketing's
-# 277b41c65b53_add_ticket_number_sequence migration) — additional to,
-# never a replacement for, the existing UUID `ticket_id` primary key.
+# reference) — additional to, never a replacement for, the existing
+# UUID `ticket_id` primary key.
+#
+# `tickets.ticket_number` is now split across two independent numbering
+# series, tagged by `ticket_number_series` (see Ticket's own docstring
+# and the b201554c1537_add_ticket_number_series_and_counter migration):
+# "legacy" tickets (everything that existed before that migration) keep
+# whatever number they already had, sourced originally from
+# `ticket_number_seq`; "current" tickets (everything created after)
+# are numbered from TicketNumberCounter's gapless, transactional 1, 2,
+# 3, ... — see TicketRepository._allocate_current_ticket_number. The
+# same integer may legitimately appear once per series; uniqueness is
+# enforced per-series (uq_tickets_ticket_number_series), not
+# table-wide.
 #
 # Runs against the real (dev) database. Most tests use a rolled-back
 # transaction (same convention as test_ticket_status_on_assignment.py);
-# the concurrency test necessarily commits real rows on separate
-# connections (a single session can't be used concurrently, and the
-# whole point is proving the real Postgres sequence is race-free
-# across genuinely independent connections) — those rows are deleted
-# again at the end of that test.
+# the concurrency and rollback tests necessarily commit/use real
+# separate connections (a single session can't be used concurrently,
+# and the whole point is proving the real locked counter is race-free
+# and gap-free across genuinely independent connections) — those rows
+# are deleted again afterward.
 
 import asyncio
 import uuid
@@ -27,7 +36,12 @@ from shared_models.models import Role, User
 from app.database.session import AsyncSessionLocal, engine
 from app.ticketing.enums import TicketPriority, TicketStatus
 from app.ticketing.models.client import Client
-from app.ticketing.models.ticket import Ticket
+from app.ticketing.models.ticket import (
+    TICKET_NUMBER_SERIES_CURRENT,
+    TICKET_NUMBER_SERIES_LEGACY,
+    Ticket,
+)
+from app.ticketing.models.ticket_number_counter import TicketNumberCounter
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.ticket_repository import (
@@ -174,13 +188,17 @@ async def test_ticket_number_never_changes_once_assigned(db_session):
 async def test_concurrent_ticket_creation_never_duplicates_numbers():
     """
     Five genuinely independent connections creating a ticket at the
-    same time must all receive distinct ticket_numbers — this is what
-    proves nextval() on a real Postgres sequence is used, not an
-    in-app "read current max, add one" computation (which would race
-    under exactly this scenario). A single shared session can't
-    exercise this (it isn't safe to use concurrently, and would
-    serialize the inserts anyway), so this test commits real rows on
-    their own sessions/connections and deletes them again afterward.
+    same time must all receive distinct, and collectively CONTIGUOUS,
+    "current"-series ticket_numbers — this is what proves
+    TicketRepository._allocate_current_ticket_number's SELECT ... FOR
+    UPDATE row lock genuinely serializes concurrent creators, rather
+    than an in-app "read current max, add one" computation (which
+    would race under exactly this scenario) or a bare SEQUENCE (which
+    would only prove uniqueness, not gaplessness). A single shared
+    session can't exercise this (it isn't safe to use concurrently,
+    and would serialize the inserts anyway), so this test commits real
+    rows on their own sessions/connections and deletes them again
+    afterward.
     """
 
     async with AsyncSessionLocal() as setup_session:
@@ -196,6 +214,14 @@ async def test_concurrent_ticket_creation_never_duplicates_numbers():
         await setup_session.commit()
         client_id = client.client_id
 
+        counter_before = (
+            await setup_session.execute(
+                select(TicketNumberCounter.next_number).where(
+                    TicketNumberCounter.series == TICKET_NUMBER_SERIES_CURRENT
+                )
+            )
+        ).scalar_one()
+
     async def _create_one():
         async with AsyncSessionLocal() as session:
             repository = TicketRepository(session)
@@ -208,22 +234,122 @@ async def test_concurrent_ticket_creation_never_duplicates_numbers():
                 )
             )
             await session.commit()
-            return ticket.ticket_id, ticket.ticket_number
+            return ticket.ticket_id, ticket.ticket_number, ticket.ticket_number_series
 
     created: list[tuple] = []
     try:
         created = await asyncio.gather(*(_create_one() for _ in range(5)))
-        numbers = [ticket_number for _ticket_id, ticket_number in created]
+        numbers = [ticket_number for _ticket_id, ticket_number, _series in created]
+        series = {series for _ticket_id, _ticket_number, series in created}
+
         assert len(set(numbers)) == len(numbers) == 5
+        assert series == {TICKET_NUMBER_SERIES_CURRENT}
+        assert sorted(numbers) == list(range(counter_before, counter_before + 5))
     finally:
         async with AsyncSessionLocal() as cleanup_session:
-            ticket_ids = [ticket_id for ticket_id, _ in created]
+            ticket_ids = [ticket_id for ticket_id, _, _ in created]
             if ticket_ids:
                 await cleanup_session.execute(
                     delete(Ticket).where(Ticket.ticket_id.in_(ticket_ids))
                 )
             await cleanup_session.execute(delete(Client).where(Client.client_id == client_id))
             await cleanup_session.commit()
+        # Same convention as the db_session fixture's own teardown:
+        # connections opened on THIS test's event loop must not linger
+        # in the shared pool for the next test's (different) event loop
+        # to try to reuse — pytest-asyncio's per-test event loop makes
+        # that a guaranteed "Event loop is closed" failure, not a race.
+        await engine.dispose()
+
+
+async def test_failed_ticket_creation_never_burns_a_number():
+    """
+    Zero-gap requirement: if a ticket-creation transaction rolls back
+    for any reason (mirrors app.database.session.get_db's own
+    except-then-rollback behavior on a request-level failure), the
+    "current" counter's increment must roll back with it — the next
+    successful attempt must receive the SAME number, not skip past it.
+    This is the whole reason the counter is a locked table row
+    incremented in the same transaction as the ticket insert, rather
+    than a Postgres SEQUENCE (whose nextval() is never rolled back).
+    """
+
+    async def _read_next_number(session) -> int:
+        return (
+            await session.execute(
+                select(TicketNumberCounter.next_number).where(
+                    TicketNumberCounter.series == TICKET_NUMBER_SERIES_CURRENT
+                )
+            )
+        ).scalar_one()
+
+    succeeding_ticket_id = None
+    client_id = None
+    try:
+        async with AsyncSessionLocal() as setup_session:
+            account_manager = await _get_account_manager(setup_session)
+            client = Client(
+                client_id=uuid.uuid4(),
+                name="Rollback Test Client",
+                inbox_email=f"rollback-test-{uuid.uuid4().hex[:8]}@example.com",
+                account_manager_id=account_manager.user_id,
+                is_active=True,
+            )
+            setup_session.add(client)
+            await setup_session.commit()
+            client_id = client.client_id
+
+        # A creation attempt that never commits — e.g. a later failure
+        # elsewhere in the same request would take this same path.
+        # Read the counter's pre-attempt value on the SAME connection,
+        # right before the attempt, rather than opening a separate one
+        # just to read it.
+        async with AsyncSessionLocal() as failing_session:
+            next_number_before = await _read_next_number(failing_session)
+            repository = TicketRepository(failing_session)
+            failed_ticket = await repository.create(
+                TicketCreate(
+                    client_company_id=client_id,
+                    title="Should never persist",
+                    ticket_type="AR",
+                    current_priority=TicketPriority.MEDIUM,
+                )
+            )
+            assert failed_ticket.ticket_number == next_number_before
+            await failing_session.rollback()
+
+        # One fresh connection proves both halves: the rollback really
+        # reverted the counter, AND the next successful attempt reclaims
+        # that same number rather than skipping past it.
+        async with AsyncSessionLocal() as verify_session:
+            next_number_after_rollback = await _read_next_number(verify_session)
+            assert next_number_after_rollback == next_number_before, (
+                "A rolled-back ticket creation must not advance the counter — "
+                f"expected {next_number_before}, got {next_number_after_rollback}"
+            )
+
+            repository = TicketRepository(verify_session)
+            succeeding_ticket = await repository.create(
+                TicketCreate(
+                    client_company_id=client_id,
+                    title="Should persist with the reclaimed number",
+                    ticket_type="AR",
+                    current_priority=TicketPriority.MEDIUM,
+                )
+            )
+            succeeding_ticket_id = succeeding_ticket.ticket_id
+            await verify_session.commit()
+            assert succeeding_ticket.ticket_number == next_number_before
+    finally:
+        async with AsyncSessionLocal() as cleanup_session:
+            if succeeding_ticket_id is not None:
+                await cleanup_session.execute(
+                    delete(Ticket).where(Ticket.ticket_id == succeeding_ticket_id)
+                )
+            if client_id is not None:
+                await cleanup_session.execute(delete(Client).where(Client.client_id == client_id))
+            await cleanup_session.commit()
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------
@@ -287,7 +413,19 @@ async def test_title_search_is_unaffected_by_tkt_support(db_session):
     assert matched_ids == {ticket.ticket_id}
 
 
-async def test_tkt_reference_maps_to_exactly_one_ticket(db_session):
+async def test_tkt_reference_finds_the_right_ticket_among_matches(db_session):
+    """
+    Searching by ticket_a's number must always surface ticket_a, and
+    never ticket_b (a different freshly-created ticket with a
+    different number). This deliberately no longer asserts "exactly
+    one result": since "current" and "legacy" tickets are independently
+    numbered and may legitimately share an integer (see
+    uq_tickets_ticket_number_series), a TKT-<n> search can legitimately
+    return two rows — one per series — if a legacy ticket happens to
+    hold the same number as a current one. What must never happen is
+    the search missing the right ticket or returning the wrong one.
+    """
+
     account_manager = await _get_account_manager(db_session)
     _client_a, ticket_a = await _make_ticket(db_session, account_manager_id=account_manager.user_id)
     _client_b, ticket_b = await _make_ticket(db_session, account_manager_id=account_manager.user_id)
@@ -301,9 +439,9 @@ async def test_tkt_reference_maps_to_exactly_one_ticket(db_session):
         search=f"TKT-{ticket_a.ticket_number}",
     )
 
-    assert len(page.items) == 1
-    assert page.items[0][0].ticket_id == ticket_a.ticket_id
-    assert page.items[0][0].ticket_id != ticket_b.ticket_id
+    matched_ids = {row[0].ticket_id for row in page.items}
+    assert ticket_a.ticket_id in matched_ids
+    assert ticket_b.ticket_id not in matched_ids
 
 
 # ---------------------------------------------------------------
@@ -318,16 +456,25 @@ async def test_tkt_reference_maps_to_exactly_one_ticket(db_session):
 # ---------------------------------------------------------------
 
 
-async def test_no_duplicate_ticket_numbers_in_database(db_session):
+async def test_no_duplicate_ticket_numbers_within_a_series(db_session):
+    """
+    Uniqueness is now scoped per ticket_number_series
+    (uq_tickets_ticket_number_series), not table-wide — the same
+    integer legitimately existing once in 'legacy' and once in
+    'current' is expected and fine; two rows sharing BOTH the same
+    number AND the same series is not, and would mean the DB
+    constraint itself is missing/broken.
+    """
+
     dupes = (
         await db_session.execute(
             text(
-                "SELECT ticket_number, count(*) c FROM tickets "
-                "GROUP BY ticket_number HAVING count(*) > 1"
+                "SELECT ticket_number, ticket_number_series, count(*) c FROM tickets "
+                "GROUP BY ticket_number, ticket_number_series HAVING count(*) > 1"
             )
         )
     ).all()
-    assert dupes == [], f"Duplicate ticket_number values found: {dupes}"
+    assert dupes == [], f"Duplicate (ticket_number, ticket_number_series) values found: {dupes}"
 
 
 async def test_no_missing_or_malformed_ticket_numbers_in_database(db_session):
@@ -352,13 +499,19 @@ async def test_no_missing_or_malformed_ticket_numbers_in_database(db_session):
 
 async def test_every_existing_ticket_number_rank_matches_creation_order(db_session):
     """
-    The real "audit the entire existing dataset" check: every ticket's
-    rank by ticket_number must equal its rank by (created_at ASC,
-    ticket_id ASC) — the exact ordering 277b41c65b53's own backfill
-    used. This is the invariant that actually matters (not "zero gaps
-    in 1..N", which legitimate ticket deletion breaks on purpose — see
-    the next test) and holds regardless of how many tickets have been
-    created and later deleted in this shared dev database.
+    The real "audit the entire existing dataset" check: WITHIN EACH
+    numbering series, every ticket's rank by ticket_number must equal
+    its rank by (created_at ASC, ticket_id ASC) — the exact ordering
+    277b41c65b53's own backfill used for 'legacy', and the order
+    TicketNumberCounter's allocation naturally produces for 'current'.
+    This is deliberately scoped per series (PARTITION BY
+    ticket_number_series) rather than table-wide: 'current' tickets
+    restart at 1 independently of 'legacy', so a whole-table rank
+    comparison would (correctly) fail the moment any 'current' ticket
+    exists. Not "zero gaps in 1..N" (legitimate ticket deletion breaks
+    that on purpose — see the next test) — holds regardless of how
+    many tickets have been created and later deleted in this shared
+    dev database.
     """
 
     mismatches = (
@@ -366,16 +519,20 @@ async def test_every_existing_ticket_number_rank_matches_creation_order(db_sessi
             text(
                 """
                 WITH by_number AS (
-                    SELECT ticket_id, ticket_number,
-                           ROW_NUMBER() OVER (ORDER BY ticket_number ASC) AS rank_by_number
+                    SELECT ticket_id, ticket_number, ticket_number_series,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ticket_number_series ORDER BY ticket_number ASC
+                           ) AS rank_by_number
                     FROM tickets
                 ),
                 by_creation AS (
                     SELECT ticket_id,
-                           ROW_NUMBER() OVER (ORDER BY created_at ASC, ticket_id ASC) AS rank_by_creation
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ticket_number_series ORDER BY created_at ASC, ticket_id ASC
+                           ) AS rank_by_creation
                     FROM tickets
                 )
-                SELECT bn.ticket_id, bn.ticket_number
+                SELECT bn.ticket_id, bn.ticket_number, bn.ticket_number_series
                 FROM by_number bn
                 JOIN by_creation bc ON bn.ticket_id = bc.ticket_id
                 WHERE bn.rank_by_number != bc.rank_by_creation
@@ -388,13 +545,14 @@ async def test_every_existing_ticket_number_rank_matches_creation_order(db_sessi
 
 async def test_deleted_ticket_numbers_are_never_reused(db_session):
     """
-    Part 12's explicit rule: once allocated, a ticket_number is
-    permanently consumed, even if that ticket is later deleted. Proven
-    directly: create a ticket, delete it, create another, and confirm
-    the sequence never rewinds to hand out the deleted ticket's number
-    again — matching this Postgres SEQUENCE's own by-construction
-    behavior (nextval() never rewinds), not something the application
-    layer has to separately enforce.
+    Part 12's explicit rule: once allocated (and committed), a
+    ticket_number is permanently consumed, even if that ticket is later
+    deleted. Proven directly: create a ticket, delete it, create
+    another, and confirm TicketNumberCounter's 'current' row never
+    rewinds to hand out the deleted ticket's number again — deletion
+    never touches the counter at all, so this falls out of the
+    allocation mechanism by construction, not something the
+    application layer has to separately enforce.
     """
 
     account_manager = await _get_account_manager(db_session)
@@ -515,3 +673,141 @@ async def test_identical_created_at_ties_break_deterministically_by_ticket_id(db
         "Tie-break for identical created_at values must order by ticket_id ASC, "
         f"expected {expected_order}, got {actual_order}"
     )
+
+
+# ---------------------------------------------------------------
+# The dual-series schema itself: the counter table exists and is
+# seeded correctly, and the composite unique constraint enforces
+# exactly the intended rule (forbidden within a series, legal across
+# series) — not just "the app happens to behave this way today."
+# ---------------------------------------------------------------
+
+
+async def test_current_series_counter_row_exists_and_is_seeded(db_session):
+    counter = (
+        await db_session.execute(
+            select(TicketNumberCounter).where(
+                TicketNumberCounter.series == TICKET_NUMBER_SERIES_CURRENT
+            )
+        )
+    ).scalar_one()
+    assert counter.next_number >= 1
+
+
+async def test_duplicate_ticket_number_within_same_series_is_rejected_by_the_db(db_session):
+    """
+    The composite constraint (ticket_number, ticket_number_series) must
+    still reject two rows sharing BOTH values — exactly as strict as
+    the single-column constraint it replaced, just scoped narrower.
+    """
+
+    account_manager = await _get_account_manager(db_session)
+    client = Client(
+        client_id=uuid.uuid4(),
+        name="Duplicate-Within-Series Test Client",
+        inbox_email=f"dup-within-series-{uuid.uuid4().hex[:8]}@example.com",
+        account_manager_id=account_manager.user_id,
+        is_active=True,
+    )
+    db_session.add(client)
+    await db_session.flush()
+
+    colliding_number = (
+        await db_session.execute(
+            select(TicketNumberCounter.next_number).where(
+                TicketNumberCounter.series == TICKET_NUMBER_SERIES_CURRENT
+            )
+        )
+    ).scalar_one()
+
+    db_session.add(
+        Ticket(
+            ticket_id=uuid.uuid4(),
+            client_company_id=client.client_id,
+            title="First current-series ticket at this number",
+            ticket_type="AR",
+            current_priority=TicketPriority.MEDIUM,
+            ticket_number=colliding_number,
+            ticket_number_series=TICKET_NUMBER_SERIES_CURRENT,
+        )
+    )
+    await db_session.flush()
+
+    db_session.add(
+        Ticket(
+            ticket_id=uuid.uuid4(),
+            client_company_id=client.client_id,
+            title="Second current-series ticket at the SAME number",
+            ticket_type="AR",
+            current_priority=TicketPriority.MEDIUM,
+            ticket_number=colliding_number,
+            ticket_number_series=TICKET_NUMBER_SERIES_CURRENT,
+        )
+    )
+    with pytest.raises(Exception):
+        await db_session.flush()
+
+
+async def test_current_ticket_can_legitimately_share_a_number_with_a_legacy_ticket(db_session):
+    """
+    The whole point of the dual-series design: a 'current' ticket and a
+    'legacy' ticket ARE allowed to hold the identical integer, since
+    uniqueness is scoped per series. Proven by directly constructing a
+    synthetic 'legacy' row at whatever number the 'current' counter is
+    about to hand out next, then creating a real ticket through the
+    normal repository path — both must persist without a
+    UniqueViolation, and the per-series duplicate check must not flag
+    them.
+    """
+
+    account_manager = await _get_account_manager(db_session)
+    client = Client(
+        client_id=uuid.uuid4(),
+        name="Cross-Series Collision Test Client",
+        inbox_email=f"cross-series-{uuid.uuid4().hex[:8]}@example.com",
+        account_manager_id=account_manager.user_id,
+        is_active=True,
+    )
+    db_session.add(client)
+    await db_session.flush()
+
+    next_current_number = (
+        await db_session.execute(
+            select(TicketNumberCounter.next_number).where(
+                TicketNumberCounter.series == TICKET_NUMBER_SERIES_CURRENT
+            )
+        )
+    ).scalar_one()
+
+    legacy_ticket = Ticket(
+        ticket_id=uuid.uuid4(),
+        client_company_id=client.client_id,
+        title="Synthetic legacy ticket at the next current-series number",
+        ticket_type="AR",
+        current_priority=TicketPriority.MEDIUM,
+        ticket_number=next_current_number,
+        ticket_number_series=TICKET_NUMBER_SERIES_LEGACY,
+    )
+    db_session.add(legacy_ticket)
+    await db_session.flush()
+
+    _client_current, current_ticket = await _make_ticket(
+        db_session, account_manager_id=account_manager.user_id
+    )
+
+    assert current_ticket.ticket_number == next_current_number
+    assert current_ticket.ticket_number_series == TICKET_NUMBER_SERIES_CURRENT
+    assert legacy_ticket.ticket_number == current_ticket.ticket_number
+    assert legacy_ticket.ticket_number_series != current_ticket.ticket_number_series
+
+    dupes = (
+        await db_session.execute(
+            text(
+                "SELECT ticket_number, ticket_number_series, count(*) c FROM tickets "
+                "WHERE ticket_number = :n "
+                "GROUP BY ticket_number, ticket_number_series HAVING count(*) > 1"
+            ),
+            {"n": next_current_number},
+        )
+    ).all()
+    assert dupes == []

@@ -65,6 +65,7 @@ OWNED_TABLES = {
     "ticket_escalations",
     "escalation_handling_slas",
     "rules",
+    "ticket_number_counters",
 }
 
 

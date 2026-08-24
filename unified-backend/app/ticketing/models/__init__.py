@@ -4,6 +4,7 @@ from .client import Client
 from .client_assignment import ClientAssignment
 from .client_contact import ClientContact
 from .ticket import Ticket
+from .ticket_number_counter import TicketNumberCounter
 from .interaction import Interaction
 from .attachment import Attachment
 from .audit_log import AuditLog
@@ -26,6 +27,7 @@ __all__ = [
     "ClientAssignment",
     "ClientContact",
     "Ticket",
+    "TicketNumberCounter",
     "Interaction",
     "Attachment",
     "AuditLog",
