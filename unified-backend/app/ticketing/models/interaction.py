@@ -187,6 +187,23 @@ class Interaction(Base):
         index=True,
     )
 
+    # Set only when this row was written during an active "Login as
+    # User" impersonation session — the real, physically-authenticated
+    # Super Admin, distinct from performed_by above, which continues to
+    # mean whoever's identity/permissions actually governed the request.
+    # NULL for every ordinary, non-impersonated row. Mirrors
+    # AuditLog.impersonator_id/impersonator_name.
+    impersonator_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id"),
+        nullable=True,
+    )
+
+    impersonator_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
     # Self-referencing thread link: a reply or a follow-up email
     # points at the root interaction of its conversation. NULL means
     # "this interaction is itself a thread root" (or doesn't belong
