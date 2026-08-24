@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from shared_models.models import User
 
+from app.core.impersonation_context import get_impersonator
 from app.core.request_timing import timed_stage
 from app.ticketing.enums import EscalationStatus, InteractionDirection, InteractionStatus, TicketPriority
 from app.ticketing.models.client import Client
@@ -45,6 +46,15 @@ class InteractionRepository:
     ) -> Interaction:
 
         interaction = Interaction(**data.model_dump())
+
+        # If the request that triggered this write is an impersonated
+        # session, stamp the real actor here — `performed_by` above
+        # stays whoever the caller already resolved (the target/
+        # effective performer, unchanged business meaning); this is
+        # purely additional. See app/core/impersonation_context.py.
+        impersonator = get_impersonator()
+        if impersonator is not None:
+            interaction.impersonator_id, interaction.impersonator_name = impersonator
 
         self.db.add(interaction)
 

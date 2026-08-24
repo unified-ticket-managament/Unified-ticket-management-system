@@ -71,6 +71,31 @@ class Interaction(Base):
         index=True,
     )
 
+    # Set only when this row was written during an active "Login as
+    # User" impersonation session (app/core/impersonation_context.py,
+    # InteractionRepository.create) — the real, physically-
+    # authenticated Super Admin, distinct from `performed_by` above,
+    # which continues to mean whoever's identity actually performed
+    # the action (the target — unchanged business meaning; this is
+    # deliberately the same convention as ticket_audit_logs'
+    # actor_id/impersonator_id split, see root CLAUDE.md's
+    # impersonation section). Denormalized at write time (name, not
+    # just id) rather than resolved via the same `names_by_id` batch
+    # lookup `performed_by_name` uses, so every existing read path
+    # that already builds an InteractionResponse from these columns
+    # picks it up for free with no additional query. NULL for every
+    # ordinary, non-impersonated row.
+    impersonator_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id"),
+        nullable=True,
+    )
+
+    impersonator_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
     payload: Mapped[dict] = mapped_column(
         JSONB,
         default=dict,
@@ -185,23 +210,6 @@ class Interaction(Base):
         ForeignKey("categories.category_id"),
         nullable=True,
         index=True,
-    )
-
-    # Set only when this row was written during an active "Login as
-    # User" impersonation session — the real, physically-authenticated
-    # Super Admin, distinct from performed_by above, which continues to
-    # mean whoever's identity/permissions actually governed the request.
-    # NULL for every ordinary, non-impersonated row. Mirrors
-    # AuditLog.impersonator_id/impersonator_name.
-    impersonator_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("users.user_id"),
-        nullable=True,
-    )
-
-    impersonator_name: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
     )
 
     # Self-referencing thread link: a reply or a follow-up email

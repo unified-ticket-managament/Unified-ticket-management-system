@@ -129,6 +129,11 @@ export function TicketAuditLog({ refreshToken, flat = false }: TicketAuditLogPro
                 <p className="mt-1.5 text-[11px] text-muted">
                   By <span className="font-medium text-slate-700">{entry.actor_name}</span>
                   <span className="ml-1 text-muted">· {ACTOR_ROLE_LABEL[entry.actor_role]}</span>
+                  {entry.impersonator_name && (
+                    <span className="ml-1 text-warning">
+                      · Impersonated by {entry.impersonator_name} (Super Admin)
+                    </span>
+                  )}
                 </p>
 
                 {fields.length > 0 && (

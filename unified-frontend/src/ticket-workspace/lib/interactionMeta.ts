@@ -123,21 +123,37 @@ export function messageDirectionLabel(message: InteractionResponse): string {
   return MESSAGE_DIRECTION_LABELS[message.interaction_type] ?? message.direction;
 }
 
+// Appended wherever performed_by_name is shown as "who did this" —
+// see root CLAUDE.md's impersonation section for why performed_by/
+// performed_by_name themselves stay the target's identity (unchanged
+// business meaning) while this is the one place the real actor is
+// surfaced, whenever present. "Super Admin" is not resolved dynamically
+// here (no roles list is loaded in this module) — every account
+// currently holding user:impersonate is seeded as Super Admin only,
+// so this is accurate today; revisit if that default ever widens.
+function impersonatorSuffix(message: InteractionResponse): string {
+  return message.impersonator_name
+    ? ` (Impersonated by ${message.impersonator_name} — Super Admin)`
+    : "";
+}
+
 export function messageSender(message: InteractionResponse): string | null {
   const payload = message.payload ?? {};
   switch (message.interaction_type) {
     case "EMAIL":
       return (payload.client_name as string) ?? (payload.from_email as string) ?? "Client";
     case "REPLY":
-      return message.performed_by_name ?? "Agent";
+      return `${message.performed_by_name ?? "Agent"}${impersonatorSuffix(message)}`;
     case "INTERNAL_NOTE": {
       if (!message.performed_by_name) return null;
       const recipientNames = internalNoteRecipientNames(message);
       const to = recipientNames.length > 0 ? ` → ${recipientNames.join(", ")}` : "";
-      return `${message.performed_by_name} (internal note)${to}`;
+      return `${message.performed_by_name}${impersonatorSuffix(message)} (internal note)${to}`;
     }
     default:
-      return message.performed_by_name ?? null;
+      return message.performed_by_name
+        ? `${message.performed_by_name}${impersonatorSuffix(message)}`
+        : null;
   }
 }
 

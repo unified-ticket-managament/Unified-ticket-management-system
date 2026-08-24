@@ -624,6 +624,13 @@ export interface InteractionResponse {
   direction: InteractionDirection;
   performed_by: string | null;
   performed_by_name?: string | null;
+  // Set only when this row was written during an active "Login as
+  // User" impersonation session — the real, physically-authenticated
+  // Super Admin, distinct from performed_by/performed_by_name above
+  // (which stay whoever's identity actually performed the action).
+  // Undefined/null for every ordinary row.
+  impersonator_id?: string | null;
+  impersonator_name?: string | null;
   subject?: string | null;
   payload: Record<string, unknown>;
   is_visible: boolean;
@@ -860,6 +867,13 @@ export interface AuditLogResponse {
   actor_id: string | null;
   actor_name: string;
   actor_role: ActorRole;
+  // Set only when this row was written during an active "Login as
+  // User" impersonation session — the real, physically-authenticated
+  // Super Admin, distinct from actor_id/actor_name above (which stay
+  // whoever's identity actually governed the request). Undefined/null
+  // for every ordinary row.
+  impersonator_id?: string | null;
+  impersonator_name?: string | null;
   old_values: Record<string, unknown> | null;
   new_values: Record<string, unknown> | null;
   created_at: string;

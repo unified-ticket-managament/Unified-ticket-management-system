@@ -112,6 +112,8 @@ def synthesize_interaction_from_audit(
         direction=InteractionDirection.INTERNAL,
         performed_by=log.actor_id,
         performed_by_name=log.actor_name,
+        impersonator_id=log.impersonator_id,
+        impersonator_name=log.impersonator_name,
         subject=None,
         payload=_payload_for(log, interaction_type),
         is_visible=True,

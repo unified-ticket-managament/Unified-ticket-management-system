@@ -46,6 +46,14 @@ class InteractionResponse(ORMBase):
     direction: InteractionDirection
     performed_by: UUID | None
     performed_by_name: str | None = None
+    # Set only when this row was written during an active "Login as
+    # User" impersonation session — the real, physically-authenticated
+    # Super Admin, distinct from performed_by/performed_by_name above
+    # (which stay whoever's identity actually performed the action).
+    # None for every ordinary row — see root CLAUDE.md's impersonation
+    # section.
+    impersonator_id: UUID | None = None
+    impersonator_name: str | None = None
     subject: str | None = None
     payload: dict[str, Any]
     is_visible: bool
