@@ -1,3 +1,4 @@
+from typing import NamedTuple
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -9,24 +10,22 @@ from app.ticketing.repositories.mail_folder_repository import MailFolderReposito
 from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.schemas.mail_folder import MailFolderCreate, MailFolderResponse
 from app.ticketing.services.access_control import has_permission
-from app.ticketing.services.rule_access import RULE_VIEW_ALL_PERMISSION, can_view_rule
-from app.ticketing.services.rule_folder_sync import folder_names_from_actions
+from app.ticketing.services.rule_access import (
+    RULE_VIEW_ALL_PERMISSION,
+    can_view_rule,
+    folder_name_to_rules as _folder_name_to_rules,
+    has_folder_share_access,
+)
 
 
-def _folder_name_to_rules(all_rules: list[Rule]) -> dict[str, list[Rule]]:
-    """
-    Every rule in the system (not just ones the current viewer can
-    see — a folder's visibility must be checked against whichever
-    rule *actually* references it, regardless of who's asking),
-    grouped by the folder name(s) its create_folder/move_to_folder
-    actions target.
-    """
-
-    mapping: dict[str, list[Rule]] = {}
-    for rule in all_rules:
-        for name in folder_names_from_actions(rule.actions):
-            mapping.setdefault(name, []).append(rule)
-    return mapping
+class FolderAccess(NamedTuple):
+    visible: bool
+    # True only when `visible` is granted via a shared rule's
+    # can_view_rule access (has_folder_share_access) rather than the
+    # viewer's own created_by fallback or rule:view_all — callers
+    # (InboxService) use this to decide whether to widen message-level
+    # visibility too, never the reverse.
+    via_sharing: bool
 
 
 def _is_folder_visible(
@@ -94,19 +93,41 @@ class MailFolderService:
             ]
         return [MailFolderResponse.model_validate(folder) for folder in folders]
 
+    async def resolve_folder_access(
+        self,
+        folder: MailFolder,
+        current_user: User,
+        rule_repository: RuleRepository,
+    ) -> FolderAccess:
+        """
+        Single-query-set answer to both "can this viewer see this
+        folder at all" and "did that access come from a sharing
+        grant" — the latter is what InboxService uses to decide
+        whether to widen message-level visibility for this one
+        folder_id (see that service's own bypass_ownership_scope
+        param). rule:view_all grants folder visibility unconditionally
+        but is never itself a "sharing" grant in the narrower sense
+        this method's `via_sharing` distinguishes.
+        """
+
+        if has_permission(current_user, RULE_VIEW_ALL_PERMISSION):
+            return FolderAccess(visible=True, via_sharing=False)
+
+        all_rules = await rule_repository.list_all()
+        name_to_rules = _folder_name_to_rules(all_rules)
+
+        via_sharing = has_folder_share_access(folder.name, current_user, name_to_rules)
+        visible = via_sharing or _is_folder_visible(folder, current_user, name_to_rules)
+        return FolderAccess(visible=visible, via_sharing=via_sharing)
+
     async def ensure_visible(
         self,
         folder: MailFolder,
         current_user: User,
         rule_repository: RuleRepository,
     ) -> None:
-        if has_permission(current_user, RULE_VIEW_ALL_PERMISSION):
-            return
-
-        all_rules = await rule_repository.list_all()
-        name_to_rules = _folder_name_to_rules(all_rules)
-
-        if _is_folder_visible(folder, current_user, name_to_rules):
+        access = await self.resolve_folder_access(folder, current_user, rule_repository)
+        if access.visible:
             return
 
         raise HTTPException(

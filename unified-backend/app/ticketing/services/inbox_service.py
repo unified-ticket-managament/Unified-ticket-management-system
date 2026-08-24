@@ -89,7 +89,11 @@ class InboxService:
         self.sla_service = sla_service
 
     async def _resolve_scope(
-        self, current_user: User, *, assigned_to_me: bool = False
+        self,
+        current_user: User,
+        *,
+        assigned_to_me: bool = False,
+        bypass_ownership_scope: bool = False,
     ) -> tuple[UUID | None, list[str] | None, UUID | None, list[UUID] | None, list[UUID] | None]:
         """
         Resolves the same role-based scoping tuple
@@ -97,6 +101,25 @@ class InboxService:
         extra_ticket_ids, category_ids) `get_inbox` and
         `get_folder_counts` both need, so the two can never drift into
         applying different visibility rules for the same user.
+
+        `bypass_ownership_scope`: set only by `get_inbox` when the
+        caller has already confirmed (via MailFolderService.
+        resolve_folder_access's `via_sharing`) that the requested
+        `folder_id` was genuinely shared with this viewer through a
+        rule's shared_user_ids — never set from any other code path.
+        When true, every role branch below is skipped entirely (all
+        five scope variables stay None, the same shape Site Lead/
+        Super Admin already get), so the query's only remaining
+        restriction is the caller's own `Interaction.folder_id ==
+        folder_id` clause — this is what lets a shared folder's
+        contents actually show up regardless of whether the viewer
+        would otherwise own the underlying client/category/ticket.
+        `assigned_to_me` is still applied afterward, unaffected by
+        this flag, so "My Claims within a shared folder" keeps
+        composing correctly. This never affects a request with no
+        folder_id at all, and never widens any filter besides the
+        ownership scope itself (client_id/search/category_filter/
+        priority_filter/pagination are all separate, untouched knobs).
 
         `category_ids` (new) is the CATEGORY-mailbox counterpart to
         `account_manager_id`'s client-ownership scoping: for an
@@ -127,7 +150,13 @@ class InboxService:
         extra_ticket_ids: list[UUID] | None = None
         category_ids: list[UUID] | None = None
 
-        if role_name in GLOBAL_INBOX_ROLE_NAMES:
+        if bypass_ownership_scope:
+            # A confirmed folder-sharing grant for this one request —
+            # every variable stays at its unrestricted None default,
+            # same shape as GLOBAL_INBOX_ROLE_NAMES below. See this
+            # method's own docstring for why this is safe.
+            pass
+        elif role_name in GLOBAL_INBOX_ROLE_NAMES:
             # No filter at all when they've asked to see everything;
             # otherwise `client_id` (if provided) is the only
             # narrowing already applied below.
@@ -206,9 +235,17 @@ class InboxService:
         category_filter: str | None = None,
         priority_filter: TicketPriority | None = None,
         assigned_to_me: bool = False,
+        bypass_ownership_scope: bool = False,
     ) -> InboxResponse:
         """
         Returns the role-scoped inbox for the current user.
+
+        `bypass_ownership_scope` — see `_resolve_scope`'s own
+        docstring. Only ever set by the `GET /inbox` route itself,
+        after independently confirming via `MailFolderService.
+        resolve_folder_access` that `folder_id` was actually shared
+        with this viewer — never derived from anything the client
+        sends directly.
 
         `scope`/`view="all"` only ever widens anything for Site Lead/
         Super Admin (the global-inbox roles) — for every other role
@@ -262,7 +299,11 @@ class InboxService:
                 ) from exc
 
         account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids, category_ids = (
-            await self._resolve_scope(current_user, assigned_to_me=assigned_to_me)
+            await self._resolve_scope(
+                current_user,
+                assigned_to_me=assigned_to_me,
+                bypass_ownership_scope=bypass_ownership_scope,
+            )
         )
 
         interactions, total = await self.interaction_repository.list_inbox(
@@ -515,6 +556,7 @@ class InboxService:
         self,
         current_user: User,
         client_id: UUID | None = None,
+        shared_folder_ids: set[UUID] | None = None,
     ) -> dict[UUID, int]:
         """
         One grouped-COUNT query for every custom folder's badge count,
@@ -523,6 +565,18 @@ class InboxService:
         `.total`, which used to mean N full list-and-serialize round
         trips (each re-running the thread-summary/claimer-name/ticket
         lookups) purely to display a number.
+
+        `shared_folder_ids` — every folder_id the caller has already
+        confirmed (via MailFolderService.resolve_folder_access's
+        `via_sharing`) was genuinely shared with this viewer. Unlike
+        `get_inbox`'s single `bypass_ownership_scope` boolean (which
+        only ever concerns one folder_id per call), this endpoint
+        returns every folder's count in one response — some shared,
+        some not, for the same viewer — so it needs a per-folder-id
+        set rather than an all-or-nothing flag. See
+        InteractionRepository.count_by_folder's own docstring for how
+        this is applied as a second, unscoped query merged with the
+        first, rather than a single OR'd WHERE clause.
         """
 
         account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids, category_ids = (
@@ -536,6 +590,7 @@ class InboxService:
             assigned_agent_id=assigned_agent_id,
             extra_ticket_ids=extra_ticket_ids,
             account_manager_category_ids=category_ids,
+            shared_folder_ids=shared_folder_ids,
         )
 
     async def get_view_counts(

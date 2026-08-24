@@ -653,6 +653,7 @@ class InteractionRepository:
         assigned_agent_id: UUID | None = None,
         extra_ticket_ids: list[UUID] | None = None,
         account_manager_category_ids: list[UUID] | None = None,
+        shared_folder_ids: set[UUID] | None = None,
     ) -> dict[UUID, int]:
         """
         One grouped COUNT per custom folder, under the exact same
@@ -660,8 +661,51 @@ class InteractionRepository:
         the Mail sidebar's per-folder badges without the N full
         list-and-serialize round trips (one per folder) that used to
         require.
+
+        `shared_folder_ids`, when given, are folder_ids the viewer has
+        genuine sharing access to (see InboxService.get_folder_counts'
+        own docstring) — counted with NO ownership scoping at all,
+        merged in Python with the normally-scoped count for every
+        other folder. Deliberately two separate queries, not one
+        query with an OR'd WHERE: this method conditionally INNER
+        JOINs `tickets` for Team Lead/Staff scoping, and that JOIN
+        would silently drop a pre-ticket row (`ticket_id IS NULL`)
+        before any WHERE/OR clause is even evaluated — a plain OR
+        added to the same joined query would still lose exactly the
+        rows this bypass exists to surface. Costs nothing extra when
+        `shared_folder_ids` is empty/None (the common case for a
+        viewer with no shared folders) — the second query is simply
+        skipped.
         """
 
+        scoped_counts = await self._count_by_folder_scoped(
+            account_manager_id=account_manager_id,
+            client_id=client_id,
+            ticket_types=ticket_types,
+            assigned_agent_id=assigned_agent_id,
+            extra_ticket_ids=extra_ticket_ids,
+            account_manager_category_ids=account_manager_category_ids,
+            exclude_folder_ids=shared_folder_ids,
+        )
+        if not shared_folder_ids:
+            return scoped_counts
+
+        unrestricted_counts = await self._count_by_folder_unrestricted(
+            folder_ids=shared_folder_ids, client_id=client_id
+        )
+        scoped_counts.update(unrestricted_counts)
+        return scoped_counts
+
+    async def _count_by_folder_scoped(
+        self,
+        account_manager_id: UUID | None = None,
+        client_id: UUID | None = None,
+        ticket_types: list[str] | None = None,
+        assigned_agent_id: UUID | None = None,
+        extra_ticket_ids: list[UUID] | None = None,
+        account_manager_category_ids: list[UUID] | None = None,
+        exclude_folder_ids: set[UUID] | None = None,
+    ) -> dict[UUID, int]:
         query = select(Interaction.folder_id, func.count(Interaction.interaction_id))
 
         if account_manager_id is not None or client_id is not None:
@@ -701,7 +745,43 @@ class InteractionRepository:
             Interaction.interaction_type == "EMAIL",
             Interaction.parent_interaction_id.is_(None),
             Interaction.folder_id.isnot(None),
-        ).group_by(Interaction.folder_id)
+        )
+
+        if exclude_folder_ids:
+            query = query.where(Interaction.folder_id.notin_(exclude_folder_ids))
+
+        query = query.group_by(Interaction.folder_id)
+
+        result = await self.db.execute(query)
+
+        return {folder_id: count for folder_id, count in result.all()}
+
+    async def _count_by_folder_unrestricted(
+        self,
+        folder_ids: set[UUID],
+        client_id: UUID | None = None,
+    ) -> dict[UUID, int]:
+        """
+        Counts every visible EMAIL-root interaction in `folder_ids`
+        with no ownership scoping at all (no Client/Ticket join,
+        hence no risk of dropping a pre-ticket row) — only for folders
+        already confirmed shared with the viewer. `client_id`, when
+        given, is kept as an explicit narrowing filter (the same
+        "further narrows to one client" role it plays everywhere
+        else), never treated as ownership scoping.
+        """
+
+        query = select(Interaction.folder_id, func.count(Interaction.interaction_id)).where(
+            Interaction.folder_id.in_(folder_ids),
+            Interaction.is_visible.is_(True),
+            Interaction.interaction_type == "EMAIL",
+            Interaction.parent_interaction_id.is_(None),
+        )
+
+        if client_id is not None:
+            query = query.where(Interaction.client_id == client_id)
+
+        query = query.group_by(Interaction.folder_id)
 
         result = await self.db.execute(query)
 
@@ -1362,6 +1442,25 @@ class InteractionRepository:
         await self.db.refresh(interaction)
 
         return interaction
+
+    async def has_any_interaction_in_folder(self, folder_id: UUID) -> bool:
+        """
+        Unconditional existence check (no role/visibility scoping — this
+        is an internal data-integrity guard, not a user-facing query).
+        The one caller is RuleService.delete's folder-cleanup step:
+        MailFolder has no ON DELETE CASCADE from interactions.folder_id
+        (interactions_folder_id_fkey), so deleting a folder real
+        messages are still filed under would otherwise raise an
+        unhandled ForeignKeyViolationError and crash the whole
+        rule-delete request with a 500.
+        """
+
+        result = await self.db.execute(
+            select(Interaction.interaction_id)
+            .where(Interaction.folder_id == folder_id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
 
     async def hide(
         self,

@@ -156,6 +156,13 @@ class RuleEngineService:
                 mail_folder_repository=self.mail_folder_repository,
             )
             await self.interaction_repository.set_folder(interaction, folder.folder_id)
+            logger.info(
+                "RULE_FOLDER_FILED rule_id=%s interaction_id=%s folder_id=%s folder_name=%r",
+                rule.rule_id,
+                interaction.interaction_id,
+                folder.folder_id,
+                action.folder_name,
+            )
 
         elif action.type == RuleActionType.FORWARD_TO:
             employee_ids: set[UUID] = set(action.employee_user_ids or [])
@@ -231,6 +238,13 @@ class RuleEngineService:
         mail_provider = get_mail_provider_client(settings)
         message_domain = mailbox_address.split("@", 1)[-1] or "probeps.com"
 
+        # Only recipients whose real send actually succeeded are
+        # notified below — the previous version notified everyone in
+        # emails_by_id unconditionally, so a recipient whose send
+        # failed (RULE_FORWARD_FAILED) could still get an in-app
+        # notification falsely implying it worked.
+        succeeded_user_ids: set[UUID] = set()
+
         for user_id, recipient_email in emails_by_id.items():
             envelope = OutboundEnvelope(
                 from_email=mailbox_address,
@@ -241,6 +255,7 @@ class RuleEngineService:
             )
             try:
                 await mail_provider.send_email(envelope)
+                succeeded_user_ids.add(user_id)
                 logger.info(
                     "RULE_FORWARD_SENT category=%s user_id=%s to=%s subject=%r",
                     rule_category,
@@ -256,6 +271,9 @@ class RuleEngineService:
                     recipient_email,
                     forward_subject,
                 )
+
+        if not succeeded_user_ids:
+            return
 
         # The full forwarded text (same content the real email above
         # carries, headers included) — not a truncated snippet.
@@ -273,10 +291,24 @@ class RuleEngineService:
             title = f"Mail forwarded: {subject}"
 
         await self.notification_service.notify(
-            set(emails_by_id.keys()),
+            succeeded_user_ids,
             notification_type,
             title=title,
             message=forward_body,
+            # Mirrors email_service.py's own MAIL_RECEIVED notify()
+            # call — the one other existing site in this codebase that
+            # already sets these three. A recipient who doesn't own
+            # this interaction (the common case — that's Bug 1's own
+            # premise) will 404 following this link directly; the
+            # frontend's synthetic Inbox-row adapter for this
+            # notification type never navigates via related_entity_id,
+            # only the generic topbar bell's raw link does, so this is
+            # still strictly additive — never a regression for anyone
+            # who genuinely does own it (the original owner, a
+            # supervisor).
+            link=f"/inbox?interaction_id={interaction.interaction_id}",
+            related_entity_type="interaction",
+            related_entity_id=interaction.interaction_id,
         )
 
 

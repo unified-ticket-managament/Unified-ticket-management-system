@@ -161,6 +161,13 @@ function draftItemToInboxItem(item: DraftItem): InboxItem {
 // of GET /inbox/{id}, which has no row to return for it.
 const OTP_FORWARD_ID_PREFIX = "otp-forward:";
 
+// Same reasoning as OTP_FORWARD_ID_PREFIX — a Mail Rule's own
+// "Forward To" action (RuleEngineService._forward_to_employees, the
+// literal same function OTP_FORWARDED comes from) has no real
+// Interaction backing it either, just a NotificationType.
+// MAIL_RULE_FORWARDED row.
+const MAIL_RULE_FORWARD_ID_PREFIX = "mail-rule-forward:";
+
 // Adapts an OTP-forward Notification (already private to exactly the
 // employee(s) an OTP Rule's "Forward To" action targeted — see
 // NotificationType.OTP_FORWARDED) into an InboxItem, so it renders
@@ -174,6 +181,41 @@ function otpNotificationToInboxItem(notification: NotificationItem): InboxItem {
     interaction_id: `${OTP_FORWARD_ID_PREFIX}${notification.notification_id}`,
     client_id: null,
     client_name: "OTP Forward",
+    from_email: null,
+    to_email: null,
+    subject: notification.title,
+    message_id: null,
+    received_at: notification.created_at,
+    status: "PENDING",
+    direction: "INBOUND",
+    ticket_id: null,
+    ticket_priority: null,
+    ticket_category: null,
+    has_attachments: false,
+    claimed_by: null,
+    claimed_by_name: null,
+    tags: [],
+    folder_id: null,
+    reply_count: 0,
+    latest_message: notification.message,
+    latest_sender: null,
+    latest_at: null,
+  };
+}
+
+// Adapts a Mail Rule's MAIL_RULE_FORWARDED Notification into an
+// InboxItem, the same way otpNotificationToInboxItem does for its
+// sibling OTP_FORWARDED type (produced by the identical backend
+// function, RuleEngineService._forward_to_employees) — merged into
+// the recipient's regular Inbox instead of left invisible, which was
+// the actual bug: this notification type existed and fired correctly
+// server-side the whole time, this frontend simply never fetched or
+// rendered it anywhere.
+function mailRuleForwardNotificationToInboxItem(notification: NotificationItem): InboxItem {
+  return {
+    interaction_id: `${MAIL_RULE_FORWARD_ID_PREFIX}${notification.notification_id}`,
+    client_id: null,
+    client_name: "Mail Rule Forward",
     from_email: null,
     to_email: null,
     subject: notification.title,
@@ -296,7 +338,8 @@ type LoadKey =
   | "system"
   | "mineTicketed"
   | "otpForwards"
-  | "mailForwards";
+  | "mailForwards"
+  | "mailRuleForwards";
 
 // Maps a view the agent is looking at to the underlying fetch(es) it
 // actually needs — "unassigned"/"mine" are client-derived slices of
@@ -315,7 +358,7 @@ type LoadKey =
 function baseKeysForView(view: MailViewKey): LoadKey[] {
   switch (view) {
     case "pending":
-      return ["pending", "replied", "ticketed", "otpForwards", "mailForwards"];
+      return ["pending", "replied", "ticketed", "otpForwards", "mailForwards", "mailRuleForwards"];
     case "unassigned":
       return ["pending"];
     case "mine":
@@ -395,6 +438,14 @@ export function useMailInbox() {
   // above). Unlike OTP forwards, no lookup-by-id is needed here since
   // each one's InboxItem already carries the real interaction_id.
   const [mailForwardNotifications, setMailForwardNotifications] = useState<NotificationItem[]>([]);
+  // MAIL_RULE_FORWARDED notifications — a Mail Rule's own "Forward
+  // To" action addressed to this user (see
+  // mailRuleForwardNotificationToInboxItem above). Kept as raw
+  // NotificationItems, same as otpForwardNotifications, since
+  // openThread needs to look one back up by id for a synthetic row.
+  const [mailRuleForwardNotifications, setMailRuleForwardNotifications] = useState<
+    NotificationItem[]
+  >([]);
   // The server's own filtered total per base tab (from GET /inbox's
   // `total`) — lets `hasMore` below tell "there's another batch to
   // load" apart from "this tab just happens to have exactly
@@ -750,6 +801,11 @@ export function useMailInbox() {
     setMailForwardNotifications(result.items);
   }, []);
 
+  const fetchMailRuleForwards = useCallback(async () => {
+    const result = await getNotifications({ types: ["MAIL_RULE_FORWARDED"], limit: 100 });
+    setMailRuleForwardNotifications(result.items);
+  }, []);
+
   const fetchKey = useCallback(
     (key: LoadKey) => {
       if (key === "sent") return fetchSent();
@@ -759,6 +815,7 @@ export function useMailInbox() {
       if (key === "mineTicketed") return fetchMyTicketedClaims();
       if (key === "otpForwards") return fetchOtpForwards();
       if (key === "mailForwards") return fetchMailForwards();
+      if (key === "mailRuleForwards") return fetchMailRuleForwards();
       return fetchBaseTab(key);
     },
     [
@@ -770,6 +827,7 @@ export function useMailInbox() {
       fetchMyTicketedClaims,
       fetchOtpForwards,
       fetchMailForwards,
+      fetchMailRuleForwards,
     ]
   );
 
@@ -1058,6 +1116,25 @@ export function useMailInbox() {
       return;
     }
 
+    // Same reasoning as the OTP_FORWARD_ID_PREFIX branch above — a
+    // Mail Rule forward's synthetic row has no real Interaction
+    // behind it either.
+    if (interactionId.startsWith(MAIL_RULE_FORWARD_ID_PREFIX)) {
+      const notificationId = interactionId.slice(MAIL_RULE_FORWARD_ID_PREFIX.length);
+      const notification = mailRuleForwardNotifications.find(
+        (n) => n.notification_id === notificationId
+      );
+      if (notification) {
+        setSelectedSystemNotification(notification);
+        setOpenedIds((prev) => {
+          const next = new Set(prev);
+          next.add(interactionId);
+          return next;
+        });
+      }
+      return;
+    }
+
     const requestId = ++openThreadRequestIdRef.current;
     setOpeningId(interactionId);
     const result = await runOpen(interactionId, markRead);
@@ -1279,6 +1356,13 @@ export function useMailInbox() {
     [mailForwardNotifications]
   );
 
+  // MAIL_RULE_FORWARDED notifications, adapted and merged the same
+  // way — see mailRuleForwardNotificationToInboxItem's own comment.
+  const mailRuleForwardItems = useMemo(
+    () => mailRuleForwardNotifications.map(mailRuleForwardNotificationToInboxItem),
+    [mailRuleForwardNotifications]
+  );
+
   const inboxAll = useMemo(
     () =>
       Array.from(
@@ -1289,10 +1373,18 @@ export function useMailInbox() {
             ...rowsByTab.ticketed,
             ...otpForwardItems,
             ...mailForwardItems,
+            ...mailRuleForwardItems,
           ].map((item) => [item.interaction_id, item])
         ).values()
       ).sort((a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime()),
-    [rowsByTab.pending, rowsByTab.replied, rowsByTab.ticketed, otpForwardItems, mailForwardItems]
+    [
+      rowsByTab.pending,
+      rowsByTab.replied,
+      rowsByTab.ticketed,
+      otpForwardItems,
+      mailForwardItems,
+      mailRuleForwardItems,
+    ]
   );
 
   const rowsByView: Record<MailViewKey, InboxItem[]> = {
@@ -1339,7 +1431,8 @@ export function useMailInbox() {
         tabTotals.replied +
         tabTotals.ticketed +
         otpForwardItems.length +
-        mailForwardItems.length,
+        mailForwardItems.length +
+        mailRuleForwardItems.length,
       unassigned: unassigned.length,
       mine: mine.length,
       sent: sentItems.length,
@@ -1361,6 +1454,7 @@ export function useMailInbox() {
       systemNotifications,
       otpForwardItems,
       mailForwardItems,
+      mailRuleForwardItems,
     ]
   );
 
@@ -1389,7 +1483,8 @@ export function useMailInbox() {
       key === "system" ||
       key === "mineTicketed" ||
       key === "otpForwards" ||
-      key === "mailForwards"
+      key === "mailForwards" ||
+      key === "mailRuleForwards"
     )
       return false;
     return rowsByTab[key].length < tabTotals[key];
@@ -1409,6 +1504,7 @@ export function useMailInbox() {
         key !== "mineTicketed" &&
         key !== "otpForwards" &&
         key !== "mailForwards" &&
+        key !== "mailRuleForwards" &&
         rowsByTab[key].length < tabTotals[key]
     );
     if (keys.length === 0) return;

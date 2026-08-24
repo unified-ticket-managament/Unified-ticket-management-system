@@ -57,6 +57,7 @@ from app.ticketing.services.attachment_service import AttachmentService, attachm
 from app.ticketing.utils.recipient_validation import ensure_recipients_are_valid
 from app.ticketing.services.inbox_service import InboxService
 from app.ticketing.services.mail_folder_service import MailFolderService
+from app.ticketing.services.rule_access import folder_name_to_rules, has_folder_share_access
 from app.ticketing.services.message_read_status_service import (
     MessageReadStatusService,
 )
@@ -165,12 +166,25 @@ async def get_inbox(
     into the query itself, so it searches the full filtered set.
     """
 
+    bypass_ownership_scope = False
     if folder_id is not None:
         # A folder now has the same ownership/sharing-driven visibility
         # as the rules that file mail into it (see MailFolderService) —
         # a guessed/leaked private folder_id must not be usable to
         # filter the inbox by it. Missing and not-visible are treated
         # identically (404) so existence isn't leaked either.
+        #
+        # `via_sharing` additionally decides whether the viewer's own
+        # role-based ownership scope (Account Manager's owned clients,
+        # Team Lead's category, Staff's assigned tickets) is bypassed
+        # for THIS folder_id only — a folder genuinely shared with this
+        # viewer (via a rule's shared_user_ids) must actually show what
+        # was filed into it, not just appear to exist while showing
+        # nothing (see InboxService._resolve_scope's own docstring).
+        # Never widens the viewer's own unscoped Inbox, and never
+        # bypasses anything for a folder they merely created themselves
+        # with no rule sharing it — resolve_folder_access already
+        # distinguishes those cases.
         folder_repository = MailFolderRepository(db)
         folder = await folder_repository.get_by_id(folder_id)
         if folder is None:
@@ -178,9 +192,15 @@ async def get_inbox(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Folder not found.",
             )
-        await MailFolderService(folder_repository).ensure_visible(
+        access = await MailFolderService(folder_repository).resolve_folder_access(
             folder, current_user, RuleRepository(db)
         )
+        if not access.visible:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Folder not found.",
+            )
+        bypass_ownership_scope = access.via_sharing
 
     repository = InteractionRepository(db)
     attachment_repository = AttachmentRepository(db)
@@ -210,6 +230,7 @@ async def get_inbox(
         category_filter=category,
         priority_filter=priority,
         assigned_to_me=assigned_to_me,
+        bypass_ownership_scope=bypass_ownership_scope,
     )
 
 
@@ -227,13 +248,35 @@ async def get_folder_counts(
     role scoping as GET /inbox — backs the Mail sidebar's per-folder
     badges without calling GET /inbox once per folder just to read
     `.total`.
+
+    Folders the viewer has genuine sharing access to (a rule filing
+    into them names the viewer in shared_user_ids — see
+    rule_access.has_folder_share_access) are counted with the same
+    ownership bypass GET /inbox applies for a single shared folder_id
+    — otherwise a shared folder would show a real folder in the
+    sidebar (GET /folders already grants that) but a misleading 0
+    count here, the exact bug this whole fix addresses.
     """
+
+    folder_repository = MailFolderRepository(db)
+    rule_repository = RuleRepository(db)
+
+    all_folders = await folder_repository.list_all()
+    all_rules = await rule_repository.list_all()
+    name_to_rules = folder_name_to_rules(all_rules)
+    shared_folder_ids = {
+        folder.folder_id
+        for folder in all_folders
+        if has_folder_share_access(folder.name, current_user, name_to_rules)
+    }
 
     repository = InteractionRepository(db)
 
     service = InboxService(repository)
 
-    return await service.get_folder_counts(current_user, client_id=client_id)
+    return await service.get_folder_counts(
+        current_user, client_id=client_id, shared_folder_ids=shared_folder_ids
+    )
 
 
 @router.get(

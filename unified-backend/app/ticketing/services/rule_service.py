@@ -1,9 +1,11 @@
+import logging
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from shared_models.models import User
 
 from app.ticketing.models.rule import Rule
+from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.schemas.rule import (
@@ -24,6 +26,8 @@ from app.ticketing.services.rule_folder_sync import (
 )
 
 RULE_MANAGE_PERMISSION = "rule:manage"
+
+logger = logging.getLogger(__name__)
 
 
 def _ensure_can_view(rule: Rule, current_user: User) -> None:
@@ -60,9 +64,11 @@ class RuleService:
         self,
         rule_repository: RuleRepository,
         mail_folder_repository: MailFolderRepository,
+        interaction_repository: InteractionRepository | None = None,
     ):
         self.rule_repository = rule_repository
         self.mail_folder_repository = mail_folder_repository
+        self.interaction_repository = interaction_repository
 
     async def list_all(self, current_user: User) -> list[RuleResponse]:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
@@ -187,8 +193,34 @@ class RuleService:
             # rule ever existing (or the ownership feature itself) —
             # never delete one of those here, no matter what named it;
             # only a folder this rule-management flow actually owns.
-            if folder is not None and folder.created_by is not None:
-                await self.mail_folder_repository.delete(folder)
+            if folder is None or folder.created_by is None:
+                continue
+
+            # A folder still has real Interaction rows filed into it
+            # (mail_folders has no ON DELETE CASCADE from
+            # interactions.folder_id) — deleting it would raise an
+            # unhandled ForeignKeyViolationError and crash this whole
+            # request with a 500. No other rule needs the folder
+            # anymore, but its actual messages are real data; leave
+            # the folder in place (now an ordinary, rule-less folder,
+            # still visible to its own creator) rather than losing
+            # them or crashing the delete.
+            if (
+                self.interaction_repository is not None
+                and await self.interaction_repository.has_any_interaction_in_folder(
+                    folder.folder_id
+                )
+            ):
+                logger.info(
+                    "Skipping delete of folder %r (%s) — still referenced by "
+                    "real interactions after rule %s was deleted.",
+                    folder.name,
+                    folder.folder_id,
+                    rule_id,
+                )
+                continue
+
+            await self.mail_folder_repository.delete(folder)
 
     async def reorder(
         self, rule_id: UUID, request: RuleReorderRequest, current_user: User
