@@ -52,8 +52,38 @@ def sanitize_outbound_html(html: str) -> str:
     embeds, style attributes, arbitrary remote images, etc.) before
     `body_html` is allowed to reach an OutboundEnvelope. Called once,
     from email_envelope.py, rather than at every individual caller.
+
+    Also applies `_style_email_tables` (see below) — every caller of
+    this function is agent-authored content (a composer paste, a reply,
+    an internal note), where a <table> is always a genuine, deliberate
+    data table the agent pasted in, never structural/layout markup.
     """
 
+    return _style_email_tables(_clean_html(html))
+
+
+def sanitize_inbound_html(html: str) -> str:
+    """
+    Sanitizes an external sender's own HTML for storage/display — the
+    same tag/attribute/scheme allow-list and cid-only <img> restriction
+    as sanitize_outbound_html, but deliberately does NOT run
+    `_style_email_tables`. An inbound sender's <table> is just as often
+    pure layout/positioning markup (newsletter/marketing templates
+    nest tables purely to lay out a header/columns/footer, with no
+    intent for any of it to look like a bordered grid) as it is a real
+    data table — unlike agent-authored content, where every <table> is
+    a deliberate paste. Forcing a visible border onto every nested
+    layout table made ordinary marketing/notification emails render as
+    a wall of boxes never present in the original message (confirmed
+    against a real inbound Sunshine Health email). Preserving the
+    sender's own structure/formatting is the priority for inbound mail;
+    only genuinely dangerous content is stripped.
+    """
+
+    return _clean_html(html)
+
+
+def _clean_html(html: str) -> str:
     cleaned = nh3.clean(
         html,
         tags=_ALLOWED_TAGS,
@@ -62,7 +92,7 @@ def sanitize_outbound_html(html: str) -> str:
         link_rel=None,
     )
 
-    return _style_email_tables(_strip_non_cid_images(cleaned))
+    return _strip_non_cid_images(cleaned)
 
 
 def _strip_non_cid_images(html: str) -> str:

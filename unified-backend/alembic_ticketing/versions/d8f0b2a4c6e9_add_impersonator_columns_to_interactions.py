@@ -28,25 +28,27 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        'interactions',
-        sa.Column('impersonator_id', postgresql.UUID(as_uuid=True), nullable=True),
-    )
-    op.add_column(
-        'interactions',
-        sa.Column('impersonator_name', sa.String(length=255), nullable=True),
-    )
-    op.create_foreign_key(
-        'fk_interactions_impersonator_id_users',
-        'interactions', 'users',
-        ['impersonator_id'], ['user_id'],
+    op.execute("ALTER TABLE interactions ADD COLUMN IF NOT EXISTS impersonator_id UUID")
+    op.execute("ALTER TABLE interactions ADD COLUMN IF NOT EXISTS impersonator_name VARCHAR(255)")
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.table_constraints
+                WHERE table_name = 'interactions'
+                AND constraint_name = 'fk_interactions_impersonator_id_users'
+            ) THEN
+                ALTER TABLE interactions
+                ADD CONSTRAINT fk_interactions_impersonator_id_users
+                FOREIGN KEY (impersonator_id) REFERENCES users(user_id);
+            END IF;
+        END $$;
+        """
     )
 
 
 def downgrade() -> None:
-    op.drop_constraint(
-        'fk_interactions_impersonator_id_users',
-        'interactions', type_='foreignkey',
-    )
-    op.drop_column('interactions', 'impersonator_name')
-    op.drop_column('interactions', 'impersonator_id')
+    op.execute("ALTER TABLE interactions DROP CONSTRAINT IF EXISTS fk_interactions_impersonator_id_users")
+    op.execute("ALTER TABLE interactions DROP COLUMN IF EXISTS impersonator_name")
+    op.execute("ALTER TABLE interactions DROP COLUMN IF EXISTS impersonator_id")

@@ -980,6 +980,41 @@ def test_map_external_email_to_interaction_falls_back_to_raw_html_when_no_visibl
     assert 'src="cid:image1.png"' in email.html_body
 
 
+def test_map_external_email_to_interaction_does_not_add_borders_to_nested_layout_tables():
+    """
+    Regression test for a real reported bug: a marketing/newsletter
+    email (e.g. Sunshine Health) using nested <table> elements purely
+    for layout rendered with visible rectangular borders around every
+    layout container in UTMS, even though the original email had none.
+    Root cause: mail_mapping_service used to sanitize inbound HTML
+    through sanitize_outbound_html, which unconditionally forces
+    border styling onto every <table>/<td>/<th> — correct for an
+    agent's own pasted data table, wrong for an external sender's
+    layout markup. Fixed by routing inbound HTML through the new
+    sanitize_inbound_html instead, which shares the same
+    tag/attribute/script-stripping allow-list but never adds borders.
+    """
+
+    nested_layout_html = (
+        "<html><body>"
+        "<table><tr><td>"
+        "<table><tr><td>"
+        "<table><tr><td>Sunshine Health — your monthly newsletter</td></tr></table>"
+        "</td></tr></table>"
+        "</td></tr></table>"
+        "</body></html>"
+    )
+    payload = _graph_payload(nested_layout_html, "html")
+
+    email = map_external_email_to_interaction(payload)
+
+    assert email.html_body is not None
+    assert "border" not in email.html_body
+    assert "style=" not in email.html_body
+    assert "Sunshine Health" in email.html_body
+    assert email.html_body.count("<table>") == 3
+
+
 def test_map_external_email_to_interaction_propagates_provider_message_id():
     payload = _graph_payload("hello", "text")
     payload.id = "AAMkAGI2-real-graph-native-id"

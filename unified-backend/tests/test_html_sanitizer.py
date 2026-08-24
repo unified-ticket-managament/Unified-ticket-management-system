@@ -3,10 +3,12 @@
 # Pure-logic coverage for app.ticketing.utils.html_sanitizer.
 # sanitize_outbound_html — the one server-side sanitization choke
 # point for agent-authored body_html (Outlook-style clipboard paste)
-# before it's ever embedded in a real outbound Graph HTML email. No
-# DB, no network.
+# before it's ever embedded in a real outbound Graph HTML email — and
+# sanitize_inbound_html, the sibling choke point for an external
+# sender's own HTML (see the "nested-table border regression" section
+# at the bottom of this file). No DB, no network.
 
-from app.ticketing.utils.html_sanitizer import sanitize_outbound_html
+from app.ticketing.utils.html_sanitizer import sanitize_inbound_html, sanitize_outbound_html
 
 
 def test_allows_basic_formatting_tags():
@@ -193,3 +195,93 @@ def test_table_styling_and_cid_image_coexist():
 
     assert 'src="cid:abc123"' in result
     assert "border-collapse:collapse" in result
+
+
+# ---------------------------------------------------------
+# Nested-table border regression: inbound mail must not get the
+# outbound composer's border styling (sanitize_inbound_html)
+# ---------------------------------------------------------
+#
+# sanitize_outbound_html's `_style_email_tables` step is correct for
+# agent-authored content (every <table> there is a deliberate pasted
+# data table), but an external sender's inbound HTML routinely uses
+# nested <table> elements purely for layout (newsletter/marketing
+# templates positioning a header/columns/footer, exactly like the
+# reported Sunshine Health regression) — those must render exactly as
+# the sender sent them, with no border ever added.
+
+
+def test_a_real_pasted_data_table_still_gets_visible_borders_outbound():
+    """
+    Requirement: a data table created/pasted from UTMS's own composer
+    (reply/compose/internal note — every sanitize_outbound_html caller)
+    must still render with visible borders in Outlook.
+    """
+
+    html = "<table><tr><td>Name</td><td>Status</td></tr><tr><td>Raju</td><td>Open</td></tr></table>"
+
+    result = sanitize_outbound_html(html)
+
+    assert "border-collapse:collapse" in result
+    assert 'border:1px solid #888888' in result
+
+
+def test_inbound_sender_html_does_not_get_border_styling():
+    """
+    Requirement: incoming marketing/layout emails containing nested
+    tables must not suddenly show borders around every layout
+    container. sanitize_inbound_html (mail_mapping_service.py's own
+    choke point for external sender HTML) must never add the
+    `_style_email_tables` styling sanitize_outbound_html applies.
+    """
+
+    html = (
+        "<table><tr><td>"
+        "<table><tr><td>"
+        "<table><tr><td>Sunshine Health newsletter content</td></tr></table>"
+        "</td></tr></table>"
+        "</td></tr></table>"
+    )
+
+    result = sanitize_inbound_html(html)
+
+    assert "border" not in result
+    assert "style=" not in result
+    assert "Sunshine Health newsletter content" in result
+    # The nested table structure itself is preserved, not flattened.
+    assert result.count("<table>") == 3
+
+
+def test_inbound_sanitizer_still_strips_dangerous_content():
+    """
+    sanitize_inbound_html must not be a weaker sanitizer than
+    sanitize_outbound_html for anything except table border styling —
+    an external sender's HTML is no more trustworthy than a pasted one.
+    """
+
+    html = (
+        '<table><tr><td onclick="evil()">click</td></tr></table>'
+        "<script>alert(1)</script>"
+        '<img src="https://evil.com/track.png">'
+        '<a href="javascript:alert(1)">bad link</a>'
+    )
+
+    result = sanitize_inbound_html(html)
+
+    assert "onclick" not in result
+    assert "evil()" not in result
+    assert "<script" not in result
+    assert "alert" not in result
+    assert "evil.com" not in result
+    assert "javascript:" not in result
+    assert "click</td>" in result
+    assert "bad link" in result
+
+
+def test_inbound_sanitizer_preserves_cid_inline_images():
+    html = '<p>See attached:</p><img src="cid:xyz789" alt="chart">'
+
+    result = sanitize_inbound_html(html)
+
+    assert 'src="cid:xyz789"' in result
+    assert 'alt="chart"' in result

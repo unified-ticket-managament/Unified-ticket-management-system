@@ -17,7 +17,7 @@ from bs4 import BeautifulSoup
 from app.ticketing.schemas.email import EmailRequest, LinkedAttachmentCandidate
 from app.ticketing.schemas.mail_integration import GraphAttachmentPayload, IncomingMailPayload
 from app.ticketing.utils.constants import MAX_ATTACHMENT_FILES, MAX_ATTACHMENT_SIZE_BYTES
-from app.ticketing.utils.html_sanitizer import sanitize_outbound_html
+from app.ticketing.utils.html_sanitizer import sanitize_inbound_html
 from app.ticketing.utils.validators import sanitize_filename, validate_attachment_type
 
 logger = logging.getLogger(__name__)
@@ -214,19 +214,26 @@ def map_external_email_to_interaction(
         from_name=payload.from_.emailAddress.name,
         subject=payload.subject or "(no subject)",
         body=plain_body,
-        # Sanitized through the same choke point body_html already
-        # goes through for an agent-authored outbound send
-        # (email_envelope.py) — reused here rather than duplicated,
-        # since an inbound sender's raw HTML is no more trustworthy
-        # than a pasted one: script/iframe/event-handler attributes/
-        # javascript: URLs are stripped, and <img src> is restricted to
-        # cid: references only (an inline image this platform itself
-        # stored — see build_upload_files_from_graph_attachments below
-        # — never an arbitrary remote image/tracking pixel). Extraction
-        # above (plain-text, cloud links) still runs against the raw,
-        # unsanitized HTML — sanitization only applies to what gets
-        # stored/rendered as body_html itself.
-        html_body=sanitize_outbound_html(raw_html) if is_html else None,
+        # Sanitized through the same tag/attribute/scheme allow-list
+        # body_html already goes through for an agent-authored outbound
+        # send (email_envelope.py) — since an inbound sender's raw HTML
+        # is no more trustworthy than a pasted one: script/iframe/
+        # event-handler attributes/javascript: URLs are stripped, and
+        # <img src> is restricted to cid: references only (an inline
+        # image this platform itself stored — see
+        # build_upload_files_from_graph_attachments below — never an
+        # arbitrary remote image/tracking pixel). Deliberately uses
+        # sanitize_inbound_html, not sanitize_outbound_html — the
+        # latter also forces a visible border onto every <table>, which
+        # is correct for an agent's own pasted data table but wrong
+        # here: an inbound sender's <table> is frequently pure layout/
+        # positioning markup (newsletter/marketing templates), and
+        # bordering every nested layout table doesn't match the
+        # original message at all. Extraction above (plain-text, cloud
+        # links) still runs against the raw, unsanitized HTML —
+        # sanitization only applies to what gets stored/rendered as
+        # body_html itself.
+        html_body=sanitize_inbound_html(raw_html) if is_html else None,
         linked_attachments=(
             extract_cloud_link_attachments(raw_html) if is_html else []
         ),
