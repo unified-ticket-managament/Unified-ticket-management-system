@@ -22,9 +22,17 @@ class ComposeEmailRequest(BaseModel):
     "To" recipient, not downgraded to Cc — resolved server-side and
     merged via the same additive OutboundEnvelope.to_emails mechanism
     Forward uses). At least one of the two must be present.
+
+    Exactly one of `client_id`/`category_id` must be given — the
+    "From" mailbox this message sends as. `category_id` sends from a
+    CATEGORY's own shared mailbox (Category.inbox_email) instead of a
+    client's, mirroring the mutual-exclusivity OutgoingEmailRequest
+    (schemas/mail_integration.py) already uses for client_id/from_email.
     """
 
-    client_id: UUID
+    client_id: UUID | None = None
+
+    category_id: UUID | None = None
 
     to_email: EmailStr | None = None
 
@@ -55,13 +63,21 @@ class ComposeEmailRequest(BaseModel):
             raise ValueError("Either to_email or distribution_list_ids is required.")
         return self
 
+    @model_validator(mode="after")
+    def _require_exactly_one_sender(self) -> "ComposeEmailRequest":
+        if (self.client_id is None) == (self.category_id is None):
+            raise ValueError("Exactly one of client_id or category_id must be provided.")
+        return self
+
 
 class ComposeEmailResponse(BaseModel):
     """Response returned after a new Compose email is recorded."""
 
     interaction_id: UUID
 
-    client_id: UUID
+    client_id: UUID | None = None
+
+    category_id: UUID | None = None
 
     created_at: datetime
 

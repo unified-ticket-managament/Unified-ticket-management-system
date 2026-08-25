@@ -303,7 +303,11 @@ export async function updateInteractionFolder(
 }
 
 export interface ComposeEmailPayload {
-  clientId: string;
+  // Exactly one of clientId/categoryId — the "From" mailbox this
+  // message sends as. See ComposeEmailRequest's identical backend
+  // docstring (schemas/compose.py).
+  clientId?: string;
+  categoryId?: string;
   // Optional — the primary/only recipient can instead come entirely
   // from distributionListIds (Compose has no fixed thread, so a
   // picked Distribution List becomes a genuine additional "To"
@@ -362,7 +366,8 @@ export async function composeEmail(
   payload: ComposeEmailPayload
 ): Promise<ComposeEmailResponse> {
   const formData = new FormData();
-  formData.append("client_id", payload.clientId);
+  if (payload.clientId) formData.append("client_id", payload.clientId);
+  if (payload.categoryId) formData.append("category_id", payload.categoryId);
   if (payload.toEmail) formData.append("to_email", payload.toEmail);
   payload.distributionListIds?.forEach((id) => formData.append("distribution_list_ids", id));
   formData.append("subject", payload.subject);
@@ -388,7 +393,10 @@ export async function composeEmail(
 
 export interface ForwardToInternalUserPayload {
   interactionId: string;
-  clientId: string;
+  // Exactly one of clientId/categoryId — see ComposeEmailPayload's
+  // identical fields above.
+  clientId?: string;
+  categoryId?: string;
   // The union of all three is resolved/deduplicated server-side into
   // one final recipient list, sent as one send (see
   // InteractionService.forward_to_internal_user) — at least one of
@@ -426,7 +434,8 @@ export async function forwardToInternalUser(
   payload: ForwardToInternalUserPayload
 ): Promise<ForwardToInternalUserResponse> {
   const formData = new FormData();
-  formData.append("client_id", payload.clientId);
+  if (payload.clientId) formData.append("client_id", payload.clientId);
+  if (payload.categoryId) formData.append("category_id", payload.categoryId);
   payload.recipientUserIds?.forEach((id) => formData.append("recipient_user_ids", id));
   payload.recipientEmails?.forEach((email) => formData.append("recipient_emails", email));
   payload.distributionListIds?.forEach((id) => formData.append("distribution_list_ids", id));

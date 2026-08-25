@@ -586,6 +586,45 @@ def ensure_can_compose_for_client(client, current_user: User) -> None:
     return
 
 
+async def ensure_can_compose_for_category(
+    category, current_user: User, reporting_manager_repository
+) -> None:
+    """
+    Gates sending as a CATEGORY shared mailbox (Compose/Forward's From
+    field, when a category rather than a client is selected) — the
+    same `communication:reply_external` baseline ensure_can_compose_
+    for_client requires, plus the category equivalent of that
+    function's Account-Manager-owns-client rule: an Account Manager
+    may only send as a category they're the Reporting Manager for
+    (ReportingManagerTeam), the same ownership check
+    ensure_agent_can_view_pending_interaction already applies to a
+    category-mailbox item on the read side. Every other permission-
+    holding role (Site Lead/Super Admin, and any role explicitly
+    granted the permission) is unrestricted, mirroring
+    ensure_can_compose_for_client exactly.
+    """
+
+    ensure_has_permission(current_user, "communication:reply_external")
+
+    if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
+        return
+
+    if current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME:
+        category_account_manager_ids = (
+            await reporting_manager_repository.list_account_manager_ids_by_category(
+                category.category_id
+            )
+        )
+        if current_user.user_id in category_account_manager_ids:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to compose mail for this category.",
+        )
+
+    return
+
+
 def has_permission(current_user: User, permission_name: str) -> bool:
     """
     Non-raising check against the permission list threaded onto

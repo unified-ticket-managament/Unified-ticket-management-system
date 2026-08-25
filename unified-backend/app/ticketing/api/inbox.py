@@ -381,7 +381,8 @@ async def get_drafts(
     status_code=201,
 )
 async def compose_email(
-    client_id: UUID = Form(...),
+    client_id: UUID | None = Form(default=None),
+    category_id: UUID | None = Form(default=None),
     to_email: str = Form(default=""),
     distribution_list_ids: list[UUID] = Form(default=[]),
     subject: str = Form(...),
@@ -446,6 +447,7 @@ async def compose_email(
     composed = await interaction_service.compose_email(
         request=ComposeEmailRequest(
             client_id=client_id,
+            category_id=category_id,
             to_email=parsed_to_email,
             distribution_list_ids=distribution_list_ids,
             subject=subject,
@@ -534,7 +536,8 @@ async def upload_compose_inline_image(
 )
 async def forward_to_internal_user(
     interaction_id: UUID,
-    client_id: UUID = Form(...),
+    client_id: UUID | None = Form(default=None),
+    category_id: UUID | None = Form(default=None),
     recipient_user_ids: list[UUID] = Form(default=[]),
     recipient_emails: list[str] = Form(default=[]),
     distribution_list_ids: list[UUID] = Form(default=[]),
@@ -593,6 +596,7 @@ async def forward_to_internal_user(
 
     request = ForwardToInternalUserRequest(
         client_id=client_id,
+        category_id=category_id,
         recipient_user_ids=recipient_user_ids,
         recipient_emails=recipient_emails,
         distribution_list_ids=distribution_list_ids,

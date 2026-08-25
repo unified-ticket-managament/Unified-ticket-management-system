@@ -34,7 +34,19 @@ import {
 import { isValidEmailAddress } from "@tw/lib/validation";
 import { MAX_ATTACHMENT_FILES } from "@tw/lib/attachmentMeta";
 import { generateIdempotencyKey } from "@tw/lib/idempotency";
-import type { ClientContact, ClientResponse, InternalNoteRecipientCandidate } from "@tw/types";
+import { mergedClientFilterOptions } from "@tw/lib/clientFilter";
+import type {
+  CategoryResponse,
+  ClientContact,
+  ClientResponse,
+  InternalNoteRecipientCandidate,
+} from "@tw/types";
+
+// Prefix marking a "From" Select value as a category mailbox rather
+// than a client id — the two live in one combined option/value space
+// (see composableSenders below) since the underlying Select can only
+// carry a single string value.
+const CATEGORY_FROM_PREFIX = "category:";
 
 const LOCAL_DRAFT_KEY = "utms-mail-compose-draft";
 
@@ -77,6 +89,7 @@ export interface ComposeInitialValues {
 
 interface LocalDraft {
   clientId: string;
+  categoryId?: string;
   toEmail: string;
   cc: string;
   bcc: string;
@@ -101,6 +114,12 @@ function clearLocalDraft() {
 
 interface ComposeViewProps {
   clients: ClientResponse[];
+  // Categories with a configured inbox_email are offered as
+  // additional "From" mailbox options, alongside active clients — see
+  // composableSenders below (reuses lib/clientFilter.ts's existing
+  // mergedClientFilterOptions, the same active-clients+inbox-mail-
+  // categories merge already used by Mail's own Clients filter).
+  categories: CategoryResponse[];
   // Distinguishes "still fetching the client list" and "the fetch
   // failed" from "fetched fine, and there are genuinely zero clients"
   // — all three used to look identical (`clients` is an empty array
@@ -111,7 +130,8 @@ interface ComposeViewProps {
   initialValues?: ComposeInitialValues;
   isSending: boolean;
   onSend: (payload: {
-    clientId: string;
+    clientId?: string;
+    categoryId?: string;
     toEmail?: string;
     subject: string;
     message: string;
@@ -133,7 +153,8 @@ interface ComposeViewProps {
   // initialValues.mode === "forward".
   onForwardSend?: (payload: {
     interactionId: string;
-    clientId: string;
+    clientId?: string;
+    categoryId?: string;
     recipientUserIds?: string[];
     recipientEmails?: string[];
     distributionListIds?: string[];
@@ -177,6 +198,7 @@ function parseEmails(value: string): string[] {
 // silently pretending it's server-backed.
 export function ComposeView({
   clients,
+  categories,
   clientsLoading,
   clientsError,
   initialValues,
@@ -219,6 +241,24 @@ export function ComposeView({
     return clients;
   }, [clients, currentUser, canComposeExternally]);
 
+  // "From" option set — active clients (composableClients, already
+  // role-scoped above) plus categories with a configured inbox_email,
+  // deduped by name collision — reuses lib/clientFilter.ts's existing
+  // mergedClientFilterOptions as-is (already used by Mail's own
+  // Clients filter dropdown for this exact rule set) rather than
+  // re-deriving the same active/inbox-email filtering here. Category
+  // options are intentionally NOT further scoped per-role the way
+  // composableClients is for Account Manager — the backend's own
+  // ensure_can_compose_for_category is the real gate; an Account
+  // Manager who isn't that category's Reporting Manager sees the
+  // option but gets a clean rejection on Send, same "frontend
+  // filtering is a convenience, never the real gate" convention this
+  // component already follows for client ownership.
+  const { activeClients, categoryOptions } = useMemo(
+    () => mergedClientFilterOptions(composableClients, categories),
+    [composableClients, categories]
+  );
+
   const localDraft = useMemo(() => (initialValues ? null : readLocalDraft()), [initialValues]);
 
   // "From" — which client this message is filed under (still a
@@ -229,6 +269,10 @@ export function ComposeView({
   // "external address left Send disabled" bug — canSend (below) no
   // longer requires the "To" text to match a client at all.
   const [clientId, setClientId] = useState(initialValues?.clientId ?? localDraft?.clientId ?? "");
+  // "From" — category-mailbox counterpart to clientId, mutually
+  // exclusive with it. See handleFromChange for how the single
+  // Select's value space encodes which of the two is selected.
+  const [categoryId, setCategoryId] = useState(localDraft?.categoryId ?? "");
   // "To" — the actual recipient(s). A plain comma-separated address
   // list, same convention as Cc/Bcc (parseEmails below) rather than a
   // chip UI, so entering more than one is just typing/selecting more
@@ -364,7 +408,7 @@ export function ComposeView({
     };
   }, [isForward, clientId]);
 
-  const canCompose = composableClients.length > 0;
+  const canCompose = activeClients.length > 0 || categoryOptions.length > 0;
   const isEmpty = isRichTextEmpty(bodyHtml);
   // Every comma-separated entry in "To" — a dropdown-picked contact
   // and a manually-typed external address are both just entries in
@@ -407,7 +451,7 @@ export function ComposeView({
     : MAX_ATTACHMENT_FILES;
 
   const canSend = Boolean(
-    clientId &&
+    (clientId || categoryId) &&
       (toEntries.length > 0 || distributionListIds.length > 0) &&
       invalidToEntries.length === 0 &&
       subject.trim() &&
@@ -447,14 +491,28 @@ export function ComposeView({
 
   const selectedClient = composableClients.find((c) => c.client_id === clientId);
 
-  function handleFromChange(newClientId: string) {
-    setClientId(newClientId);
+  // "From" Select's combined value space: a bare id is a client,
+  // CATEGORY_FROM_PREFIX + id is a category — see the constant's own
+  // comment above for why one Select needs to carry both kinds.
+  const fromValue = clientId || (categoryId ? `${CATEGORY_FROM_PREFIX}${categoryId}` : "");
+
+  function handleFromChange(newValue: string) {
+    if (newValue.startsWith(CATEGORY_FROM_PREFIX)) {
+      setCategoryId(newValue.slice(CATEGORY_FROM_PREFIX.length));
+      setClientId("");
+    } else {
+      setClientId(newValue);
+      setCategoryId("");
+    }
     // Compose mode's recipient suggestions are specific to whichever
     // client this message is filed under — switching "From" clears
     // them rather than leaving a stale contact address associated
-    // with the wrong client. Forward mode's recipient is an internal
-    // user, unrelated to which client mailbox is sending, so it's
-    // left untouched there.
+    // with the wrong client (a category has no contacts of its own,
+    // so selecting one also clears toEmail via this same path — the
+    // existing !clientId guard on the contacts-fetch effect below
+    // already no-ops correctly once clientId is empty). Forward
+    // mode's recipient is an internal user, unrelated to which
+    // mailbox is sending, so it's left untouched there.
     if (!isForward) setToEmail("");
   }
 
@@ -475,7 +533,7 @@ export function ComposeView({
   }
 
   function handleSaveDraft() {
-    const draft: LocalDraft = { clientId, toEmail, cc, bcc, subject, bodyHtml };
+    const draft: LocalDraft = { clientId, categoryId, toEmail, cc, bcc, subject, bodyHtml };
     window.localStorage.setItem(LOCAL_DRAFT_KEY, JSON.stringify(draft));
     pushToast("Draft saved on this device.", "success");
   }
@@ -509,7 +567,8 @@ export function ComposeView({
       if (!toRecipient.email && distributionListIds.length === 0) return;
       const result = await onForwardSend({
         interactionId: initialValues.interactionId,
-        clientId,
+        clientId: clientId || undefined,
+        categoryId: categoryId || undefined,
         recipientUserIds: toRecipient.userId ? [toRecipient.userId] : [],
         recipientEmails: !toRecipient.userId && toRecipient.email ? [toRecipient.email] : [],
         distributionListIds,
@@ -536,7 +595,8 @@ export function ComposeView({
     // an additional Cc rather than requiring a backend/API change.
     const [primaryTo, ...extraTo] = toEntries;
     const result = await onSend({
-      clientId,
+      clientId: clientId || undefined,
+      categoryId: categoryId || undefined,
       toEmail: primaryTo,
       subject: subject.trim(),
       message: htmlToPlainText(bodyHtml),
@@ -596,35 +656,47 @@ export function ComposeView({
               ? "Loading..."
               : !canComposeExternally
                 ? "You don't have permission to compose external mail. Ask an administrator to grant you the \"communication:reply_external\" permission."
-                : "There are no clients available for you to compose mail to."}
+                : "There are no clients or category mailboxes available for you to compose mail from."}
           </div>
         ) : (
           <div className="flex flex-col gap-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">From</label>
               {/* The actual sending mailbox for BOTH Compose and
-                  Forward — whichever client is picked here, the
+                  Forward — whichever option is picked here, the
                   outbound send goes out from that client's own
                   configured mailbox (falling back to the shared
-                  mailbox for a client with none configured), enforced
-                  server-side regardless of what's selected here (see
-                  ensure_can_compose_for_client). Sourced from the same
-                  composableClients scoping (Account Manager: own
-                  clients only; else: unrestricted) already used
-                  elsewhere in this component, never a hardcoded list.
-                  In Compose mode, selecting one also populates the
-                  "To" field's contact suggestions below; Forward mode
+                  mailbox for a client with none configured) or, for a
+                  category option, that category's own inbox_email —
+                  enforced server-side regardless of what's selected
+                  here (see ensure_can_compose_for_client/
+                  ensure_can_compose_for_category). Options are active
+                  clients (role-scoped: Account Manager sees only
+                  their own; else unrestricted) plus categories with a
+                  configured inbox_email, deduped by name — see
+                  mergedClientFilterOptions (lib/clientFilter.ts),
+                  reused as-is. In Compose mode, selecting a client
+                  also populates the "To" field's contact suggestions
+                  below (a category has none of its own); Forward mode
                   doesn't use client-contact suggestions since its "To"
                   is always an internal user. */}
-              <Select value={clientId} onValueChange={handleFromChange}>
+              <Select value={fromValue} onValueChange={handleFromChange}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select a client" />
+                  <SelectValue placeholder="Select a client or category mailbox" />
                 </SelectTrigger>
                 <SelectContent>
-                  {composableClients.map((client) => (
+                  {activeClients.map((client) => (
                     <SelectItem key={client.client_id} value={client.client_id}>
                       {client.name}
                       {client.inbox_email ? ` · ${client.inbox_email}` : " · (no distribution email configured)"}
+                    </SelectItem>
+                  ))}
+                  {categoryOptions.map((category) => (
+                    <SelectItem
+                      key={category.category_id}
+                      value={`${CATEGORY_FROM_PREFIX}${category.category_id}`}
+                    >
+                      {category.category_name} · {category.inbox_email}
                     </SelectItem>
                   ))}
                 </SelectContent>

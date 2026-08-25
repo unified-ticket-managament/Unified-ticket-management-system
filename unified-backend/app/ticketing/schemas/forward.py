@@ -26,7 +26,11 @@ from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 class ForwardToInternalUserRequest(BaseModel):
-    client_id: UUID
+    # Exactly one of client_id/category_id — the "From" mailbox this
+    # forward sends as. See ComposeEmailRequest's identical
+    # client_id/category_id docstring (schemas/compose.py).
+    client_id: UUID | None = None
+    category_id: UUID | None = None
     recipient_user_ids: list[UUID] = Field(default_factory=list)
     recipient_emails: list[EmailStr] = Field(default_factory=list)
     distribution_list_ids: list[UUID] = Field(default_factory=list)
@@ -52,6 +56,12 @@ class ForwardToInternalUserRequest(BaseModel):
                 "At least one recipient (internal user, external email, or "
                 "distribution list) is required."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _require_exactly_one_sender(self) -> "ForwardToInternalUserRequest":
+        if (self.client_id is None) == (self.category_id is None):
+            raise ValueError("Exactly one of client_id or category_id must be provided.")
         return self
 
 

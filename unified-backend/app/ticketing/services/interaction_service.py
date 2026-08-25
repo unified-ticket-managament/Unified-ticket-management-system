@@ -83,6 +83,7 @@ from app.ticketing.services.access_control import (
     ensure_agent_can_view_ticket,
     ensure_agent_can_view_ticket_including_escalated,
     ensure_can_close_ticket,
+    ensure_can_compose_for_category,
     ensure_can_compose_for_client,
     ensure_can_reassign_ticket,
     ensure_can_reopen_ticket,
@@ -2234,24 +2235,61 @@ class InteractionService:
                 return ComposeEmailResponse(
                     interaction_id=existing.interaction_id,
                     client_id=existing.client_id,
+                    category_id=existing.category_id,
                     created_at=existing.created_at,
                 )
 
-        if self.client_repository is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Client lookup is not available.",
+        client = None
+        category = None
+
+        if request.client_id is not None:
+            if self.client_repository is None:
+                raise HTTPException(
+                    status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Client lookup is not available.",
+                )
+
+            client = await self.client_repository.get_by_id(request.client_id)
+
+            if client is None:
+                raise HTTPException(
+                    status_code=http_status.HTTP_404_NOT_FOUND,
+                    detail="Client not found.",
+                )
+
+            ensure_can_compose_for_client(client, current_user)
+        else:
+            # Sending as a CATEGORY's own shared mailbox instead of a
+            # client's — mirrors the client branch above, but resolved
+            # against Category.inbox_email (see access_control.
+            # ensure_can_compose_for_category's own docstring for the
+            # Account-Manager-owns-category-via-ReportingManagerTeam
+            # rule this applies instead of client ownership).
+            category = await CategoryRepository(self.user_repository.db).get_by_id(
+                request.category_id
             )
 
-        client = await self.client_repository.get_by_id(request.client_id)
+            if category is None:
+                raise HTTPException(
+                    status_code=http_status.HTTP_404_NOT_FOUND,
+                    detail="Category not found.",
+                )
 
-        if client is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Client not found.",
+            if not category.inbox_email:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="This category has no configured mailbox.",
+                )
+
+            from app.rbac.repositories.reporting_manager_repository import (
+                ReportingManagerRepository,
             )
 
-        ensure_can_compose_for_client(client, current_user)
+            await ensure_can_compose_for_category(
+                category,
+                current_user,
+                ReportingManagerRepository(self.user_repository.db),
+            )
 
         # Compose has no fixed thread, so a picked Distribution List
         # becomes a genuine additional "To" recipient (not downgraded
@@ -2281,18 +2319,26 @@ class InteractionService:
             current_user
         )
 
-        am_email = await self._resolve_account_manager_email(client)
-        # The selected client's own configured mailbox, when it has
-        # one — falls back to the shared mailbox for a client still on
-        # it, same shared-vs-dedicated split email_service.py already
-        # applies on the inbound side. Previously this always used the
-        # shared mailbox regardless of which client was selected —
-        # a real, reported bug (e.g. selecting FFJ still sent from the
-        # generic address) — the outbound dispatcher (see
-        # outbound_dispatcher.py) already targets whatever mailbox
-        # this envelope's from_email says, so resolving it correctly
-        # here is the only fix needed.
-        mailbox_address = client.inbox_email or resolve_shared_mailbox_address(get_settings())
+        if client is not None:
+            am_email = await self._resolve_account_manager_email(client)
+            # The selected client's own configured mailbox, when it has
+            # one — falls back to the shared mailbox for a client still on
+            # it, same shared-vs-dedicated split email_service.py already
+            # applies on the inbound side. Previously this always used the
+            # shared mailbox regardless of which client was selected —
+            # a real, reported bug (e.g. selecting FFJ still sent from the
+            # generic address) — the outbound dispatcher (see
+            # outbound_dispatcher.py) already targets whatever mailbox
+            # this envelope's from_email says, so resolving it correctly
+            # here is the only fix needed.
+            mailbox_address = client.inbox_email or resolve_shared_mailbox_address(
+                get_settings()
+            )
+        else:
+            # No Account Manager Cc, and no shared-mailbox fallback — a
+            # category with no inbox_email was already rejected above.
+            am_email = None
+            mailbox_address = category.inbox_email
 
         # Signed body — what actually gets sent and stored — so a
         # client reading a brand-new Compose message (never a Reply,
@@ -2322,8 +2368,10 @@ class InteractionService:
             envelope = envelope.model_copy(update={"to_emails": effective_to})
 
         email_payload = EmailPayload(
-            client_id=client.client_id,
-            client_name=client.name,
+            client_id=client.client_id if client is not None else None,
+            client_name=client.name if client is not None else None,
+            category_id=category.category_id if category is not None else None,
+            category_name=category.category_name if category is not None else None,
             to_email=primary_to_email,
             from_email=mailbox_address,
             from_name=current_user.name,
@@ -2354,7 +2402,8 @@ class InteractionService:
                     payload=interaction_payload,
                     is_visible=True,
                     message_id=envelope.message_id,
-                    client_id=client.client_id,
+                    client_id=client.client_id if client is not None else None,
+                    category_id=category.category_id if category is not None else None,
                     parent_interaction_id=None,
                     received_at=datetime.now(timezone.utc),
                     subject=request.subject,
@@ -2375,6 +2424,7 @@ class InteractionService:
                 return ComposeEmailResponse(
                     interaction_id=existing.interaction_id,
                     client_id=existing.client_id,
+                    category_id=existing.category_id,
                     created_at=existing.created_at,
                 )
             raise
@@ -2395,7 +2445,8 @@ class InteractionService:
             actor_name=actor_name,
             actor_role=actor_role,
             new_values={
-                "client_id": client.client_id,
+                "client_id": client.client_id if client is not None else None,
+                "category_id": category.category_id if category is not None else None,
                 "to_emails": effective_to,
                 "distribution_list_ids": list(request.distribution_list_ids),
             },
@@ -2416,7 +2467,8 @@ class InteractionService:
 
         return ComposeEmailResponse(
             interaction_id=interaction.interaction_id,
-            client_id=client.client_id,
+            client_id=client.client_id if client is not None else None,
+            category_id=category.category_id if category is not None else None,
             created_at=interaction.created_at,
         )
 
@@ -2530,24 +2582,56 @@ class InteractionService:
 
         ensure_has_permission(current_user, "communication:reply_external")
 
-        if self.client_repository is None:
-            raise HTTPException(
-                status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Client lookup is not available.",
+        client = None
+        category = None
+
+        if request.client_id is not None:
+            if self.client_repository is None:
+                raise HTTPException(
+                    status_code=http_status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Client lookup is not available.",
+                )
+
+            client = await self.client_repository.get_by_id(request.client_id)
+
+            if client is None or not client.is_active:
+                raise HTTPException(
+                    status_code=http_status.HTTP_404_NOT_FOUND,
+                    detail="Client not found.",
+                )
+
+            # The real, server-side "is this manager authorized to send
+            # from this client's mailbox" check — the frontend's own From
+            # dropdown is never trusted on its own.
+            ensure_can_compose_for_client(client, current_user)
+        else:
+            # Sending as a CATEGORY's own shared mailbox — see
+            # compose_email's identical branch for the full rationale.
+            category = await CategoryRepository(self.user_repository.db).get_by_id(
+                request.category_id
             )
 
-        client = await self.client_repository.get_by_id(request.client_id)
+            if category is None:
+                raise HTTPException(
+                    status_code=http_status.HTTP_404_NOT_FOUND,
+                    detail="Category not found.",
+                )
 
-        if client is None or not client.is_active:
-            raise HTTPException(
-                status_code=http_status.HTTP_404_NOT_FOUND,
-                detail="Client not found.",
+            if not category.inbox_email:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="This category has no configured mailbox.",
+                )
+
+            from app.rbac.repositories.reporting_manager_repository import (
+                ReportingManagerRepository,
             )
 
-        # The real, server-side "is this manager authorized to send
-        # from this client's mailbox" check — the frontend's own From
-        # dropdown is never trusted on its own.
-        ensure_can_compose_for_client(client, current_user)
+            await ensure_can_compose_for_category(
+                category,
+                current_user,
+                ReportingManagerRepository(self.user_repository.db),
+            )
 
         # Combined-total attachment limit: original attachments already
         # stored against the interaction being forwarded, plus any
@@ -2636,8 +2720,10 @@ class InteractionService:
             current_user
         )
 
-        mailbox_address = client.inbox_email or resolve_shared_mailbox_address(
-            get_settings()
+        mailbox_address = (
+            client.inbox_email or resolve_shared_mailbox_address(get_settings())
+            if client is not None
+            else category.inbox_email
         )
 
         signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
@@ -2684,7 +2770,8 @@ class InteractionService:
                     payload=payload,
                     is_visible=True,
                     message_id=envelope.message_id,
-                    client_id=client.client_id,
+                    client_id=client.client_id if client is not None else None,
+                    category_id=category.category_id if category is not None else None,
                     parent_interaction_id=original.interaction_id,
                     subject=request.subject,
                     dispatch_idempotency_key=request.idempotency_key,
@@ -2705,7 +2792,8 @@ class InteractionService:
 
         audit_new_values: dict = {
             "forwarded_interaction_id": original.interaction_id,
-            "client_id": client.client_id,
+            "client_id": client.client_id if client is not None else None,
+            "category_id": category.category_id if category is not None else None,
             "recipient_user_ids": [r.user_id for r in recipients if r.user_id is not None],
             "recipient_emails": [r.email for r in recipients if r.user_id is None],
             "distribution_list_ids": list(request.distribution_list_ids),
