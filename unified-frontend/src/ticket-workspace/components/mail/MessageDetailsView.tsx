@@ -240,9 +240,14 @@ function Bubble({ data }: { data: BubbleData }) {
           dangerouslySetInnerHTML={{ __html: renderedBody }}
         />
         {isOverflowing && <ShowMoreToggle isExpanded={isExpanded} onToggle={toggle} />}
-        {data.attachments && data.attachments.length > 0 && (
+        {(() => {
+          // Inline/embedded images (e.g. a signature logo referenced
+          // via cid: above) already render inside the body via
+          // resolveCidImagesForDisplay — don't list them again here.
+          const visibleAttachments = data.attachments?.filter((a) => !a.is_inline) ?? [];
+          return visibleAttachments.length > 0 && (
           <div className="mt-3 flex flex-col gap-1.5">
-            {data.attachments.map((a) => (
+            {visibleAttachments.map((a) => (
               <a
                 key={a.id}
                 href={a.download_url}
@@ -263,7 +268,8 @@ function Bubble({ data }: { data: BubbleData }) {
               </a>
             ))}
           </div>
-        )}
+          );
+        })()}
       </div>
     </div>
   );

@@ -104,6 +104,38 @@ def body_references_inline_attachment(html: str) -> bool:
     return "cid:" in html
 
 
+def _normalize_content_id(raw: str) -> str:
+    """
+    Normalizes a Content-ID for comparison: strips surrounding `<>`
+    (present in raw MIME headers, sometimes echoed by mail clients
+    inside an `<img src="cid:...">` value too) and lowercases, since
+    Content-ID matching must be case-insensitive and bracket-tolerant
+    per RFC 2392 — two systems disagreeing only on case/brackets still
+    refer to the same resource.
+    """
+
+    return raw.strip().strip("<>").lower()
+
+
+def _extract_referenced_cid_targets(html: str) -> set[str]:
+    """
+    Collects the normalized cid: targets every <img> tag in an inbound
+    HTML body actually references (e.g. `<img src="cid:image001.jpg">`
+    -> "image001.jpg"). Used as a second, independent signal alongside
+    Graph's own `isInline` flag when classifying an attachment as
+    inline — see build_upload_files_from_graph_attachments below.
+    """
+
+    targets: set[str] = set()
+
+    for img in BeautifulSoup(html, "html.parser").find_all("img", src=True):
+        src = img["src"].strip()
+        if src.lower().startswith("cid:"):
+            targets.add(_normalize_content_id(src[len("cid:"):]))
+
+    return targets
+
+
 def _extract_header(
     payload: IncomingMailPayload, header_name: str
 ) -> str | None:
@@ -286,6 +318,7 @@ class _GraphAttachmentUploadFile:
 
 def build_upload_files_from_graph_attachments(
     attachments: list[GraphAttachmentPayload],
+    html_body: str | None = None,
 ) -> list[_GraphAttachmentUploadFile]:
     """
     Maps Graph's raw attachment list (GraphMailProviderClient.
@@ -333,6 +366,22 @@ def build_upload_files_from_graph_attachments(
     like any other of its fields — no second, parallel attachment
     mechanism for this case.
 
+    `html_body`, when provided, is the message's own raw HTML — an
+    attachment is also treated as inline when the body's own
+    `<img src="cid:{contentId}">` references it, even when Graph's own
+    `isInline` flag reports False for it. This matters because Graph's
+    `isInline` is itself only a heuristic derived from the original
+    MIME `Content-Disposition` header and is not reliable across every
+    sending client/relay — the same signature/logo image can arrive
+    with isInline=True on one message and isInline=False on another,
+    even though both are genuinely referenced by the HTML body's own
+    cid: image. Matching is done purely via the Content-ID <-> cid:
+    relationship (case/bracket-normalized, see
+    _extract_referenced_cid_targets/_normalize_content_id above) —
+    never by filename, sender, or a blanket "hide every image"
+    shortcut, so a genuine image *attachment* (not referenced by the
+    body at all) is still stored and listed normally.
+
     Defensively pre-validates size/type against AttachmentService's
     own existing limits and drops (logging) anything that would fail
     those checks, rather than letting a single bad attachment raise
@@ -343,15 +392,23 @@ def build_upload_files_from_graph_attachments(
     otherwise raise for the whole batch instead of just trimming it).
     """
 
+    referenced_cid_targets = (
+        _extract_referenced_cid_targets(html_body) if html_body else set()
+    )
+
     files: list[_GraphAttachmentUploadFile] = []
     dropped = 0
 
     for attachment in attachments:
         display_name = attachment.name or "attachment"
 
+        is_referenced_in_body = bool(
+            attachment.contentId
+            and _normalize_content_id(attachment.contentId) in referenced_cid_targets
+        )
         is_inline_image = bool(
-            attachment.isInline
-            and attachment.contentId
+            attachment.contentId
+            and (attachment.isInline or is_referenced_in_body)
             and (attachment.contentType or "").startswith("image/")
         )
 

@@ -8,11 +8,16 @@ interface AttachmentListProps {
 }
 
 export function AttachmentList({ attachments, className = "" }: AttachmentListProps) {
-  if (attachments.length === 0) return null;
+  // Inline/embedded images (e.g. a signature logo referenced via
+  // cid:) already render inside the message body itself — listing
+  // them here too would show the same image twice.
+  const visibleAttachments = attachments.filter((attachment) => !attachment.is_inline);
+
+  if (visibleAttachments.length === 0) return null;
 
   return (
     <div className={`flex flex-col gap-2 ${className}`}>
-      {attachments.map((attachment) => {
+      {visibleAttachments.map((attachment) => {
         const isExternal = Boolean(attachment.is_external_link);
         const Icon = isExternal ? ExternalLink : iconForFilename(attachment.filename);
         const isImage = !isExternal && isImageAttachment(attachment);

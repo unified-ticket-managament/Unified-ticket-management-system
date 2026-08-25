@@ -252,7 +252,7 @@ async def _poll_one_mailbox(
         ):
             try:
                 attachments = await mail_provider_client.fetch_message_attachments(payload.id)
-                files = build_upload_files_from_graph_attachments(attachments)
+                files = build_upload_files_from_graph_attachments(attachments, payload.body.content)
             except Exception:
                 logger.exception(
                     "Graph poll: failed to fetch attachments for message %s — "

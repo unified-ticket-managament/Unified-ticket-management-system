@@ -786,6 +786,179 @@ def test_build_upload_files_from_graph_attachments_caps_at_max_files():
 
 
 # ---------------------------------------------------------
+# build_upload_files_from_graph_attachments + html_body — regression
+# coverage for the "logo sometimes renders inline, sometimes shows up
+# as image001.jpg" bug: Graph's own `isInline` flag is an unreliable
+# heuristic, so an attachment referenced by the body's own
+# <img src="cid:..."> must be classified inline even when Graph
+# reports isInline=False for it.
+# ---------------------------------------------------------
+
+
+def test_build_upload_files_from_graph_attachments_body_reference_classifies_inline_jpeg():
+    html = '<p>Regards</p><img src="cid:image001.jpg@01D9F2A1">'
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="image001.jpg",
+                contentType="image/jpeg",
+                isInline=False,
+                contentId="image001.jpg@01D9F2A1",
+            )
+        ],
+        html,
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is True
+    assert files[0].content_id == "image001.jpg@01D9F2A1"
+
+
+def test_build_upload_files_from_graph_attachments_body_reference_classifies_inline_png():
+    html = '<img src="cid:logo@company.example">'
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="logo.png",
+                contentType="image/png",
+                isInline=False,
+                contentId="logo@company.example",
+            )
+        ],
+        html,
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is True
+    assert files[0].content_id == "logo@company.example"
+
+
+def test_build_upload_files_from_graph_attachments_body_reference_ignores_filename_mismatch():
+    """
+    Matching is purely via the Content-ID <-> cid: relationship — a
+    body img referencing a *different* cid than an attachment's own
+    filename would suggest must still resolve correctly, and a
+    completely different filename must not confuse the match.
+    """
+
+    html = '<img src="cid:abc123@example.com">'
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="unrelated-name.png",
+                contentType="image/png",
+                isInline=False,
+                contentId="abc123@example.com",
+            )
+        ],
+        html,
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is True
+    assert files[0].content_id == "abc123@example.com"
+
+
+def test_build_upload_files_from_graph_attachments_not_referenced_stays_a_genuine_attachment():
+    """
+    An attachment with a contentId that simply isn't mentioned in the
+    body at all (isInline also False) must remain a normal,
+    downloadable attachment — no regression from broadening
+    classification to also consider the body.
+    """
+
+    html = "<p>No images referenced here.</p>"
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="photo.jpg",
+                contentType="image/jpeg",
+                isInline=False,
+                contentId="photo123@example.com",
+            )
+        ],
+        html,
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is False
+    assert files[0].content_id is None
+
+
+def test_build_upload_files_from_graph_attachments_case_and_bracket_insensitive_match():
+    html = '<img src="CID:<Image001.JPG@01D9F2A1>">'
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="image001.jpg",
+                contentType="image/jpeg",
+                isInline=False,
+                contentId="image001.jpg@01d9f2a1",
+            )
+        ],
+        html,
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is True
+
+
+def test_build_upload_files_from_graph_attachments_multiple_inline_and_genuine_mixed():
+    html = (
+        '<img src="cid:logo1@x"><p>body</p><img src="cid:logo2@x">'
+    )
+
+    attachments = [
+        _graph_attachment(
+            name="logo1.png", contentType="image/png", isInline=False, contentId="logo1@x"
+        ),
+        _graph_attachment(
+            name="logo2.png", contentType="image/png", isInline=True, contentId="logo2@x"
+        ),
+        _graph_attachment(
+            name="report.pdf", contentType="application/pdf", isInline=False, contentId=None
+        ),
+    ]
+
+    files = build_upload_files_from_graph_attachments(attachments, html)
+
+    assert len(files) == 3
+    by_name = {f.filename: f for f in files}
+    assert by_name["logo1.png"].is_inline is True
+    assert by_name["logo2.png"].is_inline is True
+    assert by_name["report.pdf"].is_inline is False
+    assert by_name["report.pdf"].content_id is None
+
+
+def test_build_upload_files_from_graph_attachments_missing_html_body_falls_back_to_graph_isinline():
+    """
+    No html_body available at all (e.g. a plain-text message) must
+    behave exactly as before this fix — classification falls back to
+    Graph's own isInline flag alone.
+    """
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="image001.jpg",
+                contentType="image/jpeg",
+                isInline=False,
+                contentId="image001.jpg@01D9F2A1",
+            )
+        ]
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is False
+    assert files[0].content_id is None
+
+
+# ---------------------------------------------------------
 # validate_attachment_type (validators.py) — extension is the real
 # gate, declared content_type is advisory only
 # ---------------------------------------------------------
