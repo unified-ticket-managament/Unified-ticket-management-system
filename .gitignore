@@ -26,3 +26,6 @@ node_modules/
 Thumbs.db
 
 unified-backend/backend_audit.log
+
+# Production data backups (contain real PII, password hashes, tokens) — never commit
+unified-backend/db_migration_export/
