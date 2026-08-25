@@ -403,7 +403,11 @@ export function ReplyComposer({
               }
               onClick={handleSend}
             >
-              <Send className="h-3.5 w-3.5" />
+              {isSending ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Send className="h-3.5 w-3.5" />
+              )}
               Send Reply
             </Button>
           </div>

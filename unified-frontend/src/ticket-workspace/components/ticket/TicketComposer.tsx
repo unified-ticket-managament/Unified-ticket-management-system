@@ -110,6 +110,15 @@ export function TicketComposer({
   // so a deleted/replaced image can be filtered back out at Send
   // time via filterLiveInlineImageIds — see handleSend below.
   const pastedImageInteractionIdsRef = useRef<TrackedInlineImage[]>([]);
+  // One Send idempotency key per in-progress reply, not one per
+  // click — a double-click (or a manual retry after a failure) must
+  // reuse the same key so the backend's own dedup (a unique index on
+  // the key) can actually collapse them. Unlike a Compose/Reply
+  // modal, this composer stays mounted across sends (fields just
+  // reset in place), so the key is explicitly regenerated after a
+  // successful send and on ticket change, below — never on every
+  // handleSend call.
+  const idempotencyKeyRef = useRef<string>(generateIdempotencyKey());
   const [noteSubject, setNoteSubject] = useState("");
   const [contacts, setContacts] = useState<ClientContact[]>([]);
   const [selectedTo, setSelectedTo] = useState("");
@@ -240,6 +249,7 @@ export function TicketComposer({
   // ticket changes — the agent can still override it below.
   useEffect(() => {
     setSelectedTo(fromEmail ?? "");
+    idempotencyKeyRef.current = generateIdempotencyKey();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTicket?.ticket_id]);
 
@@ -265,7 +275,12 @@ export function TicketComposer({
   if (!activeTicket) return null;
 
   const isReply = activeMode === "reply";
-  const isLoading = isReply ? isReplyLoading : isNoteLoading;
+  // For Reply, this must also cover the attachment pre-upload step
+  // handleSend runs before runReply itself starts (see below) — the
+  // Send button's disabled state is bound to isLoading, and without
+  // isUploadLoading here it stayed clickable for the whole upload,
+  // letting a second click fire a second, differently-keyed send.
+  const isLoading = isReply ? isReplyLoading || isUploadLoading : isNoteLoading;
   const isTicketClosed = activeTicket.current_status === "CLOSED";
 
   // ticket:reply and communication:reply_internal are independent UI gates —
@@ -331,7 +346,7 @@ export function TicketComposer({
           distribution_list_ids: replyDistributionListIds,
           attachment_source_interaction_id: attachmentSourceInteractionId,
           inline_image_interaction_ids: liveInlineImageInteractionIds,
-          idempotency_key: generateIdempotencyKey(),
+          idempotency_key: idempotencyKeyRef.current,
         })
       : await runNote(activeTicket.ticket_id, {
           note: plainMessage,
@@ -352,6 +367,7 @@ export function TicketComposer({
       } else {
         pushToast("Internal note added.", "success");
       }
+      if (isReply) idempotencyKeyRef.current = generateIdempotencyKey();
       pastedImageInteractionIdsRef.current = [];
       setMessageHtml("");
       setNoteSubject("");

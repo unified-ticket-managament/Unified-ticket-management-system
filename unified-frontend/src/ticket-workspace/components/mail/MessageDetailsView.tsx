@@ -353,7 +353,8 @@ interface MessageDetailsViewProps {
   onSendDraft: (
     interactionId: string,
     toEmails?: string[],
-    distributionListIds?: string[]
+    distributionListIds?: string[],
+    idempotencyKey?: string
   ) => Promise<InteractionReplyResponse | null>;
   onDiscardDraft: (interactionId: string) => Promise<boolean>;
   onUploadDraftAttachment: (interactionId: string, files: File[]) => Promise<AttachmentMeta[] | null>;
@@ -406,6 +407,18 @@ export function MessageDetailsView({
   // {interactionId, contentId} pairs so a deleted/replaced image can
   // be filtered back out at Send time via filterLiveInlineImageIds.
   const pastedImageInteractionIdsRef = useRef<TrackedInlineImage[]>([]);
+  // One Send idempotency key per open thread, not one per click — a
+  // double-click (or a manual retry after a failure) must reuse the
+  // same key so the backend's own dedup (a unique index on the key)
+  // can actually collapse them. This component instance is reused
+  // across different opened emails (InboxPage.tsx renders it with no
+  // `key` prop), so the key is explicitly regenerated whenever the
+  // open thread changes (effect below) and after a successful send —
+  // never left stable across two different logical messages.
+  const idempotencyKeyRef = useRef<string>(generateIdempotencyKey());
+  useEffect(() => {
+    idempotencyKeyRef.current = generateIdempotencyKey();
+  }, [email.interaction_id]);
 
   // Retry Send (P1) — reuses the persisted envelope server-side, see
   // InteractionService.retry_failed_send. Refreshes just this one
@@ -549,7 +562,7 @@ export function MessageDetailsView({
 
   const { run: runReply, isLoading: isReplying } = useApiAction(replyToInteraction);
   const { run: runTicketReply, isLoading: isReplyingTicket } = useApiAction(replyToClient);
-  const { run: runUploadAttachment } = useApiAction(uploadAttachment);
+  const { run: runUploadAttachment, isLoading: isUploadingAttachment } = useApiAction(uploadAttachment);
   const { run: runCreate, isLoading: isCreating } = useApiAction(createTicketFromInteraction, {
     successMessage: "Ticket created from this email.",
   });
@@ -637,9 +650,10 @@ export function MessageDetailsView({
         attachment_source_interaction_id: attachmentSourceInteractionId,
         reply_all: replyMode === "replyAll",
         inline_image_interaction_ids: liveInlineImageInteractionIds,
-        idempotency_key: generateIdempotencyKey(),
+        idempotency_key: idempotencyKeyRef.current,
       });
       if (result) {
+        idempotencyKeyRef.current = generateIdempotencyKey();
         pastedImageInteractionIdsRef.current = [];
         showUndoSendToast(pushToast, result.interaction_id, "Reply sent.");
         setReplyMode(null);
@@ -683,9 +697,10 @@ export function MessageDetailsView({
       to_emails: payload.to,
       distribution_list_ids: payload.distributionListIds,
       reply_all: replyMode === "replyAll",
-      idempotency_key: generateIdempotencyKey(),
+      idempotency_key: idempotencyKeyRef.current,
     });
     if (result) {
+      idempotencyKeyRef.current = generateIdempotencyKey();
       setReplyMode(null);
       onRefreshList();
       setSelectedEmail({
@@ -738,8 +753,14 @@ export function MessageDetailsView({
   }
 
   async function handleSendDraft(toEmails?: string[], distributionListIds?: string[]) {
-    const result = await onSendDraft(email.interaction_id, toEmails, distributionListIds);
+    const result = await onSendDraft(
+      email.interaction_id,
+      toEmails,
+      distributionListIds,
+      idempotencyKeyRef.current
+    );
     if (result) {
+      idempotencyKeyRef.current = generateIdempotencyKey();
       setReplyMode(null);
       onRefreshList();
     }
@@ -1111,7 +1132,7 @@ export function MessageDetailsView({
           initialMessage={hasDraft ? email.draft_message ?? "" : ""}
           isTicketed={isTicketed}
           draftAttachments={email.draft_attachments}
-          isSending={isReplying || isReplyingTicket}
+          isSending={isReplying || isReplyingTicket || isUploadingAttachment}
           onCancel={() => setReplyMode(null)}
           onSend={handleSend}
           onSaveDraft={handleSaveDraft}

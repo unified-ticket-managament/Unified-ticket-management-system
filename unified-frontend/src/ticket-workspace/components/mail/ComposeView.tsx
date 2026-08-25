@@ -265,6 +265,13 @@ export function ComposeView({
   // {interactionId, contentId} pairs so a deleted/replaced image can
   // be filtered back out at Send time via filterLiveInlineImageIds.
   const pastedImageInteractionIdsRef = useRef<TrackedInlineImage[]>([]);
+  // One Send idempotency key per mounted composer instance, not one
+  // per click — a double-click (or a manual retry after a failed
+  // send) must reuse the same key so the backend's own dedup (a
+  // unique index on the key) can actually collapse them. useRef's
+  // initial-value argument only takes effect on the first render, so
+  // this is still just one generated key per composer instance.
+  const idempotencyKeyRef = useRef<string>(generateIdempotencyKey());
 
   async function handleComposeImageUpload(file: File) {
     const res = await uploadComposeInlineImage(file);
@@ -513,7 +520,7 @@ export function ComposeView({
         files,
         bodyHtml: richBodyHtml,
         inlineImageInteractionIds: liveInlineImageInteractionIds,
-        idempotencyKey: generateIdempotencyKey(),
+        idempotencyKey: idempotencyKeyRef.current,
       });
       if (result) {
         pastedImageInteractionIdsRef.current = [];
@@ -539,7 +546,7 @@ export function ComposeView({
       files,
       inlineImageInteractionIds: liveInlineImageInteractionIds,
       distributionListIds,
-      idempotencyKey: generateIdempotencyKey(),
+      idempotencyKey: idempotencyKeyRef.current,
     });
     if (result) {
       pastedImageInteractionIdsRef.current = [];

@@ -167,11 +167,20 @@ export async function uploadDraftInlineImage(
 export async function sendDraft(
   interactionId: string,
   toEmails?: string[],
-  distributionListIds?: string[]
+  distributionListIds?: string[],
+  // Client-generated Send idempotency key — see ComposeEmailPayload.
+  // idempotencyKey above for the same additive contract. Previously
+  // missing here entirely even though the backend's DraftSendRequest
+  // already supports it.
+  idempotencyKey?: string
 ): Promise<InteractionReplyResponse> {
   const { data } = await apiClient.post<InteractionReplyResponse>(
     `/inbox/${interactionId}/draft/send`,
-    { to_emails: toEmails ?? [], distribution_list_ids: distributionListIds ?? [] }
+    {
+      to_emails: toEmails ?? [],
+      distribution_list_ids: distributionListIds ?? [],
+      idempotency_key: idempotencyKey,
+    }
   );
   return data;
 }

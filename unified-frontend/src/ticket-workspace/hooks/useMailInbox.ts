@@ -1228,9 +1228,10 @@ export function useMailInbox() {
   async function sendDraftMessage(
     interactionId: string,
     toEmails?: string[],
-    distributionListIds?: string[]
+    distributionListIds?: string[],
+    idempotencyKey?: string
   ) {
-    const result = await runSendDraft(interactionId, toEmails, distributionListIds);
+    const result = await runSendDraft(interactionId, toEmails, distributionListIds, idempotencyKey);
     if (result && selectedEmail?.interaction_id === interactionId) {
       // Sending a reply isn't "opening to read" — don't let this
       // refresh silently re-mark an explicitly-unread thread as read.
