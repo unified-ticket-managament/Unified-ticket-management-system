@@ -46,7 +46,14 @@ const VIEW_LABELS: Record<MailViewKey, string> = {
 // presentational consumer of it.
 export function InboxPage() {
   const mail = useMailInbox();
-  const { selectedEmail, setSelectedEmail } = useWorkflowContext();
+  // Unfiltered category list — deliberately NOT mail.categories, which
+  // is scoped down to [] for Team Lead/Staff for the Mail list-filter
+  // dropdown's own purposes (redundant there, since those roles are
+  // already single-category-scoped everywhere else). Compose's "From"
+  // field needs every category with an inbox_email regardless of role
+  // — the backend's own ensure_can_compose_for_category is the real
+  // gate, same convention as the client side of this same picker.
+  const { selectedEmail, setSelectedEmail, categories: allCategories } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const isDesktop = useIsDesktopViewport();
   const [composeOpen, setComposeOpen] = useState(false);
@@ -194,7 +201,8 @@ export function InboxPage() {
 
   async function handleForwardSend(payload: {
     interactionId: string;
-    clientId: string;
+    clientId?: string;
+    categoryId?: string;
     recipientUserIds?: string[];
     recipientEmails?: string[];
     distributionListIds?: string[];
@@ -213,7 +221,8 @@ export function InboxPage() {
   }
 
   async function handleComposeSend(payload: {
-    clientId: string;
+    clientId?: string;
+    categoryId?: string;
     toEmail?: string;
     subject: string;
     message: string;
@@ -344,6 +353,7 @@ export function InboxPage() {
     <ComposeView
       variant="panel"
       clients={mail.clients}
+      categories={allCategories}
       clientsLoading={mail.clientsLoading}
       clientsError={mail.clientsError}
       initialValues={composeInitialValues}
@@ -421,6 +431,7 @@ export function InboxPage() {
             ) : composeOpen ? (
               <ComposeView
                 clients={mail.clients}
+                categories={allCategories}
                 clientsLoading={mail.clientsLoading}
                 clientsError={mail.clientsError}
                 initialValues={composeInitialValues}

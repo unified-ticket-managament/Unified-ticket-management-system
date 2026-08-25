@@ -639,7 +639,7 @@ class InboxService:
             message = ""
             try:
                 own_payload = EmailPayload.model_validate(email.payload)
-                client_name = own_payload.client_name or "Unknown"
+                client_name = own_payload.client_name or own_payload.category_name or "Unknown"
                 subject = own_payload.subject
                 message = own_payload.body
             except ValidationError:
@@ -695,7 +695,7 @@ class InboxService:
             if root is not None:
                 try:
                     payload = EmailPayload.model_validate(root.payload)
-                    client_name = payload.client_name or "Unknown"
+                    client_name = payload.client_name or payload.category_name or "Unknown"
                     subject = payload.subject
                 except ValidationError:
                     logger.warning(
@@ -749,7 +749,7 @@ class InboxService:
             if root is not None:
                 try:
                     payload = EmailPayload.model_validate(root.payload)
-                    client_name = payload.client_name or "Unknown"
+                    client_name = payload.client_name or payload.category_name or "Unknown"
                     subject = payload.subject
                 except ValidationError:
                     logger.warning(

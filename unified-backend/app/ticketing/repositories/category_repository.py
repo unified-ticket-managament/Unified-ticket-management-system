@@ -1,5 +1,7 @@
 # category_repository.py
 
+from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import Category
@@ -19,6 +21,12 @@ class CategoryRepository:
             select(Category).order_by(Category.category_name)
         )
         return list(result.scalars().all())
+
+    async def get_by_id(self, category_id: UUID) -> Category | None:
+        result = await self.db.execute(
+            select(Category).where(Category.category_id == category_id)
+        )
+        return result.scalar_one_or_none()
 
     async def exists(self, category_name: str) -> bool:
         """

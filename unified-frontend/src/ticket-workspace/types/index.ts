@@ -770,7 +770,8 @@ export interface ReplyRequest {
 
 export interface ComposeEmailResponse {
   interaction_id: string;
-  client_id: string;
+  client_id: string | null;
+  category_id: string | null;
   created_at: string;
   attachments: AttachmentMeta[];
   message: string;
