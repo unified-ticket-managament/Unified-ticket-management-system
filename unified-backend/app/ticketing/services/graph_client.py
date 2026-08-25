@@ -11,6 +11,7 @@
 # get_mail_provider_client() is the single place that decides whether
 # this class or MockMailProviderClient backs the rest of the app.
 
+import base64
 import html
 import logging
 from datetime import datetime
@@ -19,11 +20,20 @@ import httpx
 
 from app.core.config import Settings
 from app.ticketing.schemas.mail_integration import GraphAttachmentPayload, IncomingMailPayload
-from app.ticketing.schemas.payloads import OutboundEnvelope
+from app.ticketing.schemas.payloads import EnvelopeAttachment, OutboundEnvelope
 from app.ticketing.services.graph_auth import GraphAuthClient
+from app.ticketing.services.graph_retry import call_with_graph_retry
 from app.ticketing.services.mail_provider import MailProviderClient, MailProviderSendResult
+from app.ticketing.storage.base import StorageService
 
 logger = logging.getLogger(__name__)
+
+# Graph's documented per-request chunk ceiling for an upload-session
+# PUT. Each attachment landing here is already known to be within
+# Graph's real ~150MB attachment ceiling (see attachment_service.py's
+# GRAPH_INLINE_ATTACHMENT_MAX_BYTES comment) — this only controls how
+# many PUT calls one such attachment is split across.
+UPLOAD_SESSION_CHUNK_SIZE = 4 * 1024 * 1024
 
 # Fields requested on every message fetch — matches IncomingMailPayload's
 # own fields one-for-one, plus internetMessageHeaders (only returned when
@@ -37,16 +47,51 @@ MESSAGE_SELECT_FIELDS = (
 
 class GraphAPIError(Exception):
     """Raised when Graph returns a non-2xx response to a mail send/fetch
-    call, after authentication already succeeded."""
+    call, after authentication already succeeded.
 
-    def __init__(self, status_code: int, detail: str):
+    `operation` (Phase 2 hardening) is the same short operation name
+    already passed to call_with_graph_retry at each raise site
+    (e.g. "createDraft", "addAttachment", "sendDraft") — lets a caller
+    several layers up (OutboundDispatchError, then
+    InteractionService._dispatch_and_record's stored dispatch_error)
+    distinguish which Graph call actually failed, instead of collapsing
+    every failure into one flat string. Optional/defaulted so every
+    pre-existing raise site (and every inbound-fetch one, which this
+    class is also used for) stays valid without updating.
+
+    `orphaned_draft_id` is set post-hoc (never via the constructor) by
+    _send_via_draft when a failure happens after a real Graph draft was
+    already created — see that method's own try/except.
+    """
+
+    def __init__(self, status_code: int, detail: str, *, operation: str | None = None):
         self.status_code = status_code
         self.detail = detail
+        self.operation = operation
+        self.orphaned_draft_id: str | None = None
         super().__init__(f"Graph API error {status_code}: {detail}")
 
 
 def _build_recipients(addresses: list[str]) -> list[dict]:
     return [{"emailAddress": {"address": address}} for address in addresses]
+
+
+def _split_envelope_attachments(
+    attachments: list[EnvelopeAttachment],
+) -> tuple[list[EnvelopeAttachment], list[EnvelopeAttachment]]:
+    """
+    Splits an envelope's attachments into the ones small enough to
+    embed directly (content_base64 set — see
+    attachment_service.load_envelope_attachments) and the ones that
+    need a real Graph upload session (content_base64 unset,
+    storage_key set instead). Every attachment reaching this function
+    is one or the other, never neither/both — load_envelope_attachments
+    is the only place these are constructed.
+    """
+
+    small = [a for a in attachments if a.content_base64 is not None]
+    large = [a for a in attachments if a.content_base64 is None]
+    return small, large
 
 
 def _build_graph_attachments(attachments: list) -> list[dict]:
@@ -176,16 +221,42 @@ def _build_reply_action_body(envelope: OutboundEnvelope) -> dict:
 
 
 class GraphMailProviderClient(MailProviderClient):
-    def __init__(self, auth_client: GraphAuthClient, mailbox_address: str, api_base_url: str):
+    def __init__(
+        self,
+        auth_client: GraphAuthClient,
+        mailbox_address: str,
+        api_base_url: str,
+        storage_service: StorageService | None = None,
+    ):
         self._auth_client = auth_client
         self._mailbox_address = mailbox_address
         self._api_base_url = api_base_url.rstrip("/")
+        # Only needed for large (over the inline-embed threshold)
+        # attachments — see _add_large_attachment. None is fine for
+        # every send with no large attachments (the common case) and
+        # for every inbound-only use of this client (fetch/list/
+        # subscription), none of which ever reach that code path.
+        self._storage_service = storage_service
 
     async def _authorized_headers(self) -> dict[str, str]:
         token = await self._auth_client.get_token()
         return {"Authorization": f"Bearer {token}"}
 
+    async def _force_refresh_token(self) -> None:
+        await self._auth_client.get_token(force_refresh=True)
+
     async def send_email(self, envelope: OutboundEnvelope) -> MailProviderSendResult:
+        small_attachments, large_attachments = _split_envelope_attachments(
+            envelope.attachments
+        )
+
+        if large_attachments:
+            # sendMail/reply's inline-JSON attachments can't carry
+            # anything this big — build a real draft message instead,
+            # attach the small files directly and the large ones via
+            # a genuine Graph upload session, then send the draft.
+            return await self._send_via_draft(envelope, small_attachments, large_attachments)
+
         if envelope.reply_to_provider_message_id:
             return await self._send_reply(envelope)
 
@@ -193,12 +264,27 @@ class GraphMailProviderClient(MailProviderClient):
 
         url = f"{self._api_base_url}/users/{self._mailbox_address}/sendMail"
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                url,
-                headers=await self._authorized_headers(),
-                json={"message": message, "saveToSentItems": True},
-            )
+        async def _attempt() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.post(
+                    url,
+                    headers=await self._authorized_headers(),
+                    json={"message": message, "saveToSentItems": True},
+                )
+
+        # SEND policy: sendMail returns 202 with no body — a 5xx or a
+        # transport failure is genuinely ambiguous about whether Graph
+        # already accepted the send, so neither is retried here (see
+        # graph_retry.py's module docstring). Only 429 (a definitive
+        # synchronous rejection) and 401 (handled via token refresh)
+        # are retried.
+        response = await call_with_graph_retry(
+            _attempt,
+            operation="sendMail",
+            force_refresh_token=self._force_refresh_token,
+            retry_5xx=False,
+            retry_on_transport_error=False,
+        )
 
         if response.status_code != 202:
             logger.error(
@@ -208,7 +294,7 @@ class GraphMailProviderClient(MailProviderClient):
                 envelope.subject,
                 response.text,
             )
-            raise GraphAPIError(response.status_code, response.text)
+            raise GraphAPIError(response.status_code, response.text, operation="sendMail")
 
         logger.info(
             "graph provider send: message_id=%s to=%s subject=%r",
@@ -253,12 +339,24 @@ class GraphMailProviderClient(MailProviderClient):
             f"{envelope.reply_to_provider_message_id}/{action}"
         )
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                url,
-                headers=await self._authorized_headers(),
-                json=_build_reply_action_body(envelope),
-            )
+        async def _attempt() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.post(
+                    url,
+                    headers=await self._authorized_headers(),
+                    json=_build_reply_action_body(envelope),
+                )
+
+        # SEND policy — same reasoning as send_email's sendMail call:
+        # reply/replyAll also returns 202 with no body, so a 5xx/
+        # transport failure is never retried, only 429/401.
+        response = await call_with_graph_retry(
+            _attempt,
+            operation=action,
+            force_refresh_token=self._force_refresh_token,
+            retry_5xx=False,
+            retry_on_transport_error=False,
+        )
 
         if response.status_code != 202:
             logger.error(
@@ -270,7 +368,7 @@ class GraphMailProviderClient(MailProviderClient):
                 envelope.subject,
                 response.text,
             )
-            raise GraphAPIError(response.status_code, response.text)
+            raise GraphAPIError(response.status_code, response.text, operation=action)
 
         logger.info(
             "graph provider %s: reply_to=%s message_id=%s to=%s subject=%r",
@@ -289,14 +387,401 @@ class GraphMailProviderClient(MailProviderClient):
             status="SENT",
         )
 
+    # ------------------------------------------------------------
+    # Large-attachment path: create a real draft, attach files to
+    # it (small ones inline, large ones via a genuine Graph upload
+    # session), then send the draft. Used only when send_email finds
+    # at least one attachment over the inline-embed threshold — every
+    # send with none takes the sendMail/_send_reply fast path above,
+    # completely unchanged.
+    # ------------------------------------------------------------
+
+    async def _send_via_draft(
+        self,
+        envelope: OutboundEnvelope,
+        small_attachments: list[EnvelopeAttachment],
+        large_attachments: list[EnvelopeAttachment],
+    ) -> MailProviderSendResult:
+        if envelope.reply_to_provider_message_id:
+            draft_id = await self._create_reply_draft(envelope)
+        else:
+            draft_id = await self._create_new_draft(envelope)
+
+        try:
+            for attachment in small_attachments:
+                await self._add_small_attachment(draft_id, attachment)
+
+            for attachment in large_attachments:
+                await self._add_large_attachment(draft_id, attachment)
+
+            await self._send_draft(draft_id)
+        except GraphAPIError as exc:
+            # Phase 2 hardening: draft_id is only known here, inside
+            # this method — a failure past this point means Graph
+            # genuinely holds a real, never-sent draft. Annotating it
+            # onto the exception (rather than swallowing/re-raising a
+            # new one) lets _dispatch_and_record record this
+            # distinctly from "never reached Graph at all".
+            exc.orphaned_draft_id = draft_id
+            raise
+
+        logger.info(
+            "graph provider send (draft, %d large attachment(s)): draft_id=%s "
+            "message_id=%s to=%s subject=%r",
+            len(large_attachments),
+            draft_id,
+            envelope.message_id,
+            envelope.to_email,
+            envelope.subject,
+        )
+
+        # Unlike sendMail/_send_reply (which return 202 with no body,
+        # so envelope.message_id is the only id ever known), this
+        # path genuinely creates a real Graph message first — its id
+        # is known and worth returning instead of falling back to our
+        # own envelope.message_id.
+        return MailProviderSendResult(
+            provider_message_id=draft_id,
+            status="SENT",
+        )
+
+    async def _create_new_draft(self, envelope: OutboundEnvelope) -> str:
+        """
+        Creates a plain (non-reply) draft message — same shape as
+        _build_send_mail_message, minus attachments (added afterward,
+        individually, by the caller: a not-yet-created message can't
+        have its large attachments' upload sessions targeted at it).
+        """
+
+        message = _build_send_mail_message(envelope)
+        message.pop("attachments", None)
+
+        url = f"{self._api_base_url}/users/{self._mailbox_address}/messages"
+
+        async def _attempt() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.post(
+                    url,
+                    headers=await self._authorized_headers(),
+                    json=message,
+                )
+
+        response = await call_with_graph_retry(
+            _attempt,
+            operation="createDraft",
+            force_refresh_token=self._force_refresh_token,
+        )
+
+        if response.status_code not in (200, 201):
+            logger.error(
+                "Graph create-draft failed: status=%s to=%s subject=%r body=%s",
+                response.status_code,
+                envelope.to_email,
+                envelope.subject,
+                response.text,
+            )
+            raise GraphAPIError(response.status_code, response.text, operation="createDraft")
+
+        return response.json()["id"]
+
+    async def _create_reply_draft(self, envelope: OutboundEnvelope) -> str:
+        """
+        Creates a real reply/replyAll draft via Graph's createReply/
+        createReplyAll action (as opposed to the direct reply/replyAll
+        action _send_reply uses, which sends immediately and returns
+        no id) — the draft can then have attachments added to it
+        before being sent for real via _send_draft.
+
+        createReply/createReplyAll auto-populate recipients from the
+        original message (reply: the original sender; replyAll: the
+        original message's own To+Cc too) — this platform always
+        resolves the correct To/Cc/Bcc into the envelope itself before
+        dispatch (including any agent-picked "To" override), so the
+        draft's recipients are explicitly overwritten via a follow-up
+        PATCH rather than trusting either action's own defaults, the
+        same "envelope is authoritative" contract _build_reply_action_
+        body already enforces for the non-draft reply path.
+        """
+
+        action = "createReplyAll" if envelope.reply_all else "createReply"
+        url = (
+            f"{self._api_base_url}/users/{self._mailbox_address}/messages/"
+            f"{envelope.reply_to_provider_message_id}/{action}"
+        )
+
+        comment = (
+            envelope.body_html
+            if envelope.body_html
+            else _plain_text_to_html_comment(envelope.body)
+        )
+
+        async def _attempt() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.post(
+                    url,
+                    headers=await self._authorized_headers(),
+                    json={"comment": comment},
+                )
+
+        response = await call_with_graph_retry(
+            _attempt,
+            operation=action,
+            force_refresh_token=self._force_refresh_token,
+        )
+
+        if response.status_code not in (200, 201):
+            logger.error(
+                "Graph %s (draft) failed: status=%s reply_to=%s to=%s subject=%r body=%s",
+                action,
+                response.status_code,
+                envelope.reply_to_provider_message_id,
+                envelope.to_email,
+                envelope.subject,
+                response.text,
+            )
+            raise GraphAPIError(response.status_code, response.text, operation=action)
+
+        draft_id = response.json()["id"]
+
+        patch_url = f"{self._api_base_url}/users/{self._mailbox_address}/messages/{draft_id}"
+        patch_body = {
+            "toRecipients": _build_recipients([envelope.to_email]),
+            "ccRecipients": _build_recipients(envelope.cc),
+            "bccRecipients": _build_recipients(envelope.bcc),
+        }
+
+        async def _attempt_patch() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.patch(
+                    patch_url,
+                    headers=await self._authorized_headers(),
+                    json=patch_body,
+                )
+
+        patch_response = await call_with_graph_retry(
+            _attempt_patch,
+            operation="draftRecipientPatch",
+            force_refresh_token=self._force_refresh_token,
+        )
+
+        if patch_response.status_code not in (200, 202):
+            logger.error(
+                "Graph draft recipient PATCH failed: status=%s draft_id=%s body=%s",
+                patch_response.status_code,
+                draft_id,
+                patch_response.text,
+            )
+            raise GraphAPIError(
+                patch_response.status_code,
+                patch_response.text,
+                operation="draftRecipientPatch",
+            )
+
+        return draft_id
+
+    async def _add_small_attachment(
+        self, draft_id: str, attachment: EnvelopeAttachment
+    ) -> None:
+        item = _build_graph_attachments([attachment])[0]
+        url = (
+            f"{self._api_base_url}/users/{self._mailbox_address}/messages/"
+            f"{draft_id}/attachments"
+        )
+
+        async def _attempt() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.post(
+                    url,
+                    headers=await self._authorized_headers(),
+                    json=item,
+                )
+
+        response = await call_with_graph_retry(
+            _attempt,
+            operation="addAttachment",
+            force_refresh_token=self._force_refresh_token,
+        )
+
+        if response.status_code not in (200, 201):
+            logger.error(
+                "Graph add-attachment failed: status=%s draft_id=%s filename=%r body=%s",
+                response.status_code,
+                draft_id,
+                attachment.filename,
+                response.text,
+            )
+            raise GraphAPIError(response.status_code, response.text, operation="addAttachment")
+
+    async def _add_large_attachment(
+        self, draft_id: str, attachment: EnvelopeAttachment
+    ) -> None:
+        """
+        Uploads one large (over the inline-embed threshold) attachment
+        to an existing draft via Graph's own chunked upload-session
+        flow: createUploadSession, then a series of PUTs to the
+        returned uploadUrl in UPLOAD_SESSION_CHUNK_SIZE pieces, each
+        carrying a Content-Range header identifying its byte range —
+        Graph assembles the final attachment once the last byte
+        arrives. Per Microsoft's docs, the uploadUrl is already
+        pre-authorized — no Authorization header is sent on the PUTs
+        themselves (a bearer token there would be superfluous, not
+        required).
+        """
+
+        if self._storage_service is None or not attachment.storage_key:
+            raise GraphAPIError(
+                500,
+                f"Cannot send attachment {attachment.filename!r}: no storage "
+                "service available to read its content for a Graph upload "
+                "session.",
+                operation="createUploadSession",
+            )
+
+        data = await self._storage_service.download(object_key=attachment.storage_key)
+        size = len(data)
+
+        attachment_item: dict = {
+            "attachmentType": "file",
+            "name": attachment.filename,
+            "size": size,
+            "contentType": attachment.content_type,
+        }
+        if attachment.is_inline and attachment.content_id:
+            attachment_item["isInline"] = True
+            attachment_item["contentId"] = attachment.content_id
+
+        session_url = (
+            f"{self._api_base_url}/users/{self._mailbox_address}/messages/"
+            f"{draft_id}/attachments/createUploadSession"
+        )
+
+        async def _attempt_session() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.post(
+                    session_url,
+                    headers=await self._authorized_headers(),
+                    json={"AttachmentItem": attachment_item},
+                )
+
+        session_response = await call_with_graph_retry(
+            _attempt_session,
+            operation="createUploadSession",
+            force_refresh_token=self._force_refresh_token,
+        )
+
+        if session_response.status_code not in (200, 201):
+            logger.error(
+                "Graph createUploadSession failed: status=%s draft_id=%s "
+                "filename=%r size=%d body=%s",
+                session_response.status_code,
+                draft_id,
+                attachment.filename,
+                size,
+                session_response.text,
+            )
+            raise GraphAPIError(
+                session_response.status_code,
+                session_response.text,
+                operation="createUploadSession",
+            )
+
+        upload_url = session_response.json()["uploadUrl"]
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            start = 0
+            while start < size:
+                end = min(start + UPLOAD_SESSION_CHUNK_SIZE, size) - 1
+                chunk = data[start : end + 1]
+                chunk_range = f"bytes {start}-{end}/{size}"
+
+                async def _attempt_chunk() -> httpx.Response:
+                    return await client.put(
+                        upload_url,
+                        headers={
+                            "Content-Length": str(len(chunk)),
+                            "Content-Range": chunk_range,
+                        },
+                        content=chunk,
+                    )
+
+                # Graph's upload-session PUT is idempotent per byte
+                # range — resending the same Content-Range is safe, so
+                # this retries the one failed chunk in place rather
+                # than restarting the whole upload from byte 0. The
+                # uploadUrl is pre-authorized (no Authorization header
+                # is ever sent here — see this method's own docstring)
+                # so a 401 is not expected, but force_refresh_token is
+                # still supplied for the wrapper's uniform contract.
+                put_response = await call_with_graph_retry(
+                    _attempt_chunk,
+                    operation="uploadSessionChunk",
+                    force_refresh_token=self._force_refresh_token,
+                )
+
+                if put_response.status_code not in (200, 201, 202):
+                    logger.error(
+                        "Graph upload-session chunk failed: status=%s draft_id=%s "
+                        "filename=%r range=%d-%d/%d body=%s",
+                        put_response.status_code,
+                        draft_id,
+                        attachment.filename,
+                        start,
+                        end,
+                        size,
+                        put_response.text,
+                    )
+                    raise GraphAPIError(
+                        put_response.status_code,
+                        put_response.text,
+                        operation="uploadSessionChunk",
+                    )
+
+                start = end + 1
+
+    async def _send_draft(self, draft_id: str) -> None:
+        url = (
+            f"{self._api_base_url}/users/{self._mailbox_address}/messages/"
+            f"{draft_id}/send"
+        )
+
+        async def _attempt() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.post(url, headers=await self._authorized_headers())
+
+        # SEND policy — sending the draft is the actual dispatch of
+        # the customer email (same reasoning as sendMail/_send_reply).
+        response = await call_with_graph_retry(
+            _attempt,
+            operation="sendDraft",
+            force_refresh_token=self._force_refresh_token,
+            retry_5xx=False,
+            retry_on_transport_error=False,
+        )
+
+        if response.status_code != 202:
+            logger.error(
+                "Graph draft send failed: status=%s draft_id=%s body=%s",
+                response.status_code,
+                draft_id,
+                response.text,
+            )
+            raise GraphAPIError(response.status_code, response.text, operation="sendDraft")
+
     async def fetch_message(self, message_id: str) -> IncomingMailPayload:
         url = (
             f"{self._api_base_url}/users/{self._mailbox_address}/messages/{message_id}"
             f"?$select={MESSAGE_SELECT_FIELDS}"
         )
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, headers=await self._authorized_headers())
+        async def _attempt() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.get(url, headers=await self._authorized_headers())
+
+        response = await call_with_graph_retry(
+            _attempt,
+            operation="fetchMessage",
+            force_refresh_token=self._force_refresh_token,
+        )
 
         if response.status_code != 200:
             logger.error(
@@ -333,8 +818,15 @@ class GraphMailProviderClient(MailProviderClient):
             f"&$top=50"
         )
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, headers=await self._authorized_headers())
+        async def _attempt() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.get(url, headers=await self._authorized_headers())
+
+        response = await call_with_graph_retry(
+            _attempt,
+            operation="listNewMessages",
+            force_refresh_token=self._force_refresh_token,
+        )
 
         if response.status_code != 200:
             logger.error(
@@ -388,8 +880,15 @@ class GraphMailProviderClient(MailProviderClient):
             f"/attachments"
         )
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, headers=await self._authorized_headers())
+        async def _attempt() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.get(url, headers=await self._authorized_headers())
+
+        response = await call_with_graph_retry(
+            _attempt,
+            operation="fetchMessageAttachments",
+            force_refresh_token=self._force_refresh_token,
+        )
 
         if response.status_code != 200:
             logger.error(
@@ -401,15 +900,95 @@ class GraphMailProviderClient(MailProviderClient):
             raise GraphAPIError(response.status_code, response.text)
 
         data = response.json()
-        return [
-            GraphAttachmentPayload.model_validate(item) for item in data.get("value", [])
-        ]
+        raw_items = data.get("value", [])
+        await self._resolve_item_attachments(message_id, raw_items)
+
+        return [GraphAttachmentPayload.model_validate(item) for item in raw_items]
+
+    async def _resolve_item_attachments(
+        self, message_id: str, raw_items: list[dict]
+    ) -> None:
+        """
+        Preserves an Outlook itemAttachment (a forwarded/nested email,
+        e.g. "Attach as email") as a downloadable .eml instead of
+        silently dropping it — mail_mapping_service.
+        build_upload_files_from_graph_attachments drops every
+        non-fileAttachment item today since only fileAttachment
+        carries contentBytes. Graph's `.../attachments/{id}/$value`
+        returns an itemAttachment's raw RFC 5322 (MIME) bytes directly
+        (not JSON) — fetching that here and synthesizing a
+        fileAttachment-shaped `contentBytes`/`contentType`/`name` onto
+        the raw dict lets the existing mapping/validation pipeline
+        carry it through unchanged, as an opaque message/rfc822 file.
+        No TNEF decoding, no nested-message rendering, no new storage
+        mechanism — purely additive to the existing drop/filter logic.
+
+        Best-effort: any failure fetching one nested message is
+        logged and left alone (no contentBytes synthesized), so it's
+        dropped exactly as it is today — one bad nested-message fetch
+        never fails the whole inbound email.
+        """
+
+        for item in raw_items:
+            if item.get("@odata.type") != "#microsoft.graph.itemAttachment":
+                continue
+
+            attachment_id = item.get("id")
+            if not attachment_id:
+                continue
+
+            value_url = (
+                f"{self._api_base_url}/users/{self._mailbox_address}/messages/"
+                f"{message_id}/attachments/{attachment_id}/$value"
+            )
+
+            async def _attempt() -> httpx.Response:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    return await client.get(
+                        value_url, headers=await self._authorized_headers()
+                    )
+
+            try:
+                response = await call_with_graph_retry(
+                    _attempt,
+                    operation="fetchItemAttachmentValue",
+                    force_refresh_token=self._force_refresh_token,
+                )
+            except Exception:
+                logger.warning(
+                    "Graph fetch of itemAttachment %r ($value) on message %s "
+                    "failed — leaving it unresolved (dropped downstream, "
+                    "same as today).",
+                    item.get("name"),
+                    message_id,
+                    exc_info=True,
+                )
+                continue
+
+            if response.status_code != 200:
+                logger.warning(
+                    "Could not resolve nested-message itemAttachment %r on "
+                    "message %s — leaving it unresolved (dropped downstream, "
+                    "same as today).",
+                    item.get("name"),
+                    message_id,
+                )
+                continue
+
+            name = item.get("name") or "forwarded-message"
+            if not name.lower().endswith(".eml"):
+                name = f"{name}.eml"
+
+            item["name"] = name
+            item["contentType"] = "message/rfc822"
+            item["contentBytes"] = base64.b64encode(response.content).decode("ascii")
 
 
 def build_graph_mail_provider_client(
     settings: Settings,
     auth_client: GraphAuthClient | None,
     mailbox_address: str | None = None,
+    storage_service: StorageService | None = None,
 ) -> GraphMailProviderClient | None:
     resolved_mailbox_address = mailbox_address or settings.graph_mailbox_address
 
@@ -420,4 +999,5 @@ def build_graph_mail_provider_client(
         auth_client=auth_client,
         mailbox_address=resolved_mailbox_address,
         api_base_url=settings.graph_api_base_url,
+        storage_service=storage_service,
     )

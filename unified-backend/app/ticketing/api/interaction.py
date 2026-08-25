@@ -20,7 +20,7 @@ from app.ticketing.schemas.interaction import (
     HideInteractionResponse,
     ThreadResponse,
 )
-from app.ticketing.schemas.ticket_action import CancelSendResponse
+from app.ticketing.schemas.ticket_action import CancelSendResponse, RetrySendResponse
 from app.ticketing.services.interaction_service import InteractionService
 from app.ticketing.storage import get_storage_service
 
@@ -163,6 +163,43 @@ async def cancel_send(
     )
 
     return await service.cancel_pending_send(
+        interaction_id=interaction_id,
+        current_user=current_user,
+    )
+
+
+# =========================================================
+# Retry a failed send
+# =========================================================
+
+@router.post(
+    "/{interaction_id}/retry-send",
+    response_model=RetrySendResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def retry_send(
+    interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Retries a FAILED outbound Compose/Reply/Reply-All/Forward
+    (InteractionService.retry_failed_send) — reuses the persisted
+    envelope rather than starting a new compose flow. See that
+    method's own docstring for the authorization/concurrency rules.
+    """
+
+    interaction_repository = InteractionRepository(db)
+    ticket_repository = TicketRepository(db)
+    user_repository = UserRepository(db)
+
+    service = InteractionService(
+        interaction_repository=interaction_repository,
+        ticket_repository=ticket_repository,
+        user_repository=user_repository,
+    )
+
+    return await service.retry_failed_send(
         interaction_id=interaction_id,
         current_user=current_user,
     )

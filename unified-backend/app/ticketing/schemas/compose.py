@@ -43,6 +43,12 @@ class ComposeEmailRequest(BaseModel):
     # (schemas/ticket_action.py) for the same additive contract.
     body_html: str | None = None
 
+    # Client-generated Send idempotency key — see ReplyCreate.
+    # idempotency_key's own docstring for the contract. None (the
+    # default) opts out entirely, exactly like every Compose before
+    # this field existed.
+    idempotency_key: str | None = Field(default=None, max_length=255)
+
     @model_validator(mode="after")
     def _require_a_recipient_source(self) -> "ComposeEmailRequest":
         if not self.to_email and not self.distribution_list_ids:

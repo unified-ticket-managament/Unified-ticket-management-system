@@ -141,6 +141,7 @@ class MockMailProviderClient(MailProviderClient):
 def get_mail_provider_client(
     settings: Settings | None = None,
     mailbox_address: str | None = None,
+    storage_service=None,
 ) -> MailProviderClient:
     """
     Dependency-injection swap point. Returns a real GraphMailProviderClient
@@ -157,6 +158,18 @@ def get_mail_provider_client(
     outbound_dispatcher.py). Omitted, this returns the same
     shared-mailbox client every caller has always gotten.
 
+    `storage_service`, when given, lets the returned client fetch and
+    upload a large (over the inline-embed threshold) attachment's
+    real bytes via a genuine Graph upload session at actual dispatch
+    time (see graph_client.py's _add_large_attachment) — only
+    outbound_dispatcher.dispatch() (the one call site that ever sends
+    an envelope with attachments) passes this. Every inbound-only call
+    site (the webhook route, the poller, the Mail Rules forward_to
+    action, none of which ever call send_email with attachments)
+    leaves this None, exactly as before this parameter existed — a
+    None storage_service only matters if send_email is later called
+    with a large attachment, which none of those call sites do.
+
     Imports graph_client/graph_auth lazily (function-local, not
     module-level) to avoid a circular import: graph_client.py imports
     MailProviderClient/MailProviderSendResult from this module.
@@ -169,7 +182,10 @@ def get_mail_provider_client(
 
     auth_client = build_graph_auth_client(settings)
     graph_client = build_graph_mail_provider_client(
-        settings, auth_client, mailbox_address=mailbox_address
+        settings,
+        auth_client,
+        mailbox_address=mailbox_address,
+        storage_service=storage_service,
     )
 
     if graph_client is not None:

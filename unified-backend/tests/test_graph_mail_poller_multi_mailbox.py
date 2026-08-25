@@ -52,9 +52,11 @@ class _FakeCategoryRepository:
 
 
 def setup_function(function):
-    # Fresh per-mailbox checkpoint state for every test — this module
-    # state is otherwise shared/mutated across the whole test process.
+    # Fresh per-mailbox checkpoint/failure-count state for every test —
+    # this module state is otherwise shared/mutated across the whole
+    # test process.
     graph_mail_poller_module._state.checkpoints = {}
+    graph_mail_poller_module._state.failure_counts = {}
 
 
 async def test_resolve_mailboxes_to_poll_includes_shared_and_client_mailboxes(monkeypatch):
@@ -319,3 +321,206 @@ async def test_poll_one_mailbox_threads_mailbox_address_into_email_mapping(monke
     )
 
     assert calls == ["credentialing@probeps.com"]
+
+
+class _FakeReceivedPayload:
+    """
+    A minimal IncomingMailPayload stand-in carrying exactly the
+    attributes _poll_one_mailbox's retry/checkpoint logic reads:
+    id/internetMessageId (message identity) and receivedDateTime
+    (which message a held-back checkpoint must not advance past).
+    map_external_email_to_interaction is monkeypatched to the identity
+    function in the tests below, so the "email_request" _build_email_
+    service's receive_email sees is this same object.
+    """
+
+    def __init__(self, msg_id: str, received_at: datetime):
+        self.id = msg_id
+        self.internetMessageId = f"<{msg_id}@example.com>"
+        self.hasAttachments = False
+        self.receivedDateTime = received_at
+
+        class body:
+            content = ""
+
+        self.body = body
+
+
+def _identity_map(payload, landed_mailbox=None):
+    return payload
+
+
+async def test_poll_holds_checkpoint_back_to_a_failed_messages_own_time(monkeypatch):
+    """
+    The core fix: a message that fails with a genuine (non-ValueError)
+    exception must not be silently skipped forever. The checkpoint
+    must be held back to just before that message's own arrival time —
+    not advanced to when this tick started — so the next tick's
+    `receivedDateTime gt since` filter re-includes it.
+    """
+
+    settings = _settings()
+    tick_started_at = datetime.now(timezone.utc)
+    ok_time = tick_started_at - timedelta(minutes=10)
+    fail_time = tick_started_at - timedelta(minutes=5)
+
+    ok_payload = _FakeReceivedPayload("ok-msg", ok_time)
+    fail_payload = _FakeReceivedPayload("fail-msg", fail_time)
+
+    mail_provider_client = _FakeGraphMailProviderClient(messages=[ok_payload, fail_payload])
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "get_mail_provider_client",
+        lambda settings, mailbox_address=None: mail_provider_client,
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module, "map_external_email_to_interaction", _identity_map
+    )
+
+    class _PartiallyFailingEmailService:
+        async def receive_email(self, email_request, files=None):
+            if email_request.id == "fail-msg":
+                raise RuntimeError("simulated transient failure")
+
+            class _Response:
+                pass
+
+            return _Response()
+
+    monkeypatch.setattr(
+        graph_mail_poller_module, "_build_email_service", lambda db: _PartiallyFailingEmailService()
+    )
+
+    mailbox = "holdback@probeps.com"
+    await graph_mail_poller_module._poll_one_mailbox(settings, mailbox, tick_started_at)
+
+    checkpoint = graph_mail_poller_module._state.checkpoints[mailbox]
+    # Held back to just before the failed message's own time...
+    assert checkpoint < fail_time
+    # ...specifically at (fail_time - 1 microsecond), not merely
+    # "somewhere earlier" — the exact boundary that makes the next
+    # tick's `receivedDateTime gt since` filter re-include it.
+    assert checkpoint == fail_time - timedelta(microseconds=1)
+    # Never advanced all the way to when this tick started, unlike
+    # the pre-fix behavior.
+    assert checkpoint != tick_started_at
+
+
+async def test_poll_dead_letters_a_message_after_max_retries(monkeypatch):
+    """
+    A message failing MAX_MESSAGE_RETRY_ATTEMPTS consecutive times
+    (across that many separate poll ticks) is dead-lettered: logged
+    distinctly and no longer holding the checkpoint back — a single
+    permanently-broken message must not block every other message
+    behind it forever.
+    """
+
+    settings = _settings()
+    tick_started_at = datetime.now(timezone.utc)
+    fail_time = tick_started_at - timedelta(minutes=5)
+    payload = _FakeReceivedPayload("always-fails", fail_time)
+
+    mail_provider_client = _FakeGraphMailProviderClient(messages=[payload])
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "get_mail_provider_client",
+        lambda settings, mailbox_address=None: mail_provider_client,
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module, "map_external_email_to_interaction", _identity_map
+    )
+
+    class _AlwaysFailingEmailService:
+        async def receive_email(self, email_request, files=None):
+            raise RuntimeError("simulated permanent failure")
+
+    monkeypatch.setattr(
+        graph_mail_poller_module, "_build_email_service", lambda db: _AlwaysFailingEmailService()
+    )
+
+    mailbox = "deadletter@probeps.com"
+
+    for attempt in range(1, graph_mail_poller_module.MAX_MESSAGE_RETRY_ATTEMPTS):
+        await graph_mail_poller_module._poll_one_mailbox(settings, mailbox, tick_started_at)
+        # Still short of the retry ceiling — checkpoint stays held
+        # back at this message's own time on every attempt so far.
+        assert graph_mail_poller_module._state.checkpoints[mailbox] == (
+            fail_time - timedelta(microseconds=1)
+        )
+        assert (
+            graph_mail_poller_module._state.failure_counts[mailbox][payload.internetMessageId]
+            == attempt
+        )
+
+    # The MAX_MESSAGE_RETRY_ATTEMPTS-th failure dead-letters it.
+    await graph_mail_poller_module._poll_one_mailbox(settings, mailbox, tick_started_at)
+
+    assert payload.internetMessageId not in graph_mail_poller_module._state.failure_counts.get(
+        mailbox, {}
+    )
+    # Free to advance all the way to this tick's start time now that
+    # nothing is still holding it back.
+    assert graph_mail_poller_module._state.checkpoints[mailbox] == tick_started_at
+
+
+async def test_poll_clears_failure_count_once_a_previously_failing_message_succeeds(monkeypatch):
+    """
+    A message that failed on an earlier tick and then succeeds on a
+    later one must have its retry count forgotten — otherwise a
+    transient failure long ago could contribute toward prematurely
+    dead-lettering a message that's actually fine now.
+    """
+
+    settings = _settings()
+    tick_started_at = datetime.now(timezone.utc)
+    fail_time = tick_started_at - timedelta(minutes=5)
+    mailbox = "recovers@probeps.com"
+
+    payload = _FakeReceivedPayload("eventually-succeeds", fail_time)
+    mail_provider_client = _FakeGraphMailProviderClient(messages=[payload])
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "get_mail_provider_client",
+        lambda settings, mailbox_address=None: mail_provider_client,
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module, "map_external_email_to_interaction", _identity_map
+    )
+
+    class _FailsOnceThenSucceeds:
+        def __init__(self):
+            self.calls = 0
+
+        async def receive_email(self, email_request, files=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("simulated transient failure")
+
+            class _Response:
+                pass
+
+            return _Response()
+
+    service = _FailsOnceThenSucceeds()
+    monkeypatch.setattr(graph_mail_poller_module, "_build_email_service", lambda db: service)
+
+    # First tick: fails, checkpoint held back, failure count recorded.
+    await graph_mail_poller_module._poll_one_mailbox(settings, mailbox, tick_started_at)
+    assert graph_mail_poller_module._state.failure_counts[mailbox][payload.internetMessageId] == 1
+
+    # Second tick: succeeds — failure count forgotten, checkpoint free
+    # to advance normally.
+    await graph_mail_poller_module._poll_one_mailbox(settings, mailbox, tick_started_at)
+    assert payload.internetMessageId not in graph_mail_poller_module._state.failure_counts.get(
+        mailbox, {}
+    )
+    assert graph_mail_poller_module._state.checkpoints[mailbox] == tick_started_at

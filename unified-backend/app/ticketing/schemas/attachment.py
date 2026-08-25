@@ -15,7 +15,9 @@ class AttachmentCreate(BaseModel):
     # there are no real bytes, so no object-storage key exists.
     storage_key: str | None = Field(default=None, min_length=1)
     bucket_name: str | None = Field(default=None, max_length=255)
-    scan_status: str = Field(default="pending", max_length=20)
+    # See Attachment.scan_status's own docstring — "not_scanned", not
+    # "pending"; no AV scanning exists or is implied.
+    scan_status: str = Field(default="not_scanned", max_length=20)
     external_url: str | None = Field(default=None, min_length=1)
     is_external_link: bool = False
     # content_id is server-minted (see AttachmentService.create_inline_image)

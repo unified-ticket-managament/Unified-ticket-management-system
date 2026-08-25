@@ -27,6 +27,27 @@ class InteractionCreate(BaseModel):
     conversation_id: str | None = Field(default=None, max_length=255)
     in_reply_to_message_id: str | None = Field(default=None, max_length=255)
     references: list[str] | None = None
+    # Real-column mirror of the same-named keys already written into
+    # `payload` for every outbound (Compose/Reply/Reply-All/Forward/
+    # Draft) interaction — see interaction_service._dispatch_columns_
+    # from_payload, the one place these are derived from a payload
+    # dict so both stay in sync. `payload` remains the source of truth
+    # every existing read site (cancel_pending_send, undo_send's own
+    # re-check) already reads; these columns exist purely so a failed/
+    # pending send can be a real, indexed query instead of a full-table
+    # JSONB scan, and so API responses can expose it as a typed field.
+    dispatch_status: str | None = Field(default=None, max_length=20)
+    dispatch_error: str | None = None
+    send_after: datetime | None = None
+    provider_message_id: str | None = Field(default=None, max_length=255)
+    # Client-generated Send/Retry-Send idempotency key — see
+    # Interaction.dispatch_idempotency_key's own docstring for the
+    # (performed_by, key) scoping. None (the default) for every
+    # caller that doesn't opt in, unchanged from before this existed.
+    dispatch_idempotency_key: str | None = Field(default=None, max_length=255)
+    # See Interaction.is_bounce's own docstring — set only by
+    # EmailService._receive_bounce.
+    is_bounce: bool = False
 
 
 class InteractionUpdate(BaseModel):
@@ -36,6 +57,12 @@ class InteractionUpdate(BaseModel):
     is_visible: bool | None = None
     removed_by: UUID | None = None
     removed_at: datetime | None = None
+    # See InteractionCreate's matching fields — same dual-write
+    # convention.
+    dispatch_status: str | None = None
+    dispatch_error: str | None = None
+    send_after: datetime | None = None
+    provider_message_id: str | None = None
 
 
 class InteractionResponse(ORMBase):
@@ -69,6 +96,15 @@ class InteractionResponse(ORMBase):
     conversation_id: str | None = None
     in_reply_to_message_id: str | None = None
     references: list[str] = Field(default_factory=list)
+    # Typed mirror of payload["dispatch_status"]/["dispatch_error"]/
+    # ["provider_message_id"] for an outbound interaction — the
+    # frontend already receives the untyped payload dict too, but a
+    # real field lets it render a distinct "Failed to send" state
+    # without reaching into an untyped blob. None for every
+    # interaction that was never an outbound dispatch attempt.
+    dispatch_status: str | None = None
+    dispatch_error: str | None = None
+    provider_message_id: str | None = None
 
 
 class TicketInteractionResponse(InteractionResponse):
@@ -196,6 +232,13 @@ class DraftSendRequest(BaseModel):
 
     to_email: EmailStr | None = None
     distribution_list_ids: list[UUID] = Field(default_factory=list)
+    # Phase 2 hardening: Send/Retry-Send idempotency — see
+    # Interaction.dispatch_idempotency_key's own docstring for the
+    # (performed_by, key) scoping, and InteractionReplyRequest.
+    # idempotency_key for the identical field on every other send path.
+    # Optional; None (the default) reproduces this endpoint's exact
+    # pre-existing behavior with zero duplicate-send protection.
+    idempotency_key: str | None = Field(default=None, max_length=255)
 
 
 class DraftResponse(ORMBase):

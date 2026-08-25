@@ -66,6 +66,26 @@ class NotificationType:
     # merged into the recipient's own regular Inbox instead, same
     # convention OTP_FORWARDED already established.
     MAIL_FORWARDED = "MAIL_FORWARDED"
+    # A non-delivery report/bounce was detected on inbound intake (see
+    # app/ticketing/services/bounce_detection.py) — sent to Site Lead/
+    # Super Admin only (never a client's Account Manager, since a
+    # bounce isn't real correspondence from them). See EmailService.
+    # _receive_bounce.
+    MAIL_BOUNCE_DETECTED = "MAIL_BOUNCE_DETECTED"
+    # Phase 2 hardening: Microsoft Graph subscription creation/renewal
+    # returned a non-2xx response (graph_subscription_service.py) —
+    # sent to Site Lead/Super Admin so a lapsed webhook subscription
+    # (which silently stops all webhook-transport mail intake) doesn't
+    # go unnoticed.
+    GRAPH_SUBSCRIPTION_FAILED = "GRAPH_SUBSCRIPTION_FAILED"
+    # Phase 2 hardening: an inbound Graph message landed at a mailbox
+    # address with no matching Client/Category (and it isn't the
+    # configured shared mailbox) — EmailService.receive_email already
+    # refuses to persist it ("Unknown inbox address."); this is purely
+    # an ops-visibility notification, never accompanied by any new
+    # Client/Category/Interaction row. See graph_mail_poller.py /
+    # mail_integration.py's notify_unmatched_inbox_email.
+    UNMATCHED_INBOX_EMAIL = "UNMATCHED_INBOX_EMAIL"
 
 
 class NotificationService:

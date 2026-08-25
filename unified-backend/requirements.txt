@@ -43,6 +43,20 @@ nh3==0.2.18
 # production-proven line; 4.x is still a pre-release rewrite.
 APScheduler==3.11.3
 
+# Magic-byte content sniffing for attachment uploads (Phase 2 hardening,
+# app/ticketing/utils/validators.py's validate_attachment_magic_bytes) —
+# a second, defense-in-depth gate on top of the extension allow-list,
+# which remains the actual security gate. Requires libmagic, a system C
+# library not bundled with Python — on Debian/Render this needs
+# libmagic1 provisioned at the OS level (a deploy-config follow-up, not
+# assumed here); on local Windows dev, no libmagic ships at all unless
+# separately installed. This is a soft dependency: validators.py catches
+# an ImportError or a runtime failure to load libmagic and skips this
+# check entirely rather than blocking uploads, so a host with no
+# libmagic installed degrades to extension-only validation, unchanged
+# from before this.
+python-magic==0.4.27
+
 # rbac-only additions
 passlib[bcrypt]==1.7.4
 bcrypt==4.0.1

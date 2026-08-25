@@ -40,7 +40,7 @@ class _StubFailingClient:
 async def test_dispatch_returns_result_on_success(monkeypatch):
     monkeypatch.setattr(
         "app.ticketing.services.outbound_dispatcher.get_mail_provider_client",
-        lambda mailbox_address=None: _StubSucceedingClient(),
+        lambda mailbox_address=None, storage_service=None: _StubSucceedingClient(),
     )
 
     dispatcher = OutboundDispatcher()
@@ -54,7 +54,7 @@ async def test_dispatch_returns_result_on_success(monkeypatch):
 async def test_dispatch_raises_outbound_dispatch_error_on_failure(monkeypatch):
     monkeypatch.setattr(
         "app.ticketing.services.outbound_dispatcher.get_mail_provider_client",
-        lambda mailbox_address=None: _StubFailingClient(),
+        lambda mailbox_address=None, storage_service=None: _StubFailingClient(),
     )
 
     dispatcher = OutboundDispatcher()
@@ -78,7 +78,7 @@ async def test_dispatch_targets_the_envelopes_own_mailbox(monkeypatch):
 
     captured_mailbox_addresses = []
 
-    def _spy(mailbox_address=None):
+    def _spy(mailbox_address=None, storage_service=None):
         captured_mailbox_addresses.append(mailbox_address)
         return _StubSucceedingClient()
 

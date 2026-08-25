@@ -75,6 +75,23 @@ class Settings(BaseSettings):
     # not change production behavior by default.
     graph_mail_poll_interval_seconds: int = 60
 
+    # Phase 2 hardening: how many days an abandoned draft (or a pasted
+    # inline image never attached to anything sent) may sit before the
+    # scheduled retention sweep (app/core/draft_retention_scheduler.py)
+    # hard-deletes it and its stored attachments. A user who explicitly
+    # discards a draft is unaffected — this only catches what
+    # discard_draft was never called on (tab closed, crash, navigated
+    # away).
+    draft_retention_days: int = 30
+
+    # How often the draft-retention sweep tick runs. Once/day by
+    # default — unlike the SLA sweep, this has no correctness reason to
+    # run more often (an abandoned draft's own definition is measured
+    # in days, not seconds), so this stays a coarser, low-overhead
+    # cadence rather than mirroring sla_sweep_interval_seconds's fast
+    # default.
+    draft_retention_sweep_interval_seconds: int = 86400
+
     # Confidence threshold (0.0-1.0) the semantic OTP classifier
     # (app/ticketing/services/otp_classifier.py) must clear before an
     # inbound email's Response SLA is marked COMPLETED as a recognized

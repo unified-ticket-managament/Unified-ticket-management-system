@@ -1100,6 +1100,57 @@ class InteractionRepository:
 
         return result.scalars().first()
 
+    async def list_stale_drafts(self, older_than: datetime) -> list[Interaction]:
+        """
+        Phase 2 hardening: every still-visible draft (is_draft=True)
+        older than `older_than` — the scheduled draft-retention sweep's
+        own query (app/core/draft_retention_scheduler.py). An abandoned
+        compose/reply the user never explicitly discarded (tab closed,
+        crash, navigated away) otherwise lingers, with its uploaded
+        attachments, forever.
+        """
+
+        result = await self.db.execute(
+            select(Interaction).where(
+                Interaction.is_draft.is_(True),
+                Interaction.is_visible.is_(True),
+                Interaction.created_at < older_than,
+            )
+        )
+        return list(result.scalars().all())
+
+    async def list_stale_unclaimed_inline_images(
+        self, older_than: datetime
+    ) -> list[Interaction]:
+        """
+        Phase 2 hardening: every still-visible ATTACHMENT interaction
+        minted purely to stage a pasted inline image
+        (AttachmentService.upload_inline_image /
+        InteractionService.upload_compose_inline_image — both set
+        payload["is_inline"]=True) that was never reassigned onto a
+        submitted reply/note/compose/forward and is older than
+        `older_than`.
+
+        The `payload["is_inline"]` condition is what keeps this from
+        ever matching an ordinary, permanently-attached
+        upload_attachment row (which has no `is_inline` payload key at
+        all) — those must never be swept. A *consumed* inline image
+        (one whose files were reassigned onto a real sent interaction)
+        already has is_visible flipped False by that same reassignment
+        path, so it's excluded by the is_visible.is_(True) condition
+        here without needing a second, separate check.
+        """
+
+        result = await self.db.execute(
+            select(Interaction).where(
+                Interaction.interaction_type == "ATTACHMENT",
+                Interaction.is_visible.is_(True),
+                Interaction.payload["is_inline"].astext == "true",
+                Interaction.created_at < older_than,
+            )
+        )
+        return list(result.scalars().all())
+
     async def update_draft_message(
         self,
         interaction: Interaction,
@@ -1197,6 +1248,74 @@ class InteractionRepository:
         )
 
         return list(result.scalars().all())
+
+    async def get_by_idempotency_key(
+        self, idempotency_key: str, performed_by: UUID
+    ) -> Interaction | None:
+        """
+        Looks up an interaction by its Send/Retry-Send idempotency key,
+        scoped to the caller who set it — the same (performed_by, key)
+        pair the partial unique index on dispatch_idempotency_key
+        enforces (see the add_dispatch_idempotency_key migration), so
+        this can never surface another user's interaction even given
+        a guessed/reused key string.
+        """
+
+        result = await self.db.execute(
+            select(Interaction).where(
+                Interaction.dispatch_idempotency_key == idempotency_key,
+                Interaction.performed_by == performed_by,
+            )
+        )
+
+        return result.scalar_one_or_none()
+
+    async def find_orphans_awaiting_parent(self, message_id: str) -> list[Interaction]:
+        """
+        Out-of-order delivery: finds every already-stored interaction
+        whose in_reply_to_message_id/references named `message_id` —
+        i.e. it arrived as a reply before its own original message
+        did, so it had nothing to thread-match against yet at its own
+        creation time (get_by_message_ids only ever looks *backward*).
+        Called once the original itself lands, by
+        EmailService._reconcile_orphaned_replies.
+
+        The guard conditions (still parentless, unticketed, unclaimed,
+        PENDING) mirror claim()/archive()'s own race-guard idiom —
+        deliberately narrow: once an agent has acted on an orphan in
+        any way, it's left alone rather than reparented out from under
+        them. Matches on exact message_id equality only — the same
+        signal already trusted for the forward-direction check — so
+        this can never merge two unrelated emails.
+        """
+
+        result = await self.db.execute(
+            select(Interaction).where(
+                Interaction.parent_interaction_id.is_(None),
+                Interaction.ticket_id.is_(None),
+                Interaction.claimed_by.is_(None),
+                Interaction.status == InteractionStatus.PENDING,
+                or_(
+                    Interaction.in_reply_to_message_id == message_id,
+                    Interaction.references.contains([message_id]),
+                ),
+            )
+        )
+
+        return list(result.scalars().all())
+
+    async def reparent(self, interaction: Interaction, new_parent_id: UUID) -> None:
+        """
+        Fixes up parent_interaction_id after the fact — the entire
+        mutation find_orphans_awaiting_parent's reconciliation needs.
+        Deliberately does not touch any other column (status, ticket_id,
+        SLA-adjacent state): only the structural thread link changes,
+        so list_thread/find_thread_root's existing recursive walk picks
+        up the corrected nesting with no further change needed.
+        """
+
+        interaction.parent_interaction_id = new_parent_id
+        await self.db.flush()
 
     async def list_thread_summaries(
         self,
@@ -1339,6 +1458,38 @@ class InteractionRepository:
         )
 
         return result.scalar_one_or_none() is not None
+
+    async def try_transition_to_pending_send(
+        self,
+        interaction_id: UUID,
+    ) -> Interaction | None:
+        """
+        Atomically moves a FAILED outbound interaction back to
+        PENDING_SEND — Retry Send's own race guard, same conditional-
+        UPDATE idiom as claim()/archive() above, so two concurrent
+        retry clicks (or a retry racing the original send finally
+        landing) can't both win. Returns None when the guard fails
+        (not FAILED — already retried, already sent, or never a real
+        send to begin with), the signal InteractionService.
+        retry_failed_send uses to 400 "no longer retryable" rather
+        than attempting a second dispatch.
+        """
+
+        result = await self.db.execute(
+            update(Interaction)
+            .where(
+                Interaction.interaction_id == interaction_id,
+                Interaction.dispatch_status == "FAILED",
+            )
+            .values(dispatch_status="PENDING_SEND", dispatch_error=None)
+        )
+
+        if result.rowcount == 0:
+            return None
+
+        await self.db.flush()
+
+        return await self.get_by_id(interaction_id)
 
     async def claim(
         self,

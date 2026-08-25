@@ -8,6 +8,10 @@ from fastapi.responses import JSONResponse
 from starlette.datastructures import MutableHeaders
 
 from app.core.config import get_settings
+from app.core.draft_retention_scheduler import (
+    shutdown_scheduler as shutdown_draft_retention_scheduler,
+    start_scheduler as start_draft_retention_scheduler,
+)
 from app.core.graph_mail_poll_scheduler import (
     shutdown_scheduler as shutdown_graph_mail_poll_scheduler,
     start_scheduler as start_graph_mail_poll_scheduler,
@@ -60,7 +64,9 @@ async def lifespan(app: FastAPI):
     start_scheduler()
     start_graph_subscription_scheduler()
     start_graph_mail_poll_scheduler()
+    start_draft_retention_scheduler()
     yield
+    shutdown_draft_retention_scheduler()
     shutdown_graph_mail_poll_scheduler()
     shutdown_graph_subscription_scheduler()
     shutdown_scheduler()

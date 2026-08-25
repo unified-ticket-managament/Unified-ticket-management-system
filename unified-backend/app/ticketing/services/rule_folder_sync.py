@@ -12,6 +12,8 @@ folder-creation code path — always go through this function.
 
 from uuid import UUID
 
+from sqlalchemy.exc import IntegrityError
+
 from app.ticketing.enums.rule_enums import RuleActionType
 from app.ticketing.models.mail_folder import MailFolder
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
@@ -32,18 +34,39 @@ async def ensure_folder(
     visibility already correctly follows whichever rule(s) currently
     reference it, computed at read time by MailFolderService, not
     baked into this column after creation).
+
+    Race-safe: two near-simultaneous calls for the same not-yet-
+    existing name (e.g. two rules matching two near-simultaneous
+    inbound emails, both naming a brand-new folder) can both pass the
+    get_by_name check above as None and both attempt create() —
+    `MailFolder.name`'s unique constraint means the loser's flush
+    raises IntegrityError. Caught here via a savepoint (so only this
+    one create attempt rolls back, not the whole surrounding
+    transaction/request) and resolved by re-fetching the winner's row,
+    the same "loser just returns the winner's result" pattern
+    InteractionService's own get-or-create-draft race already uses.
     """
 
     name = folder_name.strip()
     existing = await mail_folder_repository.get_by_name(name)
     if existing is not None:
         return existing
-    # This function's only callers are rule-driven (see module
-    # docstring) — a folder actually created here is always eligible
-    # for RuleService.delete's auto-cleanup, unlike one a user creates
-    # by hand via MailFolderService.create (POST /folders), which
-    # never sets this flag.
-    return await mail_folder_repository.create(name, created_by=created_by, is_rule_created=True)
+
+    try:
+        # This function's only callers are rule-driven (see module
+        # docstring) — a folder actually created here is always
+        # eligible for RuleService.delete's auto-cleanup, unlike one a
+        # user creates by hand via MailFolderService.create
+        # (POST /folders), which never sets this flag.
+        async with mail_folder_repository.db.begin_nested():
+            return await mail_folder_repository.create(
+                name, created_by=created_by, is_rule_created=True
+            )
+    except IntegrityError:
+        existing = await mail_folder_repository.get_by_name(name)
+        if existing is not None:
+            return existing
+        raise
 
 
 def folder_names_from_actions(actions) -> set[str]:

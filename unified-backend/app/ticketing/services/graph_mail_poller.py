@@ -31,17 +31,22 @@ from app.rbac.repositories.reporting_manager_repository import (
 )
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.repositories.client_repository import ClientRepository
+from app.ticketing.repositories.inbound_mail_failure_repository import (
+    InboundMailFailureRepository,
+)
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.services.attachment_service import AttachmentService
 from app.ticketing.services.email_service import EmailService
 from app.ticketing.services.graph_client import GraphAPIError
+from app.ticketing.services.mail_integrity import is_duplicate_message_id_violation
 from app.ticketing.services.mail_mapping_service import (
     body_references_inline_attachment,
     build_upload_files_from_graph_attachments,
     map_external_email_to_interaction,
 )
+from app.ticketing.services.mail_ops_alerts import notify_unmatched_inbox_email
 from app.ticketing.services.mail_provider import get_mail_provider_client
 from app.ticketing.services.rule_engine_service import build_rule_engine_service
 from app.ticketing.services.sla_service import build_sla_service
@@ -53,6 +58,15 @@ logger = logging.getLogger(__name__)
 # replaying a mailbox's entire history on cold start while still
 # catching anything that arrived shortly before the process started.
 INITIAL_LOOKBACK_MINUTES = 15
+
+# How many consecutive poll ticks a single message is allowed to keep
+# failing (a genuine, unexpected exception — not the terminal "already
+# processed"/"unknown inbox address" ValueErrors, which are never
+# retried) before it's dead-lettered: logged distinctly and allowed to
+# stop holding back this mailbox's checkpoint. Bounded specifically so
+# one permanently-broken message (a bug this exact retry can't fix)
+# can't block every other message in the same and later ticks forever.
+MAX_MESSAGE_RETRY_ATTEMPTS = 3
 
 
 class _PollState:
@@ -67,9 +81,18 @@ class _PollState:
     Keyed per mailbox address (lowercased) rather than a single
     scalar — the legacy shared mailbox and every client-specific
     mailbox each advance independently, and one mailbox's checkpoint
-    never affects another's."""
+    never affects another's.
+
+    `failure_counts` tracks, per mailbox, how many consecutive ticks
+    each still-unresolved message (keyed by its own internetMessageId)
+    has failed with a genuine exception — this is what makes
+    _poll_one_mailbox hold the checkpoint back at exactly that
+    message's arrival time instead of unconditionally advancing past
+    it (the previously-accepted, now-fixed gap: a message that failed
+    once was never retried by any later tick)."""
 
     checkpoints: dict[str, datetime] = {}
+    failure_counts: dict[str, dict[str, int]] = {}
 
 
 _state = _PollState()
@@ -240,11 +263,20 @@ async def _poll_one_mailbox(
         return
 
     processed = 0
+    mailbox_failure_counts = _state.failure_counts.setdefault(mailbox_address, {})
+    # The earliest still-unresolved (genuinely failed, not yet
+    # dead-lettered) message's own receivedDateTime this tick — None
+    # means every message this tick either stored successfully or hit
+    # a terminal, non-retryable outcome (already processed/unknown
+    # inbox). Determines how far the checkpoint is allowed to advance
+    # below.
+    earliest_unresolved_received_at: datetime | None = None
 
     for payload in messages:
         email_request = map_external_email_to_interaction(
             payload, landed_mailbox=mailbox_address
         )
+        message_key = payload.internetMessageId
 
         files = None
         if payload.id and (
@@ -266,33 +298,167 @@ async def _poll_one_mailbox(
                 await service.receive_email(email_request, files=files)
                 await db.commit()
                 processed += 1
+                # A message that failed on an earlier tick and just
+                # now succeeded no longer needs its retry count kept
+                # around.
+                mailbox_failure_counts.pop(message_key, None)
+
+                # Phase 2 hardening: mark any prior persisted failure
+                # record resolved. Its own inner try/except — a
+                # diagnostic-write failure here must never surface as
+                # a failure of this otherwise-successful poll.
+                try:
+                    await InboundMailFailureRepository(db).mark_resolved(
+                        message_id=message_key, mailbox_address=mailbox_address
+                    )
+                    await db.commit()
+                except Exception:
+                    logger.exception(
+                        "Failed to mark inbound_mail_failures resolved for %s",
+                        message_key,
+                    )
             except ValueError as exc:
                 # "Email already processed." (overlap with a prior poll
                 # or the webhook path already having caught it) and
-                # "Unknown inbox address." are expected, non-exceptional
-                # outcomes here — log at info, not exception.
+                # "Unknown inbox address." are expected, non-exceptional,
+                # TERMINAL outcomes here — log at info, not exception,
+                # and never retry (there is nothing a retry could fix).
                 await db.rollback()
-                logger.info(
-                    "Graph poll: message %s not stored: %s",
-                    payload.internetMessageId,
-                    exc,
-                )
-            except Exception:
+                message = str(exc)
+                if message == "Unknown inbox address.":
+                    # Phase 2 hardening: previously silently dropped
+                    # with no operational visibility at all — elevated
+                    # to warning and given the same ops-notification
+                    # EmailService's own shared-mailbox fallback
+                    # already uses. Deliberately does NOT widen
+                    # EmailService.receive_email itself (see
+                    # notify_unmatched_inbox_email's own docstring) —
+                    # no Client/Category/Interaction row is ever
+                    # created here.
+                    logger.warning(
+                        "Graph poll: message %s landed at unmapped inbox "
+                        "address %s with no matching Client/Category — "
+                        "notifying Site Lead/Super Admin instead of "
+                        "silently dropping.",
+                        payload.internetMessageId,
+                        mailbox_address,
+                    )
+                    try:
+                        await notify_unmatched_inbox_email(
+                            db,
+                            from_email=email_request.from_email,
+                            subject=email_request.subject,
+                            mailbox_address=mailbox_address,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to notify ops of unmatched inbox address %s",
+                            mailbox_address,
+                        )
+                else:
+                    logger.info(
+                        "Graph poll: message %s not stored: %s",
+                        payload.internetMessageId,
+                        exc,
+                    )
+                mailbox_failure_counts.pop(message_key, None)
+            except Exception as exc:
                 await db.rollback()
-                logger.exception(
-                    "Graph poll: processing failed for message %s",
-                    payload.internetMessageId,
-                )
 
-    # Advances even on a tick that processed nothing (or failed
-    # partway through some messages) — this is a checkpoint of "we
-    # asked Graph as of this time," not "we successfully stored
-    # everything as of this time." A message that failed to process
-    # is not retried by a later tick; it would need to be re-sent or
-    # handled manually. Acceptable for this integration's current
-    # scope — see EMAIL_INTEGRATION_CHECKLIST.md's existing note on
-    # retry/dead-letter handling being unbuilt.
-    _state.checkpoints[mailbox_address] = tick_started_at
+                if is_duplicate_message_id_violation(exc):
+                    # Phase 2 hardening: the losing side of a benign
+                    # concurrent-insert race (another poll tick, or the
+                    # webhook transport, already stored this exact
+                    # message) — never a genuine processing failure, so
+                    # it must not be retry-counted or dead-lettered.
+                    logger.info(
+                        "Graph poll: message %s lost a concurrent insert "
+                        "race — already processed by another worker/"
+                        "transport; not retried.",
+                        payload.internetMessageId,
+                    )
+                    mailbox_failure_counts.pop(message_key, None)
+                    continue
+
+                attempt = mailbox_failure_counts.get(message_key, 0) + 1
+                mailbox_failure_counts[message_key] = attempt
+
+                # Phase 2 hardening: persist a diagnostic record of this
+                # genuine failure — backs, but never replaces, the
+                # in-memory counter above (which still drives the real
+                # retry/dead-letter decision). Its own inner try/except
+                # — a DB hiccup writing this record must never crash
+                # the batch or mask the real underlying failure.
+                try:
+                    await InboundMailFailureRepository(db).record_or_increment(
+                        message_id=message_key,
+                        mailbox_address=mailbox_address,
+                        error_summary=f"{type(exc).__name__}: {exc}",
+                    )
+                    await db.commit()
+                except Exception:
+                    logger.exception(
+                        "Failed to persist inbound_mail_failures row for %s",
+                        message_key,
+                    )
+
+                if attempt >= MAX_MESSAGE_RETRY_ATTEMPTS:
+                    # Dead-lettered: this message has now failed
+                    # MAX_MESSAGE_RETRY_ATTEMPTS consecutive times.
+                    # Logged distinctly (a real, alertable signal, not
+                    # just another "processing failed" line) and
+                    # allowed to stop holding back this mailbox's
+                    # checkpoint — a retry has already been given a
+                    # fair chance, and one permanently-broken message
+                    # must not block every other message behind it
+                    # forever.
+                    logger.error(
+                        "Graph poll: message %s failed %d consecutive times — "
+                        "giving up on it (dead-lettered); it will not be "
+                        "retried again automatically.",
+                        payload.internetMessageId,
+                        attempt,
+                    )
+                    mailbox_failure_counts.pop(message_key, None)
+                else:
+                    logger.exception(
+                        "Graph poll: processing failed for message %s "
+                        "(attempt %d/%d — will retry next tick)",
+                        payload.internetMessageId,
+                        attempt,
+                        MAX_MESSAGE_RETRY_ATTEMPTS,
+                    )
+                    # Falls back to this tick's own start time if Graph
+                    # genuinely omitted receivedDateTime (shouldn't
+                    # happen — it's always requested via $select and
+                    # this transport already orders by it — but never
+                    # crash the poll loop over a missing optional
+                    # field): re-checking from the start of this tick
+                    # is a safe, if slightly wider, retry window.
+                    received_at = payload.receivedDateTime or tick_started_at
+                    if (
+                        earliest_unresolved_received_at is None
+                        or received_at < earliest_unresolved_received_at
+                    ):
+                        earliest_unresolved_received_at = received_at
+
+    if earliest_unresolved_received_at is not None:
+        # Hold the checkpoint back to just before the earliest
+        # still-retryable failure's own arrival time, so the next
+        # tick's `receivedDateTime gt since` filter re-includes it
+        # (and, harmlessly, every already-successfully-stored message
+        # after it — those are simply re-rejected as already-processed
+        # by EmailService.receive_email's own dedupe check). This is
+        # the fix for the previously-accepted gap where a failed
+        # message was never retried by any later tick.
+        _state.checkpoints[mailbox_address] = earliest_unresolved_received_at - timedelta(
+            microseconds=1
+        )
+    else:
+        # Every message this tick either stored successfully or hit a
+        # terminal, non-retryable outcome — safe to advance all the
+        # way to when this tick started, same as before this fix.
+        _state.checkpoints[mailbox_address] = tick_started_at
 
     if messages:
         logger.info(

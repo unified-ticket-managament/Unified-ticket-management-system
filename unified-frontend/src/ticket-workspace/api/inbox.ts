@@ -316,6 +316,12 @@ export interface ComposeEmailPayload {
   // cid: inline image (see InteractionService.upload_compose_inline_
   // image / _merge_inline_images_into_envelope).
   inlineImageInteractionIds?: string[];
+  // Client-generated Send idempotency key — a repeated request with
+  // the same key (e.g. a client-side retry after a network hiccup)
+  // returns the already-created interaction instead of sending a
+  // second email. Generate a fresh one per Send attempt (e.g.
+  // crypto.randomUUID()); omit to opt out entirely.
+  idempotencyKey?: string;
 }
 
 // POST /inbox/compose/attachments/inline-image — stages a single
@@ -361,6 +367,7 @@ export async function composeEmail(
       payload.inlineImageInteractionIds.join(",")
     );
   }
+  if (payload.idempotencyKey) formData.append("idempotency_key", payload.idempotencyKey);
 
   const { data } = await apiClient.post<ComposeEmailResponse>(
     "/inbox/compose",
@@ -395,6 +402,8 @@ export interface ForwardToInternalUserPayload {
   // staging mechanism (and the same uploadComposeInlineImage call) is
   // reused for Forward's own paste-a-screenshot case.
   inlineImageInteractionIds?: string[];
+  // See ComposeEmailPayload.idempotencyKey — same contract.
+  idempotencyKey?: string;
 }
 
 // POST /inbox/{interaction_id}/forward — forward an existing client
@@ -423,6 +432,7 @@ export async function forwardToInternalUser(
       payload.inlineImageInteractionIds.join(",")
     );
   }
+  if (payload.idempotencyKey) formData.append("idempotency_key", payload.idempotencyKey);
 
   const { data } = await apiClient.post<ForwardToInternalUserResponse>(
     `/inbox/${payload.interactionId}/forward`,

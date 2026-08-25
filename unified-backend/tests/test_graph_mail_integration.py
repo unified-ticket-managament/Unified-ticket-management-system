@@ -118,6 +118,83 @@ def test_client_state_matches_fails_closed_when_unconfigured(monkeypatch):
     assert _client_state_matches(_notification_item("anything")) is False
 
 
+async def test_process_graph_notification_passes_landed_mailbox_for_webhook_transport(
+    monkeypatch,
+):
+    """
+    The webhook subscription only ever targets settings.
+    graph_mailbox_address (see graph_subscription_service.py's
+    _create — it subscribes to that one mailbox's Inbox and no
+    other), unlike the polling transport, which iterates several. So
+    every message this route ever receives genuinely landed in that
+    one mailbox, regardless of whether it appears in To, Cc, or is
+    invisible in Bcc. Before this fix, only the polling transport
+    passed landed_mailbox through — a Cc-only (or Bcc-only) match
+    against the shared inbox delivered via a webhook fell through to
+    "Unknown inbox address." This confirms _process_graph_notification
+    now passes the configured mailbox through identically.
+    """
+
+    from app.ticketing.api import mail_integration
+
+    settings = _base_settings(
+        graph_webhook_client_state="secret",
+        graph_mailbox_address="shared@example.com",
+    )
+    monkeypatch.setattr(mail_integration, "get_settings", lambda: settings)
+
+    payload = IncomingMailPayload(
+        internetMessageId="<msg-1@example.com>",
+        subject="hello",
+        from_=GraphRecipient(emailAddress=GraphEmailAddress(address="sender@example.com")),
+        toRecipients=[
+            GraphRecipient(emailAddress=GraphEmailAddress(address="someone-else@example.com"))
+        ],
+        body=GraphItemBody(contentType="text", content="hi"),
+    )
+
+    class _FakeMailProviderClient:
+        async def fetch_message(self, message_id):
+            return payload
+
+    captured: dict = {}
+    original_map = mail_integration.map_external_email_to_interaction
+
+    def _spy_map(payload_arg, landed_mailbox=None):
+        captured["landed_mailbox"] = landed_mailbox
+        return original_map(payload_arg, landed_mailbox=landed_mailbox)
+
+    monkeypatch.setattr(mail_integration, "map_external_email_to_interaction", _spy_map)
+
+    class _FakeSession:
+        async def commit(self):
+            pass
+
+        async def rollback(self):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(mail_integration, "AsyncSessionLocal", lambda: _FakeSession())
+
+    class _FakeEmailService:
+        async def receive_email(self, email_request, files=None):
+            captured["received"] = email_request
+
+    monkeypatch.setattr(mail_integration, "_build_email_service", lambda db: _FakeEmailService())
+
+    item = _notification_item("secret")
+
+    await mail_integration._process_graph_notification(item, _FakeMailProviderClient())
+
+    assert captured["landed_mailbox"] == "shared@example.com"
+    assert captured["received"].landed_mailbox == "shared@example.com"
+
+
 # ---------------------------------------------------------
 # Provider-client factory switching (mail_provider.py)
 # ---------------------------------------------------------
@@ -546,6 +623,251 @@ async def test_send_email_dispatches_to_send_mail_when_no_reply_target(monkeypat
 
 async def _fake_headers() -> dict:
     return {"Authorization": "Bearer test-token"}
+
+
+class _FakeStorageService:
+    """Minimal stand-in for StorageService — only download() is ever
+    called by _add_large_attachment."""
+
+    def __init__(self, data_by_key: dict[str, bytes]):
+        self._data_by_key = data_by_key
+
+    async def download(self, *, object_key: str) -> bytes:
+        return self._data_by_key[object_key]
+
+
+class _RecordingGraphHttpClient:
+    """
+    A single fake httpx.AsyncClient stand-in that serves every call
+    _send_via_draft's methods make (create draft/reply, PATCH
+    recipients, POST an attachment, POST createUploadSession, PUT
+    upload chunks, POST send) — routed purely by URL suffix/method, so
+    one instance covers the whole multi-request flow the real upload-
+    session/draft path requires (unlike the single-POST fast path the
+    existing tests above only need).
+    """
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self.draft_id = "draft-123"
+        self.upload_url = "https://upload.example.com/session-abc"
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def post(self, url, headers=None, json=None):
+        self.calls.append({"method": "POST", "url": url, "headers": headers, "json": json})
+
+        if url.endswith("/attachments/createUploadSession"):
+            return _JsonResponse(200, {"uploadUrl": self.upload_url})
+        if url.endswith("/send"):
+            return _JsonResponse(202, {})
+        if url.endswith("/attachments"):
+            return _JsonResponse(201, {"id": "small-attachment-1"})
+        if "/createReply" in url or "/createReplyAll" in url:
+            return _JsonResponse(201, {"id": self.draft_id})
+        if url.endswith("/messages"):
+            return _JsonResponse(201, {"id": self.draft_id})
+
+        raise AssertionError(f"unexpected POST {url}")
+
+    async def patch(self, url, headers=None, json=None):
+        self.calls.append({"method": "PATCH", "url": url, "headers": headers, "json": json})
+        return _JsonResponse(200, {"id": self.draft_id})
+
+    async def put(self, url, headers=None, content=None):
+        self.calls.append({"method": "PUT", "url": url, "headers": headers, "content": content})
+        assert headers is not None and "Authorization" not in headers, (
+            "the upload-session URL is pre-authorized — no bearer token should "
+            "be sent on the chunk PUTs"
+        )
+        return _JsonResponse(200, {})
+
+
+class _JsonResponse:
+    def __init__(self, status_code: int, body: dict):
+        self.status_code = status_code
+        self.text = str(body)
+        self._body = body
+
+    def json(self):
+        return self._body
+
+
+async def test_send_email_uses_upload_session_for_large_attachment_on_new_message(
+    monkeypatch,
+):
+    """
+    An attachment over the inline-embed threshold (GRAPH_INLINE_
+    ATTACHMENT_MAX_BYTES, 3MB) must not be silently dropped (the
+    pre-fix behavior) — it must go out via a real Graph draft +
+    upload-session flow instead. Confirms the whole chain for a
+    brand-new (non-reply) message: create draft -> upload session ->
+    chunked PUTs covering every byte -> send.
+    """
+
+    import app.ticketing.services.graph_client as graph_client_module
+
+    fake_client = _RecordingGraphHttpClient()
+    monkeypatch.setattr(graph_client_module.httpx, "AsyncClient", lambda timeout=30.0, **_: fake_client)
+
+    large_bytes = b"x" * (5 * 1024 * 1024)  # 5MB — over the 3MB inline threshold
+    storage = _FakeStorageService({"attachments/big.pdf": large_bytes})
+
+    client = graph_client_module.GraphMailProviderClient(
+        auth_client=None,
+        mailbox_address="mailbox@example.com",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        storage_service=storage,
+    )
+    monkeypatch.setattr(client, "_authorized_headers", lambda: _fake_headers())
+
+    envelope = _envelope(
+        attachments=[
+            EnvelopeAttachment(
+                filename="big.pdf",
+                content_type="application/pdf",
+                storage_key="attachments/big.pdf",
+                size_bytes=len(large_bytes),
+            )
+        ],
+    )
+
+    result = await client.send_email(envelope)
+
+    assert result.provider_message_id == "draft-123"
+    assert result.status == "SENT"
+
+    put_calls = [c for c in fake_client.calls if c["method"] == "PUT"]
+    assert len(put_calls) == 2  # 5MB at a 4MB chunk size -> 4MB + 1MB
+
+    total_uploaded = sum(len(c["content"]) for c in put_calls)
+    assert total_uploaded == len(large_bytes)
+
+    first_range = put_calls[0]["headers"]["Content-Range"]
+    assert first_range == f"bytes 0-4194303/{len(large_bytes)}"
+    second_range = put_calls[1]["headers"]["Content-Range"]
+    assert second_range == f"bytes 4194304-{len(large_bytes) - 1}/{len(large_bytes)}"
+
+    send_calls = [c for c in fake_client.calls if c["url"].endswith("/send")]
+    assert len(send_calls) == 1
+
+
+async def test_send_email_uses_upload_session_for_large_attachment_on_reply(monkeypatch):
+    """
+    Same as the new-message case, but for a reply: must create a real
+    draft via createReply/createReplyAll (not the direct reply/
+    replyAll action, which has no id to attach a large file to),
+    explicitly override its recipients (createReply/createReplyAll
+    auto-populate from the original message, which this platform's
+    own resolved envelope must always win over), then attach and send.
+    """
+
+    import app.ticketing.services.graph_client as graph_client_module
+
+    fake_client = _RecordingGraphHttpClient()
+    monkeypatch.setattr(graph_client_module.httpx, "AsyncClient", lambda timeout=30.0, **_: fake_client)
+
+    large_bytes = b"y" * (4 * 1024 * 1024)  # 4MB
+    storage = _FakeStorageService({"attachments/scan.pdf": large_bytes})
+
+    client = graph_client_module.GraphMailProviderClient(
+        auth_client=None,
+        mailbox_address="mailbox@example.com",
+        api_base_url="https://graph.microsoft.com/v1.0",
+        storage_service=storage,
+    )
+    monkeypatch.setattr(client, "_authorized_headers", lambda: _fake_headers())
+
+    envelope = _envelope(
+        reply_to_provider_message_id="AAMkAG-native-id",
+        cc=["cc@example.com"],
+        attachments=[
+            EnvelopeAttachment(
+                filename="scan.pdf",
+                content_type="application/pdf",
+                storage_key="attachments/scan.pdf",
+                size_bytes=len(large_bytes),
+            )
+        ],
+    )
+
+    result = await client.send_email(envelope)
+
+    assert result.provider_message_id == "draft-123"
+
+    create_reply_calls = [c for c in fake_client.calls if "/createReply" in c["url"]]
+    assert len(create_reply_calls) == 1
+    assert create_reply_calls[0]["json"] == {"comment": envelope.body}
+
+    patch_calls = [c for c in fake_client.calls if c["method"] == "PATCH"]
+    assert len(patch_calls) == 1
+    assert patch_calls[0]["json"]["toRecipients"] == [
+        {"emailAddress": {"address": envelope.to_email}}
+    ]
+    assert patch_calls[0]["json"]["ccRecipients"] == [
+        {"emailAddress": {"address": "cc@example.com"}}
+    ]
+    assert patch_calls[0]["json"]["bccRecipients"] == []
+
+    put_calls = [c for c in fake_client.calls if c["method"] == "PUT"]
+    assert sum(len(c["content"]) for c in put_calls) == len(large_bytes)
+
+
+async def test_send_email_still_uses_sendmail_when_every_attachment_is_small(monkeypatch):
+    """
+    Regression guard: an envelope with only small (already-inline,
+    content_base64 set) attachments must keep taking the original
+    single-POST sendMail path — the draft/upload-session machinery
+    should never be invoked when nothing actually needs it.
+    """
+
+    import app.ticketing.services.graph_client as graph_client_module
+
+    captured: dict = {}
+
+    class _FakeResponse:
+        status_code = 202
+        text = ""
+
+    class _FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["url"] = url
+            captured["json"] = json
+            return _FakeResponse()
+
+    monkeypatch.setattr(graph_client_module.httpx, "AsyncClient", lambda timeout=30.0: _FakeAsyncClient())
+
+    client = graph_client_module.GraphMailProviderClient(
+        auth_client=None,
+        mailbox_address="mailbox@example.com",
+        api_base_url="https://graph.microsoft.com/v1.0",
+    )
+    monkeypatch.setattr(client, "_authorized_headers", lambda: _fake_headers())
+
+    envelope = _envelope(
+        attachments=[
+            EnvelopeAttachment(
+                filename="small.pdf",
+                content_type="application/pdf",
+                content_base64="aGVsbG8=",
+            )
+        ],
+    )
+
+    result = await client.send_email(envelope)
+
+    assert captured["url"].endswith("/sendMail")
+    assert result.provider_message_id == envelope.message_id
 
 
 async def test_fetch_message_attachments_builds_url_and_parses_response(monkeypatch):

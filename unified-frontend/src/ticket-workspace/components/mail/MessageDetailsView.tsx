@@ -51,7 +51,7 @@ import { useAuthStore } from "@/store/auth-store";
 import { archiveInteraction, replyToInteraction, uploadDraftInlineImage } from "@tw/api/inbox";
 import { listAssignableAgents } from "@tw/api/agent";
 import { listClientContacts } from "@tw/api/clients";
-import { replyToClient, uploadAttachment, uploadTicketInlineImage } from "@tw/api/interaction";
+import { replyToClient, retrySend, uploadAttachment, uploadTicketInlineImage } from "@tw/api/interaction";
 import { attachInteractionToTicket, createTicketFromInteraction, listTickets } from "@tw/api/ticket";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
@@ -143,6 +143,13 @@ interface BubbleData {
   bodyHtml?: string | null;
   isClient: boolean;
   attachments?: OpenEmailResponse["attachments"];
+  // Retry Send affordance — only ever set on an agent-authored bubble
+  // (isClient: false) whose own dispatch_status is "FAILED". See
+  // replyBubble below and MessageDetailsView's handleRetrySend.
+  interactionId?: string;
+  dispatchStatus?: string | null;
+  dispatchError?: string | null;
+  performedBy?: string | null;
 }
 
 function rootBubble(email: OpenEmailResponse): BubbleData {
@@ -197,10 +204,24 @@ function replyBubble(reply: InteractionResponse): BubbleData {
     bodyHtml: payload.body_html ?? null,
     isClient: false,
     attachments: reply.attachments,
+    interactionId: reply.interaction_id,
+    dispatchStatus: reply.dispatch_status,
+    dispatchError: reply.dispatch_error,
+    performedBy: reply.performed_by,
   };
 }
 
-function Bubble({ data }: { data: BubbleData }) {
+function Bubble({
+  data,
+  canRetry,
+  isRetrying,
+  onRetrySend,
+}: {
+  data: BubbleData;
+  canRetry?: boolean;
+  isRetrying?: boolean;
+  onRetrySend?: (interactionId: string) => void;
+}) {
   // Render once and reuse for both the overflow measurement and the
   // render itself, so "Show More" reflects the rendered length rather
   // than the raw stored body (which may include Outlook's own quoted
@@ -230,6 +251,25 @@ function Bubble({ data }: { data: BubbleData }) {
           <p className="text-[11px] text-muted-foreground">{formatDateTime(data.timestamp)}</p>
         </div>
         {data.toLabel && <p className="mt-0.5 text-[11px] text-muted-foreground">To: {data.toLabel}</p>}
+        {data.dispatchStatus === "FAILED" && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-1.5 text-[11.5px] text-destructive">
+            <span className="font-medium">
+              Failed to send{data.dispatchError ? `: ${data.dispatchError}` : "."}
+            </span>
+            {canRetry && data.interactionId && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 gap-1 border-destructive/40 px-2 text-[11px] text-destructive hover:bg-destructive/10"
+                disabled={isRetrying}
+                onClick={() => onRetrySend?.(data.interactionId as string)}
+              >
+                {isRetrying ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
+                Retry Send
+              </Button>
+            )}
+          </div>
+        )}
         <div
           ref={ref}
           className={cn(
@@ -361,6 +401,22 @@ export function MessageDetailsView({
   // See handleUploadInlineImage/handleSend below — only ever
   // populated for a ticketed reply's pasted images.
   const pastedImageInteractionIdsRef = useRef<string[]>([]);
+
+  // Retry Send (P1) — reuses the persisted envelope server-side, see
+  // InteractionService.retry_failed_send. Refreshes just this one
+  // open message afterward (not the whole list) so the bubble's own
+  // dispatch_status/dispatch_error reflect the outcome. useApiAction
+  // already pushes its own error toast and never rejects — a `null`
+  // result is the failure signal, success gets its own toast here.
+  const retryAction = useApiAction((interactionId: string) => retrySend(interactionId));
+  const handleRetrySend = (interactionId: string) => {
+    retryAction.run(interactionId).then((result) => {
+      if (result) {
+        onRefreshMessage(email.interaction_id);
+        pushToast("Retrying send.", "info");
+      }
+    });
+  };
 
   // canReplyExternal above is a render-time snapshot of whatever
   // useAuthStore held at login/last refresh — it never re-checks a
@@ -567,6 +623,7 @@ export function MessageDetailsView({
         attachment_source_interaction_id: attachmentSourceInteractionId,
         reply_all: replyMode === "replyAll",
         inline_image_interaction_ids: pastedImageInteractionIdsRef.current,
+        idempotency_key: crypto.randomUUID(),
       });
       if (result) {
         pastedImageInteractionIdsRef.current = [];
@@ -612,6 +669,7 @@ export function MessageDetailsView({
       to_email: payload.to,
       distribution_list_ids: payload.distributionListIds,
       reply_all: replyMode === "replyAll",
+      idempotency_key: crypto.randomUUID(),
     });
     if (result) {
       setReplyMode(null);
@@ -918,9 +976,18 @@ export function MessageDetailsView({
             <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Message</h3>
             <div className="flex flex-col gap-3">
               <Bubble data={rootBubble(email)} />
-              {email.replies.map((reply) => (
-                <Bubble key={reply.interaction_id} data={replyBubble(reply)} />
-              ))}
+              {email.replies.map((reply) => {
+                const bubbleData = replyBubble(reply);
+                return (
+                  <Bubble
+                    key={reply.interaction_id}
+                    data={bubbleData}
+                    canRetry={bubbleData.performedBy === currentUser?.user_id}
+                    isRetrying={retryAction.isLoading}
+                    onRetrySend={handleRetrySend}
+                  />
+                );
+              })}
             </div>
           </section>
         </div>

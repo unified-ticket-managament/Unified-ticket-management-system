@@ -16,6 +16,7 @@ from bs4 import BeautifulSoup
 
 from app.ticketing.schemas.email import EmailRequest, LinkedAttachmentCandidate
 from app.ticketing.schemas.mail_integration import GraphAttachmentPayload, IncomingMailPayload
+from app.ticketing.services.bounce_detection import is_bounce_notification
 from app.ticketing.utils.constants import MAX_ATTACHMENT_FILES, MAX_ATTACHMENT_SIZE_BYTES
 from app.ticketing.utils.html_sanitizer import sanitize_inbound_html
 from app.ticketing.utils.validators import sanitize_filename, validate_attachment_type
@@ -23,6 +24,17 @@ from app.ticketing.utils.validators import sanitize_filename, validate_attachmen
 logger = logging.getLogger(__name__)
 
 GRAPH_FILE_ATTACHMENT_ODATA_TYPE = "#microsoft.graph.fileAttachment"
+
+# A forwarded/nested-email attachment ("Attach as email" in Outlook).
+# GraphMailProviderClient.fetch_message_attachments (graph_client.py)
+# already resolves one of these into a synthetic fileAttachment-shaped
+# dict (name ending .eml, contentType message/rfc822, contentBytes =
+# the raw RFC 5322 bytes from Graph's own .../$value) whenever it can
+# — see that method's own docstring. Only a *resolved* one (contentBytes
+# now present) is let through the filter below; an itemAttachment that
+# couldn't be resolved (still no contentBytes) is dropped exactly as
+# before this feature existed.
+GRAPH_ITEM_ATTACHMENT_ODATA_TYPE = "#microsoft.graph.itemAttachment"
 
 # Host substrings identifying a OneDrive/SharePoint share link.
 # Confirmed live against a real Outlook "Attach as cloud link" send:
@@ -278,6 +290,11 @@ def map_external_email_to_interaction(
         conversation_id=payload.conversationId,
         provider_message_id=payload.id,
         landed_mailbox=landed_mailbox,
+        is_bounce=is_bounce_notification(
+            from_email=payload.from_.emailAddress.address,
+            subject=payload.subject,
+            content_type_header=_extract_header(payload, "Content-Type"),
+        ),
     )
 
 
@@ -421,9 +438,24 @@ def build_upload_files_from_graph_attachments(
             dropped += 1
             continue
 
+        # contentType == "message/rfc822" (not just contentBytes being
+        # present) is the marker that distinguishes an itemAttachment
+        # graph_client.py's own _resolve_item_attachments actually
+        # resolved from a bare/unresolved one — a real, unresolved
+        # itemAttachment never carries contentBytes at all (Graph's
+        # `/attachments` list never returns it for that odata_type),
+        # but this keeps the check honest rather than relying on that
+        # incidentally always being true.
+        is_resolved_item_attachment = (
+            attachment.odata_type == GRAPH_ITEM_ATTACHMENT_ODATA_TYPE
+            and attachment.contentType == "message/rfc822"
+            and bool(attachment.contentBytes)
+        )
+
         if (
             attachment.odata_type is not None
             and attachment.odata_type != GRAPH_FILE_ATTACHMENT_ODATA_TYPE
+            and not is_resolved_item_attachment
         ):
             logger.warning(
                 "Dropping Graph attachment %r — not a file attachment (@odata.type=%s)",

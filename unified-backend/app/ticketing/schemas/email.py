@@ -131,6 +131,16 @@ class EmailRequest(BaseModel):
     # otherwise be required.
     provider_message_id: str | None = Field(default=None, max_length=255)
 
+    # True only when NDR-signature detection (bounce_detection.
+    # is_bounce_notification, called from mail_mapping_service.
+    # map_external_email_to_interaction) classified this message as a
+    # non-delivery report/bounce rather than a real client email.
+    # Always False for the legacy N8N/dummy transport and for any
+    # caller that doesn't run that detection — EmailService.
+    # receive_email routes a True here to a distinct, non-ticket-
+    # creating path (see its own _receive_bounce).
+    is_bounce: bool = False
+
 
 class EmailResponse(BaseModel):
     """

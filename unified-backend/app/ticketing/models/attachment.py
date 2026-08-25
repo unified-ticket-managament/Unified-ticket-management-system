@@ -102,9 +102,16 @@ class Attachment(Base):
         nullable=False,
     )
 
+    # Phase 2 hardening: was "pending", implying an antivirus scan is
+    # in progress/will happen — none exists anywhere in this codebase
+    # (grep confirms nothing ever updates or reads this column beyond
+    # this default). "not_scanned" is a static, honest value; no AV
+    # scanning is added by this change — malware/AV scanning is
+    # explicitly out of scope. See the accompanying migration for the
+    # one-time backfill of already-inserted "pending" rows.
     scan_status: Mapped[str] = mapped_column(
         String(20),
-        default="pending",
+        default="not_scanned",
         nullable=False,
     )
 

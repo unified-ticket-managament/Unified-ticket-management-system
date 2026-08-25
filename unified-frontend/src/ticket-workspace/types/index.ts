@@ -447,6 +447,9 @@ export interface InteractionReplyRequest {
   // (Outlook-style clipboard paste — pasted rich text/tables/inline
   // images). Omit to send exactly like before this field existed.
   body_html?: string | null;
+  // Client-generated Send idempotency key — see ComposeEmailPayload.
+  // idempotencyKey (api/inbox.ts) for the same contract.
+  idempotency_key?: string | null;
 }
 
 export interface InteractionReplyResponse {
@@ -645,6 +648,12 @@ export interface InteractionResponse {
   conversation_id?: string | null;
   in_reply_to_message_id?: string | null;
   references?: string[];
+  // Typed mirror of payload["dispatch_status"]/["dispatch_error"] for
+  // an outbound send (Compose/Reply/Reply-All/Forward/Draft) — see
+  // the backend's own InteractionResponse. null/undefined for every
+  // interaction that was never an outbound dispatch attempt.
+  dispatch_status?: string | null;
+  dispatch_error?: string | null;
 }
 
 // GET /interactions/{id}/thread
@@ -733,6 +742,8 @@ export interface ReplyRequest {
   // (see InteractionService._merge_inline_images_into_envelope).
   // Omit/empty when nothing was pasted.
   inline_image_interaction_ids?: string[];
+  // See InteractionReplyRequest.idempotency_key above — same contract.
+  idempotency_key?: string | null;
 }
 
 // ==========================================================
@@ -787,6 +798,15 @@ export interface TicketActionResponse {
 // pending pre-ticket Compose/reply too), unlike TicketActionResponse's
 // own required ticket_id.
 export interface CancelSendResponse {
+  interaction_id: string;
+  ticket_id: string | null;
+  message: string;
+  created_at: string;
+}
+
+// POST /interactions/{id}/retry-send — Retry Send for a FAILED
+// outbound Compose/Reply/Reply-All/Forward.
+export interface RetrySendResponse {
   interaction_id: string;
   ticket_id: string | null;
   message: string;

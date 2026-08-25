@@ -84,6 +84,14 @@ class ReplyCreate(BaseModel):
     # list (the default) is a pure no-op.
     inline_image_interaction_ids: list[UUID] = Field(default_factory=list)
 
+    # Client-generated Send idempotency key — a repeated request with
+    # the same key (e.g. a double-click, or a retried request after a
+    # network hiccup on the client side) returns the already-created
+    # interaction instead of sending a second reply. None (the
+    # default) opts out entirely, exactly like every reply before this
+    # field existed. See Interaction.dispatch_idempotency_key.
+    idempotency_key: str | None = Field(default=None, max_length=255)
+
 
 class InteractionReplyRequest(BaseModel):
     """
@@ -115,6 +123,9 @@ class InteractionReplyRequest(BaseModel):
 
     # See ReplyCreate.body_html above — same meaning, same reason.
     body_html: str | None = None
+
+    # See ReplyCreate.idempotency_key above — same meaning, same reason.
+    idempotency_key: str | None = Field(default=None, max_length=255)
 
     # Deliberately no inline_image_interaction_ids field here, unlike
     # ReplyCreate — this request type has exactly one caller that can
@@ -209,6 +220,19 @@ class CancelSendResponse(ORMBase):
     (interaction.ticket_id is None until/unless that thread is later
     turned into a ticket), so this can't reuse TicketActionResponse's
     own required `ticket_id`.
+    """
+
+    interaction_id: UUID
+    ticket_id: UUID | None
+    message: str
+    created_at: datetime
+
+
+class RetrySendResponse(ORMBase):
+    """
+    Response for POST /interactions/{id}/retry-send — a near-twin of
+    CancelSendResponse, same optional `ticket_id` reasoning (a
+    still-pre-ticket Compose/reply can fail and be retried too).
     """
 
     interaction_id: UUID

@@ -2,12 +2,15 @@
 
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import HTTPException, UploadFile
 from fastapi import status as http_status
 from sqlalchemy.exc import IntegrityError
+
+logger = logging.getLogger(__name__)
 
 from shared_models.models import User
 
@@ -62,6 +65,7 @@ from app.ticketing.schemas.ticket_action import (
     InteractionReplyResponse,
     PriorityChangeRequest,
     ReplyCreate,
+    RetrySendResponse,
     StatusChangeRequest,
     TicketActionResponse,
     TransferAgentRequest,
@@ -154,6 +158,37 @@ from app.ticketing.services.attachment_service import (
 from app.ticketing.services.undo_send import compute_send_after, schedule_delayed_send
 from app.ticketing.utils.constants import MAX_ATTACHMENT_FILES
 from app.ticketing.storage.base import StorageService
+
+
+def _dispatch_columns_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    Mirrors the dispatch_status/dispatch_error/send_after/
+    provider_message_id keys already written into an outbound
+    interaction's payload dict (by _dispatch_and_record,
+    _schedule_delayed_send, cancel_pending_send, and the handful of
+    creation call sites that set an initial dispatch_status) onto the
+    same-named real Interaction columns — the single place this
+    mapping happens, so every InteractionCreate/InteractionUpdate call
+    that touches these payload keys derives the column kwargs from
+    this instead of duplicating the mapping at each call site.
+
+    payload remains the source of truth every existing read site
+    (cancel_pending_send, undo_send's own re-check) keeps reading
+    unchanged; these columns exist purely so a failed/pending send can
+    be a real, indexed query instead of a full-table JSONB scan, and
+    so API responses can expose it as a typed field. send_after is
+    stored in payload as an ISO string (see undo_send.compute_send_after)
+    but as a real datetime on the column.
+    """
+
+    send_after_raw = payload.get("send_after")
+
+    return {
+        "dispatch_status": payload.get("dispatch_status"),
+        "dispatch_error": payload.get("dispatch_error"),
+        "send_after": datetime.fromisoformat(send_after_raw) if send_after_raw else None,
+        "provider_message_id": payload.get("provider_message_id"),
+    }
 
 
 def _to_response(
@@ -637,13 +672,49 @@ class InteractionService:
                 interaction.interaction_id, envelope
             )
         except OutboundDispatchError as exc:
+            # Phase 2 hardening: prefix with which Graph operation
+            # actually failed (and its status code), when known —
+            # existing consumers of dispatch_error (cancel_pending_send,
+            # undo_send, the frontend's own display) only ever treat it
+            # as an opaque string, so this is purely additive.
+            error_message = str(exc)
+            if exc.operation:
+                tag = f"[graph:{exc.operation}"
+                if exc.status_code is not None:
+                    tag += f":{exc.status_code}"
+                tag += "] "
+                error_message = tag + error_message
+
             failed_payload = {
                 **interaction.payload,
                 "dispatch_status": "FAILED",
-                "dispatch_error": str(exc),
+                "dispatch_error": error_message,
             }
+            if exc.orphaned_provider_draft_id:
+                # Deliberately payload-only (never promoted to a
+                # column/migration) — provider_message_id is
+                # documented as "the message this interaction actually
+                # dispatched as," which a never-sent orphaned draft
+                # must not be conflated with. _dispatch_columns_from_
+                # payload only reads dispatch_status/dispatch_error/
+                # send_after/provider_message_id, so this extra key is
+                # silently ignored by it — no column drift risk.
+                failed_payload["orphaned_provider_draft_id"] = (
+                    exc.orphaned_provider_draft_id
+                )
+                logger.warning(
+                    "Outbound send left an orphaned, never-sent Graph "
+                    "draft: interaction_id=%s draft_id=%s operation=%s",
+                    interaction.interaction_id,
+                    exc.orphaned_provider_draft_id,
+                    exc.operation,
+                )
             await self.interaction_repository.update(
-                interaction, InteractionUpdate(payload=failed_payload)
+                interaction,
+                InteractionUpdate(
+                    payload=failed_payload,
+                    **_dispatch_columns_from_payload(failed_payload),
+                ),
             )
             await self.interaction_repository.db.commit()
 
@@ -658,7 +729,11 @@ class InteractionService:
             "provider_message_id": result.provider_message_id,
         }
         await self.interaction_repository.update(
-            interaction, InteractionUpdate(payload=sent_payload)
+            interaction,
+            InteractionUpdate(
+                payload=sent_payload,
+                **_dispatch_columns_from_payload(sent_payload),
+            ),
         )
 
     async def _schedule_delayed_send(
@@ -691,7 +766,11 @@ class InteractionService:
             "send_after": send_after.isoformat(),
         }
         await self.interaction_repository.update(
-            interaction, InteractionUpdate(payload=pending_payload)
+            interaction,
+            InteractionUpdate(
+                payload=pending_payload,
+                **_dispatch_columns_from_payload(pending_payload),
+            ),
         )
         await self.interaction_repository.db.commit()
 
@@ -751,7 +830,11 @@ class InteractionService:
 
         canceled_payload = {**interaction.payload, "dispatch_status": "CANCELED"}
         await self.interaction_repository.update(
-            interaction, InteractionUpdate(payload=canceled_payload)
+            interaction,
+            InteractionUpdate(
+                payload=canceled_payload,
+                **_dispatch_columns_from_payload(canceled_payload),
+            ),
         )
         await self.interaction_repository.db.commit()
 
@@ -760,6 +843,97 @@ class InteractionService:
             ticket_id=interaction.ticket_id,
             message="Send canceled.",
             created_at=datetime.now(timezone.utc),
+        )
+
+    async def retry_failed_send(
+        self,
+        interaction_id: UUID,
+        current_user: User,
+    ) -> RetrySendResponse:
+        """
+        Retries a FAILED outbound Compose/Reply/Reply-All/Forward —
+        reuses the exact envelope persisted at
+        `interaction.payload["envelope"]` (built once, at the
+        original send attempt) rather than re-resolving recipients/
+        attachments/threading from scratch, so a retry can never
+        diverge from what the agent actually composed.
+
+        Authorization mirrors cancel_pending_send exactly: only the
+        interaction's own sender may retry it — this is "retry my own
+        failed action," not a ticket-visibility question.
+
+        Concurrency-safe by construction: try_transition_to_pending_
+        send is a conditional UPDATE (FAILED -> PENDING_SEND) that
+        only one of two simultaneous retry clicks can ever win — the
+        loser gets None back and 400s rather than both scheduling a
+        second real dispatch. Reuses _schedule_delayed_send verbatim
+        (the same Undo-Send window, the same background dispatch
+        task, the same eventual SENT/FAILED outcome as any other
+        send) — no new dispatch code path.
+        """
+
+        interaction = await self.interaction_repository.get_by_id(interaction_id)
+
+        if interaction is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        if interaction.performed_by != current_user.user_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="You can only retry a message you sent yourself.",
+            )
+
+        envelope_data = interaction.payload.get("envelope")
+        if not envelope_data:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="This message has no envelope to retry — it was never a real send attempt.",
+            )
+
+        transitioned = await self.interaction_repository.try_transition_to_pending_send(
+            interaction_id
+        )
+        if transitioned is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="This message is no longer retryable — it has already been sent, "
+                "is already pending, or was never a failed send.",
+            )
+
+        # try_transition_to_pending_send only touches the real
+        # dispatch_status/dispatch_error columns (the atomic guard
+        # itself); mirror the same reset into payload here so
+        # cancel_pending_send's own payload-based check (and any other
+        # payload reader) sees a consistent picture — same dual-write
+        # convention _dispatch_columns_from_payload's callers already
+        # follow everywhere else.
+        retried_payload = {
+            **transitioned.payload,
+            "dispatch_status": "PENDING_SEND",
+            "dispatch_error": None,
+        }
+        await self.interaction_repository.update(
+            transitioned,
+            InteractionUpdate(
+                payload=retried_payload,
+                **_dispatch_columns_from_payload(retried_payload),
+            ),
+        )
+
+        # _schedule_delayed_send commits (adding send_after on top of
+        # the payload sync above) before scheduling the real dispatch
+        # — no separate commit needed here.
+        envelope = OutboundEnvelope.model_validate(envelope_data)
+        await self._schedule_delayed_send(transitioned, envelope)
+
+        return RetrySendResponse(
+            interaction_id=transitioned.interaction_id,
+            ticket_id=transitioned.ticket_id,
+            message="Retrying send.",
+            created_at=transitioned.created_at,
         )
 
     async def _attach_outbound_files(
@@ -994,6 +1168,7 @@ class InteractionService:
         client_id: UUID | None = None,
         parent_interaction_id: UUID | None = None,
         subject: str | None = None,
+        idempotency_key: str | None = None,
     ) -> Interaction:
         """
         Creates any interaction that belongs to a ticket.
@@ -1045,6 +1220,10 @@ class InteractionService:
                 parent_interaction_id=parent_interaction_id,
 
                 subject=subject,
+
+                dispatch_idempotency_key=idempotency_key,
+
+                **_dispatch_columns_from_payload(payload),
 
             )
 
@@ -1305,6 +1484,18 @@ class InteractionService:
         ensure_has_permission(current_user, "ticket:reply")
         ensure_has_permission(current_user, "communication:reply_external")
 
+        if request.idempotency_key:
+            existing = await self.interaction_repository.get_by_idempotency_key(
+                request.idempotency_key, current_user.user_id
+            )
+            if existing is not None:
+                return TicketActionResponse(
+                    interaction_id=existing.interaction_id,
+                    ticket_id=ticket_id,
+                    message="Reply queued to send.",
+                    created_at=existing.created_at,
+                )
+
         # request.to_email/cc/bcc are already EmailStr-validated for
         # syntax by Pydantic before this method ever runs — this adds
         # the domain-deliverability layer syntax alone can't catch
@@ -1313,7 +1504,7 @@ class InteractionService:
         # ReplyCreate.to_email) — the default recipient (the ticket's
         # latest inbound sender) is never re-validated, since it isn't
         # new user input.
-        ensure_recipients_are_valid(
+        await ensure_recipients_are_valid(
             to=request.to_email, cc=request.cc, bcc=request.bcc
         )
 
@@ -1388,6 +1579,15 @@ class InteractionService:
                 else None
             )
 
+            if not inbound_payload.provider_message_id:
+                logger.warning(
+                    "Reply to interaction %s has no reply_to_provider_message_id — "
+                    "falling back to a plain, unthreaded sendMail (the original "
+                    "inbound message never captured a Graph message id, e.g. the "
+                    "legacy transport or a malformed payload).",
+                    latest_email.interaction_id,
+                )
+
             if reply_from_email:
                 envelope = build_reply_envelope(
                     from_email=reply_from_email,
@@ -1413,17 +1613,35 @@ class InteractionService:
         else:
             payload["dispatch_status"] = "NO_RECIPIENT"
 
-        interaction = await self._create_ticket_interaction(
-            ticket_id=ticket_id,
-            interaction_type="REPLY",
-            direction=InteractionDirection.OUTBOUND,
-            payload=payload,
-            performed_by=actor_id,
-            message_id=envelope.message_id if envelope is not None else None,
-            client_id=ticket.client_company_id,
-            parent_interaction_id=thread_root_id,
-            subject=latest_email.subject if latest_email is not None else None,
-        )
+        try:
+            interaction = await self._create_ticket_interaction(
+                ticket_id=ticket_id,
+                interaction_type="REPLY",
+                direction=InteractionDirection.OUTBOUND,
+                payload=payload,
+                performed_by=actor_id,
+                message_id=envelope.message_id if envelope is not None else None,
+                client_id=ticket.client_company_id,
+                parent_interaction_id=thread_root_id,
+                subject=latest_email.subject if latest_email is not None else None,
+                idempotency_key=request.idempotency_key,
+            )
+        except IntegrityError:
+            # See compose_email's identical guard — a concurrent
+            # double-submit with the same key; nothing real has
+            # happened yet (no attachment merge, no dispatch).
+            await self.interaction_repository.db.rollback()
+            existing = await self.interaction_repository.get_by_idempotency_key(
+                request.idempotency_key, current_user.user_id
+            )
+            if existing is not None:
+                return TicketActionResponse(
+                    interaction_id=existing.interaction_id,
+                    ticket_id=ticket_id,
+                    message="Reply queued to send.",
+                    created_at=existing.created_at,
+                )
+            raise
 
         # Metadata only — the reply body itself is never written to
         # the audit trail.
@@ -1539,10 +1757,22 @@ class InteractionService:
         await self._ensure_can_act_on_pending_interaction(root, current_user)
         ensure_has_permission(current_user, "communication:reply_external")
 
+        if request.idempotency_key:
+            existing = await self.interaction_repository.get_by_idempotency_key(
+                request.idempotency_key, current_user.user_id
+            )
+            if existing is not None:
+                return InteractionReplyResponse(
+                    interaction_id=existing.interaction_id,
+                    parent_interaction_id=root.interaction_id,
+                    message=request.message,
+                    created_at=existing.created_at,
+                )
+
         # See add_reply's identical call for the full rationale — the
         # domain-deliverability layer syntax-only EmailStr validation
         # can't catch.
-        ensure_recipients_are_valid(
+        await ensure_recipients_are_valid(
             to=request.to_email, cc=request.cc, bcc=request.bcc
         )
 
@@ -1590,6 +1820,15 @@ class InteractionService:
             else None
         )
 
+        if not inbound_payload.provider_message_id:
+            logger.warning(
+                "Reply to interaction %s has no reply_to_provider_message_id — "
+                "falling back to a plain, unthreaded sendMail (the original "
+                "inbound message never captured a Graph message id, e.g. the "
+                "legacy transport or a malformed payload).",
+                root.interaction_id,
+            )
+
         envelope = None
         if reply_from_email:
             envelope = build_reply_envelope(
@@ -1616,21 +1855,40 @@ class InteractionService:
         else:
             payload["dispatch_status"] = "NO_RECIPIENT"
 
-        interaction = await self.interaction_repository.create(
-            InteractionCreate(
-                ticket_id=None,
-                interaction_type="REPLY",
-                direction=InteractionDirection.OUTBOUND,
-                status=InteractionStatus.ASSIGNED,
-                performed_by=actor_id,
-                payload=payload,
-                is_visible=True,
-                message_id=envelope.message_id if envelope is not None else None,
-                client_id=root.client_id,
-                parent_interaction_id=root.interaction_id,
-                subject=root.subject,
+        try:
+            interaction = await self.interaction_repository.create(
+                InteractionCreate(
+                    ticket_id=None,
+                    interaction_type="REPLY",
+                    direction=InteractionDirection.OUTBOUND,
+                    status=InteractionStatus.ASSIGNED,
+                    performed_by=actor_id,
+                    payload=payload,
+                    is_visible=True,
+                    message_id=envelope.message_id if envelope is not None else None,
+                    client_id=root.client_id,
+                    parent_interaction_id=root.interaction_id,
+                    subject=root.subject,
+                    dispatch_idempotency_key=request.idempotency_key,
+                    **_dispatch_columns_from_payload(payload),
+                )
             )
-        )
+        except IntegrityError:
+            # See compose_email's identical guard — a concurrent
+            # double-submit with the same key; nothing real has
+            # happened yet (no attachment merge, no dispatch).
+            await self.interaction_repository.db.rollback()
+            existing = await self.interaction_repository.get_by_idempotency_key(
+                request.idempotency_key, current_user.user_id
+            )
+            if existing is not None:
+                return InteractionReplyResponse(
+                    interaction_id=existing.interaction_id,
+                    parent_interaction_id=root.interaction_id,
+                    message=request.message,
+                    created_at=existing.created_at,
+                )
+            raise
 
         # Metadata only — the reply body itself is never written to
         # the audit trail.
@@ -1781,7 +2039,24 @@ class InteractionService:
         *before* dispatch, so they actually ride along on the real
         outbound Graph message — not just recorded for this app's own
         UI, which is all that happened before this parameter existed.
+
+        `request.idempotency_key`, when given, makes a repeated
+        request with the same key (double-click, or a client-side
+        retry after a network hiccup) return the already-created
+        interaction instead of composing a second email — see
+        Interaction.dispatch_idempotency_key's own docstring.
         """
+
+        if request.idempotency_key:
+            existing = await self.interaction_repository.get_by_idempotency_key(
+                request.idempotency_key, current_user.user_id
+            )
+            if existing is not None:
+                return ComposeEmailResponse(
+                    interaction_id=existing.interaction_id,
+                    client_id=existing.client_id,
+                    created_at=existing.created_at,
+                )
 
         if self.client_repository is None:
             raise HTTPException(
@@ -1889,22 +2164,41 @@ class InteractionService:
         if envelope.body_html:
             interaction_payload["body_html"] = envelope.body_html
 
-        interaction = await self.interaction_repository.create(
-            InteractionCreate(
-                ticket_id=None,
-                interaction_type="EMAIL",
-                direction=InteractionDirection.OUTBOUND,
-                status=InteractionStatus.ASSIGNED,
-                performed_by=actor_id,
-                payload=interaction_payload,
-                is_visible=True,
-                message_id=envelope.message_id,
-                client_id=client.client_id,
-                parent_interaction_id=None,
-                received_at=datetime.now(timezone.utc),
-                subject=request.subject,
+        try:
+            interaction = await self.interaction_repository.create(
+                InteractionCreate(
+                    ticket_id=None,
+                    interaction_type="EMAIL",
+                    direction=InteractionDirection.OUTBOUND,
+                    status=InteractionStatus.ASSIGNED,
+                    performed_by=actor_id,
+                    payload=interaction_payload,
+                    is_visible=True,
+                    message_id=envelope.message_id,
+                    client_id=client.client_id,
+                    parent_interaction_id=None,
+                    received_at=datetime.now(timezone.utc),
+                    subject=request.subject,
+                    dispatch_idempotency_key=request.idempotency_key,
+                    **_dispatch_columns_from_payload(interaction_payload),
+                )
             )
-        )
+        except IntegrityError:
+            # Concurrent double-submit with the same idempotency key —
+            # nothing real has happened yet at this point (no
+            # attachment writes, no dispatch), so the losing request
+            # just rolls back and returns the winner's own row.
+            await self.interaction_repository.db.rollback()
+            existing = await self.interaction_repository.get_by_idempotency_key(
+                request.idempotency_key, current_user.user_id
+            )
+            if existing is not None:
+                return ComposeEmailResponse(
+                    interaction_id=existing.interaction_id,
+                    client_id=existing.client_id,
+                    created_at=existing.created_at,
+                )
+            raise
 
         await AuditLogService.log_event(
             self.interaction_repository.db,
@@ -1949,6 +2243,29 @@ class InteractionService:
     # ---------------------------------------------------------
     # Forward — an existing client email, to an internal org user
     # ---------------------------------------------------------
+
+    @staticmethod
+    def _forward_response_from_existing(
+        existing: Interaction,
+    ) -> ForwardToInternalUserResponse:
+        """
+        Reconstructs the exact response an idempotency-key hit should
+        return — used both when the key already resolves on the first
+        check and after a concurrent-insert IntegrityError. Reads
+        dispatch_status off the real column (reflecting whatever the
+        original request has actually reached by now — PENDING_SEND,
+        SENT, or FAILED) rather than assuming PENDING_SEND.
+        """
+
+        return ForwardToInternalUserResponse(
+            interaction_id=existing.interaction_id,
+            dispatch_status=existing.dispatch_status or "PENDING_SEND",
+            created_at=existing.created_at,
+            recipients=[
+                ResolvedForwardRecipient.model_validate(r)
+                for r in existing.payload.get("recipients", [])
+            ],
+        )
 
     async def forward_to_internal_user(
         self,
@@ -2002,6 +2319,13 @@ class InteractionService:
           list simply contributes nothing, it never errors the whole
           request unless it was the only source given.
         """
+
+        if request.idempotency_key:
+            existing = await self.interaction_repository.get_by_idempotency_key(
+                request.idempotency_key, current_user.user_id
+            )
+            if existing is not None:
+                return self._forward_response_from_existing(existing)
 
         original = await self.interaction_repository.get_by_id(interaction_id)
 
@@ -2169,21 +2493,35 @@ class InteractionService:
         if envelope.body_html:
             payload["body_html"] = envelope.body_html
 
-        interaction = await self.interaction_repository.create(
-            InteractionCreate(
-                ticket_id=original.ticket_id,
-                interaction_type="FORWARD",
-                direction=InteractionDirection.OUTBOUND,
-                status=InteractionStatus.ASSIGNED,
-                performed_by=actor_id,
-                payload=payload,
-                is_visible=True,
-                message_id=envelope.message_id,
-                client_id=client.client_id,
-                parent_interaction_id=original.interaction_id,
-                subject=request.subject,
+        try:
+            interaction = await self.interaction_repository.create(
+                InteractionCreate(
+                    ticket_id=original.ticket_id,
+                    interaction_type="FORWARD",
+                    direction=InteractionDirection.OUTBOUND,
+                    status=InteractionStatus.ASSIGNED,
+                    performed_by=actor_id,
+                    payload=payload,
+                    is_visible=True,
+                    message_id=envelope.message_id,
+                    client_id=client.client_id,
+                    parent_interaction_id=original.interaction_id,
+                    subject=request.subject,
+                    dispatch_idempotency_key=request.idempotency_key,
+                    **_dispatch_columns_from_payload(payload),
+                )
             )
-        )
+        except IntegrityError:
+            # See compose_email's identical guard — a concurrent
+            # double-submit with the same key; nothing real has
+            # happened yet (no attachment merge, no dispatch).
+            await self.interaction_repository.db.rollback()
+            existing = await self.interaction_repository.get_by_idempotency_key(
+                request.idempotency_key, current_user.user_id
+            )
+            if existing is not None:
+                return self._forward_response_from_existing(existing)
+            raise
 
         audit_new_values: dict = {
             "forwarded_interaction_id": original.interaction_id,
@@ -3672,6 +4010,13 @@ class InteractionService:
 
         try:
             async with self.interaction_repository.db.begin_nested():
+                draft_payload = {
+                    "message": message,
+                    "cc": cc or [],
+                    "bcc": bcc or [],
+                    "body_html": body_html,
+                    "dispatch_status": "DRAFT",
+                }
                 return await self.interaction_repository.create(
                     InteractionCreate(
                         ticket_id=None,
@@ -3679,17 +4024,12 @@ class InteractionService:
                         direction=InteractionDirection.OUTBOUND,
                         status=InteractionStatus.PENDING,
                         performed_by=current_user.user_id,
-                        payload={
-                            "message": message,
-                            "cc": cc or [],
-                            "bcc": bcc or [],
-                            "body_html": body_html,
-                            "dispatch_status": "DRAFT",
-                        },
+                        payload=draft_payload,
                         is_visible=True,
                         client_id=root.client_id,
                         parent_interaction_id=root.interaction_id,
                         is_draft=True,
+                        **_dispatch_columns_from_payload(draft_payload),
                     )
                 )
         except IntegrityError:
@@ -3872,6 +4212,7 @@ class InteractionService:
         current_user: User,
         to_email: str | None = None,
         distribution_list_ids: list[UUID] | None = None,
+        idempotency_key: str | None = None,
     ) -> InteractionReplyResponse:
         """
         Sends current_user's draft on this thread — hands its saved
@@ -3891,10 +4232,34 @@ class InteractionService:
         deliberately not part of the auto-saved draft payload (unlike
         message/cc/bcc), since it's only meaningful at the moment of
         sending, not while still drafting.
+
+        `idempotency_key` (Phase 2 hardening): unlike the other four
+        send paths (add_reply, add_interaction_reply, compose_email,
+        forward_to_internal_user), this pre-check MUST run before
+        `get_draft` below, not after — a successful prior send already
+        hard-deletes the draft row (see the end of this method), so a
+        retry with the same key has to short-circuit here and return
+        the original result, rather than reach get_draft and 404 on a
+        row that's supposed to be gone. No separate IntegrityError
+        catch is needed here either: this method never calls
+        interaction_repository.create() directly — that race is fully
+        owned by add_interaction_reply's own insert below.
         """
 
         root = await self._resolve_pending_thread_root(interaction_id)
         await self._ensure_can_act_on_pending_interaction(root, current_user)
+
+        if idempotency_key:
+            existing = await self.interaction_repository.get_by_idempotency_key(
+                idempotency_key, current_user.user_id
+            )
+            if existing is not None:
+                return InteractionReplyResponse(
+                    interaction_id=existing.interaction_id,
+                    parent_interaction_id=root.interaction_id,
+                    message=existing.payload.get("message", ""),
+                    created_at=existing.created_at,
+                )
 
         draft = await self.interaction_repository.get_draft(
             root.interaction_id, current_user.user_id
@@ -3922,6 +4287,7 @@ class InteractionService:
                 to_email=to_email,
                 distribution_list_ids=distribution_list_ids or [],
                 body_html=body_html,
+                idempotency_key=idempotency_key,
             ),
             current_user=current_user,
             existing_attachment_source_interaction_id=draft_interaction_id,
@@ -3935,6 +4301,56 @@ class InteractionService:
         await self.interaction_repository.delete_draft(draft)
 
         return reply
+
+    async def _delete_stored_attachments(self, interaction_id: UUID) -> None:
+        """
+        Deletes every real storage object + Attachment row for one
+        interaction — the shared core `discard_draft` (interactive) and
+        the scheduled draft-retention sweep (Phase 2 hardening) both
+        call, so there's exactly one place this logic lives. A no-op
+        (not an error) when either dependency is unavailable — mirrors
+        discard_draft's own pre-existing None-guard.
+        """
+
+        if self.attachment_repository is None or self.storage_service is None:
+            return
+
+        attachments = await self.attachment_repository.list_by_interaction_id(interaction_id)
+        for attachment in attachments:
+            await self.storage_service.delete(object_key=attachment.storage_key)
+            await self.attachment_repository.delete(attachment)
+
+    async def _discard_draft_core(self, draft: Interaction) -> None:
+        """
+        Shared deletion core for discard_draft (interactive) and the
+        scheduled draft-retention sweep — callers own their own lookup/
+        authorization. Byte-for-byte the same operations, in the same
+        order, discard_draft's own inline body always performed.
+        """
+
+        await self._delete_stored_attachments(draft.interaction_id)
+        await self.interaction_repository.delete_draft(draft)
+
+    async def _discard_stale_inline_image(self, interaction: Interaction) -> None:
+        """
+        Phase 2 hardening: sweeps an abandoned pasted-image staging
+        interaction (upload_inline_image/upload_compose_inline_image's
+        own ATTACHMENT row, never consumed by a submitted note/reply/
+        compose/forward) — deletes its stored bytes/Attachment row,
+        then marks it invisible rather than hard-deleting the
+        Interaction row itself (the exact same end-state a normally-
+        *consumed* inline image already reaches once its files are
+        reassigned onto a real sent interaction — see
+        list_stale_unclaimed_inline_images's own docstring for the
+        query condition that keeps this from ever matching one of
+        those, or an ordinary, permanently-attached upload_attachment
+        row).
+        """
+
+        await self._delete_stored_attachments(interaction.interaction_id)
+        await self.interaction_repository.update(
+            interaction, InteractionUpdate(is_visible=False)
+        )
 
     async def discard_draft(
         self,
@@ -3961,15 +4377,7 @@ class InteractionService:
                 detail="No draft found on this thread.",
             )
 
-        if self.attachment_repository is not None and self.storage_service is not None:
-            draft_attachments = await self.attachment_repository.list_by_interaction_id(
-                draft.interaction_id
-            )
-            for attachment in draft_attachments:
-                await self.storage_service.delete(object_key=attachment.storage_key)
-                await self.attachment_repository.delete(attachment)
-
-        await self.interaction_repository.delete_draft(draft)
+        await self._discard_draft_core(draft)
 
         return DraftDeleteResponse(message="Draft discarded.")
 

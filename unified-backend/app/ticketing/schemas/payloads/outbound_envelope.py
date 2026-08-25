@@ -3,18 +3,30 @@ from pydantic import BaseModel, EmailStr, Field
 
 class EnvelopeAttachment(BaseModel):
     """
-    One file ready to ride along on an outbound send — content
-    already read out of storage and base64-encoded, so the mail
-    transport (graph_client.py) needs no storage/DB access of its
-    own to embed it. See attachment_service.load_envelope_attachments,
-    the one place this is built, for the size limit this implies
-    (Graph's sendMail only accepts small inline attachments; anything
-    over that limit is dropped there before it ever reaches here).
+    One file ready to ride along on an outbound send. See
+    attachment_service.load_envelope_attachments, the one place this
+    is built, for exactly how — either shape below can be produced,
+    depending on size:
+
+    - Small (<= attachment_service.GRAPH_INLINE_ATTACHMENT_MAX_BYTES):
+      content already read out of storage and base64-encoded
+      (`content_base64` set, `storage_key`/`size_bytes` unset), so
+      the mail transport (graph_client.py) can embed it directly in a
+      single sendMail/reply call with no storage/DB access of its own.
+    - Large (over that threshold, but always within Graph's own real
+      ~150MB attachment ceiling, since UTMS's own
+      MAX_ATTACHMENT_SIZE_BYTES caps every stored attachment well
+      below that): `content_base64` is left unset and `storage_key`/
+      `size_bytes` are set instead — this envelope is itself persisted
+      verbatim into Interaction.payload, and a multi-megabyte base64
+      blob has no business living in a JSONB column. graph_client.py
+      fetches the real bytes fresh, once, at actual dispatch time via
+      a genuine Graph upload session (see its _add_large_attachment).
     """
 
     filename: str
     content_type: str
-    content_base64: str
+    content_base64: str | None = None
 
     # Only set for a pasted-inline-image attachment (see
     # attachment_service.create_inline_image) — content_id is the
@@ -26,6 +38,12 @@ class EnvelopeAttachment(BaseModel):
     # exact same 3-field shape as before this pair existed.
     content_id: str | None = None
     is_inline: bool = False
+
+    # Large-attachment reference (see class docstring). Both unset
+    # (the default) for every small attachment — the exact same shape
+    # as before this pair existed.
+    storage_key: str | None = None
+    size_bytes: int | None = None
 
 
 class OutboundEnvelope(BaseModel):

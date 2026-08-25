@@ -10,6 +10,7 @@ from app.ticketing.enums import (
     InteractionDirection,
     InteractionStatus,
 )
+from app.ticketing.models.interaction import Interaction
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
@@ -43,6 +44,7 @@ from app.ticketing.services.rule_conditions import RuleEmailContext
 from app.ticketing.services.rule_engine_service import RuleEngineService
 from app.ticketing.services.sla_service import SLAService
 from app.ticketing.services.sla_escalation_rules import RecipientContext, resolve_team_lead
+from app.ticketing.services.sla_breach_notifier import resolve_global_inbox_user_ids
 from app.notifications.service import NotificationService, NotificationType
 
 logger = logging.getLogger(__name__)
@@ -177,6 +179,17 @@ class EmailService:
             raise ValueError(
                 "Email already processed."
             )
+
+        # ---------------------------------------
+        # Bounce/NDR detection (Phase 2 hardening) — must run before
+        # any client/category resolution or thread-matching below, so
+        # a bounce quoting the original outbound message is never
+        # misattributed onto an existing ticket as a client reply. See
+        # _receive_bounce's own docstring for the full rationale.
+        # ---------------------------------------
+
+        if email.is_bounce:
+            return await self._receive_bounce(email)
 
         # ---------------------------------------
         # Client Lookup
@@ -443,12 +456,22 @@ class EmailService:
     references=email.references or None,
 
     subject=email.subject,
+
+    # Mirrors payload["provider_message_id"] onto the real column —
+    # already indexed by the P0 migration, but this forward-write path
+    # never actually populated it (only outbound interactions did, via
+    # _dispatch_columns_from_payload). See interaction_service.py's
+    # own docstring for that mirroring convention.
+    provider_message_id=email.provider_message_id,
 )
 
         created = (
             await self.interaction_repository
             .create(interaction)
         )
+
+        if email.message_id:
+            await self._reconcile_orphaned_replies(created, email.message_id)
 
         # ---------------------------------------
         # SLA
@@ -715,3 +738,187 @@ class EmailService:
 
             attachments=attachment_metas,
         )
+
+    async def _receive_bounce(self, email: EmailRequest) -> EmailResponse:
+        """
+        Handles a message already classified as a non-delivery report/
+        bounce (see bounce_detection.is_bounce_notification, called
+        from mail_mapping_service.map_external_email_to_interaction).
+
+        Deliberately does NOT:
+        - run any thread-matching (conversation_id/in_reply_to/
+          references) — an NDR quoting the original outbound message
+          in its own body could otherwise be misattributed as a
+          client reply on an existing ticket, firing a false
+          CLIENT_REPLY notification to the assigned agent.
+        - start any SLA clock — there is no real correspondence here
+          to measure a response time against.
+        - call the rule engine at all. This is the load-bearing
+          anti-loop guarantee: if a FORWARD_TO rule action ever
+          targets a broken address, the resulting bounce must never
+          itself be able to match a rule and get forwarded again —
+          skipping rule evaluation unconditionally for every detected
+          bounce closes that loop completely, regardless of how any
+          rule is configured.
+
+        Still persists a real Interaction (is_visible=False, so it's
+        excluded from every existing inbox/ticket list query for free
+        via that already-pervasive filter, with zero query-site
+        changes) — this preserves the original inbound message for
+        operational investigation, it does not discard it. The
+        existing message_id unique constraint still protects against
+        a redelivered NDR creating a second row.
+
+        Client/category resolution here is best-effort, purely for a
+        readable notification title — resolution failure is fine, the
+        notification still fires with a generic label.
+        """
+
+        settings = get_settings()
+        landed_mailbox = (email.landed_mailbox or "").strip().lower() or None
+        arrived_at_shared_mailbox = is_configured_graph_mailbox(
+            landed_mailbox or email.to_email, settings
+        )
+
+        category = None
+        if not arrived_at_shared_mailbox and self.category_repository is not None:
+            category = await self.category_repository.get_active_by_inbox_email(
+                landed_mailbox or email.to_email
+            )
+
+        client = None
+        if category is None:
+            if arrived_at_shared_mailbox and email.from_email:
+                client = await self.client_repository.get_active_by_any_email(
+                    email.from_email
+                )
+            elif landed_mailbox:
+                client = await self.client_repository.get_active_by_inbox_email(
+                    landed_mailbox
+                )
+            else:
+                client = await self.client_repository.get_active_by_inbox_email(
+                    email.to_email
+                )
+
+        received_at = email.received_at or datetime.now(timezone.utc)
+
+        payload = {
+            "client_id": str(client.client_id) if client is not None else None,
+            "client_name": client.name if client is not None else None,
+            "category_id": str(category.category_id) if category is not None else None,
+            "category_name": category.category_name if category is not None else None,
+            "to_email": email.to_email,
+            "from_email": email.from_email,
+            "from_name": email.from_name,
+            "subject": email.subject,
+            "body": email.body,
+            "html_body": email.html_body,
+            "provider_message_id": email.provider_message_id,
+        }
+
+        interaction = InteractionCreate(
+            ticket_id=None,
+            interaction_type="EMAIL",
+            status=InteractionStatus.PENDING,
+            direction=InteractionDirection.INBOUND,
+            performed_by=None,
+            payload=payload,
+            is_visible=False,
+            is_bounce=True,
+            message_id=email.message_id,
+            client_id=client.client_id if client is not None else None,
+            category_id=category.category_id if category is not None else None,
+            parent_interaction_id=None,
+            received_at=received_at,
+            subject=email.subject,
+            provider_message_id=email.provider_message_id,
+        )
+
+        created = await self.interaction_repository.create(interaction)
+
+        logger.warning(
+            "Bounce/NDR detected and stored without ticket creation: "
+            "interaction_id=%s message_id=%s from=%s subject=%r",
+            created.interaction_id,
+            email.message_id,
+            email.from_email,
+            email.subject,
+        )
+
+        if self.notification_service is not None and self.user_repository is not None:
+            recipient_ids = await resolve_global_inbox_user_ids(self.user_repository)
+            label = client.name if client is not None else (
+                category.category_name if category is not None else email.to_email
+            )
+            await self.notification_service.notify(
+                recipient_ids,
+                NotificationType.MAIL_BOUNCE_DETECTED,
+                title=f"Bounce/NDR detected for {label}",
+                message=email.subject or "(no subject)",
+                link=f"/inbox?interaction_id={created.interaction_id}",
+                related_entity_type="interaction",
+                related_entity_id=created.interaction_id,
+            )
+
+        return EmailResponse(
+            message="Bounce/NDR detected — stored for investigation, no ticket created.",
+            interaction_id=str(created.interaction_id),
+            client_id=str(client.client_id) if client is not None else None,
+            client_name=client.name if client is not None else None,
+            category_id=str(category.category_id) if category is not None else None,
+            category_name=category.category_name if category is not None else None,
+            ticket_id=None,
+            threaded_under=None,
+            status=created.status.value,
+            attachments=[],
+        )
+
+    async def _reconcile_orphaned_replies(
+        self, created: Interaction, message_id: str
+    ) -> None:
+        """
+        Out-of-order delivery: a reply that arrived before its own
+        original message has nothing to thread-match against yet (the
+        priority-order check above only ever looks *backward*, from a
+        new email to an already-stored one), so it lands as its own
+        thread root. Once the original itself arrives — this call,
+        right after `created` (the original) is persisted — look for
+        any already-stored orphan whose in_reply_to/references named
+        this message's own message_id, and fix up its
+        parent_interaction_id to point at `created`.
+
+        Deliberately narrow and additive:
+        - Matches only on exact message_id string equality — the same
+          signal already trusted for the forward-direction check —
+          so this can never merge two unrelated emails.
+        - Only ever touches an orphan matching
+          find_orphans_awaiting_parent's guard (still parentless,
+          unticketed, unclaimed, PENDING): once an agent has acted on
+          it in any way, it's left alone. This is what keeps this
+          purely a structural, display-level fix — an orphan's own
+          FirstResponseSLA clock (if one was started because it looked
+          like a new root) is never touched, moved, or merged; only
+          parent_interaction_id changes, so list_thread/find_thread_root
+          simply see one more level of nesting going forward.
+        - Conversation_id-based matching (the normal case for both
+          Graph transports) already handles out-of-order delivery
+          symmetrically at read time and never reaches this path —
+          this only covers the narrower RFC 5322 In-Reply-To/References
+          tier (e.g. the legacy N8N transport, which has no
+          conversationId concept at all).
+        """
+
+        orphans = await self.interaction_repository.find_orphans_awaiting_parent(
+            message_id
+        )
+
+        for orphan in orphans:
+            await self.interaction_repository.reparent(orphan, created.interaction_id)
+            logger.info(
+                "Reconciled out-of-order reply %s under its now-arrived "
+                "original %s (message_id=%s)",
+                orphan.interaction_id,
+                created.interaction_id,
+                message_id,
+            )

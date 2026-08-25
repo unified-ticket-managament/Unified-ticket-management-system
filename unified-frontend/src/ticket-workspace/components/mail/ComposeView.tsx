@@ -114,6 +114,7 @@ interface ComposeViewProps {
     files: File[];
     inlineImageInteractionIds?: string[];
     distributionListIds?: string[];
+    idempotencyKey?: string;
   }) => Promise<unknown>;
   // Forward mode's own Send path — distinct from onSend since
   // forwarding can address a mix of internal organization users (by
@@ -136,6 +137,7 @@ interface ComposeViewProps {
     files: File[];
     bodyHtml?: string;
     inlineImageInteractionIds?: string[];
+    idempotencyKey?: string;
   }) => Promise<unknown>;
   onDiscard: () => void;
   // Only rendered (as a "← Back" control) when this view is in
@@ -490,6 +492,7 @@ export function ComposeView({
         files,
         bodyHtml: richBodyHtml,
         inlineImageInteractionIds: pastedImageInteractionIdsRef.current,
+        idempotencyKey: crypto.randomUUID(),
       });
       if (result) {
         clearLocalDraft();
@@ -514,6 +517,7 @@ export function ComposeView({
       files,
       inlineImageInteractionIds: pastedImageInteractionIdsRef.current,
       distributionListIds,
+      idempotencyKey: crypto.randomUUID(),
     });
     if (result) {
       clearLocalDraft();

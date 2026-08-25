@@ -23,6 +23,8 @@
 #    never receive mail at all (typo'd TLD, nonexistent domain, a
 #    domain with no mail exchanger configured).
 
+import asyncio
+
 from email_validator import EmailNotValidError, validate_email
 from fastapi import HTTPException, status
 
@@ -42,7 +44,12 @@ def ensure_recipient_address_is_valid(address: str) -> None:
         )
 
 
-def ensure_recipients_are_valid(
+def _validate_all(addresses: list[str]) -> None:
+    for address in addresses:
+        ensure_recipient_address_is_valid(address)
+
+
+async def ensure_recipients_are_valid(
     *,
     to: str | list[str] | None = None,
     cc: list[str] | None = None,
@@ -56,6 +63,15 @@ def ensure_recipients_are_valid(
     empty values are silently skipped (an omitted Cc/Bcc, or a Reply
     that didn't override its default recipient, is never itself an
     error).
+
+    Runs the actual (blocking, DNS-resolving) validation loop in a
+    worker thread via asyncio.to_thread — check_deliverability=True
+    means every address here does a real, synchronous MX/A/AAAA
+    lookup (see this module's own docstring), which would otherwise
+    block the event loop for every other in-flight request for the
+    duration of that lookup. An HTTPException raised inside the
+    thread propagates back out unchanged (same status code, same
+    message) — asyncio.to_thread re-raises the worker's exception as-is.
     """
 
     addresses: list[str] = []
@@ -67,5 +83,4 @@ def ensure_recipients_are_valid(
     addresses.extend(cc or [])
     addresses.extend(bcc or [])
 
-    for address in addresses:
-        ensure_recipient_address_is_valid(address)
+    await asyncio.to_thread(_validate_all, addresses)

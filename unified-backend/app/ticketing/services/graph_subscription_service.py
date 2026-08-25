@@ -15,8 +15,68 @@ import httpx
 
 from app.core.config import Settings
 from app.ticketing.services.graph_auth import GraphAuthClient, build_graph_auth_client
+from app.ticketing.services.graph_retry import call_with_graph_retry
 
 logger = logging.getLogger(__name__)
+
+# Truncated in the notification body — this is Graph's own error JSON,
+# not a customer email body/attachment/token, but still capped so the
+# in-app notification never balloons.
+_FAILURE_DETAIL_MAX_CHARS = 500
+
+
+async def _notify_ops_of_subscription_failure(
+    *, action: str, status_code: int, detail: str
+) -> None:
+    """
+    Phase 2 hardening: subscription creation/renewal failure previously
+    only logged at error level, with no operational alert — a lapsed
+    webhook subscription silently stops all webhook-transport mail
+    intake (polling, if configured, is unaffected either way).
+
+    `action` is "creation" or "renewal". This module was previously
+    entirely DB-free (only httpx calls) — opens its own short-lived
+    AsyncSessionLocal session here, the same pattern
+    app/core/sla_scheduler.py already uses for a DB write with no HTTP
+    request in flight. Reuses the same Site Lead/Super Admin audience
+    resolve_global_inbox_user_ids already established for the SLA
+    breach notifier and EmailService's own shared-mailbox fallback —
+    not a new alert channel.
+
+    Deliberately wrapped in its own try/except: a failure to send this
+    alert (e.g. a transient DB error) must never mask or crash the
+    original creation/renewal failure path that's calling it — that
+    path has already logged the real failure via logger.error before
+    reaching this call.
+    """
+
+    try:
+        # Deferred imports: this module is imported very early (it has
+        # no DB/notification dependencies today), and importing these
+        # at module level would add a DB/notifications dependency to
+        # every caller of is_fully_configured/ensure_subscription even
+        # when Graph isn't configured at all.
+        from app.database.session import AsyncSessionLocal
+        from app.notifications.repository import NotificationRepository
+        from app.notifications.service import NotificationService, NotificationType
+        from app.ticketing.repositories.user_repository import UserRepository
+        from app.ticketing.services.sla_breach_notifier import (
+            resolve_global_inbox_user_ids,
+        )
+
+        async with AsyncSessionLocal() as db:
+            recipient_ids = await resolve_global_inbox_user_ids(UserRepository(db))
+            await NotificationService(NotificationRepository(db)).notify(
+                recipient_ids,
+                NotificationType.GRAPH_SUBSCRIPTION_FAILED,
+                title=f"Graph mail subscription {action} failed",
+                message=f"status={status_code}: {detail[:_FAILURE_DETAIL_MAX_CHARS]}",
+            )
+            await db.commit()
+    except Exception:
+        logger.exception(
+            "Failed to notify ops of Graph subscription %s failure", action
+        )
 
 # Graph enforces a hard ceiling of ~4230 minutes (~3 days) on a
 # message-resource subscription's lifetime — there is no "forever"
@@ -94,7 +154,6 @@ async def ensure_subscription(settings: Settings) -> None:
 
 async def _create(settings: Settings, auth_client: GraphAuthClient, now: datetime) -> None:
     expiration = now + timedelta(minutes=SUBSCRIPTION_LIFETIME_MINUTES)
-    token = await auth_client.get_token()
 
     body = {
         "changeType": "created",
@@ -104,18 +163,32 @@ async def _create(settings: Settings, auth_client: GraphAuthClient, now: datetim
         "clientState": settings.graph_webhook_client_state,
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{settings.graph_api_base_url}/subscriptions",
-            headers={"Authorization": f"Bearer {token}"},
-            json=body,
-        )
+    async def _attempt() -> httpx.Response:
+        token = await auth_client.get_token()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            return await client.post(
+                f"{settings.graph_api_base_url}/subscriptions",
+                headers={"Authorization": f"Bearer {token}"},
+                json=body,
+            )
+
+    async def _force_refresh_token() -> None:
+        await auth_client.get_token(force_refresh=True)
+
+    response = await call_with_graph_retry(
+        _attempt,
+        operation="createSubscription",
+        force_refresh_token=_force_refresh_token,
+    )
 
     if response.status_code != 201:
         logger.error(
             "Graph subscription creation failed: status=%s body=%s",
             response.status_code,
             response.text,
+        )
+        await _notify_ops_of_subscription_failure(
+            action="creation", status_code=response.status_code, detail=response.text
         )
         return
 
@@ -131,14 +204,24 @@ async def _create(settings: Settings, auth_client: GraphAuthClient, now: datetim
 
 async def _renew(settings: Settings, auth_client: GraphAuthClient, now: datetime) -> None:
     expiration = now + timedelta(minutes=SUBSCRIPTION_LIFETIME_MINUTES)
-    token = await auth_client.get_token()
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.patch(
-            f"{settings.graph_api_base_url}/subscriptions/{_state.subscription_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"expirationDateTime": expiration.isoformat()},
-        )
+    async def _attempt() -> httpx.Response:
+        token = await auth_client.get_token()
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            return await client.patch(
+                f"{settings.graph_api_base_url}/subscriptions/{_state.subscription_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"expirationDateTime": expiration.isoformat()},
+            )
+
+    async def _force_refresh_token() -> None:
+        await auth_client.get_token(force_refresh=True)
+
+    response = await call_with_graph_retry(
+        _attempt,
+        operation="renewSubscription",
+        force_refresh_token=_force_refresh_token,
+    )
 
     if response.status_code != 200:
         logger.error(
@@ -147,6 +230,9 @@ async def _renew(settings: Settings, auth_client: GraphAuthClient, now: datetime
             _state.subscription_id,
             response.status_code,
             response.text,
+        )
+        await _notify_ops_of_subscription_failure(
+            action="renewal", status_code=response.status_code, detail=response.text
         )
         # Forget the stale id/expiry so the next tick creates a new
         # subscription rather than repeatedly trying to renew one

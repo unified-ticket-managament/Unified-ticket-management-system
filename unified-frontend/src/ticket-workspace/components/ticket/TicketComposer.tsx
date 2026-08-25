@@ -312,6 +312,7 @@ export function TicketComposer({
           distribution_list_ids: replyDistributionListIds,
           attachment_source_interaction_id: attachmentSourceInteractionId,
           inline_image_interaction_ids: pastedImageInteractionIdsRef.current,
+          idempotency_key: crypto.randomUUID(),
         })
       : await runNote(activeTicket.ticket_id, {
           note: plainMessage,

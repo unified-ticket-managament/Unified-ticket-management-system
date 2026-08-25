@@ -13,6 +13,7 @@ import type {
   InternalNoteResponse,
   PriorityChangeRequest,
   ReplyRequest,
+  RetrySendResponse,
   StatusChangeRequest,
   ThreadResponse,
   TicketActionResponse,
@@ -248,6 +249,19 @@ export async function hideInteractionById(
 export async function cancelSend(interactionId: string): Promise<CancelSendResponse> {
   const { data } = await apiClient.post<CancelSendResponse>(
     `/interactions/${interactionId}/cancel-send`
+  );
+  return data;
+}
+
+// POST /interactions/{interaction_id}/retry-send — Retry Send for a
+// FAILED outbound Compose/Reply/Reply-All/Forward. Reuses the exact
+// envelope persisted at send time; see InteractionService.
+// retry_failed_send. A concurrent second retry (e.g. a double click)
+// 400s rather than sending twice — surface the error, don't retry
+// client-side.
+export async function retrySend(interactionId: string): Promise<RetrySendResponse> {
+  const { data } = await apiClient.post<RetrySendResponse>(
+    `/interactions/${interactionId}/retry-send`
   );
   return data;
 }

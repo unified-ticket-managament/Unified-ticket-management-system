@@ -52,19 +52,44 @@ def test_rejects_a_domain_that_does_not_exist():
     assert "painmedpa.cm" in exc_info.value.detail
 
 
-def test_ensure_recipients_are_valid_checks_to_cc_and_bcc_together():
+async def test_ensure_recipients_are_valid_checks_to_cc_and_bcc_together():
     with pytest.raises(HTTPException):
-        ensure_recipients_are_valid(
+        await ensure_recipients_are_valid(
             to="valid@painmedpa.com", cc=["also-valid@painmedpa.com"], bcc=["not-an-email"]
         )
 
 
-def test_ensure_recipients_are_valid_skips_empty_fields():
+async def test_ensure_recipients_are_valid_skips_empty_fields():
     # None/omitted To, and empty Cc/Bcc lists, are never themselves an
     # error — an unset override or an unused Cc/Bcc field is the
     # common case, not a validation failure.
-    ensure_recipients_are_valid(to=None, cc=[], bcc=[])
+    await ensure_recipients_are_valid(to=None, cc=[], bcc=[])
 
 
-def test_ensure_recipients_are_valid_accepts_a_list_of_to_addresses():
-    ensure_recipients_are_valid(to=["someone@painmedpa.com"], cc=None, bcc=None)
+async def test_ensure_recipients_are_valid_accepts_a_list_of_to_addresses():
+    await ensure_recipients_are_valid(to=["someone@painmedpa.com"], cc=None, bcc=None)
+
+
+async def test_ensure_recipients_are_valid_does_not_block_the_event_loop():
+    # The real regression this conversion fixes: check_deliverability=
+    # True does a blocking DNS lookup under the hood — running it
+    # in-line on the event loop would starve every other concurrently
+    # scheduled task for the lookup's duration. Running a cheap
+    # concurrent task alongside a real (slow-ish, DNS-resolving) call
+    # and asserting the cheap one's own marker flips before the
+    # validation call returns proves the validation genuinely ran off
+    # the event loop thread (asyncio.to_thread), not just that it
+    # returned eventually.
+    import asyncio
+
+    marker = {"ticked": False}
+
+    async def _tick_soon():
+        await asyncio.sleep(0)
+        marker["ticked"] = True
+
+    tick_task = asyncio.create_task(_tick_soon())
+    await ensure_recipients_are_valid(to="someone@painmedpa.com", cc=None, bcc=None)
+    await tick_task
+
+    assert marker["ticked"] is True

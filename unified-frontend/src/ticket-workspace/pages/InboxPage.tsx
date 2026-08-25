@@ -205,6 +205,7 @@ export function InboxPage() {
     files: File[];
     bodyHtml?: string;
     inlineImageInteractionIds?: string[];
+    idempotencyKey?: string;
   }) {
     const result = await mail.forwardToInternalUser(payload);
     if (result) closeCompose();
@@ -222,6 +223,7 @@ export function InboxPage() {
     files: File[];
     inlineImageInteractionIds?: string[];
     distributionListIds?: string[];
+    idempotencyKey?: string;
   }) {
     const result = await mail.composeEmail(payload);
     if (result) closeCompose();

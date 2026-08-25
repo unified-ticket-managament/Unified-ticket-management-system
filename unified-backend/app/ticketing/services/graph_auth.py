@@ -53,10 +53,22 @@ class GraphAuthClient:
             authority=f"https://login.microsoftonline.com/{tenant_id}",
         )
 
-    async def get_token(self) -> str:
+    async def get_token(self, *, force_refresh: bool = False) -> str:
         # acquire_token_for_client is a blocking network call under the
         # hood (same reasoning as SMTPEmailSender's asyncio.to_thread
         # use in email_sender.py) — never block the event loop with it.
+        #
+        # force_refresh=True is used after a Graph call returns 401 on
+        # a token MSAL still considers fresh (e.g. revoked early) —
+        # MSAL's own acquire_token_for_client explicitly rejects a
+        # force_refresh kwarg ("Historically, this method does not
+        # support force_refresh behavior"), so instead we evict the
+        # cached access-token entry for this scope directly via the
+        # public TokenCache API, making the call below a guaranteed
+        # cache miss that fetches a genuinely fresh token.
+        if force_refresh:
+            await asyncio.to_thread(self._evict_cached_access_token)
+
         result = await asyncio.to_thread(
             self._app.acquire_token_for_client, scopes=[GRAPH_DEFAULT_SCOPE]
         )
@@ -72,6 +84,21 @@ class GraphAuthClient:
             )
 
         return result["access_token"]
+
+    def _evict_cached_access_token(self) -> None:
+        """
+        Removes this app's cached access-token entry for
+        GRAPH_DEFAULT_SCOPE from MSAL's internal cache, if present —
+        both `search` and `remove_at` are public TokenCache API.
+        Leaves refresh-token/id-token/account entries (irrelevant to
+        the client-credentials flow this class uses) untouched.
+        """
+
+        cache = self._app.token_cache
+        for entry in list(
+            cache.search(msal.TokenCache.CredentialType.ACCESS_TOKEN, target=[GRAPH_DEFAULT_SCOPE])
+        ):
+            cache.remove_at(entry)
 
 
 @lru_cache(maxsize=1)

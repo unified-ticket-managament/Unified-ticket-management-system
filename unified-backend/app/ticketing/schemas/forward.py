@@ -39,6 +39,12 @@ class ForwardToInternalUserRequest(BaseModel):
     # (schemas/ticket_action.py) for the same additive contract.
     body_html: str | None = None
 
+    # Client-generated Send idempotency key — see ReplyCreate.
+    # idempotency_key's own docstring for the contract. None (the
+    # default) opts out entirely, exactly like every Forward before
+    # this field existed.
+    idempotency_key: str | None = Field(default=None, max_length=255)
+
     @model_validator(mode="after")
     def _require_at_least_one_recipient_source(self) -> "ForwardToInternalUserRequest":
         if not (self.recipient_user_ids or self.recipient_emails or self.distribution_list_ids):

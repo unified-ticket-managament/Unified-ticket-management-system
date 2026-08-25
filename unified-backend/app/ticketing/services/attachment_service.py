@@ -42,15 +42,22 @@ from app.ticketing.utils.constants import MAX_ATTACHMENT_FILES, MAX_ATTACHMENT_S
 from app.ticketing.utils.validators import (
     build_attachment_object_key,
     sanitize_filename,
+    validate_attachment_magic_bytes,
     validate_attachment_type,
 )
 
-# Microsoft Graph's sendMail only accepts small attachments embedded
-# directly in the message body (`contentBytes`) — anything larger
-# needs a draft message plus a chunked upload session, which isn't
-# implemented here. 3MB/file is comfortably under Graph's own ~4MB
-# whole-message ceiling once the base64 inflation (~33%) and the rest
-# of the message are accounted for.
+# Microsoft Graph's sendMail/reply calls only accept small attachments
+# embedded directly in the message body (`contentBytes`) — 3MB/file is
+# comfortably under Graph's own ~4MB whole-message ceiling once the
+# base64 inflation (~33%) and the rest of the message are accounted
+# for. Anything larger than this still gets sent (see graph_client.py's
+# _send_via_draft/_add_large_attachment) via a draft message plus a
+# real chunked Graph upload session instead — this constant is now
+# purely the "embed inline vs. defer to an upload session" threshold,
+# not a hard ceiling. Graph's real per-attachment ceiling is ~150MB,
+# always comfortably above UTMS's own MAX_ATTACHMENT_SIZE_BYTES, so
+# nothing that was ever accepted into storage can fail to send for
+# being too large.
 GRAPH_INLINE_ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024
 
 
@@ -118,15 +125,19 @@ async def load_envelope_attachments(
     """
     Reads each attachment's real bytes back out of storage and
     base64-encodes them, ready to embed directly in an outbound Graph
-    sendMail call (see graph_client.py's _build_graph_attachments) —
-    the one place these two things (a DB-tracked Attachment row and
-    the file content Graph needs inline) actually meet.
+    sendMail/reply call (see graph_client.py's _build_graph_attachments)
+    — the one place these two things (a DB-tracked Attachment row and
+    the file content Graph needs inline) actually meet — for anything
+    at or under GRAPH_INLINE_ATTACHMENT_MAX_BYTES. Anything larger is
+    instead returned as a lightweight storage_key reference (see
+    EnvelopeAttachment's docstring) for graph_client.py to fetch fresh
+    and upload via a real Graph upload session at actual dispatch
+    time, never embedded here.
 
-    An attachment over GRAPH_INLINE_ATTACHMENT_MAX_BYTES, or one whose
-    object read fails outright (e.g. deleted from the bucket), is
-    skipped and logged rather than failing the whole send — a missing
-    or oversized attachment shouldn't block an otherwise-good email
-    from going out.
+    An attachment whose object read fails outright (e.g. deleted from
+    the bucket) is skipped and logged rather than failing the whole
+    send — a missing attachment shouldn't block an otherwise-good
+    email from going out.
     """
 
     loaded: list[EnvelopeAttachment] = []
@@ -144,15 +155,38 @@ async def load_envelope_attachments(
             )
             continue
 
-        if (attachment.size_bytes or 0) > GRAPH_INLINE_ATTACHMENT_MAX_BYTES:
-            logger.warning(
-                "Skipping attachment %s (%r, %d bytes) on outbound send — exceeds "
-                "the %d byte inline-attachment limit; large-attachment upload "
-                "sessions aren't implemented.",
+        size = attachment.size_bytes or 0
+
+        if size > GRAPH_INLINE_ATTACHMENT_MAX_BYTES:
+            if not attachment.storage_key:
+                logger.warning(
+                    "Skipping attachment %s (%r, %d bytes) on outbound send — "
+                    "too large to embed inline and has no storage_key to defer "
+                    "to an upload session.",
+                    attachment.attachment_id,
+                    attachment.filename,
+                    size,
+                )
+                continue
+
+            logger.info(
+                "Deferring attachment %s (%r, %d bytes) on outbound send to a "
+                "Graph upload session — exceeds the %d byte inline-attachment "
+                "threshold.",
                 attachment.attachment_id,
                 attachment.filename,
-                attachment.size_bytes or 0,
+                size,
                 GRAPH_INLINE_ATTACHMENT_MAX_BYTES,
+            )
+            loaded.append(
+                EnvelopeAttachment(
+                    filename=attachment.filename,
+                    content_type=attachment.mime_type or "application/octet-stream",
+                    content_id=attachment.content_id,
+                    is_inline=bool(attachment.is_inline),
+                    storage_key=attachment.storage_key,
+                    size_bytes=size,
+                )
             )
             continue
 
@@ -278,7 +312,7 @@ class AttachmentService:
             filename = sanitize_filename(file.filename or "file")
 
             try:
-                validate_attachment_type(filename, file.content_type)
+                extension = validate_attachment_type(filename, file.content_type)
             except ValueError as exc:
                 raise HTTPException(
                     status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -290,7 +324,18 @@ class AttachmentService:
             if len(data) > MAX_ATTACHMENT_SIZE_BYTES:
                 raise HTTPException(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    detail=f'"{filename}" exceeds the 25MB size limit.',
+                    detail=(
+                        f'"{filename}" exceeds the '
+                        f"{MAX_ATTACHMENT_SIZE_BYTES // (1024 * 1024)}MB size limit."
+                    ),
+                )
+
+            try:
+                validate_attachment_magic_bytes(filename, extension, data)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                    detail=str(exc),
                 )
 
             object_key = build_attachment_object_key(filename)
@@ -382,7 +427,7 @@ class AttachmentService:
         filename = sanitize_filename(file.filename or "image")
 
         try:
-            validate_attachment_type(filename, file.content_type)
+            extension = validate_attachment_type(filename, file.content_type)
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -405,6 +450,14 @@ class AttachmentService:
                     f"{GRAPH_INLINE_ATTACHMENT_MAX_BYTES // (1024 * 1024)}MB "
                     "inline-image limit."
                 ),
+            )
+
+        try:
+            validate_attachment_magic_bytes(filename, extension, data)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail=str(exc),
             )
 
         object_key = build_attachment_object_key(filename)

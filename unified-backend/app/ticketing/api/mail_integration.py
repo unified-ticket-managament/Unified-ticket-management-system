@@ -45,22 +45,35 @@ from app.rbac.repositories.reporting_manager_repository import (
 )
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.repositories.client_repository import ClientRepository
+from app.ticketing.repositories.inbound_mail_failure_repository import (
+    InboundMailFailureRepository,
+)
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
+from app.ticketing.schemas.inbound_mail_failure import (
+    InboundMailFailureListResponse,
+    InboundMailFailureResponse,
+)
 from app.ticketing.schemas.mail_integration import (
     GraphWebhookNotificationEnvelope,
     GraphWebhookNotificationItem,
     OutgoingEmailRequest,
     OutgoingEmailResponse,
 )
+from app.ticketing.services.access_control import (
+    GLOBAL_INBOX_ROLE_NAMES,
+    ensure_has_permission,
+)
 from app.ticketing.services.attachment_service import AttachmentService
 from app.ticketing.services.email_service import EmailService
+from app.ticketing.services.mail_integrity import is_duplicate_message_id_violation
 from app.ticketing.services.mail_mapping_service import (
     body_references_inline_attachment,
     build_upload_files_from_graph_attachments,
     map_external_email_to_interaction,
 )
+from app.ticketing.services.mail_ops_alerts import notify_unmatched_inbox_email
 from app.ticketing.services.mail_provider import MailProviderClient, get_mail_provider_client
 from app.ticketing.services.outgoing_mail_service import OutgoingMailService
 from app.ticketing.services.rule_engine_service import build_rule_engine_service
@@ -190,7 +203,23 @@ async def _process_graph_notification(
         )
         return
 
-    email_request = map_external_email_to_interaction(payload)
+    # The webhook subscription is always created against exactly one
+    # mailbox (settings.graph_mailbox_address — see
+    # graph_subscription_service.py's _create(), which subscribes to
+    # that single mailbox's Inbox and no other), unlike the polling
+    # transport, which iterates several. So every message this route
+    # ever receives genuinely landed in that one mailbox, regardless
+    # of whether it appears in To, Cc, or is invisible in Bcc — passing
+    # it through here closes the gap where a Cc-only (or Bcc-only)
+    # match against a configured shared inbox used to fall through to
+    # EmailService.receive_email's "Unknown inbox address." rejection
+    # on this transport specifically, even though the exact same
+    # message would have routed correctly via polling (see
+    # EmailRequest.landed_mailbox / EmailService.receive_email's own
+    # handling of it, added by a prior commit for the poller alone).
+    email_request = map_external_email_to_interaction(
+        payload, landed_mailbox=get_settings().graph_mailbox_address
+    )
 
     files = None
     if payload.id and (
@@ -205,23 +234,96 @@ async def _process_graph_notification(
                 payload.id,
             )
 
+    mailbox_address = get_settings().graph_mailbox_address
+
     async with AsyncSessionLocal() as db:
         try:
             service = _build_email_service(db)
             await service.receive_email(email_request, files=files)
             await db.commit()
+
+            # Phase 2 hardening: mark any prior persisted failure
+            # record resolved — its own inner try/except, same as the
+            # poller's equivalent.
+            try:
+                await InboundMailFailureRepository(db).mark_resolved(
+                    message_id=email_request.message_id,
+                    mailbox_address=mailbox_address,
+                )
+                await db.commit()
+            except Exception:
+                logger.exception(
+                    "Failed to mark inbound_mail_failures resolved for %s",
+                    email_request.message_id,
+                )
         except ValueError as exc:
             # "Email already processed." (redelivery) and "Unknown inbox
             # address." are expected, non-exceptional outcomes for a
             # webhook — log at info, not exception, and don't retry.
             await db.rollback()
-            logger.info(
-                "Graph notification for message %s not stored: %s",
-                item.resourceData.id,
-                exc,
-            )
-        except Exception:
+            message = str(exc)
+            if message == "Unknown inbox address.":
+                # Phase 2 hardening — see graph_mail_poller.py's
+                # identical branch for the full rationale. Deliberately
+                # does NOT widen EmailService.receive_email itself.
+                logger.warning(
+                    "Graph notification for message %s landed at unmapped "
+                    "inbox address %s with no matching Client/Category — "
+                    "notifying Site Lead/Super Admin instead of silently "
+                    "dropping.",
+                    item.resourceData.id,
+                    mailbox_address,
+                )
+                try:
+                    await notify_unmatched_inbox_email(
+                        db,
+                        from_email=email_request.from_email,
+                        subject=email_request.subject,
+                        mailbox_address=mailbox_address,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to notify ops of unmatched inbox address %s",
+                        mailbox_address,
+                    )
+            else:
+                logger.info(
+                    "Graph notification for message %s not stored: %s",
+                    item.resourceData.id,
+                    exc,
+                )
+        except Exception as exc:
             await db.rollback()
+
+            if is_duplicate_message_id_violation(exc):
+                # Phase 2 hardening: the losing side of a benign
+                # concurrent-insert race (the poller, or an overlapping
+                # webhook redelivery, already stored this exact
+                # message) — never a genuine processing failure.
+                logger.info(
+                    "Graph notification for message %s lost a concurrent "
+                    "insert race — already processed by another worker/"
+                    "transport; not retried.",
+                    item.resourceData.id,
+                )
+                return
+
+            # Phase 2 hardening: persist a diagnostic record of this
+            # genuine failure — its own inner try/except, same
+            # reasoning as the poller's equivalent.
+            try:
+                await InboundMailFailureRepository(db).record_or_increment(
+                    message_id=email_request.message_id,
+                    mailbox_address=mailbox_address,
+                    error_summary=f"{type(exc).__name__}: {exc}",
+                )
+                await db.commit()
+            except Exception:
+                logger.exception(
+                    "Failed to persist inbound_mail_failures row for %s",
+                    email_request.message_id,
+                )
+
             logger.exception(
                 "Graph notification processing failed for message %s",
                 item.resourceData.id,
@@ -275,6 +377,41 @@ async def receive_incoming_email(
         background_tasks.add_task(_process_graph_notification, item, mail_provider_client)
 
     return {"accepted": len(envelope.value)}
+
+
+@router.get(
+    "/inbound-failures",
+    response_model=InboundMailFailureListResponse,
+    summary="List unresolved inbound-mail processing failures (ops visibility)",
+)
+async def list_inbound_mail_failures(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Phase 2 hardening: read-only visibility into
+    inbound_mail_failures (see InboundMailFailureRepository) — the
+    persisted diagnostic record the poller/webhook write to on a
+    genuine processing failure. Gated the same way this codebase's
+    existing "Site Lead/Super Admin unrestricted, anyone else needs
+    this existing permission" pattern already works elsewhere (see
+    ticket_service.py's centralized-audit-log gating) — reuses
+    ticket:view_global_audit_log rather than inventing a new RBAC
+    permission/seed migration for this narrow, low-traffic endpoint.
+    """
+
+    if current_user.role.name not in GLOBAL_INBOX_ROLE_NAMES:
+        ensure_has_permission(current_user, "ticket:view_global_audit_log")
+
+    items, total = await InboundMailFailureRepository(db).list_unresolved(
+        limit=limit, offset=offset
+    )
+    return InboundMailFailureListResponse(
+        total=total,
+        items=[InboundMailFailureResponse.model_validate(item) for item in items],
+    )
 
 
 @router.get(

@@ -391,6 +391,7 @@ async def compose_email(
     body_html: str | None = Form(default=None),
     files: list[UploadFile] = File(default=[]),
     inline_image_interaction_ids: str = Form(default=""),
+    idempotency_key: str | None = Form(default=None),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
@@ -423,7 +424,7 @@ async def compose_email(
     parsed_to_email = to_email.strip() or None
     parsed_cc = _split_emails(cc)
     parsed_bcc = _split_emails(bcc)
-    ensure_recipients_are_valid(to=parsed_to_email, cc=parsed_cc, bcc=parsed_bcc)
+    await ensure_recipients_are_valid(to=parsed_to_email, cc=parsed_cc, bcc=parsed_bcc)
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
@@ -452,6 +453,7 @@ async def compose_email(
             cc=parsed_cc,
             bcc=parsed_bcc,
             body_html=body_html,
+            idempotency_key=idempotency_key,
         ),
         current_user=current_user,
         files=files,
@@ -543,6 +545,7 @@ async def forward_to_internal_user(
     body_html: str | None = Form(default=None),
     files: list[UploadFile] = File(default=[]),
     inline_image_interaction_ids: str = Form(default=""),
+    idempotency_key: str | None = Form(default=None),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
@@ -586,7 +589,7 @@ async def forward_to_internal_user(
     # users too and are validated the same way, inside the service.
     parsed_cc = _split_emails(cc)
     parsed_bcc = _split_emails(bcc)
-    ensure_recipients_are_valid(to=recipient_emails, cc=parsed_cc, bcc=parsed_bcc)
+    await ensure_recipients_are_valid(to=recipient_emails, cc=parsed_cc, bcc=parsed_bcc)
 
     request = ForwardToInternalUserRequest(
         client_id=client_id,
@@ -598,6 +601,7 @@ async def forward_to_internal_user(
         subject=subject,
         message=message,
         body_html=body_html,
+        idempotency_key=idempotency_key,
     )
 
     interaction_repository = InteractionRepository(db)
@@ -983,6 +987,7 @@ async def send_draft(
         current_user=current_user,
         to_email=body.to_email if body else None,
         distribution_list_ids=body.distribution_list_ids if body else [],
+        idempotency_key=body.idempotency_key if body else None,
     )
 
 

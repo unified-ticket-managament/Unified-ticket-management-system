@@ -20,6 +20,7 @@ from .ticket_escalation import TicketEscalation
 from .escalation_handling_sla import EscalationHandlingSLA
 from .rule import Rule
 from .distribution_list import DistributionList, DistributionListMember
+from .inbound_mail_failure import InboundMailFailure
 
 __all__ = [
     "Base",
@@ -44,4 +45,5 @@ __all__ = [
     "Rule",
     "DistributionList",
     "DistributionListMember",
+    "InboundMailFailure",
 ]

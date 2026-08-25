@@ -110,7 +110,24 @@ class RuleEngineService:
             for raw_action in rule.actions:
                 try:
                     action = RuleActionItem.model_validate(raw_action)
-                    await self._execute_action(action, interaction=interaction, rule=rule)
+                    # A savepoint around each action's own DB work
+                    # (not just a bare try/except) — a flush-level
+                    # failure (e.g. a folder-name unique-constraint
+                    # race SQLAlchemy hasn't already recovered from,
+                    # or any other future action's own DB error) would
+                    # otherwise leave the AsyncSession in a state
+                    # requiring an explicit rollback before any further
+                    # statement on it succeeds; every later statement
+                    # in this same request — remaining rules, the
+                    # notification write, and ultimately the caller's
+                    # own commit of the freshly-created Interaction —
+                    # would then raise too, silently discarding the
+                    # entire inbound email rather than just skipping
+                    # this one action as intended. Rolling back only to
+                    # the savepoint keeps the failure genuinely
+                    # contained to this one action.
+                    async with self.interaction_repository.db.begin_nested():
+                        await self._execute_action(action, interaction=interaction, rule=rule)
                 except Exception:
                     # One action failing (e.g. a stale employee id)
                     # never blocks the rest of this rule's actions, or

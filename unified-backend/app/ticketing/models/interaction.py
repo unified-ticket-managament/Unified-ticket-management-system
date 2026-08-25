@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import Boolean
 from sqlalchemy import Enum as SQLEnum
 from datetime import datetime, timezone
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 #interaction.py
@@ -264,6 +264,79 @@ class Interaction(Base):
     default=lambda: datetime.now(timezone.utc),
     nullable=False,
     index=True,
+    )
+
+    # Real-column mirror of the same-named keys long carried inside
+    # `payload` for every outbound (Compose/Reply/Reply-All/Forward/
+    # Draft) interaction — "PENDING_SEND"/"SENT"/"FAILED"/"CANCELED"/
+    # "NO_RECIPIENT"/"DRAFT". `payload` remains the source of truth
+    # every existing read site (cancel_pending_send, undo_send's own
+    # re-check) already reads and keeps reading unchanged; these
+    # columns exist so "show me every failed/pending send" can be a
+    # real, indexed query instead of a full-table JSONB scan, and so
+    # API responses can expose it as a typed field instead of an
+    # untyped blob. NULL for every interaction that was never an
+    # outbound dispatch attempt (the overwhelming majority of rows).
+    # Plain String, not a native Postgres enum — this value set has
+    # already grown once (CANCELED, NO_RECIPIENT, DRAFT added after
+    # the original PENDING_SEND/SENT/FAILED/QUEUED trio) and a native
+    # enum would need its own migration each time it grows again.
+    dispatch_status: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+        index=True,
+    )
+
+    dispatch_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # The Undo-Send deadline for a PENDING_SEND row — mirrors
+    # payload["send_after"] (stored there as an ISO string; here as a
+    # real timestamp).
+    send_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # Microsoft Graph's own id for the message this interaction
+    # actually dispatched as, once known (mirrors
+    # payload["provider_message_id"]) — a real, indexed column so a
+    # future Sent-Items-reconciliation or reply-threading feature can
+    # look one up directly instead of scanning JSONB.
+    provider_message_id: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+    )
+
+    # Client-generated key for Send/Retry-Send idempotency — never
+    # server-derived from content, so two genuinely separate sends
+    # with identical content never collide. Scoped (performed_by, key)
+    # via a partial unique index (see the
+    # add_dispatch_idempotency_key migration) rather than a bare
+    # global unique column, so one user's key can never collide with
+    # (or be guessed to read) another user's interaction — the same
+    # "this is your own action" scoping cancel_pending_send already
+    # uses. NULL for every interaction whose caller didn't supply one
+    # (the overwhelming majority of rows, and every inbound one).
+    dispatch_idempotency_key: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    # True only for a row created by EmailService._receive_bounce — a
+    # detected non-delivery report/bounce (see bounce_detection.py),
+    # never a real client message. Always paired with is_visible=False
+    # (kept out of every inbox/ticket list query for free via that
+    # existing filter) and never has rules/SLA run against it — see
+    # _receive_bounce's own docstring for the anti-loop reasoning.
+    is_bounce: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        server_default="false",
     )
 
     # ------------------------
