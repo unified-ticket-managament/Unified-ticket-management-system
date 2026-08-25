@@ -33,7 +33,6 @@ import {
 } from "@tw/lib/richText";
 import { isValidEmailAddress } from "@tw/lib/validation";
 import { MAX_ATTACHMENT_FILES, formatBytes, iconForFilename, previewHrefFor } from "@tw/lib/attachmentMeta";
-<<<<<<< Updated upstream
 import { generateIdempotencyKey } from "@tw/lib/idempotency";
 import { mergedClientFilterOptions } from "@tw/lib/clientFilter";
 import type {
@@ -49,9 +48,6 @@ import type {
 // (see composableSenders below) since the underlying Select can only
 // carry a single string value.
 const CATEGORY_FROM_PREFIX = "category:";
-=======
-import type { AttachmentMeta, ClientContact, ClientResponse, InternalNoteRecipientCandidate } from "@tw/types";
->>>>>>> Stashed changes
 
 const LOCAL_DRAFT_KEY = "utms-mail-compose-draft";
 
