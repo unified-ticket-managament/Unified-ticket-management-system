@@ -986,6 +986,7 @@ async def send_draft(
         interaction_id=interaction_id,
         current_user=current_user,
         to_email=body.to_email if body else None,
+        to_emails=body.to_emails if body else None,
         distribution_list_ids=body.distribution_list_ids if body else [],
         idempotency_key=body.idempotency_key if body else None,
     )

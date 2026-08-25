@@ -5,9 +5,10 @@ import { Check, Loader2, Paperclip, Send, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { DistributionListMultiSelect } from "@tw/components/common/DistributionListMultiSelect";
+import { MultiRecipientCombobox, type RecipientChip } from "@tw/components/common/MultiRecipientCombobox";
+import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
 import {
   ATTACHMENT_ACCEPT_ATTR,
@@ -50,7 +51,7 @@ interface ReplyComposerProps {
     cc: string[];
     bcc: string[];
     files: File[];
-    to: string | null;
+    to: string[];
     distributionListIds: string[];
   }) => void;
   // Pre-ticket path: every field is continuously auto-saved as a
@@ -60,11 +61,11 @@ interface ReplyComposerProps {
   isTicketed: boolean;
   draftAttachments: AttachmentMeta[];
   onSaveDraft: (message: string, cc: string[], bcc: string[], bodyHtml?: string) => Promise<unknown>;
-  // `toEmail` overrides the default recipient for this send only —
+  // `toEmails` overrides the default recipient(s) for this send only —
   // deliberately not part of the auto-saved draft (see ReplyComposer's
-  // own "To" dropdown, chosen at send time, and InteractionService.
+  // own "To" combobox, chosen at send time, and InteractionService.
   // send_draft on the backend).
-  onSendDraft: (toEmail?: string | null, distributionListIds?: string[]) => Promise<unknown>;
+  onSendDraft: (toEmails?: string[], distributionListIds?: string[]) => Promise<unknown>;
   onDiscardDraft: () => Promise<unknown>;
   onUploadDraftAttachment: (files: File[]) => Promise<AttachmentMeta[] | null>;
   onRemoveDraftAttachment: (attachmentId: string) => Promise<boolean>;
@@ -115,7 +116,7 @@ export function ReplyComposer({
     initialMessage ? `<p>${escapeHtml(initialMessage).replace(/\n/g, "<br/>")}</p>` : ""
   );
   const [hasPendingImageUploads, setHasPendingImageUploads] = useState(false);
-  const [selectedTo, setSelectedTo] = useState(toEmail ?? "");
+  const [selectedTo, setSelectedTo] = useState<RecipientChip[]>(toEmail ? [{ email: toEmail }] : []);
   const [cc, setCc] = useState(initialCc.join(", "));
   const [bcc, setBcc] = useState(initialBcc.join(", "));
   const [showBcc, setShowBcc] = useState(initialBcc.length > 0);
@@ -149,16 +150,31 @@ export function ReplyComposer({
   );
   const hasInvalidRecipient = invalidCcEntries.length > 0 || invalidBccEntries.length > 0;
 
-  const toOptions = useMemo(() => {
+  const toOptions = useMemo<RecipientOption[]>(() => {
     const seen = new Set<string>();
-    const options: ClientContact[] = [];
-    for (const contact of [...(toEmail ? [{ email: toEmail, name: null }] : []), ...contacts]) {
-      if (seen.has(contact.email)) continue;
-      seen.add(contact.email);
-      options.push(contact);
+    const options: RecipientOption[] = [];
+    for (const contact of [...(toEmail ? [{ email: toEmail, name: null } as ClientContact] : []), ...contacts]) {
+      if (seen.has(contact.email.toLowerCase())) continue;
+      seen.add(contact.email.toLowerCase());
+      options.push({
+        id: contact.email,
+        label: contact.name ? `${contact.name} <${contact.email}>` : contact.email,
+        email: contact.email,
+        sublabel: contact.name ? contact.email : undefined,
+      });
     }
     return options;
   }, [contacts, toEmail]);
+
+  // ReplyComposer is never given a `key` by MessageDetailsView, so
+  // switching threads while it stays mounted (e.g. both threads
+  // already have a saved draft, so replyMode never passes through
+  // null) wouldn't otherwise reset selectedTo — mirrors
+  // RecipientCombobox's own resetKey convention.
+  useEffect(() => {
+    setSelectedTo(toEmail ? [{ email: toEmail }] : []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toEmail]);
 
   async function persistDraft() {
     setDraftStatus("saving");
@@ -206,6 +222,7 @@ export function ReplyComposer({
   async function handleSend() {
     if (hasPendingImageUploads) return;
     if (hasInvalidRecipient) return;
+    if (selectedTo.length === 0) return;
 
     if (isTicketed) {
       onSend({
@@ -214,7 +231,7 @@ export function ReplyComposer({
         cc: parseEmails(cc),
         bcc: parseEmails(bcc),
         files,
-        to: selectedTo || null,
+        to: selectedTo.map((chip) => chip.email),
         distributionListIds,
       });
       return;
@@ -225,7 +242,7 @@ export function ReplyComposer({
     // yet if the user clicks Send quickly after typing.
     setIsSendingDraft(true);
     await persistDraft();
-    await onSendDraft(selectedTo || null, distributionListIds);
+    await onSendDraft(selectedTo.map((chip) => chip.email), distributionListIds);
     setIsSendingDraft(false);
   }
 
@@ -277,24 +294,17 @@ export function ReplyComposer({
       </div>
 
       <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-3">
-        <div className="flex items-center gap-2 text-xs">
-          <span className="w-10 flex-none text-muted-foreground">To</span>
-          {toOptions.length > 1 ? (
-            <Select value={selectedTo} onValueChange={setSelectedTo}>
-              <SelectTrigger className="h-8 flex-1 text-xs">
-                <SelectValue placeholder="Select a recipient" />
-              </SelectTrigger>
-              <SelectContent>
-                {toOptions.map((contact) => (
-                  <SelectItem key={contact.email} value={contact.email}>
-                    {contact.name ? `${contact.name} <${contact.email}>` : contact.email}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <Input value={selectedTo} readOnly className="h-8 flex-1 bg-muted/30 text-xs" />
-          )}
+        <div className="flex items-start gap-2 text-xs">
+          <span className="w-10 flex-none pt-2 text-muted-foreground">To</span>
+          <div className="flex-1">
+            <MultiRecipientCombobox
+              options={toOptions}
+              value={selectedTo}
+              onChange={setSelectedTo}
+              resetKey={toEmail ?? ""}
+              placeholder="Search name or email…"
+            />
+          </div>
         </div>
         <div className="flex items-center gap-2 text-xs">
           <span className="w-10 flex-none text-muted-foreground">Cc</span>
@@ -388,7 +398,9 @@ export function ReplyComposer({
             <Button
               size="sm"
               className="gap-1.5"
-              disabled={isEmpty || isSending || hasPendingImageUploads || hasInvalidRecipient}
+              disabled={
+                isEmpty || isSending || hasPendingImageUploads || hasInvalidRecipient || selectedTo.length === 0
+              }
               onClick={handleSend}
             >
               <Send className="h-3.5 w-3.5" />
@@ -500,7 +512,14 @@ export function ReplyComposer({
               <Button
                 size="sm"
                 className="gap-1.5"
-                disabled={isEmpty || isSending || isSendingDraft || hasPendingImageUploads || hasInvalidRecipient}
+                disabled={
+                  isEmpty ||
+                  isSending ||
+                  isSendingDraft ||
+                  hasPendingImageUploads ||
+                  hasInvalidRecipient ||
+                  selectedTo.length === 0
+                }
                 onClick={handleSend}
               >
                 {isSendingDraft ? (

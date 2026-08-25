@@ -160,17 +160,18 @@ export async function uploadDraftInlineImage(
 }
 
 // POST /inbox/{interaction_id}/draft/send — send the current user's
-// draft on this thread as a real reply. `toEmail`, when the agent
-// picked a contact from the "To" dropdown, overrides the default
-// recipient for this send only (not persisted onto the draft).
+// draft on this thread as a real reply. `toEmails`, when the agent
+// picked one or more recipients from the "To" combobox, overrides the
+// default recipient(s) for this send only (not persisted onto the
+// draft).
 export async function sendDraft(
   interactionId: string,
-  toEmail?: string | null,
+  toEmails?: string[],
   distributionListIds?: string[]
 ): Promise<InteractionReplyResponse> {
   const { data } = await apiClient.post<InteractionReplyResponse>(
     `/inbox/${interactionId}/draft/send`,
-    { to_email: toEmail ?? null, distribution_list_ids: distributionListIds ?? [] }
+    { to_emails: toEmails ?? [], distribution_list_ids: distributionListIds ?? [] }
   );
   return data;
 }

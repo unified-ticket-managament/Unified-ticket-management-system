@@ -437,7 +437,15 @@ export interface InteractionReplyRequest {
   // to_email. See ReplyCreate.distribution_list_ids (backend) for the
   // same field on the ticketed-reply counterpart.
   distribution_list_ids?: string[];
+  // Single-recipient override — still accepted by the backend for
+  // back-compat callers. Mail's ReplyComposer.tsx sends to_emails
+  // below instead.
   to_email?: string | null;
+  // Multiple "To" recipients for this reply — the plural, additive
+  // counterpart the Reply composer's chip-based To field now sends
+  // instead of a single string. When both are given, the backend
+  // prefers to_emails.
+  to_emails?: string[];
   // Selects Graph's native replyAll action over reply when the
   // message being replied to has a known Graph message id — mirrors
   // the Mail page's own Reply/Reply All toggle. Falls back to a
@@ -722,9 +730,18 @@ export interface ReplyRequest {
   bcc?: string[];
   // See InternalNoteRequest.distribution_list_ids above for the
   // general pattern — here, merged into `cc` server-side, never
-  // `to_email` (a reply always targets the real thread participant).
+  // `to_email`/`to_emails` (a reply always targets the real thread
+  // participant(s)).
   distribution_list_ids?: string[];
+  // Single-recipient override — still accepted by the backend for
+  // back-compat callers (e.g. the ticket-detail Reply tab's own
+  // separate, hand-rolled composer, TicketComposer.tsx). Mail's
+  // ReplyComposer.tsx sends to_emails below instead.
   to_email?: string | null;
+  // See InteractionReplyRequest.to_emails above — same override, same
+  // reason. Mail's chip-based To field always sends this; when both
+  // are given, the backend prefers to_emails.
+  to_emails?: string[];
   // Points at the interaction_id an immediately-preceding
   // POST /tickets/{id}/attachments upload returned — set this so
   // those files are embedded in the actual outbound email, not just

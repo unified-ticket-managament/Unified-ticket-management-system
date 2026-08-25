@@ -231,6 +231,9 @@ class DraftSendRequest(BaseModel):
     """
 
     to_email: EmailStr | None = None
+    # See ReplyCreate.to_emails (schemas/ticket_action.py) — same
+    # override, same reason.
+    to_emails: list[EmailStr] | None = None
     distribution_list_ids: list[UUID] = Field(default_factory=list)
     # Phase 2 hardening: Send/Retry-Send idempotency — see
     # Interaction.dispatch_idempotency_key's own docstring for the

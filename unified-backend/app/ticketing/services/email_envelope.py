@@ -113,7 +113,7 @@ def build_reply_envelope(
     account_manager_email: str | None = None,
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
-    to_email_override: str | None = None,
+    to_email_override: str | list[str] | None = None,
     reply_to_provider_message_id: str | None = None,
     reply_all: bool = False,
     body_html: str | None = None,
@@ -144,10 +144,17 @@ def build_reply_envelope(
     since there's no Account Manager to notify. `cc`/`bcc` are
     whatever the agent themselves entered on the reply form, merged in
     alongside it. `to_email_override`, when the agent picked a
-    different contact from the "To" dropdown instead of the thread's
-    own sender, wins over `inbound_payload.from_email` — still
+    different contact (or several) from the "To" field instead of the
+    thread's own sender, wins over `inbound_payload.from_email` — still
     requires a resolvable recipient somewhere, so an override can't be
-    used to bypass the "nothing to dispatch" case below.
+    used to bypass the "nothing to dispatch" case below. Accepts either
+    a single address (back-compat) or a list for multiple explicit "To"
+    recipients — the first entry becomes the envelope's primary
+    `to_email`, and the full list is additionally set on `to_emails`
+    only when there's more than one, mirroring how Compose already
+    populates that same additive field. A single override, or none at
+    all, behaves byte-identical to before this parameter accepted a
+    list.
 
     `reply_to_provider_message_id`, when known (the inbound message's
     own Graph id — see EmailPayload.provider_message_id), makes the
@@ -167,18 +174,25 @@ def build_reply_envelope(
     function's exact pre-existing behavior — a plain-text-only send.
     """
 
-    recipient = to_email_override or inbound_payload.from_email
-    if not recipient:
+    if isinstance(to_email_override, str):
+        override_recipients = [to_email_override] if to_email_override else []
+    else:
+        override_recipients = list(to_email_override or [])
+
+    recipients = override_recipients or (
+        [inbound_payload.from_email] if inbound_payload.from_email else []
+    )
+    if not recipients:
         return None
 
     references = list(inbound_payload.references)
     if inbound_message_id:
         references.append(inbound_message_id)
 
-    return OutboundEnvelope(
+    envelope = OutboundEnvelope(
         from_email=from_email,
         from_name=agent_name,
-        to_email=recipient,
+        to_email=recipients[0],
         cc=_merge_cc(account_manager_email, cc),
         bcc=list(bcc or []),
         subject=_reply_subject(inbound_payload.subject),
@@ -190,6 +204,9 @@ def build_reply_envelope(
         reply_to_provider_message_id=reply_to_provider_message_id,
         reply_all=reply_all,
     )
+    if len(recipients) > 1:
+        envelope = envelope.model_copy(update={"to_emails": recipients})
+    return envelope
 
 
 def build_compose_envelope(

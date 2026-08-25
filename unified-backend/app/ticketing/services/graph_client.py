@@ -202,7 +202,7 @@ def _build_reply_action_body(envelope: OutboundEnvelope) -> dict:
     """
 
     message: dict = {
-        "toRecipients": _build_recipients([envelope.to_email]),
+        "toRecipients": _build_recipients(envelope.to_emails or [envelope.to_email]),
     }
     if envelope.cc:
         message["ccRecipients"] = _build_recipients(envelope.cc)
@@ -545,7 +545,7 @@ class GraphMailProviderClient(MailProviderClient):
 
         patch_url = f"{self._api_base_url}/users/{self._mailbox_address}/messages/{draft_id}"
         patch_body = {
-            "toRecipients": _build_recipients([envelope.to_email]),
+            "toRecipients": _build_recipients(envelope.to_emails or [envelope.to_email]),
             "ccRecipients": _build_recipients(envelope.cc),
             "bccRecipients": _build_recipients(envelope.bcc),
         }

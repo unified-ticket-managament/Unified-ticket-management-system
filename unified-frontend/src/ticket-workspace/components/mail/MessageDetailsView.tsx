@@ -349,7 +349,7 @@ interface MessageDetailsViewProps {
   ) => Promise<DraftSaveResponse | null>;
   onSendDraft: (
     interactionId: string,
-    toEmail?: string | null,
+    toEmails?: string[],
     distributionListIds?: string[]
   ) => Promise<InteractionReplyResponse | null>;
   onDiscardDraft: (interactionId: string) => Promise<boolean>;
@@ -597,7 +597,7 @@ export function MessageDetailsView({
     cc: string[];
     bcc: string[];
     files: File[];
-    to: string | null;
+    to: string[];
     distributionListIds: string[];
   }) {
     if (isTicketed && email.ticket_id) {
@@ -618,7 +618,7 @@ export function MessageDetailsView({
         body_html: payload.bodyHtml,
         cc: payload.cc,
         bcc: payload.bcc,
-        to_email: payload.to,
+        to_emails: payload.to,
         distribution_list_ids: payload.distributionListIds,
         attachment_source_interaction_id: attachmentSourceInteractionId,
         reply_all: replyMode === "replyAll",
@@ -666,7 +666,7 @@ export function MessageDetailsView({
       body_html: payload.bodyHtml,
       cc: payload.cc,
       bcc: payload.bcc,
-      to_email: payload.to,
+      to_emails: payload.to,
       distribution_list_ids: payload.distributionListIds,
       reply_all: replyMode === "replyAll",
       idempotency_key: crypto.randomUUID(),
@@ -720,8 +720,8 @@ export function MessageDetailsView({
     return { attachmentId: result.id, contentId: result.content_id };
   }
 
-  async function handleSendDraft(toEmail?: string | null, distributionListIds?: string[]) {
-    const result = await onSendDraft(email.interaction_id, toEmail, distributionListIds);
+  async function handleSendDraft(toEmails?: string[], distributionListIds?: string[]) {
+    const result = await onSendDraft(email.interaction_id, toEmails, distributionListIds);
     if (result) {
       setReplyMode(null);
       onRefreshList();

@@ -46,6 +46,17 @@ class ReplyCreate(BaseModel):
     # None means "use the default".
     to_email: EmailStr | None = None
 
+    # Multiple "To" overrides in one reply — the plural counterpart to
+    # to_email above, for an agent who needs to address more than one
+    # personal contact directly (not via Cc). None/empty (the default)
+    # means "no plural override"; when both to_email and to_emails are
+    # given, to_emails wins and to_email is ignored — see
+    # InteractionService.add_reply's own resolution. Reuses the same
+    # additive OutboundEnvelope.to_emails mechanism Compose/Forward
+    # already send through (see that field's own docstring), not a
+    # second parallel mechanism.
+    to_emails: list[EmailStr] | None = None
+
     # Points at an interaction that already has real, stored
     # attachments — in practice, the interaction_id a preceding
     # POST /tickets/{id}/attachments upload just returned. Set this so
@@ -117,6 +128,9 @@ class InteractionReplyRequest(BaseModel):
 
     # See ReplyCreate.to_email above — same override, same reason.
     to_email: EmailStr | None = None
+
+    # See ReplyCreate.to_emails above — same override, same reason.
+    to_emails: list[EmailStr] | None = None
 
     # See ReplyCreate.reply_all above — same meaning, same reason.
     reply_all: bool = False

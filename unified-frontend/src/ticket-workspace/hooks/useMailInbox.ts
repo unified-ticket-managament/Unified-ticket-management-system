@@ -1227,10 +1227,10 @@ export function useMailInbox() {
   // up immediately, instead of only after the thread is reopened.
   async function sendDraftMessage(
     interactionId: string,
-    toEmail?: string | null,
+    toEmails?: string[],
     distributionListIds?: string[]
   ) {
-    const result = await runSendDraft(interactionId, toEmail, distributionListIds);
+    const result = await runSendDraft(interactionId, toEmails, distributionListIds);
     if (result && selectedEmail?.interaction_id === interactionId) {
       // Sending a reply isn't "opening to read" — don't let this
       // refresh silently re-mark an explicitly-unread thread as read.

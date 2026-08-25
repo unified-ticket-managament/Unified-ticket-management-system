@@ -1496,21 +1496,32 @@ class InteractionService:
                     created_at=existing.created_at,
                 )
 
-        # request.to_email/cc/bcc are already EmailStr-validated for
+        # Prefer the plural override when present, fall back to the
+        # singular one, fall back to "no override at all" (build_
+        # reply_envelope's own default-to-thread-participant) when
+        # neither is given — to_emails is purely additive, see
+        # ReplyCreate.to_emails's own docstring.
+        override_to_emails: list[str] = (
+            dedupe_emails_case_insensitive(request.to_emails)
+            if request.to_emails
+            else ([request.to_email] if request.to_email else [])
+        )
+
+        # request.to_email(s)/cc/bcc are already EmailStr-validated for
         # syntax by Pydantic before this method ever runs — this adds
         # the domain-deliverability layer syntax alone can't catch
-        # (e.g. a typo'd TLD like "painmedpa.cm"). to_email is only
-        # ever the agent's own manually-picked override (see
-        # ReplyCreate.to_email) — the default recipient (the ticket's
-        # latest inbound sender) is never re-validated, since it isn't
-        # new user input.
+        # (e.g. a typo'd TLD like "painmedpa.cm"). to_email(s) is only
+        # ever the agent's own manually-picked override(s) (see
+        # ReplyCreate.to_email/to_emails) — the default recipient (the
+        # ticket's latest inbound sender) is never re-validated, since
+        # it isn't new user input.
         await ensure_recipients_are_valid(
-            to=request.to_email, cc=request.cc, bcc=request.bcc
+            to=override_to_emails, cc=request.cc, bcc=request.bcc
         )
 
         # Distribution Lists loop members in on Cc, resolved server-
         # side to their current active members — never into `to`,
-        # since a reply always targets the real thread participant.
+        # since a reply always targets the real thread participant(s).
         # Resolved (and merged/deduped) *after* ensure_recipients_are_
         # valid runs, so a resolved-DL address (already a known-good
         # internal user email) never triggers a deliverability check.
@@ -1518,7 +1529,7 @@ class InteractionService:
             self.distribution_list_repository, request.distribution_list_ids
         )
         _, effective_cc, effective_bcc = merge_recipients_with_priority(
-            to=[request.to_email] if request.to_email else [],
+            to=override_to_emails,
             cc=dedupe_emails_case_insensitive(request.cc, resolved_dl_emails),
             bcc=request.bcc,
         )
@@ -1598,7 +1609,7 @@ class InteractionService:
                     account_manager_email=am_email,
                     cc=effective_cc,
                     bcc=effective_bcc,
-                    to_email_override=request.to_email,
+                    to_email_override=override_to_emails,
                     reply_to_provider_message_id=inbound_payload.provider_message_id,
                     reply_all=request.reply_all,
                     body_html=signed_body_html,
@@ -1769,11 +1780,20 @@ class InteractionService:
                     created_at=existing.created_at,
                 )
 
+        # See add_reply's identical block — prefer the plural override
+        # when present, fall back to the singular one, fall back to no
+        # override at all when neither is given.
+        override_to_emails: list[str] = (
+            dedupe_emails_case_insensitive(request.to_emails)
+            if request.to_emails
+            else ([request.to_email] if request.to_email else [])
+        )
+
         # See add_reply's identical call for the full rationale — the
         # domain-deliverability layer syntax-only EmailStr validation
         # can't catch.
         await ensure_recipients_are_valid(
-            to=request.to_email, cc=request.cc, bcc=request.bcc
+            to=override_to_emails, cc=request.cc, bcc=request.bcc
         )
 
         # See add_reply's identical block — Distribution Lists loop
@@ -1783,7 +1803,7 @@ class InteractionService:
             self.distribution_list_repository, request.distribution_list_ids
         )
         _, effective_cc, effective_bcc = merge_recipients_with_priority(
-            to=[request.to_email] if request.to_email else [],
+            to=override_to_emails,
             cc=dedupe_emails_case_insensitive(request.cc, resolved_dl_emails),
             bcc=request.bcc,
         )
@@ -1840,7 +1860,7 @@ class InteractionService:
                 account_manager_email=am_email,
                 cc=effective_cc,
                 bcc=effective_bcc,
-                to_email_override=request.to_email,
+                to_email_override=override_to_emails,
                 reply_to_provider_message_id=inbound_payload.provider_message_id,
                 reply_all=request.reply_all,
                 body_html=signed_body_html,
@@ -4211,6 +4231,7 @@ class InteractionService:
         interaction_id: UUID,
         current_user: User,
         to_email: str | None = None,
+        to_emails: list[str] | None = None,
         distribution_list_ids: list[UUID] | None = None,
         idempotency_key: str | None = None,
     ) -> InteractionReplyResponse:
@@ -4231,7 +4252,10 @@ class InteractionService:
         dropdown at send time, overrides the default recipient — it's
         deliberately not part of the auto-saved draft payload (unlike
         message/cc/bcc), since it's only meaningful at the moment of
-        sending, not while still drafting.
+        sending, not while still drafting. `to_emails` is its plural
+        counterpart (see ReplyCreate.to_emails) — same reasoning, same
+        "only meaningful at send time" rule; when both are given,
+        add_interaction_reply prefers to_emails.
 
         `idempotency_key` (Phase 2 hardening): unlike the other four
         send paths (add_reply, add_interaction_reply, compose_email,
@@ -4285,6 +4309,7 @@ class InteractionService:
                 cc=cc,
                 bcc=bcc,
                 to_email=to_email,
+                to_emails=to_emails,
                 distribution_list_ids=distribution_list_ids or [],
                 body_html=body_html,
                 idempotency_key=idempotency_key,
