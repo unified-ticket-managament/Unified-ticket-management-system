@@ -141,6 +141,11 @@ interface MessageListProps {
   availableCategories: CategoryResponse[];
   clients: ClientResponse[];
   onOpen: (interactionId: string) => void;
+  // Double-clicking a row opens the same message in a full-screen
+  // view (Outlook-style), on top of the existing single-click
+  // behavior above — optional so this stays additive for any caller
+  // not yet passing it.
+  onOpenFullScreen?: (interactionId: string) => void;
   onCompose: () => void;
   onRefresh: () => void;
   // Whether the active view's underlying tab(s) have more rows on the
@@ -175,6 +180,7 @@ export function MessageList({
   availableCategories,
   clients,
   onOpen,
+  onOpenFullScreen,
   onCompose,
   onRefresh,
   hasMore,
@@ -492,6 +498,7 @@ export function MessageList({
                       if (isSelected) return;
                       onOpen(openId);
                     }}
+                    onDoubleClick={() => onOpenFullScreen?.(openId)}
                     disabled={isOpening}
                     className={cn(
                       "group flex w-full items-start gap-3 px-4 py-3 text-left transition-all duration-150 hover:z-[1] hover:-translate-y-0.5 hover:bg-muted/60 hover:shadow-sm",

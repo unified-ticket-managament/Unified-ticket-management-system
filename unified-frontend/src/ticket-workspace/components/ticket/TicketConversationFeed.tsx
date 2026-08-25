@@ -11,7 +11,15 @@ import {
   metaFor,
   summarize,
 } from "@tw/lib/interactionMeta";
-import { RENDERED_MESSAGE_HTML_CLASS, linkifyPlainText, resolveCidImagesForDisplay } from "@tw/lib/richText";
+import {
+  RENDERED_MESSAGE_HTML_CLASS,
+  RENDERED_MESSAGE_TABLE_BORDER_CLASS,
+<<<<<<< Updated upstream
+  linkifyPlainText,
+=======
+>>>>>>> Stashed changes
+  resolveCidImagesForDisplay,
+} from "@tw/lib/richText";
 import { shortId } from "@tw/lib/format";
 import type { InteractionResponse } from "@tw/types";
 
@@ -106,7 +114,9 @@ function FeedItem({ item, isLast, onHide, isHiding, onItemClick }: FeedItemProps
         {bodyHtml ? (
           <div
             ref={ref}
-            className={`mt-2 text-[13px] leading-relaxed text-slate-700 ${RENDERED_MESSAGE_HTML_CLASS} ${clampClassName}`}
+            className={`mt-2 text-[13px] leading-relaxed text-slate-700 ${RENDERED_MESSAGE_HTML_CLASS} ${
+              item.direction !== "INBOUND" ? RENDERED_MESSAGE_TABLE_BORDER_CLASS : ""
+            } ${clampClassName}`}
             dangerouslySetInnerHTML={{ __html: bodyHtml }}
           />
         ) : (

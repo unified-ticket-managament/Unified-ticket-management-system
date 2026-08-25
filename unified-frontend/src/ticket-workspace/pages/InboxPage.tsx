@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { ComposeView, type ComposeInitialValues } from "@tw/components/mail/ComposeView";
 import { MailReadingPaneEmptyState } from "@tw/components/mail/MailReadingPaneEmptyState";
@@ -16,6 +17,7 @@ import { useMailInbox, type MailViewKey } from "@tw/hooks/useMailInbox";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { RulesPanel } from "@/components/rules/RulesPanel";
+import type { AttachmentMeta } from "@tw/types";
 
 const VIEW_LABELS: Record<MailViewKey, string> = {
   pending: "Inbox",
@@ -151,6 +153,18 @@ export function InboxPage() {
     await mail.openThread(interactionId);
   }
 
+  // Double-click → floating reading window (Outlook-style, centered
+  // over the Inbox rather than replacing it). Reuses handleOpen (so
+  // the same "open thread" data-loading path backs both the
+  // right-side panel and the floating window) and only opens the
+  // overlay once that resolves, so the dialog never shows
+  // stale/empty content.
+  const [isFullScreenOpen, setIsFullScreenOpen] = useState(false);
+  async function handleOpenFullScreen(interactionId: string) {
+    await handleOpen(interactionId);
+    setIsFullScreenOpen(true);
+  }
+
   // Refreshing an already-open message's details isn't "opening it
   // to read" — pass markRead: false so this never silently undoes an
   // explicit "Mark as Unread" on the message being refreshed.
@@ -187,6 +201,7 @@ export function InboxPage() {
     bodyHtml: string;
     interactionId: string;
     originalAttachmentCount: number;
+    originalAttachments: AttachmentMeta[];
   }) {
     openCompose({
       clientId: values.clientId ?? undefined,
@@ -196,6 +211,7 @@ export function InboxPage() {
       mode: "forward",
       interactionId: values.interactionId,
       originalAttachmentCount: values.originalAttachmentCount,
+      originalAttachments: values.originalAttachments,
     });
   }
 
@@ -292,6 +308,7 @@ export function InboxPage() {
       availableCategories={mail.categories}
       clients={mail.clients}
       onOpen={handleOpen}
+      onOpenFullScreen={handleOpenFullScreen}
       onCompose={handleComposeClick}
       onRefresh={mail.refresh}
       hasMore={mail.folderRowsHasMore}
@@ -330,6 +347,7 @@ export function InboxPage() {
       availableCategories={mail.categories}
       clients={mail.clients}
       onOpen={handleOpen}
+      onOpenFullScreen={handleOpenFullScreen}
       onCompose={handleComposeClick}
       onRefresh={mail.refresh}
       hasMore={mail.hasMore}
@@ -394,7 +412,38 @@ export function InboxPage() {
     <MailReadingPaneEmptyState />
   );
 
+  // Floating reading window (double-click on a MessageList row) — the
+  // exact same MessageDetailsView/data/handlers as the right-side
+  // panel above, so every existing action (Reply/Forward/Create
+  // Ticket/Archive/Mark Read-Unread/attachments/etc.) behaves
+  // identically. The only difference is onBack: closes just the
+  // overlay instead of clearing selectedEmail, so returning to the
+  // Inbox leaves the right-side panel exactly as it was before the
+  // double-click.
+  const fullScreenDetail = selectedEmail ? (
+    <MessageDetailsView
+      variant="fullscreen"
+      email={selectedEmail}
+      folders={mail.folders}
+      onBack={() => setIsFullScreenOpen(false)}
+      onRefreshList={mail.refresh}
+      onRefreshMessage={handleRefreshMessage}
+      isRefreshingMessage={mail.openingId === selectedEmail.interaction_id}
+      onForward={handleForward}
+      onSaveDraft={mail.saveDraftMessage}
+      onSendDraft={mail.sendDraftMessage}
+      onDiscardDraft={mail.discardDraftMessage}
+      onUploadDraftAttachment={mail.uploadDraftAttachment}
+      onRemoveDraftAttachment={mail.removeDraftAttachment}
+      onUpdateTags={mail.updateTags}
+      onAssignFolder={mail.assignFolder}
+      onMarkRead={mail.markRead}
+      onMarkUnread={mail.markUnread}
+    />
+  ) : null;
+
   return (
+    <>
     <AppLayout>
       {/* No title passed above (per Mail spec: no page header) — the
           top navbar (h-16) + main's own p-6 padding are the only other
@@ -489,6 +538,7 @@ export function InboxPage() {
                 availableCategories={mail.categories}
                 clients={mail.clients}
                 onOpen={handleOpen}
+                onOpenFullScreen={handleOpenFullScreen}
                 onCompose={handleComposeClick}
                 onRefresh={mail.refresh}
                 hasMore={mail.folderRowsHasMore}
@@ -536,6 +586,7 @@ export function InboxPage() {
                 availableCategories={mail.categories}
                 clients={mail.clients}
                 onOpen={handleOpen}
+                onOpenFullScreen={handleOpenFullScreen}
                 onCompose={handleComposeClick}
                 onRefresh={mail.refresh}
                 hasMore={mail.hasMore}
@@ -546,5 +597,13 @@ export function InboxPage() {
         </div>
       )}
     </AppLayout>
+    <Dialog open={isFullScreenOpen} onOpenChange={setIsFullScreenOpen}>
+      <DialogContent className="flex h-[85vh] max-h-[85vh] w-full max-w-5xl flex-col gap-0 overflow-hidden p-0">
+        <div className="h-full w-full min-h-0 flex-1 overflow-y-auto">
+          {fullScreenDetail}
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

@@ -26,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { createDropHandler, createPasteHandler } from "@tw/lib/clipboardPaste";
 import { type ImageUploader, useImagePasteUploads } from "@tw/hooks/useImagePasteUploads";
 import { hasFailedImageUpload } from "@tw/lib/richText";
+import { TableBubbleMenu } from "@tw/components/mail/TableBubbleMenu";
 
 // Pasted-inline-image support (see lib/clipboardPaste.ts) needs a
 // few custom attributes preserved through TipTap's HTML
@@ -276,6 +277,7 @@ export function RichTextEditor({
       style={{ ["--rte-min-h" as string]: minHeight }}
     >
       <Toolbar editor={editor} />
+      <TableBubbleMenu editor={editor} />
       <EditorContent editor={editor} />
     </div>
   );

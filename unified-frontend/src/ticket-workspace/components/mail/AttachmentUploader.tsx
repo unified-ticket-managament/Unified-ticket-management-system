@@ -11,6 +11,7 @@ import {
   MAX_ATTACHMENT_SIZE_BYTES,
   formatBytes,
   iconForFilename,
+  openLocalFile,
   validateFiles,
 } from "@tw/lib/attachmentMeta";
 
@@ -125,7 +126,14 @@ export function AttachmentUploader({
                 className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-1.5"
               >
                 <Icon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{file.name}</span>
+                <button
+                  type="button"
+                  onClick={() => openLocalFile(file)}
+                  title="Open to preview"
+                  className="min-w-0 flex-1 truncate text-left text-xs font-medium text-foreground hover:underline"
+                >
+                  {file.name}
+                </button>
                 <span className="flex-none text-[11px] text-muted-foreground">{formatBytes(file.size)}</span>
                 <button
                   type="button"

@@ -7,6 +7,7 @@ import {
   MAX_ATTACHMENT_SIZE_BYTES,
   formatBytes,
   iconForFilename,
+  openLocalFile,
   validateFiles,
 } from "@tw/lib/attachmentMeta";
 
@@ -117,9 +118,14 @@ export function FileDropzone({
                 className="flex items-center gap-2.5 rounded-md2 border border-border bg-surface px-3 py-1.5"
               >
                 <Icon size={14} className="flex-none text-muted" />
-                <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-slate-700">
+                <button
+                  type="button"
+                  onClick={() => openLocalFile(file)}
+                  title="Open to preview"
+                  className="min-w-0 flex-1 truncate text-left text-[12px] font-medium text-slate-700 hover:underline"
+                >
                   {file.name}
-                </span>
+                </button>
                 <span className="flex-none text-[11px] text-muted">{formatBytes(file.size)}</span>
                 <Button
                   variant="ghost"

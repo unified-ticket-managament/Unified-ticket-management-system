@@ -32,10 +32,12 @@ import {
   type TrackedInlineImage,
 } from "@tw/lib/richText";
 import { isValidEmailAddress } from "@tw/lib/validation";
-import { MAX_ATTACHMENT_FILES } from "@tw/lib/attachmentMeta";
+import { MAX_ATTACHMENT_FILES, formatBytes, iconForFilename, previewHrefFor } from "@tw/lib/attachmentMeta";
+<<<<<<< Updated upstream
 import { generateIdempotencyKey } from "@tw/lib/idempotency";
 import { mergedClientFilterOptions } from "@tw/lib/clientFilter";
 import type {
+  AttachmentMeta,
   CategoryResponse,
   ClientContact,
   ClientResponse,
@@ -47,6 +49,9 @@ import type {
 // (see composableSenders below) since the underlying Select can only
 // carry a single string value.
 const CATEGORY_FROM_PREFIX = "category:";
+=======
+import type { AttachmentMeta, ClientContact, ClientResponse, InternalNoteRecipientCandidate } from "@tw/types";
+>>>>>>> Stashed changes
 
 const LOCAL_DRAFT_KEY = "utms-mail-compose-draft";
 
@@ -85,6 +90,11 @@ export interface ComposeInitialValues {
   // mode only) — used to cap newly-added attachments so original +
   // new never exceeds the 10-attachment total the backend enforces.
   originalAttachmentCount?: number;
+  // The original message's own attachment metadata (forward mode
+  // only) — rendered as an openable list so the user can verify what's
+  // being forwarded before sending; these are already stored server-
+  // side (real download_url), never re-uploaded.
+  originalAttachments?: AttachmentMeta[];
 }
 
 interface LocalDraft {
@@ -446,6 +456,7 @@ export function ComposeView({
   // so newly-added attachments are capped to whatever's left rather
   // than the full 10 — see AttachmentUploader's maxFiles prop.
   const originalAttachmentCount = initialValues?.originalAttachmentCount ?? 0;
+  const originalAttachments = initialValues?.originalAttachments ?? [];
   const remainingAttachmentSlots = isForward
     ? Math.max(0, MAX_ATTACHMENT_FILES - originalAttachmentCount)
     : MAX_ATTACHMENT_FILES;
@@ -883,11 +894,39 @@ export function ComposeView({
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Attachments</label>
               {isForward && originalAttachmentCount > 0 && (
-                <p className="mb-1.5 text-[11px] leading-relaxed text-muted-foreground">
-                  {originalAttachmentCount} original attachment
-                  {originalAttachmentCount === 1 ? "" : "s"} will be forwarded automatically. You
-                  can add up to {remainingAttachmentSlots} more ({MAX_ATTACHMENT_FILES} total).
-                </p>
+                <div className="mb-2">
+                  <p className="mb-1.5 text-[11px] leading-relaxed text-muted-foreground">
+                    {originalAttachmentCount} original attachment
+                    {originalAttachmentCount === 1 ? "" : "s"} will be forwarded automatically. You
+                    can add up to {remainingAttachmentSlots} more ({MAX_ATTACHMENT_FILES} total).
+                    You cannot remove them here.
+                  </p>
+                  <ul className="flex flex-col gap-1.5">
+                    {originalAttachments.map((attachment) => {
+                      const Icon = iconForFilename(attachment.filename);
+                      return (
+                        <li
+                          key={attachment.id}
+                          className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-1.5"
+                        >
+                          <Icon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
+                          <a
+                            href={previewHrefFor(attachment)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open to preview"
+                            className="min-w-0 flex-1 truncate text-xs font-medium text-foreground hover:underline"
+                          >
+                            {attachment.filename}
+                          </a>
+                          <span className="flex-none text-[11px] text-muted-foreground">
+                            {formatBytes(attachment.size)}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
               )}
               <AttachmentUploader files={files} onFilesChange={setFiles} maxFiles={remainingAttachmentSlots} />
             </div>

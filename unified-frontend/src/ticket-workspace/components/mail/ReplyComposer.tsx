@@ -15,6 +15,7 @@ import {
   MAX_ATTACHMENT_FILES,
   formatBytes,
   iconForFilename,
+  previewHrefFor,
   validateFiles,
 } from "@tw/lib/attachmentMeta";
 import { escapeHtml, htmlToPlainText, isRichContent, resolveInlineImageSources } from "@tw/lib/richText";
@@ -467,9 +468,15 @@ export function ReplyComposer({
                       className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-1.5"
                     >
                       <Icon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
+                      <a
+                        href={previewHrefFor(attachment)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="Open to preview"
+                        className="min-w-0 flex-1 truncate text-xs font-medium text-foreground hover:underline"
+                      >
                         {attachment.filename}
-                      </span>
+                      </a>
                       <span className="flex-none text-[11px] text-muted-foreground">
                         {formatBytes(attachment.size)}
                       </span>

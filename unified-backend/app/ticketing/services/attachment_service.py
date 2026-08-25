@@ -116,8 +116,25 @@ async def attachment_to_metadata(
             is_inline=False,
         )
 
+<<<<<<< Updated upstream
+    # preview_url is only ever signed for a genuinely previewable image
+    # (is_previewable_image — extension-based, never attachment.mime_type,
+    # see that function's own docstring for the spoofed-Content-Type XSS
+    # this guards against). Every other attachment still gets a real
+    # download_url; pre-send attachment-preview UIs (Reply's pre-ticket
+    # draft list, Forward's original-attachments list) fall back to that
+    # via previewHrefFor() on the frontend rather than requiring an
+    # inline-disposition URL for every file type.
     is_image = is_previewable_image(attachment.filename)
 
+=======
+    # preview_url is signed for every real (non-external-link) attachment,
+    # not just images — pre-send attachment-preview UIs (Reply's pre-ticket
+    # draft list, Forward's original-attachments list) need an inline-
+    # disposition URL for any file type, not only images; the browser's own
+    # native rendering still decides what "preview" actually looks like per
+    # mime type, this just stops the server from forcing a download.
+>>>>>>> Stashed changes
     download_url, preview_url = await asyncio.gather(
         storage_service.presigned_get_url(
             object_key=attachment.storage_key,
@@ -128,9 +145,7 @@ async def attachment_to_metadata(
             object_key=attachment.storage_key,
             filename=attachment.filename,
             inline=True,
-        )
-        if is_image
-        else _none(),
+        ),
     )
 
     return AttachmentMetadata(
@@ -144,10 +159,6 @@ async def attachment_to_metadata(
         content_id=attachment.content_id,
         is_inline=bool(attachment.is_inline),
     )
-
-
-async def _none() -> None:
-    return None
 
 
 logger = logging.getLogger(__name__)

@@ -60,6 +60,7 @@ import { formatAssigneeLabel, formatDateTime, formatTicketNumber } from "@tw/lib
 import { generateIdempotencyKey } from "@tw/lib/idempotency";
 import {
   RENDERED_MESSAGE_HTML_CLASS,
+  RENDERED_MESSAGE_TABLE_BORDER_CLASS,
   buildForwardHtml,
   filterLiveInlineImageIds,
   renderThreadedMessageHtml,
@@ -278,6 +279,10 @@ function Bubble({
           className={cn(
             "mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90 [&_a]:break-all [&_a]:underline [&_a]:text-primary",
             RENDERED_MESSAGE_HTML_CLASS,
+            // Table-grid borders only for agent-authored replies — never
+            // for the client's own inbound email, whose <table> markup
+            // is just as often pure layout scaffolding as a real table.
+            !data.isClient && RENDERED_MESSAGE_TABLE_BORDER_CLASS,
             clampClassName
           )}
           dangerouslySetInnerHTML={{ __html: renderedBody }}
@@ -329,7 +334,14 @@ interface MessageDetailsViewProps {
   // since the workspace's own outer container already supplies it,
   // and a nested card-in-a-panel would read as two separate surfaces
   // instead of one integrated one.
-  variant?: "standalone" | "panel";
+  // "fullscreen" — the double-click dedicated reading view (see
+  // InboxPage.tsx's fullScreenDetail) — also drops the card chrome
+  // (the Dialog it renders inside already supplies a full-bleed
+  // surface) and reorders sections: Back + the action toolbar move
+  // into one top bar, Sender Information moves above the scroll
+  // region alongside the subject/date header, and only the Tags and
+  // Message thread remain in the scrolling body.
+  variant?: "standalone" | "panel" | "fullscreen";
   onRefreshList: () => void;
   // Re-fetches this specific open message (not the whole list) — see
   // InboxPage.tsx, wired to mail.openThread(interactionId).
@@ -342,6 +354,7 @@ interface MessageDetailsViewProps {
     bodyHtml: string;
     interactionId: string;
     originalAttachmentCount: number;
+    originalAttachments: AttachmentMeta[];
   }) => void;
   onSaveDraft: (
     interactionId: string,
@@ -401,6 +414,7 @@ export function MessageDetailsView({
   const canReplyExternal = !!currentUser?.permissions.includes(
     "communication:reply_external"
   );
+  const isFullscreen = variant === "fullscreen";
   const [replyMode, setReplyMode] = useState<"reply" | "replyAll" | null>(null);
   // See handleUploadInlineImage/handleSend below — only ever
   // populated for a ticketed reply's pasted images. Tracked as
@@ -796,6 +810,7 @@ export function MessageDetailsView({
       bodyHtml,
       interactionId: email.interaction_id,
       originalAttachmentCount: email.attachments?.length ?? 0,
+      originalAttachments: email.attachments ?? [],
     });
   }
 
@@ -877,23 +892,170 @@ export function MessageDetailsView({
 
   const archiveDisabled = isTicketed || email.status !== "PENDING" || isArchiving;
 
+  // Shared between the bottom-pinned toolbar (panel/standalone) and
+  // the top toolbar (fullscreen, see the "isFullscreen" branch below)
+  // — same buttons/handlers either way, just rendered in a different
+  // structural position.
+  const toolbarActions = (
+    <>
+      {canReplyExternal && (
+        <>
+          <Button
+            size="sm"
+            className="gap-1.5"
+            disabled={isClosed || replyAccessCheck.isLoading}
+            onClick={() => handleReplyClick("reply")}
+          >
+            {replyAccessCheck.isLoading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ReplyIcon className="h-3.5 w-3.5" />
+            )}
+            Reply
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            disabled={isClosed || replyAccessCheck.isLoading}
+            onClick={() => handleReplyClick("replyAll")}
+          >
+            {replyAccessCheck.isLoading ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <ReplyAll className="h-3.5 w-3.5" />
+            )}
+            Reply All
+          </Button>
+        </>
+      )}
+      <Button size="sm" variant="outline" className="gap-1.5" onClick={handleForwardClick}>
+        <ForwardIcon className="h-3.5 w-3.5" />
+        Forward
+      </Button>
+
+      <Separator orientation="vertical" className="mx-1 h-5" />
+
+      {isTicketed ? (
+        <Button asChild size="sm" variant="outline" className="gap-1.5">
+          <Link to={`/tickets/${email.ticket_id}`}>
+            <FilePlus className="h-3.5 w-3.5" />
+            View Ticket
+          </Link>
+        </Button>
+      ) : (
+        <>
+          {canConvertToTicket && (
+            <Button size="sm" variant="outline" className="gap-1.5" disabled={isCreating} onClick={() => setCreateOpen(true)}>
+              <FilePlus className="h-3.5 w-3.5" />
+              Create Ticket
+            </Button>
+          )}
+          {canAttachToTicket && (
+            <Button size="sm" variant="outline" className="gap-1.5" disabled={isAttaching} onClick={openAttachDialog}>
+              <Link2 className="h-3.5 w-3.5" />
+              Link to Existing Ticket
+            </Button>
+          )}
+        </>
+      )}
+
+      {canArchive && (
+        <Button size="sm" variant="outline" className="gap-1.5" disabled={archiveDisabled} onClick={handleArchive}>
+          <Archive className="h-3.5 w-3.5" />
+          Archive
+        </Button>
+      )}
+
+      <Button
+        size="sm"
+        variant="outline"
+        className="gap-1.5"
+        onClick={() =>
+          email.is_read ? onMarkUnread(email.interaction_id) : onMarkRead(email.interaction_id)
+        }
+      >
+        {email.is_read ? <MailOpen className="h-3.5 w-3.5" /> : <Mail className="h-3.5 w-3.5" />}
+        {email.is_read ? "Mark as Unread" : "Mark as Read"}
+      </Button>
+    </>
+  );
+
+  // Shared between the in-scroll placement (panel/standalone) and the
+  // pinned-above-the-scroll-region placement (fullscreen, see the
+  // "isFullscreen" branch below) — same From/To/Cc/Bcc content either
+  // way, just rendered in a different structural position.
+  const senderInfoSection = (
+    <section>
+      <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        Sender Information
+      </h3>
+      <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-muted/20 p-3 text-[12.5px]">
+        <div className="flex gap-2">
+          <span className="w-12 flex-none font-medium text-muted-foreground">From</span>
+          <span className="min-w-0 flex-1 truncate text-foreground">
+            {email.from_name || (email.category_id ? email.category_name : email.client_name)}
+            {email.from_email && <span className="text-muted-foreground"> &lt;{email.from_email}&gt;</span>}
+          </span>
+        </div>
+        <div className="flex gap-2">
+          <span className="w-12 flex-none font-medium text-muted-foreground">To</span>
+          <span className="min-w-0 flex-1 truncate text-foreground">{email.to_email ?? "—"}</span>
+        </div>
+        {email.cc.length > 0 && (
+          <div className="flex gap-2">
+            <span className="w-12 flex-none font-medium text-muted-foreground">Cc</span>
+            <span className="min-w-0 flex-1 truncate text-foreground">{email.cc.join(", ")}</span>
+          </div>
+        )}
+        {email.bcc.length > 0 && (
+          <div className="flex gap-2">
+            <span className="w-12 flex-none font-medium text-muted-foreground">Bcc</span>
+            <span className="min-w-0 flex-1 truncate text-foreground">{email.bcc.join(", ")}</span>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+
   return (
     <div
       className={cn(
         "flex flex-col overflow-hidden",
-        variant !== "panel" && "rounded-xl border border-border bg-card shadow-card"
+        variant === "standalone" && "rounded-xl border border-border bg-card shadow-card"
       )}
     >
+      {/* Fullscreen reading view only — a single top bar combining the
+          Back control with the same action toolbar shown at the bottom
+          for panel/standalone, so double-clicking an email reads as a
+          dedicated reading surface instead of the same panel stretched
+          to the viewport. */}
+      {isFullscreen && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/20 px-5 py-2.5 pr-14">
+          <button
+            type="button"
+            onClick={onBack}
+            className="flex flex-none items-center gap-1.5 text-xs font-semibold text-muted transition-colors hover:text-slate-900"
+          >
+            <ArrowLeft size={14} />
+            Back to Inbox
+          </button>
+          <div className="flex flex-wrap items-center gap-1.5">{toolbarActions}</div>
+        </div>
+      )}
+
       {/* Message Header — subject, priority/category badges, received date/time */}
       <div className="border-b border-border px-5 py-4">
-        <button
-          type="button"
-          onClick={onBack}
-          className="mb-3 flex w-fit items-center gap-1.5 text-xs font-semibold text-muted transition-colors hover:text-slate-900"
-        >
-          <ArrowLeft size={14} />
-          Back
-        </button>
+        {!isFullscreen && (
+          <button
+            type="button"
+            onClick={onBack}
+            className="mb-3 flex w-fit items-center gap-1.5 text-xs font-semibold text-muted transition-colors hover:text-slate-900"
+          >
+            <ArrowLeft size={14} />
+            Back
+          </button>
+        )}
         <div className="flex flex-wrap items-start justify-between gap-3">
           <h2 className="min-w-0 truncate text-[16px] font-semibold text-foreground">{email.subject}</h2>
           <div className="flex flex-none flex-wrap items-center gap-1.5">
@@ -927,39 +1089,14 @@ export function MessageDetailsView({
         <p className="mt-1.5 text-[12px] text-muted-foreground">{formatDateTime(email.received_at)}</p>
       </div>
 
-      {/* Sender Information / Attachments / Tags / Message Body — the only scrolling region */}
+      {/* Fullscreen only — Sender Information pinned right below the
+          header, alongside Subject/Date, instead of buried mid-scroll. */}
+      {isFullscreen && <div className="border-b border-border px-5 py-4">{senderInfoSection}</div>}
+
+      {/* Attachments / Tags / Message Body — the only scrolling region */}
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <div className="flex flex-col gap-5">
-          <section>
-            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Sender Information
-            </h3>
-            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-muted/20 p-3 text-[12.5px]">
-              <div className="flex gap-2">
-                <span className="w-12 flex-none font-medium text-muted-foreground">From</span>
-                <span className="min-w-0 flex-1 truncate text-foreground">
-                  {email.from_name || (email.category_id ? email.category_name : email.client_name)}
-                  {email.from_email && <span className="text-muted-foreground"> &lt;{email.from_email}&gt;</span>}
-                </span>
-              </div>
-              <div className="flex gap-2">
-                <span className="w-12 flex-none font-medium text-muted-foreground">To</span>
-                <span className="min-w-0 flex-1 truncate text-foreground">{email.to_email ?? "—"}</span>
-              </div>
-              {email.cc.length > 0 && (
-                <div className="flex gap-2">
-                  <span className="w-12 flex-none font-medium text-muted-foreground">Cc</span>
-                  <span className="min-w-0 flex-1 truncate text-foreground">{email.cc.join(", ")}</span>
-                </div>
-              )}
-              {email.bcc.length > 0 && (
-                <div className="flex gap-2">
-                  <span className="w-12 flex-none font-medium text-muted-foreground">Bcc</span>
-                  <span className="min-w-0 flex-1 truncate text-foreground">{email.bcc.join(", ")}</span>
-                </div>
-              )}
-            </div>
-          </section>
+          {!isFullscreen && senderInfoSection}
 
           <section className="flex flex-wrap items-center gap-2">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Tags</span>
@@ -1031,89 +1168,13 @@ export function MessageDetailsView({
         </div>
       </div>
 
-      {/* Action Toolbar — pinned below the scrolling content, never scrolls out of view */}
-      <div className="flex flex-wrap items-center gap-1.5 border-t border-border bg-muted/20 px-5 py-2.5">
-        {canReplyExternal && (
-          <>
-            <Button
-              size="sm"
-              className="gap-1.5"
-              disabled={isClosed || replyAccessCheck.isLoading}
-              onClick={() => handleReplyClick("reply")}
-            >
-              {replyAccessCheck.isLoading ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <ReplyIcon className="h-3.5 w-3.5" />
-              )}
-              Reply
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="gap-1.5"
-              disabled={isClosed || replyAccessCheck.isLoading}
-              onClick={() => handleReplyClick("replyAll")}
-            >
-              {replyAccessCheck.isLoading ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <ReplyAll className="h-3.5 w-3.5" />
-              )}
-              Reply All
-            </Button>
-          </>
-        )}
-        <Button size="sm" variant="outline" className="gap-1.5" onClick={handleForwardClick}>
-          <ForwardIcon className="h-3.5 w-3.5" />
-          Forward
-        </Button>
-
-        <Separator orientation="vertical" className="mx-1 h-5" />
-
-        {isTicketed ? (
-          <Button asChild size="sm" variant="outline" className="gap-1.5">
-            <Link to={`/tickets/${email.ticket_id}`}>
-              <FilePlus className="h-3.5 w-3.5" />
-              View Ticket
-            </Link>
-          </Button>
-        ) : (
-          <>
-            {canConvertToTicket && (
-              <Button size="sm" variant="outline" className="gap-1.5" disabled={isCreating} onClick={() => setCreateOpen(true)}>
-                <FilePlus className="h-3.5 w-3.5" />
-                Create Ticket
-              </Button>
-            )}
-            {canAttachToTicket && (
-              <Button size="sm" variant="outline" className="gap-1.5" disabled={isAttaching} onClick={openAttachDialog}>
-                <Link2 className="h-3.5 w-3.5" />
-                Link to Existing Ticket
-              </Button>
-            )}
-          </>
-        )}
-
-        {canArchive && (
-          <Button size="sm" variant="outline" className="gap-1.5" disabled={archiveDisabled} onClick={handleArchive}>
-            <Archive className="h-3.5 w-3.5" />
-            Archive
-          </Button>
-        )}
-
-        <Button
-          size="sm"
-          variant="outline"
-          className="gap-1.5"
-          onClick={() =>
-            email.is_read ? onMarkUnread(email.interaction_id) : onMarkRead(email.interaction_id)
-          }
-        >
-          {email.is_read ? <MailOpen className="h-3.5 w-3.5" /> : <Mail className="h-3.5 w-3.5" />}
-          {email.is_read ? "Mark as Unread" : "Mark as Read"}
-        </Button>
-      </div>
+      {/* Action Toolbar — pinned below the scrolling content, never scrolls out of view.
+          Fullscreen already shows these same actions in its own top bar (see above). */}
+      {!isFullscreen && (
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-border bg-muted/20 px-5 py-2.5">
+          {toolbarActions}
+        </div>
+      )}
 
       {isClosed && (
         <div className="border-t border-border p-4 text-center text-[12px] text-muted-foreground">

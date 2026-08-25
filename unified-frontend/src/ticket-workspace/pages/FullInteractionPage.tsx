@@ -18,7 +18,15 @@ import {
   metaFor,
   summarize,
 } from "@tw/lib/interactionMeta";
-import { RENDERED_MESSAGE_HTML_CLASS, linkifyPlainText, resolveCidImagesForDisplay } from "@tw/lib/richText";
+import {
+  RENDERED_MESSAGE_HTML_CLASS,
+  RENDERED_MESSAGE_TABLE_BORDER_CLASS,
+<<<<<<< Updated upstream
+  linkifyPlainText,
+=======
+>>>>>>> Stashed changes
+  resolveCidImagesForDisplay,
+} from "@tw/lib/richText";
 import { shortId, formatDateTime } from "@tw/lib/format";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import type { InteractionResponse, InteractionStatus, OpenEmailResponse, ThreadResponse } from "@tw/types";
@@ -144,7 +152,7 @@ function ConversationItem({ message }: { message: InteractionResponse }) {
         {bodyHtml ? (
           <div
             ref={collapsible.ref}
-            className={`text-[13px] leading-relaxed text-slate-700 ${RENDERED_MESSAGE_HTML_CLASS} ${collapsible.clampClassName}`}
+            className={`text-[13px] leading-relaxed text-slate-700 ${RENDERED_MESSAGE_HTML_CLASS} ${RENDERED_MESSAGE_TABLE_BORDER_CLASS} ${collapsible.clampClassName}`}
             dangerouslySetInnerHTML={{ __html: bodyHtml }}
           />
         ) : (
@@ -212,7 +220,7 @@ function ConversationItem({ message }: { message: InteractionResponse }) {
           {bodyHtml ? (
             <div
               ref={collapsible.ref}
-              className={`${RENDERED_MESSAGE_HTML_CLASS} ${collapsible.clampClassName}`}
+              className={`${RENDERED_MESSAGE_HTML_CLASS} ${isRight ? RENDERED_MESSAGE_TABLE_BORDER_CLASS : ""} ${collapsible.clampClassName}`}
               dangerouslySetInnerHTML={{ __html: bodyHtml }}
             />
           ) : (

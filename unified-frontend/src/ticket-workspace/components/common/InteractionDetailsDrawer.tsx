@@ -13,7 +13,15 @@ import {
   metaFor,
   summarize,
 } from "@tw/lib/interactionMeta";
-import { RENDERED_MESSAGE_HTML_CLASS, linkifyPlainText, resolveCidImagesForDisplay } from "@tw/lib/richText";
+import {
+  RENDERED_MESSAGE_HTML_CLASS,
+  RENDERED_MESSAGE_TABLE_BORDER_CLASS,
+<<<<<<< Updated upstream
+  linkifyPlainText,
+=======
+>>>>>>> Stashed changes
+  resolveCidImagesForDisplay,
+} from "@tw/lib/richText";
 import { shortId, formatDateTime } from "@tw/lib/format";
 import type {
   AttachmentMeta,
@@ -276,7 +284,9 @@ function ThreadMessageItem({
       {bodyHtml ? (
         <div
           ref={ref}
-          className={`mt-1 text-[13px] leading-relaxed text-slate-700 ${RENDERED_MESSAGE_HTML_CLASS} ${clampClassName}`}
+          className={`mt-1 text-[13px] leading-relaxed text-slate-700 ${RENDERED_MESSAGE_HTML_CLASS} ${
+            message.direction !== "INBOUND" ? RENDERED_MESSAGE_TABLE_BORDER_CLASS : ""
+          } ${clampClassName}`}
           dangerouslySetInnerHTML={{ __html: bodyHtml }}
         />
       ) : (
@@ -480,7 +490,9 @@ export function InteractionDetailsDrawer({
                     <>
                       <div
                         ref={messageContent.ref}
-                        className={`mt-2 text-[13px] leading-relaxed text-slate-700 ${RENDERED_MESSAGE_HTML_CLASS} ${messageContent.clampClassName}`}
+                        className={`mt-2 text-[13px] leading-relaxed text-slate-700 ${RENDERED_MESSAGE_HTML_CLASS} ${
+                          row.direction !== "INBOUND" ? RENDERED_MESSAGE_TABLE_BORDER_CLASS : ""
+                        } ${messageContent.clampClassName}`}
                         dangerouslySetInnerHTML={{ __html: fields.messageHtml }}
                       />
                       {messageContent.isOverflowing && (

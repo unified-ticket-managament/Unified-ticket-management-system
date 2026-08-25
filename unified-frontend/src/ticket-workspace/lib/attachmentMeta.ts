@@ -157,6 +157,23 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// Opens a not-yet-uploaded local File in a new tab so the user can
+// verify it before sending, using the browser's own native handling
+// for that file type (PDF/image/text preview, or a download prompt).
+export function openLocalFile(file: File): void {
+  const url = URL.createObjectURL(file);
+  window.open(url, "_blank", "noopener,noreferrer");
+}
+
+// The already-uploaded-attachment equivalent of openLocalFile: prefer the
+// inline-disposition preview_url (so the browser previews rather than force-
+// downloads) and only fall back to download_url if the server didn't supply one.
+export function previewHrefFor(
+  attachment: Pick<AttachmentMeta, "preview_url" | "download_url">
+): string {
+  return attachment.preview_url ?? attachment.download_url;
+}
+
 export interface FileValidationResult {
   accepted: File[];
   errors: string[];

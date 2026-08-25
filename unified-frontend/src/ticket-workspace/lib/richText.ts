@@ -196,8 +196,34 @@ export function resolveCidImagesForDisplay(
 // or read back. A bare <table>/<img> has no built-in visual styling
 // at all, so without this a real table renders with no grid lines —
 // easy to mistake for "not formatted".
+//
+// Deliberately excludes any border/grid styling — those live in
+// RENDERED_MESSAGE_TABLE_BORDER_CLASS below and must only be applied
+// to agent-authored content, never inbound sender HTML. See that
+// constant's own comment for why.
 export const RENDERED_MESSAGE_HTML_CLASS =
-  "[&_table]:my-2 [&_table]:border-collapse [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:p-1.5 [&_td]:align-top [&_th]:border [&_th]:border-border [&_th]:bg-muted [&_th]:p-1.5 [&_th]:text-left [&_th]:font-semibold [&_img]:mb-2 [&_img]:max-w-full [&_img]:rounded [&_a]:break-all [&_a]:underline [&_a]:text-primary";
+<<<<<<< Updated upstream
+  "[&_table]:my-2 [&_table]:w-full [&_td]:p-1.5 [&_td]:align-top [&_th]:p-1.5 [&_th]:text-left [&_th]:font-semibold [&_img]:mb-2 [&_img]:max-w-full [&_img]:rounded [&_a]:break-all [&_a]:underline [&_a]:text-primary";
+=======
+  "[&_table]:my-2 [&_table]:w-full [&_td]:p-1.5 [&_td]:align-top [&_th]:p-1.5 [&_th]:text-left [&_th]:font-semibold [&_img]:mb-2 [&_img]:max-w-full [&_img]:rounded";
+>>>>>>> Stashed changes
+
+// Draws a visible grid (borders + header background) around every
+// <td>/<th>. Only safe to add for agent-authored content (a composer
+// paste, a reply, an internal note) where a <table> is always a
+// deliberate data table someone pasted in — never for inbound sender
+// HTML, where a <table> is just as often pure layout/positioning
+// markup (newsletter/transactional templates nest tables purely to
+// lay out paragraphs/sections, with no intent for any of it to look
+// like a bordered grid). This mirrors the exact same inbound/outbound
+// line html_sanitizer.py's sanitize_inbound_html already draws at the
+// HTML-sanitization layer, for the same reason: forcing a border onto
+// every nested layout table made ordinary transactional/notification
+// emails render as a wall of boxes never present in the original
+// message (confirmed against a real inbound TMHP IAMOnline
+// verification email — every paragraph is its own layout <td>).
+export const RENDERED_MESSAGE_TABLE_BORDER_CLASS =
+  "[&_table]:border-collapse [&_td]:border [&_td]:border-border [&_th]:border [&_th]:border-border [&_th]:bg-muted";
 
 export function plainTextToHtml(text: string): string {
   if (!text) return "";
