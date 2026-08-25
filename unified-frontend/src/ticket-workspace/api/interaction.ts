@@ -33,6 +33,7 @@ export interface ListTicketInteractionsParams {
   dateTo?: string;
   search?: string;
   clientCompanyId?: string;
+  ticketType?: string;
 }
 
 export interface ListTicketInteractionsResult {
@@ -93,6 +94,7 @@ export async function getAllTicketInteractions(
         date_to: params.dateTo,
         search: params.search,
         client_company_id: params.clientCompanyId,
+        ticket_type: params.ticketType,
       },
       signal,
     }

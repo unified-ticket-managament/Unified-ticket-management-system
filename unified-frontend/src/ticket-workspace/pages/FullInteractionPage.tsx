@@ -18,7 +18,7 @@ import {
   metaFor,
   summarize,
 } from "@tw/lib/interactionMeta";
-import { RENDERED_MESSAGE_HTML_CLASS, resolveCidImagesForDisplay } from "@tw/lib/richText";
+import { RENDERED_MESSAGE_HTML_CLASS, linkifyPlainText, resolveCidImagesForDisplay } from "@tw/lib/richText";
 import { shortId, formatDateTime } from "@tw/lib/format";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import type { InteractionResponse, InteractionStatus, OpenEmailResponse, ThreadResponse } from "@tw/types";
@@ -152,9 +152,8 @@ function ConversationItem({ message }: { message: InteractionResponse }) {
             <div
               ref={collapsible.ref}
               className={`whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${collapsible.clampClassName}`}
-            >
-              {body}
-            </div>
+              dangerouslySetInnerHTML={{ __html: linkifyPlainText(body) }}
+            />
           )
         )}
         {collapsible.isOverflowing && <ShowMoreToggle isExpanded={collapsible.isExpanded} onToggle={collapsible.toggle} />}
@@ -218,9 +217,11 @@ function ConversationItem({ message }: { message: InteractionResponse }) {
             />
           ) : (
             body && (
-              <div ref={collapsible.ref} className={`whitespace-pre-wrap ${collapsible.clampClassName}`}>
-                {body}
-              </div>
+              <div
+                ref={collapsible.ref}
+                className={`whitespace-pre-wrap ${collapsible.clampClassName}`}
+                dangerouslySetInnerHTML={{ __html: linkifyPlainText(body) }}
+              />
             )
           )}
           {collapsible.isOverflowing && (

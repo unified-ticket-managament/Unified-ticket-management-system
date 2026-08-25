@@ -39,6 +39,7 @@ import { listCategories } from "@tw/api/categories";
 import { listClients } from "@tw/api/clients";
 import { getAllTicketAuditLogs } from "@tw/api/auditLog";
 import { listTickets } from "@tw/api/ticket";
+import { resolveClientFilterValue } from "@tw/lib/clientFilter";
 import type { CategoryResponse, ClientResponse, TicketAuditLogResponse, TicketResponse } from "@tw/types";
 
 function downloadBlob(content: string, filename: string, mimeType: string) {
@@ -70,38 +71,41 @@ export default function ReportsPage() {
   // super-admin-dashboard.tsx fetches its own copy).
   const [clients, setClients] = useState<ClientResponse[]>([]);
   const [clientFilter, setClientFilter] = useState("ALL");
-  const clientCompanyId = clientFilter === "ALL" ? undefined : clientFilter;
+  const { clientId: clientCompanyId, categoryName: ticketType } = resolveClientFilterValue(
+    clientFilter,
+    categories
+  );
 
   useEffect(() => {
     listClients()
       .then(setClients)
       .catch(() => setClients([]));
+    listCategories()
+      .then(setCategories)
+      .catch(() => setCategories([]));
   }, []);
 
   const loadData = useCallback((signal?: { aborted: boolean }) => {
     setIsLoading(true);
     return Promise.all([
-      listTickets(clientCompanyId),
-      listCategories(),
-      getAllTicketAuditLogs({ eventType: "REPLY_ADDED", clientCompanyId }),
+      listTickets(clientCompanyId, ticketType),
+      getAllTicketAuditLogs({ eventType: "REPLY_ADDED", clientCompanyId, ticketType }),
     ])
-      .then(([ticketsResult, categoriesResult, replyLogsResult]) => {
+      .then(([ticketsResult, replyLogsResult]) => {
         if (signal?.aborted) return;
         setTickets(ticketsResult);
-        setCategories(categoriesResult);
         setReplyAddedLogs(replyLogsResult.items);
       })
       .catch(() => {
         if (!signal?.aborted) {
           setTickets([]);
-          setCategories([]);
           setReplyAddedLogs([]);
         }
       })
       .finally(() => {
         if (!signal?.aborted) setIsLoading(false);
       });
-  }, [clientCompanyId]);
+  }, [clientCompanyId, ticketType]);
 
   useEffect(() => {
     const signal = { aborted: false };
@@ -110,7 +114,7 @@ export default function ReportsPage() {
       signal.aborted = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientCompanyId]);
+  }, [clientCompanyId, ticketType]);
 
   // Super Admin/Site Lead/Account Manager keep Tickets by Category
   // (Account Manager's current behavior is deliberately unchanged);
@@ -181,7 +185,7 @@ export default function ReportsPage() {
           <div className="flex items-center gap-2 print:hidden">
             <ClientFilterSelect
               clients={clients}
-              currentUser={currentUser}
+              categories={categories}
               value={clientFilter}
               onChange={setClientFilter}
             />

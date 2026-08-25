@@ -12,3 +12,4 @@ class CategoryResponse(BaseModel):
 
     category_id: UUID
     category_name: str
+    inbox_email: str | None = None

@@ -41,6 +41,8 @@ export interface ListTicketAuditLogsParams {
   // Narrows to one client's entries, within whatever the caller's own
   // role scope (or centralized mode) already allows.
   clientCompanyId?: string;
+  // Narrows to one category's entries, same scoping rules as above.
+  ticketType?: string;
 }
 
 export interface ListTicketAuditLogsResult {
@@ -71,6 +73,7 @@ export async function getAllTicketAuditLogs(
         search: params.search,
         centralized: params.centralized,
         client_company_id: params.clientCompanyId,
+        ticket_type: params.ticketType,
       },
     }
   );

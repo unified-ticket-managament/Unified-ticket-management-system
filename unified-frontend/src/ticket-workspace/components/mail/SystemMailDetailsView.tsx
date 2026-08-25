@@ -130,7 +130,7 @@ export function SystemMailDetailsView({
       </div>
 
       <div
-        className="whitespace-pre-wrap break-words text-[14px] leading-relaxed text-foreground/90 [&_a]:break-all"
+        className="whitespace-pre-wrap break-words text-[14px] leading-relaxed text-foreground/90 [&_a]:break-all [&_a]:text-primary"
         dangerouslySetInnerHTML={{ __html: linkifyPlainText(bodyText) }}
       />
 

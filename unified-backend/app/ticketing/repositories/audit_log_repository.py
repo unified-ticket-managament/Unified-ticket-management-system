@@ -251,6 +251,7 @@ class AuditLogRepository:
         search: str | None = None,
         assigned_to: UUID | None = None,
         client_company_id_filter: UUID | None = None,
+        ticket_type_filter: str | None = None,
     ) -> AuditLogVisiblePage:
         """
         The Audit Log page's query, collapsed the same way
@@ -320,6 +321,9 @@ class AuditLogRepository:
 
         if client_company_id_filter is not None:
             conditions.append(Ticket.client_company_id == client_company_id_filter)
+
+        if ticket_type_filter is not None:
+            conditions.append(Ticket.ticket_type == ticket_type_filter)
 
         if entity_type is not None:
             conditions.append(AuditLog.entity_type == entity_type)

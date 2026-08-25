@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import exists, func, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
-from shared_models.models import User
+from shared_models.models import Category, User
 
 from app.core.impersonation_context import get_impersonator
 from app.core.request_timing import timed_stage
@@ -227,6 +227,7 @@ class InteractionRepository:
         date_to: datetime | None = None,
         search: str | None = None,
         client_company_id_filter: UUID | None = None,
+        ticket_type_filter: str | None = None,
     ) -> InteractionVisiblePage:
         """
         The Interactions-tab query, collapsed into as few round trips
@@ -313,6 +314,9 @@ class InteractionRepository:
 
         if client_company_id_filter is not None:
             conditions.append(Ticket.client_company_id == client_company_id_filter)
+
+        if ticket_type_filter is not None:
+            conditions.append(Ticket.ticket_type == ticket_type_filter)
 
         if interaction_types is not None:
             conditions.append(Interaction.interaction_type.in_(interaction_types))
@@ -505,11 +509,17 @@ class InteractionRepository:
         own fixed role scoping) — previously applied client-side over
         whatever page happened to be loaded, which meant "show me
         every HIGH-priority thread" could silently miss matches
-        outside the currently-fetched batch. Both only ever match
-        ticketed threads (priority/category don't exist before a
-        thread becomes a ticket), so either one triggers the same
-        INNER JOIN against `tickets` already used for
-        `ticket_types`/`assigned_agent_id` scoping.
+        outside the currently-fetched batch. Either one triggers the
+        same join against `tickets` already used for
+        `ticket_types`/`assigned_agent_id` scoping — an OUTER join,
+        since `priority_filter` only ever matches a ticketed thread
+        (priority doesn't exist pre-ticket) but `category_filter` has
+        two representations: `Interaction.category_id` for a
+        category-mailbox item that hasn't become a ticket yet, and
+        `Ticket.ticket_type` (a denormalized copy) once it has. The
+        category WHERE clause matches either; an INNER join here would
+        silently drop every not-yet-ticketed match before that WHERE
+        is even reached.
         """
 
         query = select(Interaction)
@@ -543,7 +553,7 @@ class InteractionRepository:
             or priority_filter is not None
         )
         if needs_ticket_join:
-            query = query.join(Ticket, Ticket.ticket_id == Interaction.ticket_id)
+            query = query.outerjoin(Ticket, Ticket.ticket_id == Interaction.ticket_id)
 
         if ticket_types is not None:
             query = query.where(Ticket.ticket_type.in_(ticket_types))
@@ -566,7 +576,13 @@ class InteractionRepository:
             query = query.where(or_(*ownership_conditions))
 
         if category_filter is not None:
-            query = query.where(Ticket.ticket_type == category_filter)
+            query = query.outerjoin(Category, Category.category_id == Interaction.category_id)
+            query = query.where(
+                or_(
+                    Ticket.ticket_type == category_filter,
+                    Category.category_name == category_filter,
+                )
+            )
 
         if priority_filter is not None:
             query = query.where(Ticket.current_priority == priority_filter)

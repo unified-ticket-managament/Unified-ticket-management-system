@@ -273,7 +273,7 @@ function Bubble({
         <div
           ref={ref}
           className={cn(
-            "mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90 [&_a]:break-all [&_a]:underline",
+            "mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90 [&_a]:break-all [&_a]:underline [&_a]:text-primary",
             RENDERED_MESSAGE_HTML_CLASS,
             clampClassName
           )}

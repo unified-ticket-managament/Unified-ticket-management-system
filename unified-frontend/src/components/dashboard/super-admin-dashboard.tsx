@@ -23,10 +23,12 @@ import { countsByPriorityFromTickets } from "@/lib/reportAggregations";
 import { cn, formatRelativeTime } from "@/lib/utils";
 import { useAuthStore } from "@/store/auth-store";
 import { getAllTicketAuditLogs } from "@tw/api/auditLog";
+import { listCategories } from "@tw/api/categories";
 import { listClients } from "@tw/api/clients";
 import { getDashboardStats, listTickets, type DashboardStats } from "@tw/api/ticket";
 import { auditMetaFor } from "@tw/lib/auditLogMeta";
-import type { ClientResponse, TicketAuditLogResponse, TicketResponse, TicketStatus } from "@tw/types";
+import { resolveClientFilterValue } from "@tw/lib/clientFilter";
+import type { CategoryResponse, ClientResponse, TicketAuditLogResponse, TicketResponse, TicketStatus } from "@tw/types";
 
 const STATUS_BADGE: Record<TicketStatus, { label: string; variant: "default" | "warning" | "success" | "secondary" }> = {
   OPEN: { label: "Open", variant: "default" },
@@ -77,22 +79,29 @@ export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
   // ticket-workspace page does; GET /clients is cheap and ungated
   // regardless.
   const [clients, setClients] = useState<ClientResponse[]>([]);
+  const [categories, setCategories] = useState<CategoryResponse[]>([]);
   const [clientFilter, setClientFilter] = useState("ALL");
-  const clientCompanyId = clientFilter === "ALL" ? undefined : clientFilter;
+  const { clientId: clientCompanyId, categoryName: ticketType } = resolveClientFilterValue(
+    clientFilter,
+    categories
+  );
 
   useEffect(() => {
     listClients()
       .then(setClients)
       .catch(() => setClients([]));
+    listCategories()
+      .then(setCategories)
+      .catch(() => setCategories([]));
   }, []);
 
   useEffect(() => {
     let cancelled = false;
 
     Promise.all([
-      getDashboardStats(clientCompanyId),
-      listTickets(clientCompanyId),
-      getAllTicketAuditLogs({ limit: 8, clientCompanyId }),
+      getDashboardStats(clientCompanyId, ticketType),
+      listTickets(clientCompanyId, ticketType),
+      getAllTicketAuditLogs({ limit: 8, clientCompanyId, ticketType }),
     ])
       .then(([statsResult, ticketsResult, activityResult]) => {
         if (cancelled) return;
@@ -114,7 +123,7 @@ export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
     return () => {
       cancelled = true;
     };
-  }, [clientCompanyId]);
+  }, [clientCompanyId, ticketType]);
 
   const priorityBreakdown = countsByPriorityFromTickets(tickets);
 
@@ -134,7 +143,7 @@ export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
         action={
           <ClientFilterSelect
             clients={clients}
-            currentUser={currentUser}
+            categories={categories}
             value={clientFilter}
             onChange={setClientFilter}
           />

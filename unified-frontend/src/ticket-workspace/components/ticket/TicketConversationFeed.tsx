@@ -11,7 +11,7 @@ import {
   metaFor,
   summarize,
 } from "@tw/lib/interactionMeta";
-import { RENDERED_MESSAGE_HTML_CLASS, resolveCidImagesForDisplay } from "@tw/lib/richText";
+import { RENDERED_MESSAGE_HTML_CLASS, linkifyPlainText, resolveCidImagesForDisplay } from "@tw/lib/richText";
 import { shortId } from "@tw/lib/format";
 import type { InteractionResponse } from "@tw/types";
 
@@ -110,9 +110,11 @@ function FeedItem({ item, isLast, onHide, isHiding, onItemClick }: FeedItemProps
             dangerouslySetInnerHTML={{ __html: bodyHtml }}
           />
         ) : (
-          <div ref={ref} className={`mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${clampClassName}`}>
-            {summary}
-          </div>
+          <div
+            ref={ref}
+            className={`mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${clampClassName}`}
+            dangerouslySetInnerHTML={{ __html: linkifyPlainText(summary) }}
+          />
         )}
         {isOverflowing && <ShowMoreToggle isExpanded={isExpanded} onToggle={toggle} className="inline-block" />}
 

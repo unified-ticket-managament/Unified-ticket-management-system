@@ -13,7 +13,7 @@ import {
   metaFor,
   summarize,
 } from "@tw/lib/interactionMeta";
-import { RENDERED_MESSAGE_HTML_CLASS, resolveCidImagesForDisplay } from "@tw/lib/richText";
+import { RENDERED_MESSAGE_HTML_CLASS, linkifyPlainText, resolveCidImagesForDisplay } from "@tw/lib/richText";
 import { shortId, formatDateTime } from "@tw/lib/format";
 import type {
   AttachmentMeta,
@@ -281,9 +281,11 @@ function ThreadMessageItem({
         />
       ) : (
         body && (
-          <div ref={ref} className={`mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${clampClassName}`}>
-            {body}
-          </div>
+          <div
+            ref={ref}
+            className={`mt-1 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${clampClassName}`}
+            dangerouslySetInnerHTML={{ __html: linkifyPlainText(body) }}
+          />
         )
       )}
       {isOverflowing && <ShowMoreToggle isExpanded={isExpanded} onToggle={toggle} />}
@@ -490,9 +492,10 @@ export function InteractionDetailsDrawer({
                       <div
                         ref={messageContent.ref}
                         className={`mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-slate-700 ${messageContent.clampClassName}`}
-                      >
-                        {fields.message ?? "—"}
-                      </div>
+                        dangerouslySetInnerHTML={{
+                          __html: fields.message ? linkifyPlainText(fields.message) : "—",
+                        }}
+                      />
                       {messageContent.isOverflowing && (
                         <ShowMoreToggle isExpanded={messageContent.isExpanded} onToggle={messageContent.toggle} />
                       )}

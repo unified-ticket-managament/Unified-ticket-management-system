@@ -33,6 +33,7 @@ export type TicketPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export interface CategoryResponse {
   category_id: string;
   category_name: string;
+  inbox_email: string | null;
 }
 
 // ==========================================================

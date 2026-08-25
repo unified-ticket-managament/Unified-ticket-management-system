@@ -14,6 +14,7 @@ import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { useDebouncedValue } from "@tw/hooks/useDebouncedValue";
 import { formatDateTime } from "@tw/lib/format";
 import { auditMetaFor, diffFields, formatFieldValue, humanizeFieldKey } from "@tw/lib/auditLogMeta";
+import { resolveClientFilterValue } from "@tw/lib/clientFilter";
 import { isSupervisorRole } from "@/lib/role-access";
 import type { ActorRole, AuditEntityType, AuditEventType } from "@tw/types";
 
@@ -72,7 +73,7 @@ const selectClass =
 export function AuditLogPage() {
   const navigate = useNavigate();
   const { currentUser } = useAuthContext();
-  const { agents, clients } = useWorkflowContext();
+  const { agents, clients, categories } = useWorkflowContext();
 
   // Super Admin/Site Lead always see the unrestricted, company-wide
   // log — same as before this change, no button, no toggle. Everyone
@@ -125,6 +126,7 @@ export function AuditLogPage() {
         // GET /tickets followed by one GET .../audit-logs per ticket
         // — and, since this session's pagination work, instead of the
         // entire unbounded history on every load and every poll tick.
+        const { clientId, categoryName } = resolveClientFilterValue(clientFilter, categories);
         const result = await getAllTicketAuditLogs({
           limit: PAGE_SIZE,
           offset,
@@ -135,7 +137,8 @@ export function AuditLogPage() {
           dateTo: dateTo ? new Date(`${dateTo}T23:59:59`).toISOString() : undefined,
           search: debouncedSearch.trim() || undefined,
           centralized: effectiveCentralized,
-          clientCompanyId: clientFilter === "ALL" ? undefined : clientFilter,
+          clientCompanyId: clientId,
+          ticketType: categoryName,
         });
 
         // A newer load already started (a filter/page change, manual
@@ -168,7 +171,7 @@ export function AuditLogPage() {
         if (requestId === requestIdRef.current) setIsLoading(false);
       }
     },
-    [entityFilter, eventFilter, agentFilter, clientFilter, dateFrom, dateTo, debouncedSearch, effectiveCentralized]
+    [entityFilter, eventFilter, agentFilter, clientFilter, categories, dateFrom, dateTo, debouncedSearch, effectiveCentralized]
   );
 
   // The poll interval below is only ever created once (on mount), but
@@ -353,7 +356,7 @@ export function AuditLogPage() {
 
           <ClientFilterSelect
             clients={clients}
-            currentUser={currentUser}
+            categories={categories}
             value={clientFilter}
             onChange={setClientFilter}
           />

@@ -36,6 +36,7 @@ import {
   type SlaTier,
 } from "@tw/lib/slaMath";
 import { SlaBadge } from "@tw/components/sla/SlaBadge";
+import { mergedClientFilterOptions } from "@tw/lib/clientFilter";
 
 type SortKey = "newest" | "oldest" | "sender";
 type SlaRiskFilter = "ALL" | SlaTier;
@@ -280,6 +281,11 @@ export function MessageList({
     slaRiskFilter !== "ALL",
   ].filter(Boolean).length;
 
+  const { activeClients, categoryOptions: clientFilterCategoryOptions } = useMemo(
+    () => mergedClientFilterOptions(clients, availableCategories),
+    [clients, availableCategories]
+  );
+
   return (
     <div
       className={cn(
@@ -326,9 +332,14 @@ export function MessageList({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="ALL">All clients</SelectItem>
-            {clients.map((client) => (
+            {activeClients.map((client) => (
               <SelectItem key={client.client_id} value={client.client_id}>
                 {client.name}
+              </SelectItem>
+            ))}
+            {clientFilterCategoryOptions.map((category) => (
+              <SelectItem key={`category-${category.category_id}`} value={category.category_name}>
+                {category.category_name}
               </SelectItem>
             ))}
           </SelectContent>

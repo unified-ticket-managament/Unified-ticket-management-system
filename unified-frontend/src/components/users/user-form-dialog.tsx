@@ -2,6 +2,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import axios from "axios";
 import { Eye, EyeOff, Loader2, Plus, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useFieldArray, useForm } from "react-hook-form";
@@ -365,10 +366,16 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
   const allUsers: User[] = hierarchyUsersQuery.data?.users ?? [];
   const managerOptions = allUsers.filter((u) => roleMap.get(u.role_id) === ROLE_NAMES.ACCOUNT_MANAGER);
   const teamLeadOptionsRaw = allUsers.filter((u) => roleMap.get(u.role_id) === ROLE_NAMES.TEAM_LEAD);
-  const teamLeadOptions =
-    currentUser?.role === ROLE_NAMES.ACCOUNT_MANAGER
-      ? teamLeadOptionsRaw.filter((u) => u.manager_id === currentUser.user_id)
-      : teamLeadOptionsRaw;
+  const teamLeadOptions = teamLeadOptionsRaw
+    .filter((u) => currentUser?.role !== ROLE_NAMES.ACCOUNT_MANAGER || u.manager_id === currentUser.user_id)
+    // Mirrors user_service.py's _validate_manager_and_teamlead subset
+    // check (the new user's categories must all be covered by the
+    // Team Lead's own categories) — keeps the dropdown from offering a
+    // combination the backend is guaranteed to reject.
+    .filter(
+      (u) =>
+        categoryIds.length === 0 || categoryIds.every((id) => (u.category_ids ?? []).includes(id))
+    );
   // Unrestricted by role — any active user (other than the one being
   // edited) may be picked as the Organization Chart reporting manager.
   const reportingManagerOptions = allUsers.filter((u) => u.user_id !== user?.user_id);
@@ -485,11 +492,18 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
       });
       onOpenChange(false);
     },
-    onError: () => {
+    onError: (error: unknown) => {
+      console.error(`Failed to ${mode} user:`, error);
+      const detail = axios.isAxiosError(error)
+        ? (error.response?.data as { detail?: string } | undefined)?.detail
+        : undefined;
       toast({
         variant: "destructive",
         title: mode === "create" ? "Failed to create user" : "Failed to update user",
-        description: "Please check the form and try again.",
+        description:
+          typeof detail === "string" && detail.length > 0
+            ? detail
+            : "Please check the form and try again.",
       });
     },
   });

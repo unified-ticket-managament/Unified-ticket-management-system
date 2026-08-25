@@ -59,7 +59,7 @@ export function linkifyPlainText(text: string): string {
 // redundant field. A false positive just means "sent body_html when
 // plain text alone would've done" — harmless, so a simple tag check
 // is deliberately preferred over anything more precise.
-const RICH_CONTENT_TAG_PATTERN = /<(img|table|strong|b|em|i|u|ul|ol|blockquote)\b/i;
+const RICH_CONTENT_TAG_PATTERN = /<(a|img|table|strong|b|em|i|u|ul|ol|blockquote)\b/i;
 
 export function isRichContent(html: string): boolean {
   return RICH_CONTENT_TAG_PATTERN.test(html);
@@ -167,7 +167,7 @@ export function resolveCidImagesForDisplay(
 // at all, so without this a real table renders with no grid lines —
 // easy to mistake for "not formatted".
 export const RENDERED_MESSAGE_HTML_CLASS =
-  "[&_table]:my-2 [&_table]:border-collapse [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:p-1.5 [&_td]:align-top [&_th]:border [&_th]:border-border [&_th]:bg-muted [&_th]:p-1.5 [&_th]:text-left [&_th]:font-semibold [&_img]:mb-2 [&_img]:max-w-full [&_img]:rounded";
+  "[&_table]:my-2 [&_table]:border-collapse [&_table]:w-full [&_td]:border [&_td]:border-border [&_td]:p-1.5 [&_td]:align-top [&_th]:border [&_th]:border-border [&_th]:bg-muted [&_th]:p-1.5 [&_th]:text-left [&_th]:font-semibold [&_img]:mb-2 [&_img]:max-w-full [&_img]:rounded [&_a]:break-all [&_a]:underline [&_a]:text-primary";
 
 export function plainTextToHtml(text: string): string {
   if (!text) return "";

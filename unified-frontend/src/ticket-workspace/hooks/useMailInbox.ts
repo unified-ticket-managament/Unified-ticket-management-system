@@ -29,6 +29,7 @@ import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import { resolveClientFilterValue } from "@tw/lib/clientFilter";
 import { showUndoSendToast } from "@tw/lib/undoSend";
 import type {
   DraftItem,
@@ -523,6 +524,23 @@ export function useMailInbox() {
   const [priorityFilter, setPriorityFilter] = useState<string>("ALL");
   const [messageCategoryFilter, setMessageCategoryFilter] = useState<string>("ALL");
   const [timeFilter, setTimeFilter] = useState<TimeFilterKey>("ALL");
+
+  // The Clients dropdown (MessageList) now also offers category-
+  // mailbox options alongside real clients (see lib/clientFilter.ts) —
+  // resolving which one `clientFilter` actually is here, once, keeps
+  // every GET /inbox call site below correct without each one re-
+  // deriving it. `categoryFilterFromClients` is deliberately kept
+  // separate from the Filters panel's own `messageCategoryFilter`
+  // state (untouched by this) — the two are independent entry points
+  // into the same `category` request param.
+  const categoryFilterFromClients = useMemo(
+    () => resolveClientFilterValue(clientFilter, contextCategories).categoryName,
+    [clientFilter, contextCategories]
+  );
+  const clientIdFilter = useMemo(
+    () => resolveClientFilterValue(clientFilter, contextCategories).clientId,
+    [clientFilter, contextCategories]
+  );
   const [openedIds, setOpenedIds] = useState<Set<string>>(new Set());
   // Set only on a genuine (non-cancel) fetch failure for the base
   // tabs/System — cleared optimistically the moment a new load starts
@@ -601,17 +619,18 @@ export function useMailInbox() {
       baseTabAbortRef.current[key]?.abort();
       const controller = new AbortController();
       baseTabAbortRef.current[key] = controller;
-      const clientId = clientFilter === "ALL" ? undefined : clientFilter;
       try {
         const result = await getInbox(
           key,
           {
-            clientId,
+            clientId: clientIdFilter,
             scope: key === "all" ? "all" : undefined,
             limit: MAIL_TAB_FETCH_SIZE,
             offset: 0,
             priority: priorityFilter === "ALL" ? undefined : priorityFilter,
-            category: messageCategoryFilter === "ALL" ? undefined : messageCategoryFilter,
+            category:
+              categoryFilterFromClients ??
+              (messageCategoryFilter === "ALL" ? undefined : messageCategoryFilter),
           },
           controller.signal
         );
@@ -630,7 +649,7 @@ export function useMailInbox() {
         throw error;
       }
     },
-    [clientFilter, isSupervisor, priorityFilter, messageCategoryFilter]
+    [clientIdFilter, categoryFilterFromClients, isSupervisor, priorityFilter, messageCategoryFilter]
   );
 
   // Fetches the next MAIL_TAB_FETCH_SIZE-row batch for a tab that has
@@ -642,18 +661,19 @@ export function useMailInbox() {
       baseTabAbortRef.current[key]?.abort();
       const controller = new AbortController();
       baseTabAbortRef.current[key] = controller;
-      const clientId = clientFilter === "ALL" ? undefined : clientFilter;
       const alreadyLoaded = rowsByTab[key].length;
       try {
         const result = await getInbox(
           key,
           {
-            clientId,
+            clientId: clientIdFilter,
             scope: key === "all" ? "all" : undefined,
             limit: MAIL_TAB_FETCH_SIZE,
             offset: alreadyLoaded,
             priority: priorityFilter === "ALL" ? undefined : priorityFilter,
-            category: messageCategoryFilter === "ALL" ? undefined : messageCategoryFilter,
+            category:
+              categoryFilterFromClients ??
+              (messageCategoryFilter === "ALL" ? undefined : messageCategoryFilter),
           },
           controller.signal
         );
@@ -672,7 +692,7 @@ export function useMailInbox() {
         throw error;
       }
     },
-    [clientFilter, rowsByTab, priorityFilter, messageCategoryFilter]
+    [clientIdFilter, categoryFilterFromClients, rowsByTab, priorityFilter, messageCategoryFilter]
   );
 
   // Folder browsing — a custom folder shows every item filed into it
@@ -688,19 +708,20 @@ export function useMailInbox() {
       folderAbortRef.current?.abort();
       const controller = new AbortController();
       folderAbortRef.current = controller;
-      const clientId = clientFilter === "ALL" ? undefined : clientFilter;
       setIsFolderLoading(true);
       try {
         const result = await getInbox(
           "all",
           {
-            clientId,
+            clientId: clientIdFilter,
             scope: isSupervisor ? "all" : undefined,
             folderId,
             limit: MAIL_TAB_FETCH_SIZE,
             offset,
             priority: priorityFilter === "ALL" ? undefined : priorityFilter,
-            category: messageCategoryFilter === "ALL" ? undefined : messageCategoryFilter,
+            category:
+              categoryFilterFromClients ??
+              (messageCategoryFilter === "ALL" ? undefined : messageCategoryFilter),
           },
           controller.signal
         );
@@ -715,7 +736,7 @@ export function useMailInbox() {
         setIsFolderLoading(false);
       }
     },
-    [clientFilter, isSupervisor, priorityFilter, messageCategoryFilter, pushToast]
+    [clientIdFilter, categoryFilterFromClients, isSupervisor, priorityFilter, messageCategoryFilter, pushToast]
   );
 
   // Refetches the active folder when a filter (client/priority/
@@ -897,7 +918,7 @@ export function useMailInbox() {
   const refresh = useCallback(async () => {
     beginLoading();
     try {
-      const clientId = clientFilter === "ALL" ? undefined : clientFilter;
+      const clientId = clientIdFilter;
 
       // A client/priority/category filter change invalidates every
       // previously-loaded tab's cached data (it was scoped to the old
@@ -963,6 +984,7 @@ export function useMailInbox() {
   }, [
     pushToast,
     clientFilter,
+    clientIdFilter,
     activeViewRaw,
     fetchKey,
     priorityFilter,
@@ -1015,7 +1037,6 @@ export function useMailInbox() {
   // immediately.
   const refreshAfterMutation = useCallback(
     async (extraKeys: LoadKey[] = []) => {
-      const clientId = clientFilter === "ALL" ? undefined : clientFilter;
       const keysToRefetchNow = new Set([...baseKeysForView(activeViewRaw), ...extraKeys]);
 
       loadedKeysRef.current.forEach((key) => {
@@ -1024,12 +1045,12 @@ export function useMailInbox() {
       keysToRefetchNow.forEach((key) => loadedKeysRef.current.add(key));
 
       const [viewCounts] = await Promise.all([
-        getViewCounts(clientId),
+        getViewCounts(clientIdFilter),
         Promise.all(Array.from(keysToRefetchNow).map((key) => fetchKey(key))),
       ]);
       setBaseViewCounts(viewCounts);
     },
-    [clientFilter, activeViewRaw, fetchKey]
+    [clientIdFilter, activeViewRaw, fetchKey]
   );
 
   useEffect(() => {

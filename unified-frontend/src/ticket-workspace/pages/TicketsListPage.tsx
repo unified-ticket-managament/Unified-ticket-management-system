@@ -26,6 +26,7 @@ import { useToast } from "@tw/context/ToastContext";
 import { shortId, formatDateTime, formatTicketNumber } from "@tw/lib/format";
 import { isValidDateRange } from "@tw/lib/validation";
 import { priorityTone, statusTone } from "@tw/lib/ticketTone";
+import { resolveClientFilterValue } from "@tw/lib/clientFilter";
 import type { TicketPriority, TicketResponse, TicketStatus } from "@tw/types";
 
 const STATUSES: TicketStatus[] = [
@@ -115,6 +116,7 @@ export function TicketsListPage() {
       setIsLoading(true);
       try {
         const offset = (pageToLoad - 1) * PAGE_SIZE;
+        const { clientId, categoryName } = resolveClientFilterValue(clientFilter, categories);
         const result = await listTicketsPage(
           {
             limit: PAGE_SIZE,
@@ -122,8 +124,8 @@ export function TicketsListPage() {
             view: poolTab,
             status: statusFilter === "ALL" ? undefined : statusFilter,
             priority: priorityFilter === "ALL" ? undefined : priorityFilter,
-            ticketType: categoryFilter === "ALL" ? undefined : categoryFilter,
-            clientCompanyId: clientFilter === "ALL" ? undefined : clientFilter,
+            ticketType: categoryName ?? (categoryFilter === "ALL" ? undefined : categoryFilter),
+            clientCompanyId: clientId,
             search: debouncedSearch.trim() || undefined,
             dateFrom:
               dateFrom && isValidDateRange(dateFrom, dateTo)
@@ -154,7 +156,7 @@ export function TicketsListPage() {
         if (requestId === requestIdRef.current) setIsLoading(false);
       }
     },
-    [poolTab, statusFilter, priorityFilter, categoryFilter, clientFilter, debouncedSearch, dateFrom, dateTo, sortKey, sortDir]
+    [poolTab, statusFilter, priorityFilter, categoryFilter, clientFilter, categories, debouncedSearch, dateFrom, dateTo, sortKey, sortDir]
   );
 
   // Independent of loadTickets — the tab badges don't need to be
@@ -505,7 +507,7 @@ export function TicketsListPage() {
 
           <ClientFilterSelect
             clients={clients}
-            currentUser={currentUser}
+            categories={categories}
             value={clientFilter}
             onChange={setClientFilter}
           />

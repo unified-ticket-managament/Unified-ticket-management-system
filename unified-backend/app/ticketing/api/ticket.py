@@ -1122,6 +1122,10 @@ async def get_ticket_dashboard_stats(
         None,
         description="Narrow every stat/list to one client, within whatever the caller's own role scope already allows.",
     ),
+    ticket_type: str | None = Query(
+        None,
+        description="Narrow every stat/list to one category, within whatever the caller's own role scope already allows.",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1145,7 +1149,9 @@ async def get_ticket_dashboard_stats(
     )
 
     return await service.get_dashboard_stats(
-        current_user=current_user, client_company_id_filter=client_company_id
+        current_user=current_user,
+        client_company_id_filter=client_company_id,
+        ticket_type_filter=ticket_type,
     )
 
 
@@ -1223,6 +1229,10 @@ async def list_all_ticket_audit_logs(
         None,
         description="Narrow to one client's audit-log entries, within whatever the caller's own role scope already allows.",
     ),
+    ticket_type: str | None = Query(
+        None,
+        description="Narrow to one category's audit-log entries, within whatever the caller's own role scope already allows.",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1264,6 +1274,7 @@ async def list_all_ticket_audit_logs(
         search=search,
         centralized=centralized,
         client_company_id_filter=client_company_id,
+        ticket_type_filter=ticket_type,
     )
 
     if limit is not None:
@@ -1299,6 +1310,10 @@ async def list_all_ticket_interactions(
     client_company_id: UUID | None = Query(
         None,
         description="Narrow to one client's interactions, within whatever the caller's own role scope already allows.",
+    ),
+    ticket_type: str | None = Query(
+        None,
+        description="Narrow to one category's interactions, within whatever the caller's own role scope already allows.",
     ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1353,6 +1368,7 @@ async def list_all_ticket_interactions(
         date_to=date_to,
         search=search,
         client_company_id_filter=client_company_id,
+        ticket_type_filter=ticket_type,
     )
 
     if limit is not None:

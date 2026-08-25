@@ -17,6 +17,7 @@ import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { shortId, formatDateTime } from "@tw/lib/format";
 import { RETIRED_INTERACTION_TYPES, metaFor, subjectFallbackLabel, summarize } from "@tw/lib/interactionMeta";
+import { resolveClientFilterValue } from "@tw/lib/clientFilter";
 import { isSupervisorRole } from "@/lib/role-access";
 import type { InteractionDirection, InteractionResponse, InteractionStatus } from "@tw/types";
 
@@ -65,7 +66,7 @@ const selectClass =
 export function InteractionsPage() {
   const navigate = useNavigate();
   const { currentUser } = useAuthContext();
-  const { agents, clients, interactionDrawer, setInteractionDrawer } = useWorkflowContext();
+  const { agents, clients, categories, interactionDrawer, setInteractionDrawer } = useWorkflowContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const ticketIdParam = searchParams.get("ticketId");
 
@@ -163,6 +164,7 @@ export function InteractionsPage() {
       setIsLoading(true);
       try {
         const offset = (pageToLoad - 1) * PAGE_SIZE;
+        const { clientId, categoryName } = resolveClientFilterValue(clientFilter, categories);
 
         // Scoped to tickets this agent can see (their assignments,
         // plus anything still unassigned) — matches ticket-level
@@ -182,7 +184,8 @@ export function InteractionsPage() {
             dateFrom: dateFrom ? new Date(dateFrom).toISOString() : undefined,
             dateTo: dateTo ? new Date(`${dateTo}T23:59:59`).toISOString() : undefined,
             search: debouncedSearch.trim() || undefined,
-            clientCompanyId: clientFilter === "ALL" ? undefined : clientFilter,
+            clientCompanyId: clientId,
+            ticketType: categoryName,
           },
           controller.signal
         );
@@ -233,7 +236,7 @@ export function InteractionsPage() {
         if (requestId === requestIdRef.current) setIsLoading(false);
       }
     },
-    [typeFilter, directionFilter, statusFilter, agentId, ticketIdParam, dateFrom, dateTo, debouncedSearch, clientFilter]
+    [typeFilter, directionFilter, statusFilter, agentId, ticketIdParam, dateFrom, dateTo, debouncedSearch, clientFilter, categories]
   );
 
   // Secondary/non-essential: the still-pending (pre-ticket) queue,
@@ -257,11 +260,13 @@ export function InteractionsPage() {
       }
 
       try {
+        const { clientId, categoryName } = resolveClientFilterValue(clientFilter, categories);
         const inbox = await getInbox(
           "pending",
           {
             limit: PAGE_SIZE,
-            clientId: clientFilter === "ALL" ? undefined : clientFilter,
+            clientId,
+            category: categoryName,
           },
           controller.signal
         );
@@ -289,7 +294,7 @@ export function InteractionsPage() {
         // error for what's still a successful page load overall.
       }
     },
-    [ticketIdParam, currentUser, clientFilter]
+    [ticketIdParam, currentUser, clientFilter, categories]
   );
 
   // Drives every fetch: a page change (Next/Previous) or a filter
@@ -618,7 +623,7 @@ export function InteractionsPage() {
 
           <ClientFilterSelect
             clients={clients}
-            currentUser={currentUser}
+            categories={categories}
             value={clientFilter}
             onChange={setClientFilter}
           />

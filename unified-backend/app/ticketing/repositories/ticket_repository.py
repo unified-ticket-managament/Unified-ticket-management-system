@@ -576,6 +576,7 @@ class TicketRepository:
         today_start: datetime,
         sla_risk_cutoff: datetime,
         client_company_id_filter: UUID | None = None,
+        ticket_type_filter: str | None = None,
     ) -> dict[str, int]:
         """
         Every stat card on the ticket-workspace Dashboard, in one
@@ -594,6 +595,8 @@ class TicketRepository:
         )
         if client_company_id_filter is not None:
             conditions.append(Ticket.client_company_id == client_company_id_filter)
+        if ticket_type_filter is not None:
+            conditions.append(Ticket.ticket_type == ticket_type_filter)
 
         query = select(
             func.count().filter(Ticket.agent_id.isnot(None)),

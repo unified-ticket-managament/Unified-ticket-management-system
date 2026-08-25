@@ -1,23 +1,12 @@
-import type { ClientResponse } from "@tw/types";
+import type { CategoryResponse, ClientResponse } from "@tw/types";
+import { mergedClientFilterOptions } from "@tw/lib/clientFilter";
 
 const selectClass =
   "rounded-md2 border border-border bg-surface px-3 py-2 text-xs font-medium text-slate-700 shadow-xs transition-colors focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";
 
-// Duck-typed rather than importing the ticket-workspace's own
-// `CurrentUser` — this component is also used from the RBAC-native
-// shell's Dashboard/Reports pages (outside the embedded workspace's
-// own provider tree), which carry the shell's own `AuthUser` type.
-// Both types document the same underlying `/auth/me` shape (see
-// AuthContext.tsx's own comment), so only the two fields actually
-// read here need to line up.
-interface ClientFilterCurrentUser {
-  role?: string;
-  user_id?: string;
-}
-
 interface ClientFilterSelectProps {
   clients: ClientResponse[];
-  currentUser: ClientFilterCurrentUser | null | undefined;
+  categories: CategoryResponse[];
   value: string;
   onChange: (value: string) => void;
   className?: string;
@@ -29,23 +18,27 @@ interface ClientFilterSelectProps {
 // ungated for every role, see that endpoint's own docstring), never a
 // separate fetch per page.
 //
-// An Account Manager only ever owns a subset of the company's clients
-// (Client.account_manager_id) — narrowed here so their dropdown never
-// offers a choice that the backend would just return zero rows for.
-// Every other role sees the full list: Team Lead/Staff are scoped by
-// category, not client ownership, so narrowing their dropdown would
-// be misleading; Site Lead/Super Admin are unrestricted.
+// Deliberately NOT scoped by Account-Manager ownership (Client.
+// account_manager_id) — this used to filter an Account Manager's own
+// options down to just their owned clients, but that meant an AM who
+// owns zero (or only inactive) clients saw an almost-empty dropdown
+// with real company clients missing, while the Mail Inbox's own
+// equivalent dropdown (MessageList.tsx) has never applied any such
+// scoping and shows every client to every role. Matching that: every
+// role sees the same full option list here too. This is UI-only —
+// every backend endpoint this selection ultimately feeds into still
+// enforces the real per-role visibility scoping server-side
+// (account_manager_id-owned-clients conditions, unaffected by this),
+// so picking a client outside the caller's own scope just returns an
+// empty result, exactly like Mail already behaves for every role.
 export function ClientFilterSelect({
   clients,
-  currentUser,
+  categories,
   value,
   onChange,
   className,
 }: ClientFilterSelectProps) {
-  const options =
-    currentUser?.role === "Account Manager"
-      ? clients.filter((c) => c.account_manager_id === currentUser.user_id)
-      : clients;
+  const { activeClients, categoryOptions } = mergedClientFilterOptions(clients, categories);
 
   return (
     <select
@@ -55,9 +48,14 @@ export function ClientFilterSelect({
       className={className ?? selectClass}
     >
       <option value="ALL">All Clients</option>
-      {options.map((c) => (
+      {activeClients.map((c) => (
         <option key={c.client_id} value={c.client_id}>
           {c.name}
+        </option>
+      ))}
+      {categoryOptions.map((c) => (
+        <option key={`category-${c.category_id}`} value={c.category_name}>
+          {c.category_name}
         </option>
       ))}
     </select>

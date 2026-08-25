@@ -18,9 +18,15 @@ import type {
 // (plus unassigned) tickets, Team Lead/Manager/Super Admin see all.
 // `clientCompanyId` narrows within whatever the caller's own role
 // scope already allows — never widens it.
-export async function listTickets(clientCompanyId?: string): Promise<TicketResponse[]> {
+export async function listTickets(
+  clientCompanyId?: string,
+  ticketType?: string
+): Promise<TicketResponse[]> {
   const { data } = await apiClient.get<TicketResponse[]>("/tickets", {
-    params: clientCompanyId ? { client_company_id: clientCompanyId } : undefined,
+    params: {
+      client_company_id: clientCompanyId,
+      ticket_type: ticketType,
+    },
   });
   return data;
 }
@@ -139,10 +145,14 @@ export interface DashboardStats {
 // ticket (listTickets()) and deriving these numbers client-side.
 export async function getDashboardStats(
   clientCompanyId?: string,
+  ticketType?: string,
   signal?: AbortSignal
 ): Promise<DashboardStats> {
   const { data } = await apiClient.get<DashboardStats>("/tickets/dashboard-stats", {
-    params: clientCompanyId ? { client_company_id: clientCompanyId } : undefined,
+    params: {
+      client_company_id: clientCompanyId,
+      ticket_type: ticketType,
+    },
     signal,
   });
   return data;

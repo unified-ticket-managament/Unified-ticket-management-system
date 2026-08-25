@@ -780,7 +780,11 @@ class TicketService:
         return counts
 
     async def get_dashboard_stats(
-        self, current_user: User, *, client_company_id_filter: UUID | None = None
+        self,
+        current_user: User,
+        *,
+        client_company_id_filter: UUID | None = None,
+        ticket_type_filter: str | None = None,
     ) -> dict:
         """
         Everything the ticket-workspace Dashboard needs: eight stat-
@@ -815,6 +819,7 @@ class TicketService:
             today_start=today_start,
             sla_risk_cutoff=sla_risk_cutoff,
             client_company_id_filter=client_company_id_filter,
+            ticket_type_filter=ticket_type_filter,
         )
 
         recent_page = await self.ticket_repository.list_visible_page(
@@ -824,6 +829,7 @@ class TicketService:
             sort_by="updated_at",
             sort_dir="desc",
             client_company_id_filter=client_company_id_filter,
+            ticket_type_filter=ticket_type_filter,
         )
         # HIGH-priority tickets bounded to a small page, then narrowed
         # to still-open ones and trimmed to 5 in Python — a second
@@ -839,6 +845,7 @@ class TicketService:
             sort_by="updated_at",
             sort_dir="desc",
             client_company_id_filter=client_company_id_filter,
+            ticket_type_filter=ticket_type_filter,
         )
         open_statuses = set(OPEN_STATUSES)
         critical_rows = [
@@ -947,6 +954,7 @@ class TicketService:
         search: str | None = None,
         centralized: bool = False,
         client_company_id_filter: UUID | None = None,
+        ticket_type_filter: str | None = None,
     ) -> tuple[list[TicketAuditLogResponse], int]:
         """
         Same visibility scoping as list_all, but returns every audit-
@@ -1030,6 +1038,7 @@ class TicketService:
                 date_to=date_to,
                 search=search,
                 client_company_id_filter=client_company_id_filter,
+                ticket_type_filter=ticket_type_filter,
             )
 
             responses = [
@@ -1161,6 +1170,7 @@ class TicketService:
         date_to: datetime | None = None,
         search: str | None = None,
         client_company_id_filter: UUID | None = None,
+        ticket_type_filter: str | None = None,
     ) -> tuple[list[TicketInteractionResponse], int, str | None]:
         """
         Same visibility scoping as list_all, but returns every
@@ -1207,6 +1217,7 @@ class TicketService:
                 date_to=date_to,
                 search=search,
                 client_company_id_filter=client_company_id_filter,
+                ticket_type_filter=ticket_type_filter,
             )
 
         with timed_stage("visibility"):
@@ -1216,6 +1227,7 @@ class TicketService:
                 client_company_ids=owned_client_ids,
                 ticket_types=ticket_types,
                 client_company_id_filter=client_company_id_filter,
+                ticket_type_filter=ticket_type_filter,
             )
 
             if ticket_id is not None:
@@ -1332,6 +1344,7 @@ class TicketService:
         date_to: datetime | None,
         search: str | None,
         client_company_id_filter: UUID | None = None,
+        ticket_type_filter: str | None = None,
     ) -> tuple[list[TicketInteractionResponse], int, str | None]:
         """
         The paginated (embedded-frontend) branch of list_all_interactions
@@ -1372,6 +1385,7 @@ class TicketService:
             date_to=date_to,
             search=search,
             client_company_id_filter=client_company_id_filter,
+            ticket_type_filter=ticket_type_filter,
         )
 
         next_cursor = None
