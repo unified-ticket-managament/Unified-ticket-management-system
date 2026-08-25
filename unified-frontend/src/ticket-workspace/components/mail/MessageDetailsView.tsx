@@ -57,6 +57,7 @@ import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { formatAssigneeLabel, formatDateTime, formatTicketNumber } from "@tw/lib/format";
+import { generateIdempotencyKey } from "@tw/lib/idempotency";
 import {
   RENDERED_MESSAGE_HTML_CLASS,
   buildForwardHtml,
@@ -636,7 +637,7 @@ export function MessageDetailsView({
         attachment_source_interaction_id: attachmentSourceInteractionId,
         reply_all: replyMode === "replyAll",
         inline_image_interaction_ids: liveInlineImageInteractionIds,
-        idempotency_key: crypto.randomUUID(),
+        idempotency_key: generateIdempotencyKey(),
       });
       if (result) {
         pastedImageInteractionIdsRef.current = [];
@@ -682,7 +683,7 @@ export function MessageDetailsView({
       to_emails: payload.to,
       distribution_list_ids: payload.distributionListIds,
       reply_all: replyMode === "replyAll",
-      idempotency_key: crypto.randomUUID(),
+      idempotency_key: generateIdempotencyKey(),
     });
     if (result) {
       setReplyMode(null);

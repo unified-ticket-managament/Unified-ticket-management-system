@@ -33,6 +33,7 @@ import {
 } from "@tw/lib/richText";
 import { isValidEmailAddress } from "@tw/lib/validation";
 import { MAX_ATTACHMENT_FILES } from "@tw/lib/attachmentMeta";
+import { generateIdempotencyKey } from "@tw/lib/idempotency";
 import type { ClientContact, ClientResponse, InternalNoteRecipientCandidate } from "@tw/types";
 
 const LOCAL_DRAFT_KEY = "utms-mail-compose-draft";
@@ -512,7 +513,7 @@ export function ComposeView({
         files,
         bodyHtml: richBodyHtml,
         inlineImageInteractionIds: liveInlineImageInteractionIds,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: generateIdempotencyKey(),
       });
       if (result) {
         pastedImageInteractionIdsRef.current = [];
@@ -538,7 +539,7 @@ export function ComposeView({
       files,
       inlineImageInteractionIds: liveInlineImageInteractionIds,
       distributionListIds,
-      idempotencyKey: crypto.randomUUID(),
+      idempotencyKey: generateIdempotencyKey(),
     });
     if (result) {
       pastedImageInteractionIdsRef.current = [];

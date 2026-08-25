@@ -11,6 +11,7 @@ import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEdi
 import { UserMultiSelect } from "@tw/components/common/UserMultiSelect";
 import { DistributionListMultiSelect } from "@tw/components/common/DistributionListMultiSelect";
 import { validateFiles } from "@tw/lib/attachmentMeta";
+import { generateIdempotencyKey } from "@tw/lib/idempotency";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { listClientContacts } from "@tw/api/clients";
 import {
@@ -330,7 +331,7 @@ export function TicketComposer({
           distribution_list_ids: replyDistributionListIds,
           attachment_source_interaction_id: attachmentSourceInteractionId,
           inline_image_interaction_ids: liveInlineImageInteractionIds,
-          idempotency_key: crypto.randomUUID(),
+          idempotency_key: generateIdempotencyKey(),
         })
       : await runNote(activeTicket.ticket_id, {
           note: plainMessage,
