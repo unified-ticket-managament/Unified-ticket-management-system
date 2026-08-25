@@ -26,7 +26,13 @@ import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { isValidEmailAddress } from "@tw/lib/validation";
 import { showUndoSendToast } from "@tw/lib/undoSend";
-import { htmlToPlainText, isRichContent, resolveInlineImageSources } from "@tw/lib/richText";
+import {
+  filterLiveInlineImageIds,
+  htmlToPlainText,
+  isRichContent,
+  resolveInlineImageSources,
+  type TrackedInlineImage,
+} from "@tw/lib/richText";
 import type { ClientContact } from "@tw/types";
 // Cross-alias imports, same deliberate exception MessageDetailsView.tsx
 // already documents: useAuthContext() only re-exposes the store's
@@ -99,7 +105,10 @@ export function TicketComposer({
   // the real reply/note and actually embed it (see
   // InteractionService._merge_inline_images_into_envelope) — without
   // this the image would silently never reach the outbound email.
-  const pastedImageInteractionIdsRef = useRef<string[]>([]);
+  // Tracked as {interactionId, contentId} pairs (not just the id)
+  // so a deleted/replaced image can be filtered back out at Send
+  // time via filterLiveInlineImageIds — see handleSend below.
+  const pastedImageInteractionIdsRef = useRef<TrackedInlineImage[]>([]);
   const [noteSubject, setNoteSubject] = useState("");
   const [contacts, setContacts] = useState<ClientContact[]>([]);
   const [selectedTo, setSelectedTo] = useState("");
@@ -301,6 +310,15 @@ export function TicketComposer({
     const bodyHtml = isRichContent(messageHtml)
       ? resolveInlineImageSources(messageHtml)
       : undefined;
+    // Only submit ids for images still actually present (as a real
+    // cid: reference) in the body being sent — a paste-then-delete/
+    // replace/undo before Send must not resurrect a stale attachment.
+    // See lib/richText.ts's filterLiveInlineImageIds for why this is
+    // needed on top of resolveInlineImageSources alone.
+    const liveInlineImageInteractionIds = filterLiveInlineImageIds(
+      bodyHtml ?? "",
+      pastedImageInteractionIdsRef.current
+    );
 
     const result = isReply
       ? await runReply(activeTicket.ticket_id, {
@@ -311,7 +329,7 @@ export function TicketComposer({
           bcc: parseEmails(replyBcc),
           distribution_list_ids: replyDistributionListIds,
           attachment_source_interaction_id: attachmentSourceInteractionId,
-          inline_image_interaction_ids: pastedImageInteractionIdsRef.current,
+          inline_image_interaction_ids: liveInlineImageInteractionIds,
           idempotency_key: crypto.randomUUID(),
         })
       : await runNote(activeTicket.ticket_id, {
@@ -320,7 +338,7 @@ export function TicketComposer({
           subject: noteSubject,
           recipient_user_ids: noteToIds,
           distribution_list_ids: noteDistributionListIds,
-          inline_image_interaction_ids: pastedImageInteractionIdsRef.current,
+          inline_image_interaction_ids: liveInlineImageInteractionIds,
         });
 
     if (result) {
@@ -520,7 +538,10 @@ export function TicketComposer({
               activeTicket
                 ? (file) =>
                     uploadTicketInlineImage(activeTicket.ticket_id, file).then((res) => {
-                      pastedImageInteractionIdsRef.current.push(res.interaction_id);
+                      pastedImageInteractionIdsRef.current.push({
+                        interactionId: res.interaction_id,
+                        contentId: res.content_id,
+                      });
                       return { attachmentId: res.id, contentId: res.content_id };
                     })
                 : undefined

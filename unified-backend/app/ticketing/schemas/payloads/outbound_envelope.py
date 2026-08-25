@@ -28,6 +28,14 @@ class EnvelopeAttachment(BaseModel):
     content_type: str
     content_base64: str | None = None
 
+    # The originating Attachment row's real primary key (stringified),
+    # set by load_envelope_attachments — the one stable identity a
+    # dedupe pass can safely key off (never filename/size, which two
+    # genuinely distinct attachments can share). None only for an
+    # EnvelopeAttachment built outside that one function, which
+    # doesn't happen anywhere in this codebase today.
+    attachment_id: str | None = None
+
     # Only set for a pasted-inline-image attachment (see
     # attachment_service.create_inline_image) — content_id is the
     # value referenced as `cid:{content_id}` inside the envelope's own

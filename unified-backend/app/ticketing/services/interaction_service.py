@@ -1230,6 +1230,88 @@ class InteractionService:
 
         return envelope
 
+    @staticmethod
+    def _finalize_envelope_attachments(
+        interaction: Interaction,
+        envelope: OutboundEnvelope,
+    ) -> OutboundEnvelope:
+        """
+        A final, additive safety net over `envelope.attachments`,
+        called once after every `_attach_outbound_files`/
+        `_merge_existing_attachments_into_envelope`/
+        `_merge_inline_images_into_envelope` call has run, right
+        before the envelope is actually dispatched — guards against
+        two things neither of those three helpers checks on its own:
+
+        1. A literal duplicate: the same Attachment row (by its real
+           `attachment_id`) loaded into the envelope more than once,
+           e.g. if a future/crafted request supplies overlapping
+           `attachment_source_interaction_id`/
+           `inline_image_interaction_ids`. Deduped by keeping the
+           first occurrence — re-including the identical row a second
+           time is never meaningful. Never keyed on filename/size/
+           content_id alone, since two distinct genuine attachments
+           can share a filename, and an inbound Graph-sourced inline
+           image's content_id is preserved verbatim from Graph (not
+           server-minted), so it isn't guaranteed unique the way a
+           freshly-minted one is.
+
+        2. An orphaned inline image: an `is_inline=True` attachment
+           whose `content_id` has no matching `cid:{content_id}`
+           anywhere in the final `envelope.body_html`. This is the
+           confirmed real-world case — a pasted image's interaction id
+           can survive in a composer's tracking state after the image
+           itself was deleted/replaced in the editor, so it never
+           actually appears in the outbound body. Sending it as
+           `isInline=True` with nothing in the body to anchor it is
+           exactly what Outlook renders as a stray, separately
+           downloadable attachment next to a signature/body image that
+           otherwise displays correctly. Never silently dropped
+           (a stale reference doesn't necessarily mean the content
+           itself is unwanted) — demoted to a normal, visible
+           attachment instead, so nothing is silently lost.
+
+        A quoted/forwarded message's own inline images are unaffected:
+        their `cid:` reference is preserved verbatim inside the quoted
+        HTML (see buildForwardHtml/resolveInlineImageSources on the
+        frontend), so they always have a live match here.
+
+        No-op (returns `envelope` unchanged, no `interaction.payload`
+        write) when nothing needed correcting — the common case.
+        """
+
+        body_html = envelope.body_html or ""
+        seen_attachment_ids: set[str] = set()
+        finalized: list[EnvelopeAttachment] = []
+        changed = False
+
+        for attachment in envelope.attachments:
+            if attachment.attachment_id is not None:
+                if attachment.attachment_id in seen_attachment_ids:
+                    changed = True
+                    continue
+                seen_attachment_ids.add(attachment.attachment_id)
+
+            if (
+                attachment.is_inline
+                and attachment.content_id
+                and f"cid:{attachment.content_id}" not in body_html
+            ):
+                attachment = attachment.model_copy(
+                    update={"is_inline": False, "content_id": None}
+                )
+                changed = True
+
+            finalized.append(attachment)
+
+        if not changed:
+            return envelope
+
+        envelope = envelope.model_copy(update={"attachments": finalized})
+        interaction.payload["envelope"] = envelope.model_dump()
+
+        return envelope
+
     async def _create_ticket_interaction(
         self,
         *,
@@ -1770,6 +1852,7 @@ class InteractionService:
             )
 
         if envelope is not None:
+            envelope = self._finalize_envelope_attachments(interaction, envelope)
             await self._schedule_delayed_send(interaction, envelope)
 
         return TicketActionResponse(
@@ -2004,6 +2087,7 @@ class InteractionService:
             )
 
         if envelope is not None:
+            envelope = self._finalize_envelope_attachments(interaction, envelope)
             await self._schedule_delayed_send(interaction, envelope)
 
         # The root leaves the Pending triage queue once it's been
@@ -2327,6 +2411,7 @@ class InteractionService:
                 expected_performed_by=current_user.user_id,
             )
 
+        envelope = self._finalize_envelope_attachments(interaction, envelope)
         await self._schedule_delayed_send(interaction, envelope)
 
         return ComposeEmailResponse(
@@ -2654,6 +2739,7 @@ class InteractionService:
                 expected_performed_by=current_user.user_id,
             )
 
+        envelope = self._finalize_envelope_attachments(interaction, envelope)
         await self._schedule_delayed_send(interaction, envelope)
 
         # No platform user to notify for an external-email-only

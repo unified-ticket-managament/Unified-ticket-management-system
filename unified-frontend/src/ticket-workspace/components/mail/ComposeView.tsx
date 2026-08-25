@@ -24,7 +24,13 @@ import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
 import { DistributionListMultiSelect } from "@tw/components/common/DistributionListMultiSelect";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
-import { htmlToPlainText, isRichContent, resolveInlineImageSources } from "@tw/lib/richText";
+import {
+  filterLiveInlineImageIds,
+  htmlToPlainText,
+  isRichContent,
+  resolveInlineImageSources,
+  type TrackedInlineImage,
+} from "@tw/lib/richText";
 import { isValidEmailAddress } from "@tw/lib/validation";
 import { MAX_ATTACHMENT_FILES } from "@tw/lib/attachmentMeta";
 import type { ClientContact, ClientResponse, InternalNoteRecipientCandidate } from "@tw/types";
@@ -254,12 +260,17 @@ export function ComposeView({
   // staged via uploadComposeInlineImage (see RichTextEditor's
   // onImageUpload below) and reassigned onto the real outbound
   // message at Send time — same pattern TicketComposer.tsx already
-  // uses via pastedImageInteractionIdsRef for Reply/Note.
-  const pastedImageInteractionIdsRef = useRef<string[]>([]);
+  // uses via pastedImageInteractionIdsRef for Reply/Note. Tracked as
+  // {interactionId, contentId} pairs so a deleted/replaced image can
+  // be filtered back out at Send time via filterLiveInlineImageIds.
+  const pastedImageInteractionIdsRef = useRef<TrackedInlineImage[]>([]);
 
   async function handleComposeImageUpload(file: File) {
     const res = await uploadComposeInlineImage(file);
-    pastedImageInteractionIdsRef.current.push(res.interaction_id);
+    pastedImageInteractionIdsRef.current.push({
+      interactionId: res.interaction_id,
+      contentId: res.content_id,
+    });
     return { attachmentId: res.id, contentId: res.content_id };
   }
 
@@ -475,6 +486,15 @@ export function ComposeView({
     if (hasPendingImageUploads) return;
 
     const richBodyHtml = isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined;
+    // Only submit ids for images still actually present (as a real
+    // cid: reference) in the body being sent — a paste-then-delete/
+    // replace/undo before Send must not resurrect a stale attachment.
+    // See lib/richText.ts's filterLiveInlineImageIds for why this is
+    // needed on top of resolveInlineImageSources alone.
+    const liveInlineImageInteractionIds = filterLiveInlineImageIds(
+      richBodyHtml ?? "",
+      pastedImageInteractionIdsRef.current
+    );
 
     if (isForward) {
       if (!onForwardSend || !initialValues?.interactionId) return;
@@ -491,10 +511,11 @@ export function ComposeView({
         message: htmlToPlainText(bodyHtml),
         files,
         bodyHtml: richBodyHtml,
-        inlineImageInteractionIds: pastedImageInteractionIdsRef.current,
+        inlineImageInteractionIds: liveInlineImageInteractionIds,
         idempotencyKey: crypto.randomUUID(),
       });
       if (result) {
+        pastedImageInteractionIdsRef.current = [];
         clearLocalDraft();
       }
       return;
@@ -515,11 +536,12 @@ export function ComposeView({
       cc: Array.from(new Set([...extraTo, ...parseEmails(cc)])),
       bcc: parseEmails(bcc),
       files,
-      inlineImageInteractionIds: pastedImageInteractionIdsRef.current,
+      inlineImageInteractionIds: liveInlineImageInteractionIds,
       distributionListIds,
       idempotencyKey: crypto.randomUUID(),
     });
     if (result) {
+      pastedImageInteractionIdsRef.current = [];
       clearLocalDraft();
     }
   }

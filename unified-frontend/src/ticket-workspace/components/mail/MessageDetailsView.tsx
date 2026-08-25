@@ -60,8 +60,10 @@ import { formatAssigneeLabel, formatDateTime, formatTicketNumber } from "@tw/lib
 import {
   RENDERED_MESSAGE_HTML_CLASS,
   buildForwardHtml,
+  filterLiveInlineImageIds,
   renderThreadedMessageHtml,
   resolveCidImagesForDisplay,
+  type TrackedInlineImage,
 } from "@tw/lib/richText";
 import { showUndoSendToast } from "@tw/lib/undoSend";
 import type {
@@ -399,8 +401,10 @@ export function MessageDetailsView({
   );
   const [replyMode, setReplyMode] = useState<"reply" | "replyAll" | null>(null);
   // See handleUploadInlineImage/handleSend below — only ever
-  // populated for a ticketed reply's pasted images.
-  const pastedImageInteractionIdsRef = useRef<string[]>([]);
+  // populated for a ticketed reply's pasted images. Tracked as
+  // {interactionId, contentId} pairs so a deleted/replaced image can
+  // be filtered back out at Send time via filterLiveInlineImageIds.
+  const pastedImageInteractionIdsRef = useRef<TrackedInlineImage[]>([]);
 
   // Retry Send (P1) — reuses the persisted envelope server-side, see
   // InteractionService.retry_failed_send. Refreshes just this one
@@ -613,6 +617,15 @@ export function MessageDetailsView({
         attachmentSourceInteractionId = uploadResult.interaction_id;
       }
 
+      // Only submit ids for images still actually present (as a real
+      // cid: reference) in the body being sent — a paste-then-delete/
+      // replace/undo before Send must not resurrect a stale
+      // attachment. See lib/richText.ts's filterLiveInlineImageIds.
+      const liveInlineImageInteractionIds = filterLiveInlineImageIds(
+        payload.bodyHtml ?? "",
+        pastedImageInteractionIdsRef.current
+      );
+
       const result = await runTicketReply(email.ticket_id, {
         message: payload.message,
         body_html: payload.bodyHtml,
@@ -622,7 +635,7 @@ export function MessageDetailsView({
         distribution_list_ids: payload.distributionListIds,
         attachment_source_interaction_id: attachmentSourceInteractionId,
         reply_all: replyMode === "replyAll",
-        inline_image_interaction_ids: pastedImageInteractionIdsRef.current,
+        inline_image_interaction_ids: liveInlineImageInteractionIds,
         idempotency_key: crypto.randomUUID(),
       });
       if (result) {
@@ -713,7 +726,10 @@ export function MessageDetailsView({
       // ticketed reply's pasted image lands on its own fresh
       // interaction that must be explicitly submitted back at Send
       // time — see handleSend's inline_image_interaction_ids below.
-      pastedImageInteractionIdsRef.current.push(result.interaction_id);
+      pastedImageInteractionIdsRef.current.push({
+        interactionId: result.interaction_id,
+        contentId: result.content_id,
+      });
       return { attachmentId: result.id, contentId: result.content_id };
     }
     const result = await uploadDraftInlineImage(email.interaction_id, file);

@@ -90,6 +90,36 @@ export function hasFailedImageUpload(html: string): boolean {
 // this composer has no upload wiring at all — see RichTextEditor's
 // onImageUpload prop) is removed entirely rather than sent with a
 // dead blob: reference no recipient could ever resolve.
+
+// A pasted image's interaction_id (tracked by every composer so it
+// can be submitted back as `inline_image_interaction_ids` at Send —
+// see resolveInlineImageSources above) is recorded the moment the
+// upload succeeds, but the image itself can be deleted/replaced/
+// undone in the editor afterward, before Send. Nothing else ever
+// prunes that tracked id, so by Send time it can reference an image
+// that no longer has any `cid:` anchor anywhere in the body actually
+// being sent. filterLiveInlineImageIds is the fix: called right
+// before building the send payload, it keeps only the ids whose own
+// contentId still appears as `cid:{contentId}` in the exact
+// resolveInlineImageSources output being sent — the same body the
+// backend itself will also check (InteractionService.
+// _finalize_envelope_attachments), so a stale id is never submitted
+// in the first place instead of relying solely on that backend
+// safety net.
+export interface TrackedInlineImage {
+  interactionId: string;
+  contentId: string;
+}
+
+export function filterLiveInlineImageIds(
+  resolvedBodyHtml: string,
+  tracked: TrackedInlineImage[]
+): string[] {
+  return tracked
+    .filter((image) => resolvedBodyHtml.includes(`cid:${image.contentId}`))
+    .map((image) => image.interactionId);
+}
+
 export function resolveInlineImageSources(html: string): string {
   if (typeof document === "undefined") return html;
 

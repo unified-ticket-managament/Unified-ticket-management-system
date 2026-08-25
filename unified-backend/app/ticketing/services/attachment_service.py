@@ -219,6 +219,7 @@ async def load_envelope_attachments(
                     is_inline=bool(attachment.is_inline),
                     storage_key=attachment.storage_key,
                     size_bytes=size,
+                    attachment_id=str(attachment.attachment_id),
                 )
             )
             continue
@@ -248,6 +249,7 @@ async def load_envelope_attachments(
                 # at INSERT time, not at Python object construction) —
                 # coerce so this never 500s on a not-yet-persisted row.
                 is_inline=bool(attachment.is_inline),
+                attachment_id=str(attachment.attachment_id),
             )
         )
 
