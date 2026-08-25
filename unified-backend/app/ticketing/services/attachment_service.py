@@ -38,7 +38,11 @@ from app.ticketing.services.access_control import (
 )
 from app.ticketing.services.audit_log_service import AuditLogService
 from app.ticketing.storage.base import StorageService
-from app.ticketing.utils.constants import MAX_ATTACHMENT_FILES, MAX_ATTACHMENT_SIZE_BYTES
+from app.ticketing.utils.constants import (
+    IMAGE_EXTENSIONS,
+    MAX_ATTACHMENT_FILES,
+    MAX_ATTACHMENT_SIZE_BYTES,
+)
 from app.ticketing.utils.validators import (
     build_attachment_object_key,
     sanitize_filename,
@@ -61,6 +65,37 @@ from app.ticketing.utils.validators import (
 GRAPH_INLINE_ATTACHMENT_MAX_BYTES = 3 * 1024 * 1024
 
 
+class AttachmentLoadError(Exception):
+    """
+    Raised by load_envelope_attachments when an attachment that should
+    ride along on an outbound send can't actually be embedded — either
+    it's too large to inline and has no storage_key to defer to a
+    Graph upload session, or its object read from storage failed
+    outright. Previously these were silently skipped (logged only),
+    letting an email go out silently missing an attachment the agent
+    believed was included. Callers must catch this and abort the send
+    with a clear error rather than let it propagate as a bare 500.
+    """
+
+
+def is_previewable_image(filename: str) -> bool:
+    """
+    Whether an attachment is eligible for a Content-Disposition: inline
+    preview URL — decided purely from the filename extension against
+    IMAGE_EXTENSIONS (which already excludes NEVER_INLINE_EXTENSIONS),
+    never from the attachment's stored mime_type. mime_type is the
+    client/sender-declared Content-Type, never independently verified
+    against the actual bytes for most extensions — trusting it here
+    let a file named e.g. "payload.txt" with a spoofed
+    "image/svg+xml" Content-Type mint a real inline-disposition
+    preview URL (a stored-XSS path via direct navigation). Public
+    (not `_`-prefixed) since interaction_service.py's own inline-image
+    upload responses need the identical check, not a re-derived one.
+    """
+    extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return extension in IMAGE_EXTENSIONS
+
+
 async def attachment_to_metadata(
     attachment: Attachment,
     storage_service: StorageService,
@@ -81,7 +116,7 @@ async def attachment_to_metadata(
             is_inline=False,
         )
 
-    is_image = (attachment.mime_type or "").startswith("image/")
+    is_image = is_previewable_image(attachment.filename)
 
     download_url, preview_url = await asyncio.gather(
         storage_service.presigned_get_url(
@@ -134,10 +169,12 @@ async def load_envelope_attachments(
     and upload via a real Graph upload session at actual dispatch
     time, never embedded here.
 
-    An attachment whose object read fails outright (e.g. deleted from
-    the bucket) is skipped and logged rather than failing the whole
-    send — a missing attachment shouldn't block an otherwise-good
-    email from going out.
+    Raises AttachmentLoadError (never silently drops an attachment) if
+    one can't actually be embedded — too large to inline with no
+    storage_key to defer to an upload session, or its object read from
+    storage fails outright. Callers must catch this and abort the send
+    with a clear error rather than let a message go out silently
+    missing an attachment the agent believed was included.
     """
 
     loaded: list[EnvelopeAttachment] = []
@@ -159,15 +196,11 @@ async def load_envelope_attachments(
 
         if size > GRAPH_INLINE_ATTACHMENT_MAX_BYTES:
             if not attachment.storage_key:
-                logger.warning(
-                    "Skipping attachment %s (%r, %d bytes) on outbound send — "
-                    "too large to embed inline and has no storage_key to defer "
-                    "to an upload session.",
-                    attachment.attachment_id,
-                    attachment.filename,
-                    size,
+                raise AttachmentLoadError(
+                    f'"{attachment.filename}" ({size} bytes) is too large to '
+                    "send inline and has no stored file to upload instead — "
+                    "remove it or re-attach it before sending."
                 )
-                continue
 
             logger.info(
                 "Deferring attachment %s (%r, %d bytes) on outbound send to a "
@@ -192,14 +225,16 @@ async def load_envelope_attachments(
 
         try:
             data = await storage_service.download(object_key=attachment.storage_key)
-        except Exception:
+        except Exception as exc:
             logger.exception(
-                "Failed to read attachment %s (object_key=%s) for outbound send — "
-                "sending without it.",
+                "Failed to read attachment %s (object_key=%s) for outbound send.",
                 attachment.attachment_id,
                 attachment.storage_key,
             )
-            continue
+            raise AttachmentLoadError(
+                f'Could not read "{attachment.filename}" from storage — try '
+                "removing and re-attaching it before sending."
+            ) from exc
 
         loaded.append(
             EnvelopeAttachment(
@@ -299,6 +334,8 @@ class AttachmentService:
         self,
         files: list[UploadFile],
         interaction_id: UUID,
+        *,
+        tolerate_failures: bool = False,
     ) -> list[Attachment]:
         if len(files) > MAX_ATTACHMENT_FILES:
             raise HTTPException(
@@ -314,6 +351,11 @@ class AttachmentService:
             try:
                 extension = validate_attachment_type(filename, file.content_type)
             except ValueError as exc:
+                if tolerate_failures:
+                    logger.warning(
+                        "validate_and_store_files: dropping %r — %s", filename, exc
+                    )
+                    continue
                 raise HTTPException(
                     status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                     detail=str(exc),
@@ -322,6 +364,15 @@ class AttachmentService:
             data = await file.read()
 
             if len(data) > MAX_ATTACHMENT_SIZE_BYTES:
+                if tolerate_failures:
+                    logger.warning(
+                        "validate_and_store_files: dropping %r — %d bytes exceeds "
+                        "the %d byte limit",
+                        filename,
+                        len(data),
+                        MAX_ATTACHMENT_SIZE_BYTES,
+                    )
+                    continue
                 raise HTTPException(
                     status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                     detail=(
@@ -333,6 +384,11 @@ class AttachmentService:
             try:
                 validate_attachment_magic_bytes(filename, extension, data)
             except ValueError as exc:
+                if tolerate_failures:
+                    logger.warning(
+                        "validate_and_store_files: dropping %r — %s", filename, exc
+                    )
+                    continue
                 raise HTTPException(
                     status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                     detail=str(exc),
@@ -647,7 +703,7 @@ class AttachmentService:
             },
         )
 
-        is_image = (attachment.mime_type or "").startswith("image/")
+        is_image = is_previewable_image(attachment.filename)
         preview_url = (
             await self.storage_service.presigned_get_url(
                 object_key=attachment.storage_key,

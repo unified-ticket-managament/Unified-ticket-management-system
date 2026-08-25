@@ -16,8 +16,9 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
-from app.ticketing.enums import InteractionDirection, InteractionStatus
+from app.ticketing.enums import InteractionDirection, InteractionStatus, TicketStatus
 from app.ticketing.models.interaction import Interaction
+from app.ticketing.models.ticket import Ticket
 from app.ticketing.schemas.payloads import OutboundEnvelope
 from app.ticketing.services.interaction_service import InteractionService
 
@@ -173,3 +174,46 @@ async def test_concurrent_retry_loses_the_cas_and_400s_without_a_second_dispatch
 
     assert exc_info.value.status_code == 400
     service._schedule_delayed_send.assert_not_called()
+
+
+async def test_retry_failed_send_400s_when_the_ticket_has_since_been_closed(monkeypatch):
+    """
+    P2 regression guard: retry_failed_send used to skip every
+    ticket-state guard the original send enforces (ensure_ticket_not_
+    closed/ensure_agent_can_act_on_ticket/ensure_account_manager_owns_
+    ticket_client) — a ticket closed *after* the original send failed
+    but *before* the agent clicked Retry would still re-dispatch a
+    real email. Bypass the other two guards here (separately covered
+    elsewhere) to isolate the closed-ticket check specifically.
+    """
+    import app.ticketing.services.interaction_service as interaction_service_module
+
+    monkeypatch.setattr(
+        interaction_service_module, "ensure_agent_can_act_on_ticket", AsyncMock()
+    )
+    monkeypatch.setattr(
+        interaction_service_module, "ensure_account_manager_owns_ticket_client", AsyncMock()
+    )
+
+    user_id = uuid.uuid4()
+    ticket_id = uuid.uuid4()
+    failed = _failed_interaction(performed_by=user_id)
+    failed.ticket_id = ticket_id
+
+    closed_ticket = Ticket(ticket_id=ticket_id, current_status=TicketStatus.CLOSED)
+
+    repo = AsyncMock()
+    repo.get_by_id.return_value = failed
+    service = _build_service(repo)
+    service.ticket_repository.get_by_id = AsyncMock(return_value=closed_ticket)
+
+    current_user = AsyncMock()
+    current_user.user_id = user_id
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.retry_failed_send(
+            interaction_id=failed.interaction_id, current_user=current_user
+        )
+
+    assert exc_info.value.status_code == 400
+    repo.try_transition_to_pending_send.assert_not_called()

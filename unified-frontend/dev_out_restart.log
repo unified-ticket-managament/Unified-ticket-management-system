@@ -1,0 +1,20 @@
+
+> frontend@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.9 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.31.249:3000
+- Environments: .env.local
+✓ Ready in 1769ms
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+
+○ Compiling /dashboard/[[...slug]] ...
+ GET /dashboard 200 in 3.4s (next.js: 2.8s, proxy.ts: 5ms, application-code: 535ms)
+ GET /dashboard 200 in 10.7s (next.js: 10.1s, proxy.ts: 83ms, application-code: 542ms)
+ GET /login 200 in 1595ms (next.js: 1448ms, proxy.ts: 8ms, application-code: 139ms)
+ GET / 307 in 690ms (next.js: 630ms, proxy.ts: 5ms, application-code: 56ms)
+ GET /dashboard 200 in 1181ms (next.js: 1100ms, proxy.ts: 5ms, application-code: 76ms)
+ GET /dashboard/inbox 200 in 1439ms (next.js: 1344ms, proxy.ts: 28ms, application-code: 67ms)
+[browser] [tiptap warn]: Duplicate extension names found: ['link']. This can lead to issues. (file://C:/Users/HEMA LATHA/OneDrive/Desktop/Unified-ticket-management-system/unified-frontend/.next/dev/static/chunks/node_modules_next_dist_1ybzpk2._.js:2477:13)
+[?25h

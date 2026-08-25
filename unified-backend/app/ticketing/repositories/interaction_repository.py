@@ -1254,9 +1254,8 @@ class InteractionRepository:
     ) -> list[Interaction]:
         """
         Looks up interactions by Graph's conversation_id — the
-        highest-priority thread-match signal once Task 1 ships real
-        Graph data (unused by the dummy-mail flow today, since
-        nothing populates conversation_id yet).
+        highest-priority thread-match signal, checked before
+        in_reply_to/references (see EmailService.receive_email).
         """
 
         result = await self.db.execute(

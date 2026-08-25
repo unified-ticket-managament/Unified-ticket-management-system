@@ -53,7 +53,7 @@ class OutboundDispatcher:
     configured, MockMailProviderClient otherwise — so this class needs
     no provider-specific knowledge of its own.
 
-    Every caller already stores `payload.dispatch_status = "QUEUED"`
+    Every caller already stores `payload.dispatch_status = "PENDING_SEND"`
     before calling dispatch(); callers are responsible for updating
     that to "SENT" (using this method's returned provider_message_id)
     on success, or "FAILED" on an OutboundDispatchError, since only the

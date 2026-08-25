@@ -349,19 +349,30 @@ def build_upload_files_from_graph_attachments(
 
     Filters out (each logged individually, and counted in the
     `dropped` summary below):
-    - an `isInline` attachment with no resolvable `contentId`, or
-      whose `contentType` isn't an image — nothing in the body's own
-      HTML could ever reference it via `cid:`, so there's no way to
-      display it and no reason to store it as a downloadable file
-      either (Outlook's isInline images are body content, not
-      attachments a recipient would expect in an attachment list).
-      An isInline attachment that *does* have both is kept — see
-      below, this used to be dropped unconditionally, which silently
-      discarded every pasted-into-the-body screenshot along with
-      genuine signature/logo images, since Graph represents both the
-      same way (a real fileAttachment with isInline=True/contentId
-      set, referenced from the HTML body as
+    - an `isInline` *image* with no resolvable `contentId` — nothing
+      in the body's own HTML could ever reference it via `cid:`, so
+      there's no way to display it and no reason to store it as a
+      downloadable file either (Outlook's isInline images are body
+      content, not attachments a recipient would expect in an
+      attachment list). An isInline image that *does* have a
+      resolvable `contentId`/body reference is kept as an inline
+      image — see below, this used to be dropped unconditionally,
+      which silently discarded every pasted-into-the-body screenshot
+      along with genuine signature/logo images, since Graph
+      represents both the same way (a real fileAttachment with
+      isInline=True/contentId set, referenced from the HTML body as
       `<img src="cid:{contentId}">`).
+      A *non-image* attachment reported `isInline` by Graph (e.g.
+      audio/video) is never dropped for that reason alone — only an
+      image can ever be resolved via a body `cid:` reference, so
+      Graph's isInline flag carries no useful meaning for any other
+      type. It's simply stored as a normal, non-inline, downloadable
+      attachment instead, the same as if isInline had been False.
+      This also used to be an unconditional drop, which silently lost
+      real audio/voice attachments from senders/relays that set
+      Content-Disposition: inline on them despite there being no
+      cid: reference anywhere in the body — Outlook itself still
+      shows these as ordinary attachments.
     - anything with an `@odata.type` that's explicitly present but
       not `#microsoft.graph.fileAttachment` (e.g. a forwarded message
       attached as an item, or a reference attachment) — a genuinely
@@ -423,16 +434,36 @@ def build_upload_files_from_graph_attachments(
             attachment.contentId
             and _normalize_content_id(attachment.contentId) in referenced_cid_targets
         )
+        is_image = (attachment.contentType or "").startswith("image/")
+
         is_inline_image = bool(
             attachment.contentId
             and (attachment.isInline or is_referenced_in_body)
-            and (attachment.contentType or "").startswith("image/")
+            and is_image
         )
 
-        if attachment.isInline and not is_inline_image:
+        # Only an image can ever be resolved via a body `cid:`
+        # reference (the frontend's resolveCidImagesForDisplay in
+        # richText.ts only rewrites `<img src="cid:...">` elements),
+        # so Graph's `isInline` flag is only meaningful for images —
+        # a non-image attachment (audio/video/any other file) marked
+        # isInline by Graph used to be dropped outright here, on the
+        # assumption every isInline attachment was a body-embeddable
+        # image. That's wrong for real-world audio/voice attachments:
+        # voicemail/relay senders and some mobile mail clients set
+        # Content-Disposition: inline on audio with no cid: reference
+        # at all, so those vanished entirely even though Outlook
+        # itself shows them as normal, downloadable attachments. A
+        # non-image isInline attachment now falls through and is
+        # stored exactly like any other normal attachment instead
+        # (is_inline_image is already False for it, so it's persisted
+        # with is_inline=False, content_id=None below). Only an
+        # orphaned inline *image* — genuinely unusable, since nothing
+        # in the body could ever display it — is still dropped.
+        if attachment.isInline and not is_inline_image and is_image:
             logger.warning(
-                "Dropping Graph attachment %r — inline attachment with no "
-                "resolvable contentId, or not an image",
+                "Dropping Graph attachment %r — inline image with no "
+                "resolvable contentId or body reference",
                 display_name,
             )
             dropped += 1

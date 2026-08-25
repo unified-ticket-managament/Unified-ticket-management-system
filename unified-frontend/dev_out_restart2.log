@@ -1,0 +1,30 @@
+
+> frontend@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.9 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.31.249:3000
+- Environments: .env.local
+✓ Ready in 3.0s
+○ Compiling middleware ...
+⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+
+○ Compiling /dashboard/[[...slug]] ...
+ GET /dashboard 200 in 17.0s (next.js: 15.7s, proxy.ts: 365ms, application-code: 949ms)
+ GET /dashboard 200 in 13.4s (next.js: 12.4s, proxy.ts: 11ms, application-code: 968ms)
+ GET /dashboard 200 in 1723ms (next.js: 1610ms, proxy.ts: 15ms, application-code: 98ms)
+ GET /dashboard 200 in 2.0s (next.js: 1933ms, proxy.ts: 7ms, application-code: 93ms)
+ GET /dashboard 200 in 1715ms (next.js: 1614ms, proxy.ts: 9ms, application-code: 92ms)
+ GET /dashboard 200 in 1607ms (next.js: 1498ms, proxy.ts: 8ms, application-code: 101ms)
+ GET /dashboard/inbox 200 in 3.1s (next.js: 2.7s, proxy.ts: 39ms, application-code: 347ms)
+ GET /dashboard/inbox 200 in 2.9s (next.js: 2.6s, proxy.ts: 15ms, application-code: 297ms)
+[browser] [tiptap warn]: Duplicate extension names found: ['link']. This can lead to issues. (file://C:/Users/HEMA LATHA/OneDrive/Desktop/Unified-ticket-management-system/unified-frontend/.next/dev/static/chunks/node_modules_next_dist_1ybzpk2._.js:2477:13)
+✓ Compiled in 3.3s
+✓ Compiled in 1159ms
+✓ Compiled in 170ms
+✓ Compiled in 160ms
+[browser] Unexpected import of module [project]/src/ticket-workspace/TicketWorkspaceApp.tsx [app-client] (ecmascript, next/dynamic entry) from module [project]/src/app/(dashboard)/dashboard/layout.tsx [app-client] (ecmascript), which was deleted by an HMR update (file://C:/Users/HEMA LATHA/OneDrive/Desktop/Unified-ticket-management-system/unified-frontend/.next/dev/static/chunks/node_modules_next_dist_1ybzpk2._.js:2477:13)
+✓ Compiled in 188ms
+✓ Compiled in 3.8s
+[?25h

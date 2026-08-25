@@ -151,8 +151,10 @@ from app.ticketing.schemas.forward import (
 )
 from app.ticketing.schemas.payloads import EmailPayload, EnvelopeAttachment, OutboundEnvelope
 from app.ticketing.services.attachment_service import (
+    AttachmentLoadError,
     AttachmentService,
     attachments_to_metadata,
+    is_previewable_image,
     load_envelope_attachments,
 )
 from app.ticketing.services.undo_send import compute_send_after, schedule_delayed_send
@@ -736,6 +738,35 @@ class InteractionService:
             ),
         )
 
+        try:
+            await self.interaction_repository.db.commit()
+        except Exception:
+            # Graph has already accepted/sent this message by this
+            # point — a failure committing that fact is never an
+            # ordinary, quietly-retriable error. Without this explicit
+            # commit (and this log line), undo_send.py's caller-level
+            # `except Exception: logger.exception(...)` would roll
+            # this update back along with its own later commit,
+            # leaving the interaction stuck showing
+            # dispatch_status="PENDING_SEND" forever with no
+            # in-code trace of the real provider_message_id — the one
+            # piece of information an operator needs to fix the row by
+            # hand. Logged at CRITICAL, with that id, specifically so
+            # this is never mistaken for "safe to retry": retrying a
+            # message Graph already sent would send a real duplicate.
+            logger.critical(
+                "Outbound send SUCCEEDED at Graph (provider_message_id=%s) but "
+                "committing that result to interaction %s failed — the "
+                "interaction will appear stuck at dispatch_status=PENDING_SEND "
+                "even though the email was actually sent. Fix this row "
+                "manually (set dispatch_status=SENT, provider_message_id=%s); "
+                "do not retry the send, it would create a real duplicate.",
+                result.provider_message_id,
+                interaction.interaction_id,
+                result.provider_message_id,
+            )
+            raise
+
     async def _schedule_delayed_send(
         self, interaction: Interaction, envelope: OutboundEnvelope
     ) -> None:
@@ -886,6 +917,32 @@ class InteractionService:
                 detail="You can only retry a message you sent yourself.",
             )
 
+        if interaction.ticket_id is not None:
+            # The original send (add_reply/reply_to_ticket_email) gates
+            # on ensure_ticket_not_closed/ensure_agent_can_act_on_ticket/
+            # ensure_account_manager_owns_ticket_client before ever
+            # dispatching — this retry path used to skip all three,
+            # re-dispatching the exact same envelope even if the ticket
+            # had since been closed, the caller's escalation-driven
+            # freeze had since started, or an Account Manager's access
+            # to the client had since been revoked. Re-checking here
+            # closes that gap; a ticket-less interaction (Compose, or a
+            # pre-ticket Reply) has no ticket-scoped state to re-check,
+            # same as before.
+            ticket = await self._get_ticket_or_404(interaction.ticket_id)
+            ensure_ticket_not_closed(ticket)
+            await ensure_agent_can_act_on_ticket(
+                ticket,
+                current_user,
+                self.escalation_service.ticket_escalation_repository
+                if self.escalation_service is not None
+                else None,
+                self._escalation_handling_sla_repository_or_none(),
+            )
+            await ensure_account_manager_owns_ticket_client(
+                ticket, current_user, self.client_repository
+            )
+
         envelope_data = interaction.payload.get("envelope")
         if not envelope_data:
             raise HTTPException(
@@ -980,7 +1037,13 @@ class InteractionService:
         if envelope is None:
             return None
 
-        loaded = await load_envelope_attachments(stored, self.storage_service)
+        try:
+            loaded = await load_envelope_attachments(stored, self.storage_service)
+        except AttachmentLoadError as exc:
+            raise HTTPException(
+                status_code=http_status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
         envelope = envelope.model_copy(update={"attachments": loaded})
         interaction.payload["envelope"] = envelope.model_dump()
 
@@ -1013,7 +1076,13 @@ class InteractionService:
         if not already_stored:
             return envelope
 
-        loaded = await load_envelope_attachments(already_stored, self.storage_service)
+        try:
+            loaded = await load_envelope_attachments(already_stored, self.storage_service)
+        except AttachmentLoadError as exc:
+            raise HTTPException(
+                status_code=http_status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
         envelope = envelope.model_copy(
             update={"attachments": [*envelope.attachments, *loaded]}
         )
@@ -1147,7 +1216,13 @@ class InteractionService:
         if not reassigned:
             return envelope
 
-        loaded = await load_envelope_attachments(reassigned, self.storage_service)
+        try:
+            loaded = await load_envelope_attachments(reassigned, self.storage_service)
+        except AttachmentLoadError as exc:
+            raise HTTPException(
+                status_code=http_status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
         envelope = envelope.model_copy(
             update={"attachments": [*envelope.attachments, *loaded]}
         )
@@ -2013,7 +2088,7 @@ class InteractionService:
             file, interaction.interaction_id
         )
 
-        is_image = (attachment.mime_type or "").startswith("image/")
+        is_image = is_previewable_image(attachment.filename)
         preview_url = (
             await self.storage_service.presigned_get_url(
                 object_key=attachment.storage_key,
@@ -4205,7 +4280,7 @@ class InteractionService:
             file, draft.interaction_id
         )
 
-        is_image = (attachment.mime_type or "").startswith("image/")
+        is_image = is_previewable_image(attachment.filename)
         preview_url = (
             await self.storage_service.presigned_get_url(
                 object_key=attachment.storage_key,

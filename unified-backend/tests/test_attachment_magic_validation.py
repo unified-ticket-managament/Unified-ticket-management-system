@@ -111,13 +111,52 @@ def test_exe_content_claimed_as_docx_is_rejected(monkeypatch):
         validate_attachment_magic_bytes("invoice.docx", "docx", b"MZ\x90\x00...")
 
 
-@pytest.mark.parametrize("extension", ["txt", "csv", "eml", "dat"])
+@pytest.mark.parametrize(
+    "extension",
+    [
+        "txt", "csv", "eml", "dat",
+        "rtf", "svg", "mp4", "mp3", "rar", "py", "json",
+    ],
+)
 def test_skip_extensions_never_sniffed_or_rejected(monkeypatch, extension):
     """These have no reliable fixed byte signature — never sniffed,
     regardless of what bytes are actually present."""
 
     _install_fake_magic(monkeypatch, "application/x-dosexec")  # would fail everything else
     validate_attachment_magic_bytes(f"file.{extension}", extension, b"MZ\x90\x00...")
+
+
+def test_real_pptx_zip_container_passes_family_check(monkeypatch):
+    """.pptx is itself a ZIP container, like .docx/.xlsx — must pass
+    the ZIP-family check, not just an exact Office MIME string."""
+
+    _install_fake_magic(monkeypatch, "application/zip")
+    validate_attachment_magic_bytes("deck.pptx", "pptx", b"PK\x03\x04...")
+
+
+def test_real_odt_zip_container_passes_family_check(monkeypatch):
+    _install_fake_magic(monkeypatch, "application/zip")
+    validate_attachment_magic_bytes("doc.odt", "odt", b"PK\x03\x04...")
+
+
+def test_real_ods_zip_container_passes_family_check(monkeypatch):
+    _install_fake_magic(monkeypatch, "application/zip")
+    validate_attachment_magic_bytes("sheet.ods", "ods", b"PK\x03\x04...")
+
+
+def test_real_odp_zip_container_passes_family_check(monkeypatch):
+    _install_fake_magic(monkeypatch, "application/zip")
+    validate_attachment_magic_bytes("slides.odp", "odp", b"PK\x03\x04...")
+
+
+def test_real_ppt_ole_container_passes_family_check(monkeypatch):
+    """Legacy .ppt shares the same OLE Compound File container as
+    .doc/.xls — libmagic commonly can't distinguish them and reports a
+    generic OLE-family MIME, so this must pass the same family check
+    rather than requiring an exact PowerPoint-specific MIME string."""
+
+    _install_fake_magic(monkeypatch, "application/msword")
+    validate_attachment_magic_bytes("slides.ppt", "ppt", b"\xd0\xcf\x11\xe0...")
 
 
 def test_real_gif_bytes_pass(monkeypatch):

@@ -312,7 +312,7 @@ class EmailService:
 
         # ---------------------------------------
         # Thread Check — priority order: conversation_id (Graph's own
-        # thread id, once Task 1 ships) -> in_reply_to -> references.
+        # thread id) -> in_reply_to -> references.
         # First tier that resolves to a stored interaction wins; we
         # don't merge candidates from lower tiers once a higher one
         # matches, so a conversation_id match can't be second-guessed
@@ -617,8 +617,15 @@ class EmailService:
         attachment_metas: list[AttachmentMetadata] = []
 
         if files:
+            # tolerate_failures=True: this is the automated inbound-mail
+            # intake path (Graph webhook/poller, N8N transport) — there
+            # is no human synchronously waiting on an HTTPException the
+            # way a ticket-upload/reply request has. Without this, one
+            # bad attachment (e.g. a magic-byte mismatch) would abort
+            # the whole email — body and every other valid attachment
+            # included — instead of just being logged and skipped.
             attachments = await self.attachment_service.validate_and_store_files(
-                files, created.interaction_id
+                files, created.interaction_id, tolerate_failures=True
             )
             attachment_metas = await attachments_to_metadata(
                 attachments, self.attachment_service.storage_service

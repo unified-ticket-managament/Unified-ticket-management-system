@@ -195,12 +195,32 @@ async def _process_graph_notification(
 
     try:
         payload = await mail_provider_client.fetch_message(item.resourceData.id)
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "Failed to fetch Graph message %s for subscription %s",
             item.resourceData.id,
             item.subscriptionId,
         )
+        # Unlike the polling transport, this path only ever handles
+        # one message at a time — a failure here used to be a total,
+        # silent loss with no trace in inbound_mail_failures at all
+        # (nothing else in this function had run yet to record one).
+        # Its own inner try/except: a diagnostic-write failure must
+        # never mask the real underlying fetch failure being logged
+        # above.
+        try:
+            async with AsyncSessionLocal() as failure_db:
+                await InboundMailFailureRepository(failure_db).record_or_increment(
+                    message_id=item.resourceData.id,
+                    mailbox_address=get_settings().graph_mailbox_address,
+                    error_summary=f"fetch_message failed: {type(exc).__name__}: {exc}",
+                )
+                await failure_db.commit()
+        except Exception:
+            logger.exception(
+                "Failed to persist inbound_mail_failures row for %s",
+                item.resourceData.id,
+            )
         return
 
     # The webhook subscription is always created against exactly one

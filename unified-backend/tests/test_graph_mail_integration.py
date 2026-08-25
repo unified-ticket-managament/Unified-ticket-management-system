@@ -961,20 +961,53 @@ async def test_build_upload_files_from_graph_attachments_content_readable():
     assert content == b"hello"
 
 
-def test_build_upload_files_from_graph_attachments_drops_inline_attachments(caplog):
+def test_build_upload_files_from_graph_attachments_keeps_non_image_inline_attachment():
     """
     A non-image inline attachment (this fixture defaults to a PDF) has
     nothing an HTML body's own <img src="cid:..."> could ever
-    reference — still dropped, unlike a genuine inline *image* (see
+    reference, but Graph's `isInline` flag is only a heuristic derived
+    from the sender's own Content-Disposition header — real audio/
+    voice attachments from voicemail systems, relays, and some mobile
+    clients are routinely marked isInline with no cid: reference at
+    all. Phase 4 fix: it's kept as a normal, non-inline, downloadable
+    attachment (same outcome as if isInline had been False) instead of
+    being dropped — unlike a genuine inline *image* (see
     test_build_upload_files_from_graph_attachments_keeps_inline_image
-    below), which used to be dropped unconditionally too.
+    below and the orphaned-inline-image case just after it), which
+    still can't be kept since it has no other use once undisplayable.
     """
 
-    with caplog.at_level(logging.WARNING):
-        files = build_upload_files_from_graph_attachments([_graph_attachment(isInline=True)])
+    files = build_upload_files_from_graph_attachments([_graph_attachment(isInline=True)])
 
-    assert files == []
-    assert "inline attachment" in caplog.text
+    assert len(files) == 1
+    assert files[0].filename == "invoice.pdf"
+    assert files[0].is_inline is False
+    assert files[0].content_id is None
+
+
+def test_build_upload_files_from_graph_attachments_keeps_inline_audio():
+    """
+    Direct regression test for the reported production bug: an audio
+    attachment (e.g. a voicemail/voice-memo) reported isInline=True by
+    Graph with no contentId and no body cid: reference must still
+    survive as a normal downloadable attachment, not vanish silently.
+    """
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="voicemail.mp3",
+                contentType="audio/mpeg",
+                isInline=True,
+                contentId=None,
+            )
+        ]
+    )
+
+    assert len(files) == 1
+    assert files[0].filename == "voicemail.mp3"
+    assert files[0].is_inline is False
+    assert files[0].content_id is None
 
 
 def test_build_upload_files_from_graph_attachments_keeps_inline_image():

@@ -4,10 +4,15 @@ import { Button } from "@tw/components/common/Button";
 import {
   ATTACHMENT_ACCEPT_ATTR,
   MAX_ATTACHMENT_FILES,
+  MAX_ATTACHMENT_SIZE_BYTES,
   formatBytes,
   iconForFilename,
   validateFiles,
 } from "@tw/lib/attachmentMeta";
+
+const DEFAULT_HINT = `Up to ${MAX_ATTACHMENT_FILES} files, ${
+  MAX_ATTACHMENT_SIZE_BYTES / (1024 * 1024)
+} MB each. Documents, images, video, audio, archives, or code/text.`;
 
 interface FileDropzoneProps {
   label: string;
@@ -23,7 +28,7 @@ function dedupeKey(file: File): string {
 
 export function FileDropzone({
   label,
-  hint = "Up to 10 files, 25 MB each. PDF, Office, images, or text.",
+  hint = DEFAULT_HINT,
   files,
   onFilesChange,
   disabled = false,

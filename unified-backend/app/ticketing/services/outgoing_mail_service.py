@@ -23,6 +23,7 @@ from app.ticketing.schemas.payloads import OutboundEnvelope
 from app.ticketing.services.email_envelope import build_compose_envelope
 from app.ticketing.services.email_service import resolve_shared_mailbox_address
 from app.ticketing.services.mail_provider import MailProviderClient
+from app.ticketing.utils.recipient_validation import ensure_recipients_are_valid
 
 
 def _generate_message_id(from_email: str) -> str:
@@ -40,6 +41,17 @@ class OutgoingMailService:
         self.mail_provider_client = mail_provider_client
 
     async def send_email(self, request: OutgoingEmailRequest) -> OutgoingEmailResponse:
+        # This route previously called mail_provider_client.send_email
+        # directly with zero recipient validation of any kind beyond
+        # Pydantic's own EmailStr syntax check — every other outbound
+        # path (Compose/Reply/Reply-All/Forward) runs the same
+        # deliverability-aware check below before ever reaching a
+        # Graph call. Reused as-is (see recipient_validation.py) —
+        # never a second, duplicate validation implementation.
+        await ensure_recipients_are_valid(
+            to=request.to_email, cc=request.cc, bcc=request.bcc
+        )
+
         envelope = await self._build_envelope(request)
 
         result = await self.mail_provider_client.send_email(envelope)

@@ -17,6 +17,7 @@ import logging
 from datetime import datetime
 
 import httpx
+from pydantic import ValidationError
 
 from app.core.config import Settings
 from app.ticketing.schemas.mail_integration import GraphAttachmentPayload, IncomingMailPayload
@@ -849,7 +850,41 @@ class GraphMailProviderClient(MailProviderClient):
                 since_literal,
             )
 
-        return [IncomingMailPayload.model_validate(item) for item in items]
+        messages: list[IncomingMailPayload] = []
+
+        for item in items:
+            try:
+                messages.append(IncomingMailPayload.model_validate(item))
+            except ValidationError:
+                # A single message Graph itself is happy to return can
+                # still fail this schema (e.g. a legitimately empty
+                # toRecipients on a Bcc-only delivery, or a malformed
+                # sender address on some legacy/relay-sent mail) —
+                # this used to raise out of the list comprehension,
+                # failing the *entire* batch. Caught here at the
+                # poller's own blanket `except Exception` before any
+                # message was even looked at, which left the
+                # mailbox's checkpoint un-advanced and re-fetched this
+                # exact poison message, and every legitimate message
+                # behind it, forever on every subsequent tick — a
+                # permanent, silent inbound outage for that mailbox.
+                # Skipping just this one item lets every other message
+                # in the batch (and every later tick) proceed
+                # normally; this one is logged loudly (not persisted
+                # to inbound_mail_failures — this layer has no DB
+                # access — so it's visible in logs/alerting but not
+                # yet in the Inbound Failures list; a real, separate
+                # gap, not silently fixed here).
+                logger.error(
+                    "Graph poll: message failed schema validation and was "
+                    "skipped (graph_id=%s internetMessageId=%s subject=%r)",
+                    item.get("id"),
+                    item.get("internetMessageId"),
+                    item.get("subject"),
+                    exc_info=True,
+                )
+
+        return messages
 
     async def fetch_message_attachments(
         self, message_id: str
@@ -903,7 +938,34 @@ class GraphMailProviderClient(MailProviderClient):
         raw_items = data.get("value", [])
         await self._resolve_item_attachments(message_id, raw_items)
 
-        return [GraphAttachmentPayload.model_validate(item) for item in raw_items]
+        attachments: list[GraphAttachmentPayload] = []
+
+        for item in raw_items:
+            try:
+                attachments.append(GraphAttachmentPayload.model_validate(item))
+            except ValidationError:
+                # Mirrors the same fix applied to list_new_messages
+                # above: one malformed attachment (e.g. an explicit
+                # `"name": null` from a relay/forwarder, which fails
+                # GraphAttachmentPayload's non-nullable `name` field)
+                # used to raise out of this list comprehension,
+                # failing every attachment on the message — not just
+                # the offending one. The caller's own blanket
+                # `except Exception` (mail_integration.py /
+                # graph_mail_poller.py) then stored the whole email
+                # with zero attachments. Skipping just this one item
+                # lets every well-formed attachment on the same
+                # message survive.
+                logger.error(
+                    "Graph attachments fetch: one attachment on message %s "
+                    "failed schema validation and was skipped (id=%s name=%r)",
+                    message_id,
+                    item.get("id"),
+                    item.get("name"),
+                    exc_info=True,
+                )
+
+        return attachments
 
     async def _resolve_item_attachments(
         self, message_id: str, raw_items: list[dict]

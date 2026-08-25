@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import {
   ATTACHMENT_ACCEPT_ATTR,
   MAX_ATTACHMENT_FILES,
+  MAX_ATTACHMENT_SIZE_BYTES,
   formatBytes,
   iconForFilename,
   validateFiles,
@@ -30,9 +31,9 @@ function dedupeKey(file: File): string {
 
 // Shared drag-and-drop + browse + preview + remove attachment picker
 // for both the Compose screen and the inline Reply composer —
-// PDF/DOC/DOCX/XLSX/CSV/PNG/JPG/JPEG/ZIP, up to 10 files / 25MB each
-// (see lib/attachmentMeta.ts, which mirrors the backend's own
-// allow-list).
+// documents, images, video, audio, archives, and code/text files, up
+// to 10 files / 30MB each (see lib/attachmentMeta.ts, which mirrors
+// the backend's own allow-list).
 export function AttachmentUploader({
   files,
   onFilesChange,
@@ -99,7 +100,8 @@ export function AttachmentUploader({
           }}
         />
         <p className="text-[11px] text-muted-foreground/80">
-          PDF, DOC, DOCX, XLSX, CSV, PNG, JPG, JPEG, ZIP — up to {maxFiles} files, 25MB each.
+          Documents, images, video, audio, archives, or code/text — up to {maxFiles} files,{" "}
+          {MAX_ATTACHMENT_SIZE_BYTES / (1024 * 1024)}MB each.
         </p>
       </div>
 

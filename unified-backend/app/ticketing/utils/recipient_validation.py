@@ -28,6 +28,23 @@ import asyncio
 from email_validator import EmailNotValidError, validate_email
 from fastapi import HTTPException, status
 
+# Phase 3 hardening: the email-validator library's own default
+# deliverability-check timeout is 15 seconds *per address*
+# (email_validator.DEFAULT_TIMEOUT), and validation used to run one
+# address at a time in a single worker thread — so a slow-to-resolve
+# domain, or several Cc/Bcc recipients, could leave a Send button
+# showing no feedback for many seconds (up to 15s x N) before the
+# correct rejection finally surfaced, easily reading as "nothing
+# happened" even though the check was working correctly. Lowering the
+# timeout and validating addresses concurrently (see
+# ensure_recipients_are_valid below) bounds worst-case latency to one
+# timeout window regardless of recipient count. This does NOT change
+# whether a domain is accepted or rejected — check_deliverability=True
+# and the exception handling below are unchanged; a genuine DNS
+# timeout still falls through to the library's own existing "unknown
+# deliverability is passable" behavior, it just gives up sooner.
+DELIVERABILITY_CHECK_TIMEOUT_SECONDS = 5
+
 
 def ensure_recipient_address_is_valid(address: str) -> None:
     """
@@ -36,17 +53,29 @@ def ensure_recipient_address_is_valid(address: str) -> None:
     """
 
     try:
-        validate_email(address, check_deliverability=True)
+        validate_email(
+            address,
+            check_deliverability=True,
+            timeout=DELIVERABILITY_CHECK_TIMEOUT_SECONDS,
+        )
     except EmailNotValidError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Enter a valid email address or check the domain: {address}",
         )
-
-
-def _validate_all(addresses: list[str]) -> None:
-    for address in addresses:
-        ensure_recipient_address_is_valid(address)
+    except Exception:
+        # Belt-and-suspenders: email_validator's own deliverability
+        # check already wraps any unexpected DNS/resolver error into
+        # EmailUndeliverableError (a subclass of EmailNotValidError,
+        # caught above) before it ever reaches this function — so this
+        # branch isn't known to be reachable today. It exists purely
+        # as insurance against a future library-version change ever
+        # letting an unanticipated exception escape as an unhandled
+        # 500 instead of the same clean, expected 400.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Enter a valid email address or check the domain: {address}",
+        )
 
 
 async def ensure_recipients_are_valid(
@@ -64,14 +93,17 @@ async def ensure_recipients_are_valid(
     that didn't override its default recipient, is never itself an
     error).
 
-    Runs the actual (blocking, DNS-resolving) validation loop in a
-    worker thread via asyncio.to_thread — check_deliverability=True
-    means every address here does a real, synchronous MX/A/AAAA
-    lookup (see this module's own docstring), which would otherwise
-    block the event loop for every other in-flight request for the
-    duration of that lookup. An HTTPException raised inside the
-    thread propagates back out unchanged (same status code, same
-    message) — asyncio.to_thread re-raises the worker's exception as-is.
+    Every address is validated concurrently, each in its own worker
+    thread via asyncio.to_thread — check_deliverability=True means
+    each one does a real, synchronous MX/A/AAAA lookup (see this
+    module's own docstring), which would otherwise block the event
+    loop for the duration of that lookup; running them concurrently
+    (rather than one after another) also bounds the worst-case total
+    latency to a single DELIVERABILITY_CHECK_TIMEOUT_SECONDS window
+    regardless of how many recipients are being validated. An
+    HTTPException raised inside a thread propagates back out unchanged
+    (same status code, same message) — asyncio.gather re-raises the
+    first worker's exception as-is once all threads have settled.
     """
 
     addresses: list[str] = []
@@ -83,4 +115,9 @@ async def ensure_recipients_are_valid(
     addresses.extend(cc or [])
     addresses.extend(bcc or [])
 
-    await asyncio.to_thread(_validate_all, addresses)
+    if not addresses:
+        return
+
+    await asyncio.gather(
+        *(asyncio.to_thread(ensure_recipient_address_is_valid, address) for address in addresses)
+    )
