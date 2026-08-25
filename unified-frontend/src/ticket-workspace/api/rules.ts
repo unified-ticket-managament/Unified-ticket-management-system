@@ -59,6 +59,13 @@ export interface RuleResponse extends RulePayload {
   shared_distribution_list_ids: string[];
   created_at: string;
   updated_at: string;
+  // Whether the current viewer can edit/delete/toggle/reorder this
+  // specific rule — distinct from being able to see it at all. A
+  // rule:view_all holder (Super Admin/Site Lead) can see every rule
+  // in GET /rules but this is false for one they didn't create and
+  // aren't shared on; every mutation still enforces this server-side
+  // regardless of what the UI does with this flag.
+  can_manage: boolean;
 }
 
 export async function listRules(signal?: AbortSignal): Promise<RuleResponse[]> {

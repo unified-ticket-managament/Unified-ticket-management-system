@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { useSettingsStore } from "@/store/settings-store";
 
 // Outlook-style three-panel Mail workspace shell: Mail Folders | Message
 // List | Message Details, touching directly with a single draggable
@@ -49,17 +50,38 @@ export function MailWorkspaceLayout({
   const [activeDrag, setActiveDrag] = useState<DragTarget | null>(null);
   const dragRef = useRef<DragState | null>(null);
 
+  // Only the list|detail divider persists — the folder|list divider
+  // deliberately stays non-persisted, independent of both this and the
+  // main app sidebar's own persisted width.
+  const persistedListWidth = useSettingsStore((s) => s.mailMessageListWidth);
+  const setPersistedListWidth = useSettingsStore((s) => s.setMailMessageListWidth);
+  // Mirrors the live "list" drag value so endDrag (a stable callback,
+  // can't safely close over fresh listWidth state) can read the final
+  // value on pointerup.
+  const listWidthRef = useRef<number | null>(null);
+
   // Seed default pixel widths, in the required 1:1:3 ratio, from the
   // workspace's own measured width the first time it's known — this
   // scales sensibly across monitor sizes instead of a hardcoded guess.
+  // The list width additionally restores a persisted value (if the
+  // user ever dragged it before), clamped against the current
+  // measurement — kept in this one effect, rather than a second effect
+  // keyed off persistedListWidth, so a restored width renders on the
+  // very first paint instead of flashing the ratio default first.
   useEffect(() => {
     if (folderWidth !== null || listWidth !== null) return;
     const total = containerRef.current?.getBoundingClientRect().width;
     if (!total) return;
     const unit = total / RATIO_TOTAL;
-    setFolderWidth(Math.max(FOLDER_MIN_WIDTH, Math.round(unit)));
-    setListWidth(Math.max(LIST_MIN_WIDTH, Math.round(unit)));
-  }, [folderWidth, listWidth]);
+    const seededFolderWidth = Math.max(FOLDER_MIN_WIDTH, Math.round(unit));
+    setFolderWidth(seededFolderWidth);
+    if (persistedListWidth != null) {
+      const maxList = Math.max(LIST_MIN_WIDTH, total - seededFolderWidth - DETAIL_MIN_WIDTH);
+      setListWidth(Math.min(Math.max(persistedListWidth, LIST_MIN_WIDTH), maxList));
+    } else {
+      setListWidth(Math.max(LIST_MIN_WIDTH, Math.round(unit)));
+    }
+  }, [folderWidth, listWidth, persistedListWidth]);
 
   // `cleanupRef` holds the exact remove-listener closure a given
   // beginDrag() call installed, so endDrag can tear it down without
@@ -81,16 +103,22 @@ export function MailWorkspaceLayout({
     } else {
       const maxList = Math.max(LIST_MIN_WIDTH, drag.containerWidth - drag.startFolderWidth - DETAIL_MIN_WIDTH);
       const next = Math.min(Math.max(drag.startListWidth + deltaX, LIST_MIN_WIDTH), maxList);
+      listWidthRef.current = next;
       setListWidth(next);
     }
   }, []);
 
   const endDrag = useCallback(() => {
+    const wasListDrag = dragRef.current?.target === "list";
     dragRef.current = null;
     setActiveDrag(null);
     cleanupRef.current();
     cleanupRef.current = () => {};
-  }, []);
+    if (wasListDrag && listWidthRef.current != null) {
+      setPersistedListWidth(listWidthRef.current);
+    }
+    listWidthRef.current = null;
+  }, [setPersistedListWidth]);
 
   const beginDrag = useCallback(
     (target: DragTarget) => (event: React.PointerEvent) => {

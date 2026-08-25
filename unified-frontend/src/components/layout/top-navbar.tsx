@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
-import { Bell, LogOut, User, X } from "lucide-react";
+import { AlertTriangle, Bell, LogOut, User, X } from "lucide-react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -184,7 +184,43 @@ export function TopNavbar() {
       // SLA breach/at-risk/escalation notifications get a toast in
       // addition to the bell update — everything else (permission
       // requests, etc.) only updates the bell, unchanged from before.
-      if (n.notification_type in SLA_NOTIFICATION_DOT) {
+      // SLA_ESCALATED gets its own compact, summary-only toast instead of
+      // the generic title/message rendering below — the raw `message` for
+      // this type can carry up to ~200 chars of the actual email body
+      // (see unified-backend's sla_breach_notifier.py), which is exactly
+      // what this compact variant must never show. Both backend composers
+      // build `title` as "<Label>: <Subject>" (sla_breach_notifier.py /
+      // sla_sweep_service.py), so parsing it is enough to recover the
+      // escalation type and ticket/interaction subject with no new field.
+      if (n.notification_type === "SLA_ESCALATED") {
+        const isFirstResponse = n.title.startsWith("First Response");
+        const escalationLabel = isFirstResponse
+          ? "First Response SLA Escalated"
+          : "Resolution SLA Escalated";
+        const colonIndex = n.title.indexOf(": ");
+        const subject = colonIndex >= 0 ? n.title.slice(colonIndex + 2) : n.title;
+
+        toast({
+          // `title` is typed as an intersection with the native HTML
+          // `title` attribute (string-only) via ToastProps, so it can't
+          // carry JSX — the whole compact layout (icon + label + subject)
+          // goes in `description` instead, which has no such conflict.
+          className: "border-transparent bg-destructive p-3 pr-8 text-white",
+          description: (
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-white" />
+              <div className="min-w-0">
+                <p className="text-sm font-semibold leading-tight text-white">
+                  {escalationLabel}
+                </p>
+                <p className="mt-0.5 truncate text-xs font-normal leading-tight text-white/90">
+                  Ticket: {subject}
+                </p>
+              </div>
+            </div>
+          ),
+        });
+      } else if (n.notification_type in SLA_NOTIFICATION_DOT) {
         toast({
           variant: n.notification_type === "SLA_AT_RISK" ? "default" : "destructive",
           title: n.title,

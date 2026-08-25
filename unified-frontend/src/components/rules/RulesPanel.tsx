@@ -16,19 +16,12 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Breadcrumbs } from "@/components/shared/breadcrumbs";
 import { PageHeader } from "@/components/layout/dashboard-shell";
-import { AccessDenied, ErrorState } from "@/components/shared/stats";
+import { AccessDenied, EmptyState, ErrorState } from "@/components/shared/stats";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useAuthStore } from "@/store/auth-store";
 import {
@@ -80,9 +73,18 @@ function summarizeActions(rule: RuleResponse): string {
   );
 }
 
-function RuleTable({
+// Renders Mail Rules / OTP Rules as a stacked list of individual rule
+// cards (rule name + Active/reorder/Edit/Delete in a header row, then
+// Condition/Action as labeled, stacked fields below) rather than a
+// dense generic table — easier to scan per-rule condition/action
+// summaries, which are free-text and often longer than a table column
+// comfortably fits. Same data/handlers as before this redesign, only
+// the surrounding markup changed.
+function RuleList({
   category,
   rules,
+  busyRuleIds,
+  onCreate,
   onEdit,
   onToggleEnabled,
   onReorder,
@@ -90,6 +92,14 @@ function RuleTable({
 }: {
   category: RuleCategory;
   rules: RuleResponse[];
+  // Rule ids with an in-flight reorder/toggle request — their
+  // controls are disabled meanwhile so a rapid double-click can't fire
+  // a second, concurrent request for the same rule.
+  busyRuleIds: Set<string>;
+  // Backs the empty state's own contextual "+ New Rule" button —
+  // distinct from the tab section header's identical button, so the
+  // empty state is a complete, actionable screen on its own.
+  onCreate: () => void;
   onEdit: (rule: RuleResponse) => void;
   onToggleEnabled: (rule: RuleResponse, enabled: boolean) => void;
   onReorder: (rule: RuleResponse, direction: "up" | "down") => void;
@@ -98,80 +108,116 @@ function RuleTable({
   const ordered = useMemo(() => [...rules].sort((a, b) => a.priority - b.priority), [rules]);
 
   if (ordered.length === 0) {
-    return <p className="px-6 py-8 text-sm text-muted-foreground">No {CATEGORY_LABELS[category]}s yet.</p>;
+    return (
+      <EmptyState
+        title={`No ${CATEGORY_LABELS[category]}s Yet`}
+        description={
+          category === "mail_rule"
+            ? "Create a Mail Rule to automatically organize incoming email into folders."
+            : "Create an OTP Rule to automatically forward one-time-passcode emails to the right people."
+        }
+        action={
+          <Button onClick={onCreate}>
+            <Plus className="mr-2 h-4 w-4" />
+            New Rule
+          </Button>
+        }
+      />
+    );
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead className="w-10" />
-          <TableHead>Name</TableHead>
-          <TableHead>Conditions</TableHead>
-          <TableHead>Actions</TableHead>
-          <TableHead className="w-20">Enabled</TableHead>
-          <TableHead className="w-28" />
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {ordered.map((rule, index) => (
-          <TableRow key={rule.rule_id}>
-            <TableCell>
-              <div className="flex flex-col">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-5 w-5"
-                  disabled={index === 0}
-                  aria-label="Move up"
-                  onClick={() => onReorder(rule, "up")}
-                >
-                  <ArrowUp className="h-3.5 w-3.5" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-5 w-5"
-                  disabled={index === ordered.length - 1}
-                  aria-label="Move down"
-                  onClick={() => onReorder(rule, "down")}
-                >
-                  <ArrowDown className="h-3.5 w-3.5" />
-                </Button>
+    <div className="space-y-4">
+      {ordered.map((rule, index) => {
+        // can_manage is false only for a rule this viewer can see (via
+        // rule:view_all) but didn't create and isn't shared on — every
+        // mutation below would 403 server-side regardless, so these
+        // controls are disabled rather than left clickable-but-doomed.
+        const isLocked = !rule.can_manage;
+        const isBusy = busyRuleIds.has(rule.rule_id);
+        const lockedTitle = isLocked ? "You don't have permission to manage this rule" : undefined;
+
+        return (
+          <div key={rule.rule_id} className="rounded-lg border border-border bg-card p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-foreground">{rule.name}</p>
+                {rule.stop_processing && (
+                  <p className="mt-0.5 text-xs text-muted-foreground">Stops processing more rules</p>
+                )}
               </div>
-            </TableCell>
-            <TableCell className="font-medium">
-              {rule.name}
-              {rule.stop_processing && (
-                <p className="text-xs text-muted-foreground">Stops processing more rules</p>
-              )}
-            </TableCell>
-            <TableCell className="max-w-xs text-sm text-muted-foreground">
-              {summarizeConditions(rule)}
-            </TableCell>
-            <TableCell className="max-w-xs text-sm text-muted-foreground">
-              {summarizeActions(rule)}
-            </TableCell>
-            <TableCell>
-              <Switch
-                checked={rule.is_enabled}
-                onCheckedChange={(checked) => onToggleEnabled(rule, checked)}
-              />
-            </TableCell>
-            <TableCell>
-              <div className="flex justify-end gap-1">
-                <Button variant="ghost" size="icon" aria-label="Edit rule" onClick={() => onEdit(rule)}>
-                  <Pencil className="h-4 w-4" />
-                </Button>
-                <Button variant="ghost" size="icon" aria-label="Delete rule" onClick={() => onDelete(rule)}>
-                  <Trash2 className="h-4 w-4" />
-                </Button>
+
+              <div className="flex flex-none items-center gap-3">
+                <div className="flex flex-col gap-0.5">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-5 w-5"
+                    disabled={index === 0 || isLocked || isBusy}
+                    title={lockedTitle}
+                    aria-label="Move up"
+                    onClick={() => onReorder(rule, "up")}
+                  >
+                    <ArrowUp className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-5 w-5"
+                    disabled={index === ordered.length - 1 || isLocked || isBusy}
+                    title={lockedTitle}
+                    aria-label="Move down"
+                    onClick={() => onReorder(rule, "down")}
+                  >
+                    <ArrowDown className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+
+                <Switch
+                  checked={rule.is_enabled}
+                  disabled={isLocked || isBusy}
+                  title={lockedTitle}
+                  onCheckedChange={(checked) => onToggleEnabled(rule, checked)}
+                />
+
+                <div className="flex gap-1.5">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Edit rule"
+                    disabled={isLocked}
+                    title={lockedTitle}
+                    onClick={() => onEdit(rule)}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    aria-label="Delete rule"
+                    disabled={isLocked}
+                    title={lockedTitle}
+                    onClick={() => onDelete(rule)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+            </div>
+
+            <div className="mt-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Condition</p>
+              <p className="mt-1 text-sm text-foreground/90">{summarizeConditions(rule)}</p>
+            </div>
+
+            <div className="mt-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action</p>
+              <p className="mt-1 text-sm text-foreground/90">{summarizeActions(rule)}</p>
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -206,6 +252,48 @@ export function RulesPanel({
   const [builderOpen, setBuilderOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<RuleResponse | null>(null);
   const [pendingDelete, setPendingDelete] = useState<RuleResponse | null>(null);
+  // Which of the three sections is visible — Mail Rules by default.
+  // Distribution Lists' own data/CRUD lives entirely inside
+  // DistributionListsPanel already; this state only controls which
+  // section is rendered, not any data fetching.
+  const [activeTab, setActiveTab] = useState<"mail_rule" | "otp_rule" | "distribution_lists">("mail_rule");
+  // Which category a brand-new "+ New Rule" click should open the
+  // builder pre-selected to — set right before opening, from whichever
+  // tab's own button was clicked.
+  const [createCategory, setCreateCategory] = useState<RuleCategory>("mail_rule");
+  // Rule ids with an in-flight reorder/toggle request — guards against
+  // a rapid double-click firing a second, concurrent request for the
+  // same rule (see RuleList's own use of this for disabling controls).
+  const [busyRuleIds, setBusyRuleIds] = useState<Set<string>>(new Set());
+
+  function markBusy(ruleId: string) {
+    setBusyRuleIds((prev) => new Set(prev).add(ruleId));
+  }
+
+  function clearBusy(ruleId: string) {
+    setBusyRuleIds((prev) => {
+      const next = new Set(prev);
+      next.delete(ruleId);
+      return next;
+    });
+  }
+
+  // The backend's real 403 detail (e.g. "You do not have access to
+  // this rule.") is far more useful than a flat generic string —
+  // surfacing it is what "don't hide real errors" actually means here.
+  // NOTE: by the time this runs, `error` is never a raw AxiosError —
+  // `@tw/api/client`'s response interceptor already unwraps every
+  // rejected request into a plain `Error` whose `.message` is the
+  // backend's own `detail` (falling back to `error.message` or a
+  // generic string only if there was no `detail` at all). Checking
+  // `axios.isAxiosError(error)` here would always be false and silently
+  // swallow the real message — the same interceptor-shape mistake
+  // documented in this app's own CLAUDE.md ("canceled" toast bug) and
+  // already worked around correctly by useApiAction.ts's identical
+  // `error instanceof Error ? error.message : ...` pattern, reused here.
+  function errorDetail(error: unknown): string | undefined {
+    return error instanceof Error ? error.message : undefined;
+  }
 
   function refresh(signal?: AbortSignal) {
     listRules(signal)
@@ -230,20 +318,28 @@ export function RulesPanel({
   }
 
   async function handleToggleEnabled(rule: RuleResponse, enabled: boolean) {
+    if (busyRuleIds.has(rule.rule_id)) return;
+    markBusy(rule.rule_id);
     try {
       await setRuleEnabled(rule.rule_id, enabled);
       refresh();
-    } catch {
-      toast({ title: "Couldn't update this rule", variant: "destructive" });
+    } catch (error) {
+      toast({ title: "Couldn't update this rule", description: errorDetail(error), variant: "destructive" });
+    } finally {
+      clearBusy(rule.rule_id);
     }
   }
 
   async function handleReorder(rule: RuleResponse, direction: "up" | "down") {
+    if (busyRuleIds.has(rule.rule_id)) return;
+    markBusy(rule.rule_id);
     try {
       await reorderRule(rule.rule_id, direction);
       refresh();
-    } catch {
-      toast({ title: "Couldn't reorder this rule", variant: "destructive" });
+    } catch (error) {
+      toast({ title: "Couldn't reorder this rule", description: errorDetail(error), variant: "destructive" });
+    } finally {
+      clearBusy(rule.rule_id);
     }
   }
 
@@ -266,8 +362,8 @@ export function RulesPanel({
       // the Mail page's folder list needs to know right away, not
       // just the next time Rules happens to be closed.
       onFoldersMayHaveChanged?.();
-    } catch {
-      toast({ title: "Couldn't delete this rule", variant: "destructive" });
+    } catch (error) {
+      toast({ title: "Couldn't delete this rule", description: errorDetail(error), variant: "destructive" });
     }
   }
 
@@ -275,7 +371,7 @@ export function RulesPanel({
   const otpRules = (rules ?? []).filter((r) => r.category === "otp_rule");
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8 px-6 py-6 md:px-8">
       <Breadcrumbs
         items={[
           { label: "Dashboard", href: "/dashboard" },
@@ -287,90 +383,128 @@ export function RulesPanel({
       <PageHeader
         title="Rules"
         description="Automatically organize incoming mail and forward OTP emails whenever a new email arrives — Mail Rules and OTP Rules both trigger on Email Received."
-        action={
-          <Button
-            onClick={() => {
-              setEditingRule(null);
-              setBuilderOpen(true);
-            }}
-          >
-            <Plus className="mr-2 h-4 w-4" />
-            New Rule
-          </Button>
-        }
       />
 
       {loadError && <ErrorState message={loadError} />}
 
       {!loadError && (
-        <>
-          <Card>
-            <CardHeader>
-              <CardTitle>Mail Rules</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {/* Only the true first load (rules === null, nothing to
-                  show yet at all) renders the skeleton — a later
-                  background refresh (toggle/reorder/delete/save)
-                  keeps showing the last-known list instead of
-                  blanking it out, and "No Mail Rules yet." only ever
-                  renders once real data has actually arrived, never
-                  while a request is still in flight. */}
-              {rules === null ? (
-                <div className="space-y-3 p-6">
-                  <Skeleton className="h-10 w-full" />
-                  <Skeleton className="h-10 w-full" />
-                </div>
-              ) : (
-                <RuleTable
-                  category="mail_rule"
-                  rules={mailRules}
-                  onEdit={(rule) => {
-                    setEditingRule(rule);
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
+          {/* Only this strip scrolls horizontally on a narrow viewport
+              — never the whole page — if the three labels don't fit. */}
+          <div className="overflow-x-auto">
+            <TabsList>
+              <TabsTrigger value="mail_rule">Mail Rules</TabsTrigger>
+              <TabsTrigger value="otp_rule">OTP Rules</TabsTrigger>
+              <TabsTrigger value="distribution_lists">Distribution Lists</TabsTrigger>
+            </TabsList>
+          </div>
+
+          <TabsContent value="mail_rule">
+            <Card>
+              <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-center sm:justify-between">
+                <CardTitle className="text-lg font-semibold">Mail Rules</CardTitle>
+                <Button
+                  onClick={() => {
+                    setEditingRule(null);
+                    setCreateCategory("mail_rule");
                     setBuilderOpen(true);
                   }}
-                  onToggleEnabled={handleToggleEnabled}
-                  onReorder={handleReorder}
-                  onDelete={setPendingDelete}
-                />
-              )}
-            </CardContent>
-          </Card>
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  New Rule
+                </Button>
+              </CardHeader>
+              <CardContent>
+                {/* Only the true first load (rules === null, nothing to
+                    show yet at all) renders the skeleton — a later
+                    background refresh (toggle/reorder/delete/save)
+                    keeps showing the last-known list instead of
+                    blanking it out, and "No Mail Rules yet." only ever
+                    renders once real data has actually arrived, never
+                    while a request is still in flight. */}
+                {rules === null ? (
+                  <div className="space-y-3">
+                    <Skeleton className="h-20 w-full rounded-lg" />
+                    <Skeleton className="h-20 w-full rounded-lg" />
+                  </div>
+                ) : (
+                  <RuleList
+                    category="mail_rule"
+                    rules={mailRules}
+                    onCreate={() => {
+                      setEditingRule(null);
+                      setCreateCategory("mail_rule");
+                      setBuilderOpen(true);
+                    }}
+                    onEdit={(rule) => {
+                      setEditingRule(rule);
+                      setBuilderOpen(true);
+                    }}
+                    busyRuleIds={busyRuleIds}
+                    onToggleEnabled={handleToggleEnabled}
+                    onReorder={handleReorder}
+                    onDelete={setPendingDelete}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>OTP Rules</CardTitle>
-            </CardHeader>
-            <CardContent className="p-0">
-              {rules === null ? (
-                <div className="space-y-3 p-6">
-                  <Skeleton className="h-10 w-full" />
-                  <Skeleton className="h-10 w-full" />
-                </div>
-              ) : (
-                <RuleTable
-                  category="otp_rule"
-                  rules={otpRules}
-                  onEdit={(rule) => {
-                    setEditingRule(rule);
+          <TabsContent value="otp_rule">
+            <Card>
+              <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-center sm:justify-between">
+                <CardTitle className="text-lg font-semibold">OTP Rules</CardTitle>
+                <Button
+                  onClick={() => {
+                    setEditingRule(null);
+                    setCreateCategory("otp_rule");
                     setBuilderOpen(true);
                   }}
-                  onToggleEnabled={handleToggleEnabled}
-                  onReorder={handleReorder}
-                  onDelete={setPendingDelete}
-                />
-              )}
-            </CardContent>
-          </Card>
+                >
+                  <Plus className="mr-2 h-4 w-4" />
+                  New Rule
+                </Button>
+              </CardHeader>
+              <CardContent>
+                {rules === null ? (
+                  <div className="space-y-3">
+                    <Skeleton className="h-20 w-full rounded-lg" />
+                    <Skeleton className="h-20 w-full rounded-lg" />
+                  </div>
+                ) : (
+                  <RuleList
+                    category="otp_rule"
+                    rules={otpRules}
+                    onCreate={() => {
+                      setEditingRule(null);
+                      setCreateCategory("otp_rule");
+                      setBuilderOpen(true);
+                    }}
+                    onEdit={(rule) => {
+                      setEditingRule(rule);
+                      setBuilderOpen(true);
+                    }}
+                    busyRuleIds={busyRuleIds}
+                    onToggleEnabled={handleToggleEnabled}
+                    onReorder={handleReorder}
+                    onDelete={setPendingDelete}
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
 
-          <DistributionListsPanel />
-        </>
+          <TabsContent value="distribution_lists">
+            <DistributionListsPanel />
+          </TabsContent>
+        </Tabs>
       )}
 
       <RuleBuilderDialog
         open={builderOpen}
         onOpenChange={setBuilderOpen}
         rule={editingRule}
+        defaultCategory={createCategory}
         onSaved={() => {
           refresh();
           // A create/update can add a brand-new folder-action target

@@ -21,7 +21,7 @@ import {
   UserCircle,
   Users,
 } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -35,6 +35,7 @@ import { cn } from "@/lib/utils";
 import { canSeeNavItem, NAV_ITEM_TRANSLATION_KEY, NavItemKey } from "@/lib/role-access";
 import { authService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
+import { useSettingsStore } from "@/store/settings-store";
 
 // Every role except Viewer lands on the embedded Ticket Management
 // workspace at /dashboard (see role-access.ts) — these items route
@@ -116,6 +117,20 @@ const menuItems: {
     icon: UserCircle,
   },
 ];
+
+// Drag-to-resize bounds for the expanded main sidebar (collapsed state
+// stays a fixed 80px, unaffected). 220 keeps room for this app's
+// longest nav labels ("SLA Timing Matrix", "Reporting Managers") before
+// they fall back to the existing truncate behavior; 400 is generous
+// without letting the sidebar dominate the viewport. Brackets both
+// existing known-good widths: the default (256) and the mobile drawer's
+// own fixed width (288, SheetContent's w-72).
+const MIN_SIDEBAR_WIDTH = 220;
+const MAX_SIDEBAR_WIDTH = 400;
+
+function clampSidebarWidth(width: number) {
+  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width));
+}
 
 interface SidebarContentProps {
   collapsed?: boolean;
@@ -243,18 +258,89 @@ export function SidebarContent({ collapsed = false, onNavigate }: SidebarContent
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
 
+  const persistedWidth = useSettingsStore((s) => s.sidebarWidth);
+  const setPersistedWidth = useSettingsStore((s) => s.setSidebarWidth);
+  const clampedPersistedWidth = clampSidebarWidth(persistedWidth);
+
+  // Non-null only while a drag is in progress — live pointermove
+  // updates stay local (drive the render), and only the final value
+  // on pointerup is written to the persisted store, so dragging never
+  // hammers localStorage.
+  const [dragWidth, setDragWidth] = useState<number | null>(null);
+  const dragWidthRef = useRef<number | null>(null);
+  const dragStartRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const cleanupRef = useRef<() => void>(() => {});
+
+  const isDragging = dragWidth !== null;
+  const effectiveWidth = dragWidth ?? clampedPersistedWidth;
+
+  const handlePointerMove = useCallback((event: PointerEvent) => {
+    const drag = dragStartRef.current;
+    if (!drag) return;
+    const next = clampSidebarWidth(drag.startWidth + (event.clientX - drag.startX));
+    dragWidthRef.current = next;
+    setDragWidth(next);
+  }, []);
+
+  // A stable callback (so it can be added/removed as the same function
+  // reference) can't safely close over fresh `dragWidth` state — reads
+  // the ref instead, which handlePointerMove keeps current.
+  const endDrag = useCallback(() => {
+    if (dragWidthRef.current !== null) {
+      setPersistedWidth(dragWidthRef.current);
+    }
+    dragStartRef.current = null;
+    dragWidthRef.current = null;
+    setDragWidth(null);
+    cleanupRef.current();
+    cleanupRef.current = () => {};
+  }, [setPersistedWidth]);
+
+  const beginDrag = useCallback(
+    (event: React.PointerEvent) => {
+      event.preventDefault();
+      dragStartRef.current = { startX: event.clientX, startWidth: clampedPersistedWidth };
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", endDrag);
+      cleanupRef.current = () => {
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", endDrag);
+      };
+    },
+    [clampedPersistedWidth, handlePointerMove, endDrag]
+  );
+
+  // Safety net for unmounting mid-drag — same convention
+  // MailWorkspaceLayout's own resizable panels already use.
+  useEffect(() => () => endDrag(), [endDrag]);
+
   return (
     <motion.aside
-      animate={{ width: collapsed ? 80 : 256 }}
-      transition={{ type: "spring", stiffness: 300, damping: 32 }}
+      animate={{ width: collapsed ? 80 : effectiveWidth }}
+      transition={isDragging ? { duration: 0 } : { type: "spring", stiffness: 300, damping: 32 }}
       className="relative h-screen shrink-0 border-r border-border print:hidden"
     >
       <SidebarContent collapsed={collapsed} />
 
+      {!collapsed && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize sidebar"
+          onPointerDown={beginDrag}
+          className={cn(
+            "absolute right-0 top-0 z-0 h-full w-1.5 cursor-col-resize touch-none select-none",
+            "after:absolute after:inset-y-0 after:left-1/2 after:w-px after:-translate-x-1/2 after:bg-transparent after:transition-colors",
+            "hover:after:bg-primary/50",
+            isDragging && "after:bg-primary/60"
+          )}
+        />
+      )}
+
       <Button
         variant="outline"
         size="icon"
-        className="absolute -right-3.5 top-20 h-7 w-7 rounded-full bg-background shadow-sm"
+        className="absolute -right-3.5 top-20 z-10 h-7 w-7 rounded-full bg-background shadow-sm"
         onClick={() => setCollapsed((prev) => !prev)}
         aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
       >

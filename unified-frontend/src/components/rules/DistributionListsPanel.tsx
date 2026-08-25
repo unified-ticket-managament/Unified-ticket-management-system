@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { EmptyState, ErrorState } from "@/components/shared/stats";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -108,8 +109,8 @@ export function DistributionListsPanel() {
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0">
-        <CardTitle>Distribution Lists</CardTitle>
+      <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-center sm:justify-between">
+        <CardTitle className="text-lg font-semibold">Distribution Lists</CardTitle>
         <Button size="sm" onClick={handleNew}>
           <Plus className="mr-2 h-4 w-4" />
           New Distribution List
@@ -117,14 +118,27 @@ export function DistributionListsPanel() {
       </CardHeader>
       <CardContent className="p-0">
         {loadError ? (
-          <p className="px-6 py-8 text-sm text-destructive">{loadError}</p>
+          <div className="p-6">
+            <ErrorState message={loadError} />
+          </div>
         ) : lists === null ? (
           <div className="space-y-3 p-6">
             <Skeleton className="h-10 w-full" />
             <Skeleton className="h-10 w-full" />
           </div>
         ) : lists.length === 0 ? (
-          <p className="px-6 py-8 text-sm text-muted-foreground">No distribution lists yet.</p>
+          <div className="p-6">
+            <EmptyState
+              title="No Distribution Lists Yet"
+              description="Create a distribution list to group recipients for Mail Rule and OTP Rule forwarding."
+              action={
+                <Button onClick={handleNew}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  New Distribution List
+                </Button>
+              }
+            />
+          </div>
         ) : (
           <Table>
             <TableHeader>
@@ -145,13 +159,15 @@ export function DistributionListsPanel() {
                   </TableCell>
                   <TableCell>{list.member_count}</TableCell>
                   <TableCell>
-                    <Switch
-                      checked={list.is_active}
-                      onCheckedChange={(checked) => handleToggleActive(list, checked)}
-                    />
+                    <div className="flex justify-center">
+                      <Switch
+                        checked={list.is_active}
+                        onCheckedChange={(checked) => handleToggleActive(list, checked)}
+                      />
+                    </div>
                   </TableCell>
                   <TableCell>
-                    <div className="flex justify-end gap-1">
+                    <div className="flex justify-end gap-1.5">
                       <Button
                         variant="ghost"
                         size="icon"

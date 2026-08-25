@@ -101,16 +101,56 @@ class RuleService:
                 detail="One or more selected Distribution Lists are invalid or inactive.",
             )
 
+    def _to_response(
+        self, rule: Rule, current_user: User, user_dl_ids: Iterable[UUID]
+    ) -> RuleResponse:
+        """
+        The one place a `Rule` ORM row becomes a `RuleResponse` with its
+        viewer-specific `can_manage` flag correctly attached — reused by
+        every method that can return a rule the current viewer didn't
+        necessarily create (list_all, reorder), so "can this viewer
+        actually edit/delete/toggle/reorder this row" is computed
+        identically everywhere rather than re-derived ad hoc.
+        """
+
+        response = RuleResponse.model_validate(rule)
+        response.can_manage = can_manage_rule(rule, current_user, user_dl_ids)
+        return response
+
+    async def _visible_rules_for_reorder(
+        self, category: str, current_user: User, user_dl_ids: Iterable[UUID]
+    ) -> list[Rule]:
+        """
+        The exact same visibility scope `list_all` uses for this caller,
+        narrowed to one category and priority-ordered — this is what
+        reorder()'s own adjacency math needs to agree with, since the
+        frontend's Up/Down buttons are indexed against precisely this
+        same list (via GET /rules). Using the unscoped
+        list_by_category_ordered here for every caller (the previous
+        behavior) let a non-view-all user's "adjacent" rule differ from
+        what they were actually shown, silently swapping the wrong pair.
+        """
+
+        if has_permission(current_user, RULE_VIEW_ALL_PERMISSION):
+            return await self.rule_repository.list_by_category_ordered(category)
+        owned_or_shared = await self.rule_repository.list_owned_or_shared(
+            current_user.user_id, user_dl_ids
+        )
+        return sorted(
+            (r for r in owned_or_shared if r.category == category),
+            key=lambda r: r.priority,
+        )
+
     async def list_all(self, current_user: User) -> list[RuleResponse]:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
+        user_dl_ids = await self._user_distribution_list_ids(current_user)
         if has_permission(current_user, RULE_VIEW_ALL_PERMISSION):
             rules = await self.rule_repository.list_all()
         else:
-            user_dl_ids = await self._user_distribution_list_ids(current_user)
             rules = await self.rule_repository.list_owned_or_shared(
                 current_user.user_id, user_dl_ids
             )
-        return [RuleResponse.model_validate(r) for r in rules]
+        return [self._to_response(r, current_user, user_dl_ids) for r in rules]
 
     async def get(self, rule_id: UUID, current_user: User) -> RuleResponse:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
@@ -322,7 +362,9 @@ class RuleService:
         rule = await self._get_or_404(rule_id)
         user_dl_ids = await self._user_distribution_list_ids(current_user)
         _ensure_can_manage(rule, current_user, user_dl_ids)
-        siblings = await self.rule_repository.list_by_category_ordered(rule.category)
+        siblings = await self._visible_rules_for_reorder(
+            rule.category, current_user, user_dl_ids
+        )
 
         index = next(i for i, r in enumerate(siblings) if r.rule_id == rule.rule_id)
         swap_index = index - 1 if request.direction == "up" else index + 1
@@ -331,16 +373,31 @@ class RuleService:
             # Already at the top/bottom — a no-op, not an error, so the
             # UI's disabled-at-the-edge Up/Down buttons never need to
             # special-case this themselves.
-            return [RuleResponse.model_validate(r) for r in siblings]
+            return [
+                self._to_response(r, current_user, user_dl_ids) for r in siblings
+            ]
 
         neighbor = siblings[swap_index]
+        if not can_manage_rule(neighbor, current_user, user_dl_ids):
+            # Distinct from _ensure_can_manage's shared message — this
+            # is specifically about the *other* rule being swapped
+            # with, not the one the user clicked Up/Down on. Without
+            # this check, a rule:view_all holder could otherwise mutate
+            # another user's un-owned, unshared rule's priority just by
+            # reordering their own rule next to it.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Couldn't reorder past a rule you don't have access to.",
+            )
         rule.priority, neighbor.priority = neighbor.priority, rule.priority
 
         await self.rule_repository.save(rule)
         await self.rule_repository.save(neighbor)
 
-        refreshed = await self.rule_repository.list_by_category_ordered(rule.category)
-        return [RuleResponse.model_validate(r) for r in refreshed]
+        refreshed = await self._visible_rules_for_reorder(
+            rule.category, current_user, user_dl_ids
+        )
+        return [self._to_response(r, current_user, user_dl_ids) for r in refreshed]
 
     async def _get_or_404(self, rule_id: UUID) -> Rule:
         rule = await self.rule_repository.get_by_id(rule_id)

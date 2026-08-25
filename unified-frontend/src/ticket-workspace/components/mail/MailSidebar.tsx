@@ -154,6 +154,25 @@ export const MailSidebar = memo(function MailSidebar({
         })}
       </nav>
 
+      {canManageRules && (
+        <div className="flex flex-col gap-0.5 border-t border-border pt-3">
+          <button
+            type="button"
+            data-active={rulesActive}
+            onClick={onOpenRules}
+            className={cn(
+              "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] font-medium transition-all duration-150",
+              rulesActive
+                ? "bg-primary/10 text-primary"
+                : "text-foreground/80 hover:translate-x-0.5 hover:bg-muted hover:text-foreground"
+            )}
+          >
+            <Workflow className={cn("h-4 w-4 flex-none", rulesActive ? "text-primary" : "text-muted-foreground")} />
+            <span className="truncate">Rules</span>
+          </button>
+        </div>
+      )}
+
       {folders.length > 0 && (
         <div className="flex flex-col gap-0.5 border-t border-border pt-3">
           <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -180,25 +199,6 @@ export const MailSidebar = memo(function MailSidebar({
               </button>
             );
           })}
-        </div>
-      )}
-
-      {canManageRules && (
-        <div className="flex flex-col gap-0.5 border-t border-border pt-3">
-          <button
-            type="button"
-            data-active={rulesActive}
-            onClick={onOpenRules}
-            className={cn(
-              "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] font-medium transition-all duration-150",
-              rulesActive
-                ? "bg-primary/10 text-primary"
-                : "text-foreground/80 hover:translate-x-0.5 hover:bg-muted hover:text-foreground"
-            )}
-          >
-            <Workflow className={cn("h-4 w-4 flex-none", rulesActive ? "text-primary" : "text-muted-foreground")} />
-            <span className="truncate">Rules</span>
-          </button>
         </div>
       )}
     </aside>

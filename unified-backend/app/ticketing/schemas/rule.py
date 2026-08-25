@@ -194,3 +194,11 @@ class RuleResponse(ORMBase):
     shared_distribution_list_ids: list[UUID]
     created_at: datetime
     updated_at: datetime
+    # Whether the *current viewer* (not just anyone) can edit/delete/
+    # toggle/reorder this specific rule — distinct from being able to
+    # merely see it. Defaults True because create/update/set_enabled
+    # only ever return a rule the caller just successfully mutated
+    # (already proven manageable); list_all/reorder explicitly
+    # override this per-rule since rule:view_all can surface rules the
+    # viewer can see but not manage — see rule_access.can_manage_rule.
+    can_manage: bool = True

@@ -41,6 +41,12 @@ interface RuleBuilderDialogProps {
   // already configured for the old one).
   rule: RuleResponse | null;
   onSaved: () => void;
+  // Which category toggle a brand-new ("+ New Rule") rule opens
+  // pre-selected to — e.g. the OTP Rules tab passes "otp_rule" so a
+  // user doesn't have to manually flip the toggle after opening.
+  // Ignored once editing an existing rule (its own category always
+  // wins). Defaults to "mail_rule", the prior hardcoded behavior.
+  defaultCategory?: RuleCategory;
 }
 
 function defaultCondition(category: RuleCategory): RuleConditionItem {
@@ -60,7 +66,13 @@ function emptyGroup(): RuleConditionGroup {
   return { combinator: "AND", rules: [] };
 }
 
-export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBuilderDialogProps) {
+export function RuleBuilderDialog({
+  open,
+  onOpenChange,
+  rule,
+  onSaved,
+  defaultCategory = "mail_rule",
+}: RuleBuilderDialogProps) {
   const { toast } = useToast();
   const isEditing = rule != null;
 
@@ -90,16 +102,17 @@ export function RuleBuilderDialog({ open, onOpenChange, rule, onSaved }: RuleBui
       setSharedUserIds(rule.shared_user_ids ?? []);
       setSharedDistributionListIds(rule.shared_distribution_list_ids ?? []);
     } else {
-      setCategory("mail_rule");
+      setCategory(defaultCategory);
       setName("");
       setIsEnabled(true);
-      setConditions({ combinator: "AND", rules: [defaultCondition("mail_rule")] });
+      setConditions({ combinator: "AND", rules: [defaultCondition(defaultCategory)] });
       setExceptions(emptyGroup());
       setActions([]);
       setStopProcessing(false);
       setSharedUserIds([]);
       setSharedDistributionListIds([]);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, rule]);
 
   function handleCategoryChange(next: RuleCategory) {
