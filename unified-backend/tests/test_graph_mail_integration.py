@@ -1613,6 +1613,17 @@ def test_map_external_email_to_interaction_sanitizes_dangerous_inbound_html():
 
 
 def test_map_external_email_to_interaction_preserves_a_real_table():
+    """
+    A genuine 2x2 inbound data table must both survive structurally
+    and now get the same visible-grid border styling an agent-authored
+    table gets, via sanitize_inbound_html's shape-based classifier
+    (_is_genuine_data_table) — the fix for the "genuine inbound tables
+    never got borders" half of the table-border regression. This is
+    deliberately the opposite shape from the nested-layout-table
+    regression test above (2 rows x 2 columns vs 1x1-per-level nesting)
+    so the two tests can never be satisfied by the same broken logic.
+    """
+
     payload = _graph_payload(
         "<table><tbody><tr><td>Name</td><td>Status</td></tr>"
         "<tr><td>Raju</td><td>Open</td></tr></tbody></table>",
@@ -1622,9 +1633,12 @@ def test_map_external_email_to_interaction_preserves_a_real_table():
     email = map_external_email_to_interaction(payload)
 
     assert email.html_body is not None
-    assert "<table>" in email.html_body
-    assert "<td>Raju</td>" in email.html_body
-    assert "<td>Status</td>" in email.html_body
+    assert "<table" in email.html_body
+    assert "border-collapse:collapse" in email.html_body
+    assert "border:1px solid" in email.html_body
+    assert "<td>Raju</td>" not in email.html_body  # styled now, not the bare tag
+    assert "Raju</td>" in email.html_body
+    assert "Status</td>" in email.html_body
 
 
 def test_map_external_email_to_interaction_passes_through_landed_mailbox():

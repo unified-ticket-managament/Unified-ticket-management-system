@@ -285,3 +285,117 @@ def test_inbound_sanitizer_preserves_cid_inline_images():
 
     assert 'src="cid:xyz789"' in result
     assert 'alt="chart"' in result
+
+
+# ---------------------------------------------------------
+# Genuine inbound data tables: the other half of the table-border
+# regression. An external sender's <table> is judged on its own shape
+# (_is_genuine_data_table) rather than being blanket-excluded — a real
+# 2+ row, 2+ column table (an invoice, a status report) must still get
+# a visible grid even though it arrived inbound, while a layout/
+# wrapper table (the case above) still gets none.
+# ---------------------------------------------------------
+
+
+def test_a_genuine_flat_inbound_table_now_gets_visible_borders():
+    html = "<table><tr><td>Name</td><td>Status</td></tr><tr><td>Raju</td><td>Open</td></tr></table>"
+
+    result = sanitize_inbound_html(html)
+
+    assert "border-collapse:collapse" in result
+    assert "border:1px solid #888888" in result
+    assert "Raju</td>" in result
+    assert "Status</td>" in result
+
+
+def test_inbound_single_column_multi_row_table_stays_unstyled():
+    """
+    Known, accepted limitation: a single-column table (rows stacked
+    vertically) is structurally identical to the classic layout
+    pattern used to stack a header/body/footer, so it is never treated
+    as a data table, regardless of row count.
+    """
+
+    html = "<table><tr><td>Item A</td></tr><tr><td>Item B</td></tr><tr><td>Item C</td></tr></table>"
+
+    result = sanitize_inbound_html(html)
+
+    assert "border" not in result
+    assert "style=" not in result
+
+
+def test_inbound_genuine_table_nested_inside_a_layout_wrapper_is_styled_independently():
+    """
+    A real data table pasted inside an outer layout/wrapper table (a
+    common newsletter pattern: single-cell wrapper for margins, with
+    the actual content table inside it) must get borders on the inner
+    table only — the outer 1x1 wrapper must stay untouched.
+    """
+
+    html = (
+        "<table><tr><td>"
+        "<table><tr><td>Name</td><td>Status</td></tr><tr><td>Raju</td><td>Open</td></tr></table>"
+        "</td></tr></table>"
+    )
+
+    result = sanitize_inbound_html(html)
+
+    assert result.count("border-collapse:collapse") == 1
+    assert result.count("<table>") == 1  # the outer 1x1 wrapper stays bare
+    assert result.count("<table style=") == 1  # only the inner table was styled
+    assert "Raju</td>" in result
+
+
+def test_inbound_table_with_header_and_single_data_row_gets_styled():
+    html = (
+        "<table><thead><tr><th>Name</th><th>Status</th></tr></thead>"
+        "<tbody><tr><td>Raju</td><td>Open</td></tr></tbody></table>"
+    )
+
+    result = sanitize_inbound_html(html)
+
+    assert "border-collapse:collapse" in result
+    assert result.count("border:1px solid #888888") == 4  # 2 <th> + 2 <td>
+
+
+def test_inbound_excel_clipboard_table_still_gets_styled_despite_stripped_markup():
+    """
+    Real Excel-clipboard HTML carries border/cellspacing/colgroup
+    markup that nh3 already strips outright (see
+    test_table_structure_survives_excel_style_verbose_markup) — the
+    classifier runs on the post-nh3 structure, so a genuine 2-row
+    table still qualifies for styling even once all of that is gone.
+    """
+
+    html = (
+        '<table border="1" cellspacing="0"><colgroup><col></colgroup>'
+        '<tr><td><span style="mso-number-format:General">Raju</span></td>'
+        "<td>Open</td></tr>"
+        "<tr><td>Suresh</td><td>Closed</td></tr></table>"
+    )
+
+    result = sanitize_inbound_html(html)
+
+    assert "colgroup" not in result
+    assert "mso-" not in result
+    assert "<span" not in result  # not an allowed tag either
+    assert "border-collapse:collapse" in result
+    assert "Raju" in result
+    assert "Suresh</td>" in result
+
+
+def test_inbound_table_styling_does_not_reintroduce_html_body_wrapper():
+    """
+    The classifier reparses/reserializes the whole fragment through
+    BeautifulSoup — must not wrap a bare fragment in a stray
+    <html>/<body>, which would corrupt everything downstream that
+    stores/renders body_html as a fragment, not a full document.
+    """
+
+    html = "<p>Hello &amp; welcome</p><table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
+
+    result = sanitize_inbound_html(html)
+
+    assert "<html" not in result
+    assert "<body" not in result
+    assert "Hello &amp; welcome" in result

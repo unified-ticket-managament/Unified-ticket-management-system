@@ -151,6 +151,15 @@ export const userService = {
     await api.delete(`/users/${id}`);
   },
 
+  resetPassword: async (id: string, new_password: string) => {
+    const response = await api.post<{ message: string }>(
+      `/users/${id}/reset-password`,
+      { new_password }
+    );
+
+    return response.data;
+  },
+
   activate: async (id: string) => {
     const response = await api.patch<User>(`/users/${id}/activate`);
 

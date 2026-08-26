@@ -113,6 +113,14 @@ class UserUpdate(BaseModel):
 
 
 # -----------------------------
+# Reset Password (Super Admin / user:reset_password only)
+# -----------------------------
+
+class ResetPasswordRequest(BaseModel):
+    new_password: str = Field(min_length=8)
+
+
+# -----------------------------
 # User Response
 # -----------------------------
 

@@ -1138,6 +1138,44 @@ class UserService:
         return user
 
     # --------------------------------------------------
+    # Reset Password (Super Admin / user:reset_password only —
+    # forcing another user's password, distinct from AuthService.
+    # change_password's self-service old-password-verifying flow)
+    # --------------------------------------------------
+
+    async def reset_password(
+        self,
+        user_id: UUID,
+        new_password: str,
+        actor: User | None = None,
+    ) -> None:
+
+        user, client = await self._resolve_user_or_client(user_id)
+
+        if client is not None:
+            # A "Client" user has no `users` row and no password_hash
+            # at all — see CLIENT_ROLE_NAME's own docstring.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Client users do not have a password.",
+            )
+
+        user.password_hash = get_password_hash(new_password)
+
+        await self.user_repository.update(user)
+
+        # No old_value/new_value — the password itself must never be
+        # written to the audit log, mirroring auth.change_password.
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="user.password_reset",
+                entity_type="user",
+                entity_id=str(user.user_id),
+            )
+        )
+
+    # --------------------------------------------------
     # Delete User
     # --------------------------------------------------
 

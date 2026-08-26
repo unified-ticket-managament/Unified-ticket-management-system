@@ -18,6 +18,7 @@
 import re
 
 import nh3
+from bs4 import BeautifulSoup, Tag
 
 _ALLOWED_TAGS = {
     "p", "br", "div",
@@ -66,21 +67,26 @@ def sanitize_inbound_html(html: str) -> str:
     """
     Sanitizes an external sender's own HTML for storage/display — the
     same tag/attribute/scheme allow-list and cid-only <img> restriction
-    as sanitize_outbound_html, but deliberately does NOT run
-    `_style_email_tables`. An inbound sender's <table> is just as often
-    pure layout/positioning markup (newsletter/marketing templates
-    nest tables purely to lay out a header/columns/footer, with no
-    intent for any of it to look like a bordered grid) as it is a real
-    data table — unlike agent-authored content, where every <table> is
-    a deliberate paste. Forcing a visible border onto every nested
-    layout table made ordinary marketing/notification emails render as
-    a wall of boxes never present in the original message (confirmed
-    against a real inbound Sunshine Health email). Preserving the
-    sender's own structure/formatting is the priority for inbound mail;
-    only genuinely dangerous content is stripped.
+    as sanitize_outbound_html, but deliberately does NOT run the blind,
+    unconditional `_style_email_tables`. An inbound sender's <table> is
+    just as often pure layout/positioning markup (newsletter/marketing
+    templates nest tables purely to lay out a header/columns/footer,
+    with no intent for any of it to look like a bordered grid) as it is
+    a real data table — unlike agent-authored content, where every
+    <table> is a deliberate paste. Forcing a visible border onto every
+    nested layout table made ordinary marketing/notification emails
+    render as a wall of boxes never present in the original message
+    (confirmed against a real inbound Sunshine Health email).
+
+    Instead, `_style_qualifying_inbound_tables` judges each <table> on
+    its own shape and only borders the ones that actually look like
+    data (see its docstring) — so a genuine table (e.g. an invoice or
+    status report) still gets a visible grid, while layout/wrapper
+    tables stay untouched. Preserving the sender's own structure is
+    still the priority; only genuinely dangerous content is stripped.
     """
 
-    return _clean_html(html)
+    return _style_qualifying_inbound_tables(_clean_html(html))
 
 
 def _clean_html(html: str) -> str:
@@ -139,3 +145,64 @@ def _style_email_tables(html: str) -> str:
         flags=re.IGNORECASE,
     )
     return html
+
+
+def _closest_table(tag: Tag) -> Tag | None:
+    parent = tag.parent
+    while parent is not None:
+        if getattr(parent, "name", None) == "table":
+            return parent
+        parent = parent.parent
+    return None
+
+
+def _table_own_rows(table: Tag) -> list[Tag]:
+    # A <table> nested inside this one has its own <tr>s; walking up
+    # from each <tr> to its nearest enclosing <table> is what keeps a
+    # table's shape judged independently of anything nested inside (or
+    # wrapping) it — see _is_genuine_data_table.
+    return [tr for tr in table.find_all("tr") if _closest_table(tr) is table]
+
+
+def _is_genuine_data_table(table: Tag) -> bool:
+    """
+    An inbound <table> only "counts" as real tabular data — and gets a
+    visible grid — if it actually looks like one: at least 2 rows and
+    at least 2 columns of its own. A single-column table (the classic
+    vertical-stack layout pattern used to lay out a newsletter's
+    header/body/footer as one <table> "row" per section) never
+    qualifies, no matter how many rows it has — this is what keeps a
+    Sunshine-Health-style nested layout table un-bordered while a real
+    2-column status/invoice table gets styled.
+    """
+    own_rows = _table_own_rows(table)
+    if len(own_rows) < 2:
+        return False
+
+    max_cols = max(
+        (len(row.find_all(["td", "th"], recursive=False)) for row in own_rows),
+        default=0,
+    )
+    return max_cols >= 2
+
+
+def _style_qualifying_inbound_tables(html: str) -> str:
+    """
+    Inbound counterpart to `_style_email_tables`: rather than styling
+    every <table> unconditionally (right for agent-authored content,
+    wrong for an external sender's mail — see sanitize_inbound_html),
+    each <table> is judged on its own shape via
+    `_is_genuine_data_table`. Only a qualifying table's own cells are
+    styled — a nested table inside (or wrapping) it is judged and
+    styled independently, so a real data table nested inside a layout
+    wrapper, or vice versa, never cross-contaminates the other.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    for table in soup.find_all("table"):
+        if not _is_genuine_data_table(table):
+            continue
+        table["style"] = _TABLE_STYLE
+        for row in _table_own_rows(table):
+            for cell in row.find_all(["td", "th"], recursive=False):
+                cell["style"] = _CELL_STYLE
+    return str(soup)
