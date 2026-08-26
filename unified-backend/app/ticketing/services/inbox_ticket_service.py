@@ -337,11 +337,14 @@ class InboxTicketService:
             # actually chose to change it — reuses
             # InteractionService.change_priority as-is (its own
             # PRIORITY_CHANGED audit row, stakeholder notification, and
-            # SLA reshift call, the last of which safely no-ops here
-            # since the clock is still COMPLETED at this point — the
-            # real reshift for reopen happens below via
-            # reopen_resolution_clock, using whatever priority ends up
-            # set on the ticket).
+            # SLA reshift call). That reshift call used to be a no-op
+            # here (the clock was still COMPLETED at this point, before
+            # reopen_ticket itself revived it) — now that reopen_ticket
+            # (line ~320 above) already made the clock RUNNING via its
+            # own reopen_resolution_clock call, this reshift genuinely
+            # re-adjusts due_at to land on the FINAL priority, so no
+            # second explicit reopen_resolution_clock call is needed
+            # below.
             if (
                 request.new_priority is not None
                 and request.new_priority != ticket.current_priority
@@ -427,17 +430,18 @@ class InboxTicketService:
                 completion_reason="ATTACHED_TO_TICKET",
                 resulting_ticket_id=ticket.ticket_id,
             )
-            if was_closed:
-                # FINAL priority (possibly just changed above) drives
-                # the new Resolution SLA — revives the ticket's own
-                # completed clock rather than creating a second row
-                # (ResolutionSLA.ticket_id is unique).
-                await self.sla_service.reopen_resolution_clock(
-                    ticket_id=ticket.ticket_id,
-                    client_id=ticket.client_company_id,
-                    priority=ticket.current_priority,
-                )
-            else:
+            # was_closed: nothing to do here anymore — Interaction
+            # Service.reopen_ticket itself already revived the
+            # Resolution SLA clock above (line ~320), using whatever
+            # priority the ticket had at that point, and if a priority
+            # change followed (lines ~345-353), that call's own SLA
+            # reshift already re-adjusted due_at to the FINAL priority
+            # (it used to be a no-op against a COMPLETED clock, before
+            # reopen_ticket started reviving it — see that call's own
+            # comment). A second explicit reopen_resolution_clock call
+            # here would just double-bump escalation_cycle for one
+            # logical reopen.
+            if not was_closed:
                 # Creates a fresh Resolution clock if this ticket somehow
                 # never had one (pre-dates this feature), or resumes it if
                 # paused — see SLAService.create_or_resume_resolution_clock's

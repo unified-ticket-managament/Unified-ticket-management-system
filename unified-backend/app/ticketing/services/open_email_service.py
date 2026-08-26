@@ -228,6 +228,7 @@ class OpenEmailService:
             category_id=interaction.category_id,
             category_name=payload.category_name,
             to_email=payload.to_email,
+            to_emails=payload.to_emails,
             from_email=payload.from_email,
             from_name=payload.from_name,
             cc=payload.cc,

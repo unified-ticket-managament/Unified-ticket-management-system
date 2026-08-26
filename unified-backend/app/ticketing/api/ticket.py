@@ -66,6 +66,7 @@ from app.ticketing.schemas.attachment import (
 )
 from app.ticketing.schemas.audit_log import AuditLogResponse, TicketAuditLogResponse
 from app.ticketing.schemas.interaction import (
+    DraftDeleteResponse,
     HideInteractionRequest,
     HideInteractionResponse,
     InteractionResponse,
@@ -93,6 +94,12 @@ from app.ticketing.schemas.ticket_action import (
     StatusChangeRequest,
     TicketActionResponse,
     TransferAgentRequest,
+)
+from app.ticketing.schemas.ticket_draft import (
+    TicketNoteDraftResponse,
+    TicketNoteDraftSaveRequest,
+    TicketReplyDraftResponse,
+    TicketReplyDraftSaveRequest,
 )
 from app.ticketing.schemas.ticket_from_interaction import (
     TicketFromInteractionCreate,
@@ -467,6 +474,167 @@ async def reply_to_client(
         ticket_id=ticket_id,
         request=request,
         current_user=current_user,
+    )
+
+
+# =========================================================
+# Ticket Drafts — Save Draft for Ticket Reply and Internal Note (also
+# used by Mail's own ticketed ReplyComposer, which sends through the
+# reply-draft endpoints below). See InteractionService's own "Ticket
+# Drafts" section docstring for the full architecture rationale.
+# =========================================================
+
+
+def _ticket_draft_service(db: AsyncSession) -> InteractionService:
+    return InteractionService(
+        interaction_repository=InteractionRepository(db),
+        ticket_repository=TicketRepository(db),
+        user_repository=UserRepository(db),
+        client_repository=ClientRepository(db),
+        escalation_service=build_escalation_service(db),
+        attachment_repository=AttachmentRepository(db),
+        storage_service=get_storage_service(),
+        distribution_list_repository=DistributionListRepository(db),
+        notification_service=NotificationService(NotificationRepository(db)),
+    )
+
+
+@router.put(
+    "/{ticket_id}/draft/reply",
+    response_model=TicketReplyDraftResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def save_ticket_reply_draft(
+    ticket_id: UUID,
+    request: TicketReplyDraftSaveRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upserts the current user's draft Reply on this ticket."""
+
+    return await _ticket_draft_service(db).save_ticket_reply_draft(
+        ticket_id=ticket_id, current_user=current_user, request=request
+    )
+
+
+@router.get(
+    "/{ticket_id}/draft/reply",
+    response_model=TicketReplyDraftResponse,
+)
+async def get_ticket_reply_draft(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fetches the current user's draft Reply on this ticket, to restore the composer on reopen."""
+
+    return await _ticket_draft_service(db).get_ticket_reply_draft(
+        ticket_id=ticket_id, current_user=current_user
+    )
+
+
+@router.delete(
+    "/{ticket_id}/draft/reply",
+    response_model=DraftDeleteResponse,
+)
+async def discard_ticket_reply_draft(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deletes the current user's draft Reply on this ticket without sending it."""
+
+    return await _ticket_draft_service(db).discard_ticket_reply_draft(
+        ticket_id=ticket_id, current_user=current_user
+    )
+
+
+@router.post(
+    "/{ticket_id}/draft/reply/send",
+    response_model=TicketActionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def send_ticket_reply_draft(
+    ticket_id: UUID,
+    attachment_source_interaction_id: UUID | None = None,
+    idempotency_key: str | None = None,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sends the current user's draft Reply on this ticket as a real reply."""
+
+    return await _ticket_draft_service(db).send_ticket_reply_draft(
+        ticket_id=ticket_id,
+        current_user=current_user,
+        attachment_source_interaction_id=attachment_source_interaction_id,
+        idempotency_key=idempotency_key,
+    )
+
+
+@router.put(
+    "/{ticket_id}/draft/note",
+    response_model=TicketNoteDraftResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def save_ticket_note_draft(
+    ticket_id: UUID,
+    request: TicketNoteDraftSaveRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upserts the current user's draft Internal Note on this ticket."""
+
+    return await _ticket_draft_service(db).save_ticket_note_draft(
+        ticket_id=ticket_id, current_user=current_user, request=request
+    )
+
+
+@router.get(
+    "/{ticket_id}/draft/note",
+    response_model=TicketNoteDraftResponse,
+)
+async def get_ticket_note_draft(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fetches the current user's draft Internal Note on this ticket, to restore the composer on reopen."""
+
+    return await _ticket_draft_service(db).get_ticket_note_draft(
+        ticket_id=ticket_id, current_user=current_user
+    )
+
+
+@router.delete(
+    "/{ticket_id}/draft/note",
+    response_model=DraftDeleteResponse,
+)
+async def discard_ticket_note_draft(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deletes the current user's draft Internal Note on this ticket without sending it."""
+
+    return await _ticket_draft_service(db).discard_ticket_note_draft(
+        ticket_id=ticket_id, current_user=current_user
+    )
+
+
+@router.post(
+    "/{ticket_id}/draft/note/send",
+    response_model=InternalNoteResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def send_ticket_note_draft(
+    ticket_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sends the current user's draft Internal Note on this ticket as a real note."""
+
+    return await _ticket_draft_service(db).send_ticket_note_draft(
+        ticket_id=ticket_id, current_user=current_user
     )
 
 

@@ -132,6 +132,11 @@ function draftItemToInboxItem(item: DraftItem): InboxItem {
   return {
     interaction_id: item.interaction_id,
     open_interaction_id: item.root_interaction_id ?? item.interaction_id,
+    // A Compose draft never has a root (it's a parentless EMAIL-type
+    // interaction, not a REPLY child of one) — a Reply draft always
+    // does. This is what lets the click handler tell the two apart
+    // and reopen a Compose draft as a Compose form, not a thread.
+    is_compose_draft: item.root_interaction_id === null,
     client_id: item.client_id,
     client_name: item.client_name,
     from_email: null,

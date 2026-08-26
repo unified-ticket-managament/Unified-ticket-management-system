@@ -2,6 +2,7 @@ import { apiClient } from "./client";
 import type {
   AttachmentUploadResponse,
   CancelSendResponse,
+  DraftDeleteResponse,
   HideInteractionRequest,
   HideInteractionResponse,
   InlineImageUploadResponse,
@@ -19,6 +20,10 @@ import type {
   TicketActionResponse,
   TicketAttachmentItem,
   TicketInteractionResponse,
+  TicketNoteDraftResponse,
+  TicketNoteDraftSaveRequest,
+  TicketReplyDraftResponse,
+  TicketReplyDraftSaveRequest,
 } from "@tw/types";
 
 export interface ListTicketInteractionsParams {
@@ -145,6 +150,89 @@ export async function replyToClient(
   const { data } = await apiClient.post<TicketActionResponse>(
     `/tickets/${ticketId}/reply`,
     payload
+  );
+  return data;
+}
+
+// Ticket-scoped drafts — Save Draft for Ticket Reply and Internal
+// Note (also backs Mail's own ticketed ReplyComposer). See
+// InteractionService's "Ticket Drafts" section for the full
+// architecture rationale.
+
+export async function saveTicketReplyDraft(
+  ticketId: string,
+  payload: TicketReplyDraftSaveRequest
+): Promise<TicketReplyDraftResponse> {
+  const { data } = await apiClient.put<TicketReplyDraftResponse>(
+    `/tickets/${ticketId}/draft/reply`,
+    payload
+  );
+  return data;
+}
+
+export async function getTicketReplyDraft(
+  ticketId: string
+): Promise<TicketReplyDraftResponse> {
+  const { data } = await apiClient.get<TicketReplyDraftResponse>(
+    `/tickets/${ticketId}/draft/reply`
+  );
+  return data;
+}
+
+export async function discardTicketReplyDraft(
+  ticketId: string
+): Promise<DraftDeleteResponse> {
+  const { data } = await apiClient.delete<DraftDeleteResponse>(
+    `/tickets/${ticketId}/draft/reply`
+  );
+  return data;
+}
+
+export async function sendTicketReplyDraft(
+  ticketId: string,
+  options?: { attachmentSourceInteractionId?: string; idempotencyKey?: string }
+): Promise<TicketActionResponse> {
+  const { data } = await apiClient.post<TicketActionResponse>(
+    `/tickets/${ticketId}/draft/reply/send`,
+    null,
+    {
+      params: {
+        attachment_source_interaction_id: options?.attachmentSourceInteractionId,
+        idempotency_key: options?.idempotencyKey,
+      },
+    }
+  );
+  return data;
+}
+
+export async function saveTicketNoteDraft(
+  ticketId: string,
+  payload: TicketNoteDraftSaveRequest
+): Promise<TicketNoteDraftResponse> {
+  const { data } = await apiClient.put<TicketNoteDraftResponse>(
+    `/tickets/${ticketId}/draft/note`,
+    payload
+  );
+  return data;
+}
+
+export async function getTicketNoteDraft(ticketId: string): Promise<TicketNoteDraftResponse> {
+  const { data } = await apiClient.get<TicketNoteDraftResponse>(
+    `/tickets/${ticketId}/draft/note`
+  );
+  return data;
+}
+
+export async function discardTicketNoteDraft(ticketId: string): Promise<DraftDeleteResponse> {
+  const { data } = await apiClient.delete<DraftDeleteResponse>(
+    `/tickets/${ticketId}/draft/note`
+  );
+  return data;
+}
+
+export async function sendTicketNoteDraft(ticketId: string): Promise<InternalNoteResponse> {
+  const { data } = await apiClient.post<InternalNoteResponse>(
+    `/tickets/${ticketId}/draft/note/send`
   );
   return data;
 }

@@ -51,7 +51,15 @@ import { useAuthStore } from "@/store/auth-store";
 import { archiveInteraction, replyToInteraction, uploadDraftInlineImage } from "@tw/api/inbox";
 import { listAssignableAgents } from "@tw/api/agent";
 import { listClientContacts } from "@tw/api/clients";
-import { replyToClient, retrySend, uploadAttachment, uploadTicketInlineImage } from "@tw/api/interaction";
+import {
+  discardTicketReplyDraft,
+  getTicketReplyDraft,
+  replyToClient,
+  retrySend,
+  saveTicketReplyDraft,
+  uploadAttachment,
+  uploadTicketInlineImage,
+} from "@tw/api/interaction";
 import { attachInteractionToTicket, createTicketFromInteraction, listTickets } from "@tw/api/ticket";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
@@ -78,6 +86,7 @@ import type {
   MailFolder,
   OpenEmailResponse,
   TicketPriority,
+  TicketReplyDraftResponse,
   TicketResponse,
 } from "@tw/types";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
@@ -526,6 +535,7 @@ export function MessageDetailsView({
   const isTicketed = Boolean(email.ticket_id);
   const isClosed = email.ticket_status === "CLOSED";
   const hasDraft = Boolean(email.draft_message);
+  const [ticketReplyDraft, setTicketReplyDraft] = useState<TicketReplyDraftResponse | null>(null);
   const status = STATUS_META[email.status] ?? { label: email.status, variant: "secondary" as const };
 
   useEffect(() => {
@@ -535,6 +545,36 @@ export function MessageDetailsView({
     setReplyMode(hasDraft ? (email.draft_cc.length > 0 || email.draft_bcc.length > 0 ? "replyAll" : "reply") : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email.interaction_id, email.ticket_id]);
+
+  // Ticketed counterpart of the effect above — OpenEmailResponse's
+  // own draft_message/draft_cc/draft_bcc fields are populated purely
+  // from the pre-ticket draft path (InteractionRepository.get_draft),
+  // never a ticket-scoped one, so a ticketed thread's saved draft (if
+  // any) is fetched here instead and pre-fills ReplyComposer via
+  // ticketReplyDraft below. A 404 (no draft) is expected, not an
+  // error. Only the first saved "To" recipient is restored here
+  // (ReplyComposer's own `toEmail` prop is still a single address) —
+  // a known, minor gap versus a multi-recipient ticket draft; subject/
+  // body/Cc/Bcc all restore in full.
+  useEffect(() => {
+    if (!isTicketed || !email.ticket_id) {
+      setTicketReplyDraft(null);
+      return;
+    }
+    let cancelled = false;
+    getTicketReplyDraft(email.ticket_id)
+      .then((draft) => {
+        if (cancelled) return;
+        setTicketReplyDraft(draft);
+        setReplyMode(draft.cc.length > 0 || draft.bcc.length > 0 ? "replyAll" : "reply");
+      })
+      .catch(() => {
+        if (!cancelled) setTicketReplyDraft(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isTicketed, email.ticket_id]);
 
   function loadAssignableAgents(category: string) {
     setAssignableAgentsError(false);
@@ -669,6 +709,11 @@ export function MessageDetailsView({
       if (result) {
         idempotencyKeyRef.current = generateIdempotencyKey();
         pastedImageInteractionIdsRef.current = [];
+        // The reply just sent through the normal path above — any
+        // draft this session had been autosaving for this ticket is
+        // now obsolete. Best-effort: a 404 (nothing was ever saved)
+        // is expected, not an error.
+        discardTicketReplyDraft(email.ticket_id).catch(() => {});
         showUndoSendToast(pushToast, result.interaction_id, "Reply sent.");
         setReplyMode(null);
         onRefreshList();
@@ -744,6 +789,9 @@ export function MessageDetailsView({
   }
 
   async function handleSaveDraft(message: string, cc: string[], bcc: string[], bodyHtml?: string) {
+    if (isTicketed && email.ticket_id) {
+      return saveTicketReplyDraft(email.ticket_id, { message, cc, bcc, body_html: bodyHtml });
+    }
     return onSaveDraft(email.interaction_id, message, cc, bcc, bodyHtml);
   }
 
@@ -782,6 +830,11 @@ export function MessageDetailsView({
   }
 
   async function handleDiscardDraft() {
+    if (isTicketed && email.ticket_id) {
+      const result = await discardTicketReplyDraft(email.ticket_id);
+      if (result) onRefreshList();
+      return result;
+    }
     const result = await onDiscardDraft(email.interaction_id);
     if (result) onRefreshList();
     return result;
@@ -1000,7 +1053,9 @@ export function MessageDetailsView({
         </div>
         <div className="flex gap-2">
           <span className="w-12 flex-none font-medium text-muted-foreground">To</span>
-          <span className="min-w-0 flex-1 truncate text-foreground">{email.to_email ?? "—"}</span>
+          <span className="min-w-0 flex-1 truncate text-foreground">
+            {email.to_emails.length > 0 ? email.to_emails.join(", ") : email.to_email ?? "—"}
+          </span>
         </div>
         {email.cc.length > 0 && (
           <div className="flex gap-2">
@@ -1185,12 +1240,20 @@ export function MessageDetailsView({
       {!isClosed && replyMode && (
         <ReplyComposer
           mode={replyMode}
-          toEmail={email.from_email}
+          toEmail={ticketReplyDraft?.to_email ?? email.from_email}
           contacts={contacts}
           subject={email.subject}
-          initialCc={hasDraft ? email.draft_cc : replyMode === "replyAll" ? computeReplyAllCc(email) : []}
-          initialBcc={hasDraft ? email.draft_bcc : []}
-          initialMessage={hasDraft ? email.draft_message ?? "" : ""}
+          initialCc={
+            ticketReplyDraft
+              ? ticketReplyDraft.cc
+              : hasDraft
+                ? email.draft_cc
+                : replyMode === "replyAll"
+                  ? computeReplyAllCc(email)
+                  : []
+          }
+          initialBcc={ticketReplyDraft ? ticketReplyDraft.bcc : hasDraft ? email.draft_bcc : []}
+          initialMessage={ticketReplyDraft ? ticketReplyDraft.message : hasDraft ? email.draft_message ?? "" : ""}
           isTicketed={isTicketed}
           draftAttachments={email.draft_attachments}
           isSending={isReplying || isReplyingTicket || isUploadingAttachment}

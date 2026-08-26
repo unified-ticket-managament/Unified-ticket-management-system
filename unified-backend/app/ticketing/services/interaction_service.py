@@ -8,6 +8,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, UploadFile
 from fastapi import status as http_status
+from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,12 @@ from app.ticketing.schemas.note import (
     InternalNoteResponse,
 )
 from app.ticketing.schemas.ticket import TicketUpdate
+from app.ticketing.schemas.ticket_draft import (
+    TicketNoteDraftResponse,
+    TicketNoteDraftSaveRequest,
+    TicketReplyDraftResponse,
+    TicketReplyDraftSaveRequest,
+)
 from app.ticketing.schemas.ticket_action import (
     CancelSendResponse,
     InteractionReplyRequest,
@@ -144,7 +151,12 @@ from app.ticketing.schemas.attachment import (
     InlineImageUploadResponse,
     TicketAttachmentItem,
 )
-from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
+from app.ticketing.schemas.compose import (
+    ComposeDraftResponse,
+    ComposeDraftSaveRequest,
+    ComposeEmailRequest,
+    ComposeEmailResponse,
+)
 from app.ticketing.schemas.forward import (
     ForwardToInternalUserRequest,
     ForwardToInternalUserResponse,
@@ -2200,6 +2212,7 @@ class InteractionService:
         current_user: User,
         files: list[UploadFile] | None = None,
         inline_image_interaction_ids: list[UUID] | None = None,
+        existing_attachment_source_interaction_id: UUID | None = None,
     ) -> ComposeEmailResponse:
         """
         Authors a brand-new outbound email to one of the platform's
@@ -2225,6 +2238,14 @@ class InteractionService:
         retry after a network hiccup) return the already-created
         interaction instead of composing a second email — see
         Interaction.dispatch_idempotency_key's own docstring.
+
+        `existing_attachment_source_interaction_id`, when given, is an
+        interaction that already has real, stored attachments (in
+        practice: send_compose_draft's own draft row, whose files were
+        uploaded immediately at attach time, well before Send) — see
+        add_interaction_reply's identical parameter for the full
+        rationale. The caller is still responsible for reassigning
+        those Attachment rows afterward.
         """
 
         if request.idempotency_key:
@@ -2293,18 +2314,21 @@ class InteractionService:
 
         # Compose has no fixed thread, so a picked Distribution List
         # becomes a genuine additional "To" recipient (not downgraded
-        # to Cc) — resolved server-side, merged case-insensitively
-        # with request.to_email, and 400s only if literally nothing
-        # resolves (every selected list empty/inactive AND no to_email
-        # typed) — ComposeEmailRequest's own model_validator already
-        # guarantees at least one *source* was given, but not that it
-        # actually resolves to anyone live.
+        # to Cc) — resolved server-side, merged case-insensitively with
+        # every manually-typed "To" address (request.to_email plus its
+        # plural counterpart request.to_emails — see ComposeEmailRequest's
+        # own docstring for why both exist), and 400s only if literally
+        # nothing resolves (every selected list empty/inactive AND no To
+        # address typed) — ComposeEmailRequest's own model_validator
+        # already guarantees at least one *source* was given, but not
+        # that it actually resolves to anyone live.
+        typed_to_emails = ([request.to_email] if request.to_email else []) + list(
+            request.to_emails
+        )
         resolved_dl_emails = await resolve_distribution_list_emails(
             self.distribution_list_repository, request.distribution_list_ids
         )
-        effective_to = dedupe_emails_case_insensitive(
-            [request.to_email] if request.to_email else [], resolved_dl_emails
-        )
+        effective_to = dedupe_emails_case_insensitive(typed_to_emails, resolved_dl_emails)
         if not effective_to:
             raise HTTPException(
                 status_code=http_status.HTTP_400_BAD_REQUEST,
@@ -2460,6 +2484,11 @@ class InteractionService:
                 envelope,
                 inline_image_interaction_ids,
                 expected_performed_by=current_user.user_id,
+            )
+
+        if envelope is not None and existing_attachment_source_interaction_id is not None:
+            envelope = await self._merge_existing_attachments_into_envelope(
+                interaction, envelope, existing_attachment_source_interaction_id
             )
 
         envelope = self._finalize_envelope_attachments(interaction, envelope)
@@ -3024,6 +3053,36 @@ class InteractionService:
                 await self.sla_service.complete_resolution_clock(
                     ticket_id=ticket_id, close_escalation=False
                 )
+            elif was_closed and not will_be_closed:
+                # The other direction: a ticket leaving RESOLVED back
+                # to an active status (e.g. RESOLVED -> IN_PROGRESS)
+                # used to leave the Resolution SLA clock permanently
+                # COMPLETED — every other clock-mutator (resume,
+                # reshift_due_at_for_priority_change, ...) explicitly
+                # treats COMPLETED as terminal, so nothing ever revived
+                # it here. reopen_resolution_clock exists precisely for
+                # this "the ticket's own workflow status is itself
+                # being reopened" moment (see InteractionService.
+                # reopen_ticket's identical use of it, and
+                # SLAService.reopen_resolution_clock's own docstring) —
+                # a fresh full target window at the ticket's current
+                # priority, with escalation_cycle bumped, not a resumed
+                # stale one.
+                await self.sla_service.reopen_resolution_clock(
+                    ticket_id=ticket_id,
+                    client_id=ticket.client_company_id,
+                    priority=ticket.current_priority,
+                )
+                await AuditLogService.log_event(
+                    self.ticket_repository.db,
+                    entity_type=AuditEntityType.TICKET,
+                    entity_id=ticket_id,
+                    event_type=AuditEventType.SLA_RESUMED,
+                    actor_id=actor_id,
+                    actor_name=actor_name,
+                    actor_role=actor_role,
+                    new_values={"reason": "REOPENED_FROM_RESOLVED", "new_status": new_status.value},
+                )
 
         if self.notification_service is not None:
             stakeholder_ids = await self._resolve_ticket_stakeholder_ids(
@@ -3231,17 +3290,29 @@ class InteractionService:
             },
         )
 
-        # Deliberately does NOT touch the Resolution SLA clock:
-        # SLAService.create_or_resume_resolution_clock's own docstring
-        # is explicit that a COMPLETED clock is never resurrected
-        # ("never resurrect a clock on a closed ticket"), and closing
-        # this ticket already completed it (see close_ticket above).
-        # Reopening restores the ticket's own workflow state — edit
-        # capability, replies, status/priority changes, transfer — but
-        # not a past SLA measurement or the internal escalation
-        # workflow (if one was closed alongside the original
-        # completion); a future breach on the reopened ticket would
-        # create a new escalation rather than resuming the old one.
+        # Revives the Resolution SLA clock — SLAService.create_or_
+        # resume_resolution_clock is the wrong method to reach for here
+        # (its own docstring: a COMPLETED clock is never resurrected
+        # through it, by design, for the ordinary pause/resume case),
+        # but reopen_resolution_clock exists precisely for this moment:
+        # the ticket's own workflow status is itself being reopened
+        # right now, so the SLA measurement should restart alongside
+        # it — a fresh full target window, not a resumed old one. Uses
+        # whatever priority the ticket has at this exact point; if
+        # InboxTicketService.attach_to_existing_ticket's own reopen-
+        # then-optionally-change-priority flow changes it immediately
+        # afterward, change_priority's own existing SLA reshift call
+        # (previously a no-op against a COMPLETED clock) now genuinely
+        # re-adjusts due_at for the new priority — one clean bump here,
+        # not two competing full resets (see that method's own comment
+        # for why its formerly-separate reopen_resolution_clock call
+        # was removed once this one covers it).
+        if self.sla_service is not None:
+            await self.sla_service.reopen_resolution_clock(
+                ticket_id=ticket_id,
+                client_id=ticket.client_company_id,
+                priority=ticket.current_priority,
+            )
 
         return TicketActionResponse(
             interaction_id=None,
@@ -4654,6 +4725,601 @@ class InteractionService:
         await self._discard_draft_core(draft)
 
         return DraftDeleteResponse(message="Draft discarded.")
+
+    # ---------------------------------------------------------
+    # Compose Drafts — a brand-new outbound message has no existing
+    # thread root for save_draft/_get_or_create_draft's "child of a
+    # resolved root" shape to attach to (get_draft looks for a row
+    # whose parent_interaction_id equals the given root, never for the
+    # root being a draft itself) — so a Compose draft is instead its
+    # own root: interaction_type="EMAIL", parent_interaction_id=None,
+    # is_draft=True, uniquely identified by its own interaction_id from
+    # the moment it's created. These methods are a deliberate sibling
+    # to save_draft/discard_draft/send_draft/upload_draft_attachment
+    # above, not a branch inside them (a real is_draft=True row with no
+    # parent never existed before this feature, so this shape is new,
+    # not overlapping) — they still reuse the same underlying
+    # primitives (InteractionRepository.delete_draft, AttachmentService,
+    # and — for Send — the real compose_email method itself, exactly
+    # mirroring how send_draft delegates to add_interaction_reply
+    # rather than reimplementing dispatch).
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def _compose_draft_to_response(
+        draft: Interaction, attachments: list[AttachmentMetadata]
+    ) -> ComposeDraftResponse:
+        payload = draft.payload if isinstance(draft.payload, dict) else {}
+        return ComposeDraftResponse(
+            interaction_id=draft.interaction_id,
+            client_id=draft.client_id,
+            category_id=draft.category_id,
+            to_email=payload.get("to_email"),
+            to_emails=payload.get("to_emails") or [],
+            cc=payload.get("cc") or [],
+            bcc=payload.get("bcc") or [],
+            subject=payload.get("subject") or "",
+            message=payload.get("message") or "",
+            body_html=payload.get("body_html"),
+            attachments=attachments,
+            created_at=draft.created_at,
+        )
+
+    @staticmethod
+    def _compose_draft_payload(request: ComposeDraftSaveRequest) -> dict[str, Any]:
+        return {
+            "client_id": str(request.client_id) if request.client_id else None,
+            "category_id": str(request.category_id) if request.category_id else None,
+            "to_email": request.to_email,
+            "to_emails": list(request.to_emails),
+            "cc": list(request.cc),
+            "bcc": list(request.bcc),
+            "subject": request.subject,
+            "message": request.message,
+            "body_html": request.body_html,
+            "dispatch_status": "DRAFT",
+        }
+
+    async def create_compose_draft(
+        self,
+        current_user: User,
+        request: ComposeDraftSaveRequest,
+    ) -> ComposeDraftResponse:
+        """The one missing piece Compose needed to move off client-only localStorage — see save_compose_draft for the update half."""
+
+        draft = await self.interaction_repository.create(
+            InteractionCreate(
+                ticket_id=None,
+                interaction_type="EMAIL",
+                direction=InteractionDirection.OUTBOUND,
+                status=InteractionStatus.PENDING,
+                performed_by=current_user.user_id,
+                payload=self._compose_draft_payload(request),
+                is_visible=True,
+                client_id=request.client_id,
+                category_id=request.category_id,
+                parent_interaction_id=None,
+                subject=request.subject or None,
+                is_draft=True,
+            )
+        )
+        return self._compose_draft_to_response(draft, attachments=[])
+
+    async def _get_owned_compose_draft(
+        self, interaction_id: UUID, current_user: User
+    ) -> Interaction:
+        draft = await self.interaction_repository.get_by_id(interaction_id)
+
+        if (
+            draft is None
+            or not draft.is_draft
+            or draft.parent_interaction_id is not None
+            or draft.interaction_type != "EMAIL"
+        ):
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Compose draft not found.",
+            )
+
+        if draft.performed_by != current_user.user_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_403_FORBIDDEN,
+                detail="You can only act on your own draft.",
+            )
+
+        return draft
+
+    async def save_compose_draft(
+        self,
+        interaction_id: UUID,
+        current_user: User,
+        request: ComposeDraftSaveRequest,
+    ) -> ComposeDraftResponse:
+        """Upserts current_user's Compose draft in place — one row, overwritten wholesale on every save (same upsert semantics as update_draft_message)."""
+
+        draft = await self._get_owned_compose_draft(interaction_id, current_user)
+
+        updated = await self.interaction_repository.update(
+            draft,
+            InteractionUpdate(
+                payload=self._compose_draft_payload(request),
+                client_id=request.client_id,
+                category_id=request.category_id,
+            ),
+        )
+        attachments = await self._fetch_draft_attachments(updated.interaction_id)
+        return self._compose_draft_to_response(updated, attachments)
+
+    async def get_compose_draft(
+        self, interaction_id: UUID, current_user: User
+    ) -> ComposeDraftResponse:
+        draft = await self._get_owned_compose_draft(interaction_id, current_user)
+        attachments = await self._fetch_draft_attachments(draft.interaction_id)
+        return self._compose_draft_to_response(draft, attachments)
+
+    async def discard_compose_draft(
+        self, interaction_id: UUID, current_user: User
+    ) -> DraftDeleteResponse:
+        draft = await self._get_owned_compose_draft(interaction_id, current_user)
+        await self._discard_draft_core(draft)
+        return DraftDeleteResponse(message="Draft discarded.")
+
+    async def upload_compose_draft_attachment(
+        self,
+        interaction_id: UUID,
+        files: list[UploadFile],
+        current_user: User,
+    ) -> list[AttachmentMetadata]:
+        """Compose's counterpart to upload_draft_attachment — same immediate-upload-before-Send pattern, same interaction_id-keyed storage."""
+
+        if not files:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="At least one file is required.",
+            )
+
+        if self.attachment_repository is None or self.storage_service is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Attachment storage is not configured.",
+            )
+
+        draft = await self._get_owned_compose_draft(interaction_id, current_user)
+
+        attachment_service = AttachmentService(
+            attachment_repository=self.attachment_repository,
+            interaction_repository=self.interaction_repository,
+            ticket_repository=self.ticket_repository,
+            storage_service=self.storage_service,
+        )
+
+        stored = await attachment_service.validate_and_store_files(
+            files, draft.interaction_id
+        )
+
+        return await attachments_to_metadata(stored, self.storage_service)
+
+    async def send_compose_draft(
+        self,
+        interaction_id: UUID,
+        current_user: User,
+        files: list[UploadFile] | None = None,
+        inline_image_interaction_ids: list[UUID] | None = None,
+        idempotency_key: str | None = None,
+    ) -> ComposeEmailResponse:
+        """
+        Sends current_user's Compose draft — hands its saved fields to
+        the real `compose_email` (there is deliberately no separate
+        "draft becomes a Compose send" code path, same principle
+        send_draft already established for Reply drafts) and, via
+        `existing_attachment_source_interaction_id`, embeds any files
+        already uploaded against the draft in the real outbound send
+        itself, then repoints those Attachment rows onto the newly
+        created message before deleting the now-obsolete draft row.
+        """
+
+        draft = await self._get_owned_compose_draft(interaction_id, current_user)
+        payload = draft.payload if isinstance(draft.payload, dict) else {}
+
+        draft_to_email = payload.get("to_email")
+        draft_to_emails = payload.get("to_emails") or []
+        draft_cc = payload.get("cc") or []
+        draft_bcc = payload.get("bcc") or []
+
+        # ComposeEmailRequest's own fields are EmailStr-typed, so a
+        # syntactically-bad address would raise an unhandled pydantic
+        # ValidationError before this method could give a clean 400 —
+        # same reasoning as the compose route's own pre-construction
+        # check (api/inbox.py's compose_email route), which this method
+        # bypasses entirely by constructing the request directly. This
+        # also re-checks deliverability (DNS/MX) for a syntactically-
+        # valid-but-undeliverable address that may have been saved into
+        # the draft — ComposeDraftSaveRequest's own EmailStr fields only
+        # ever caught malformed syntax at save time, never domain
+        # deliverability.
+        await ensure_recipients_are_valid(
+            to=([draft_to_email] if draft_to_email else []) + list(draft_to_emails),
+            cc=draft_cc,
+            bcc=draft_bcc,
+        )
+
+        # A draft may legitimately have no "From" selected yet (unlike
+        # a real send, ComposeDraftSaveRequest never required one) — a
+        # draft this incomplete can't actually be sent. Same for a
+        # draft saved with no recipient at all. ComposeEmailRequest's
+        # own model_validators already enforce both rules; caught here
+        # and turned into a clean 400 instead of an unhandled pydantic
+        # ValidationError, since this method constructs the request
+        # directly rather than going through a route that pre-validates
+        # first (see api/inbox.py's compose route for that convention).
+        try:
+            request = ComposeEmailRequest(
+                client_id=UUID(payload["client_id"]) if payload.get("client_id") else None,
+                category_id=UUID(payload["category_id"]) if payload.get("category_id") else None,
+                to_email=draft_to_email,
+                to_emails=draft_to_emails,
+                cc=draft_cc,
+                bcc=draft_bcc,
+                subject=payload.get("subject") or "(no subject)",
+                message=payload.get("message") or "",
+                body_html=payload.get("body_html"),
+                idempotency_key=idempotency_key,
+            )
+        except PydanticValidationError as exc:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="This draft is missing something required to send it "
+                "(a From client/category, or a recipient) — finish filling it "
+                "in before sending.",
+            ) from exc
+
+        response = await self.compose_email(
+            request,
+            current_user,
+            files=files,
+            inline_image_interaction_ids=inline_image_interaction_ids,
+            existing_attachment_source_interaction_id=draft.interaction_id,
+        )
+
+        if self.attachment_repository is not None:
+            await self.attachment_repository.reassign_interaction(
+                draft.interaction_id, response.interaction_id
+            )
+
+        await self.interaction_repository.delete_draft(draft)
+
+        return response
+
+    # ---------------------------------------------------------
+    # Ticket Drafts — Save Draft for Ticket Reply and Internal Note
+    # (and Mail's own ticketed ReplyComposer, which sends through the
+    # same add_reply this delegates to). A ticket draft has no thread
+    # root to be a child of, the way a bare Mail draft does (see
+    # save_draft above) — the ticket itself is the scope, so each is
+    # its own row: ticket_id set, parent_interaction_id NULL,
+    # is_draft=True, uniquely keyed per (ticket_id, performed_by,
+    # interaction_type) by ix_interactions_one_ticket_draft_per_agent_
+    # per_type. Reply and Internal Note get their own small method
+    # pairs rather than one generic one — their fields genuinely
+    # differ (email recipients vs. recipient_user_ids only), which is
+    # what keeps a note draft internal-only by construction, the same
+    # guarantee add_internal_note's own real send path already has.
+    # Attachments are deliberately out of scope here: both Ticket
+    # Reply and Internal Note already upload their files fresh at
+    # Send time (TicketComposer.tsx's replyFiles/attachFiles), never
+    # against an in-progress draft — this preserves that unchanged.
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def _ticket_reply_draft_payload(request: TicketReplyDraftSaveRequest) -> dict[str, Any]:
+        return {
+            "to_email": request.to_email,
+            "to_emails": list(request.to_emails),
+            "cc": list(request.cc),
+            "bcc": list(request.bcc),
+            "message": request.message,
+            "body_html": request.body_html,
+            "dispatch_status": "DRAFT",
+        }
+
+    @staticmethod
+    def _ticket_reply_draft_to_response(draft: Interaction) -> TicketReplyDraftResponse:
+        payload = draft.payload if isinstance(draft.payload, dict) else {}
+        return TicketReplyDraftResponse(
+            interaction_id=draft.interaction_id,
+            ticket_id=draft.ticket_id,
+            to_email=payload.get("to_email"),
+            to_emails=payload.get("to_emails") or [],
+            cc=payload.get("cc") or [],
+            bcc=payload.get("bcc") or [],
+            message=payload.get("message") or "",
+            body_html=payload.get("body_html"),
+            created_at=draft.created_at,
+        )
+
+    async def _ensure_can_draft_ticket_reply(self, ticket, current_user: User) -> None:
+        ensure_ticket_not_closed(ticket)
+        await ensure_agent_can_act_on_ticket(
+            ticket,
+            current_user,
+            self.escalation_service.ticket_escalation_repository
+            if self.escalation_service is not None
+            else None,
+            self._escalation_handling_sla_repository_or_none(),
+        )
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_has_permission(current_user, "ticket:reply")
+        ensure_has_permission(current_user, "communication:reply_external")
+
+    async def save_ticket_reply_draft(
+        self,
+        ticket_id: UUID,
+        current_user: User,
+        request: TicketReplyDraftSaveRequest,
+    ) -> TicketReplyDraftResponse:
+        ticket = await self._get_ticket_or_404(ticket_id)
+        await self._ensure_can_draft_ticket_reply(ticket, current_user)
+
+        payload = self._ticket_reply_draft_payload(request)
+        existing = await self.interaction_repository.get_ticket_draft(
+            ticket_id, current_user.user_id, "REPLY"
+        )
+        if existing is not None:
+            updated = await self.interaction_repository.update(
+                existing, InteractionUpdate(payload=payload)
+            )
+            return self._ticket_reply_draft_to_response(updated)
+
+        try:
+            async with self.interaction_repository.db.begin_nested():
+                created = await self.interaction_repository.create(
+                    InteractionCreate(
+                        ticket_id=ticket_id,
+                        interaction_type="REPLY",
+                        direction=InteractionDirection.OUTBOUND,
+                        performed_by=current_user.user_id,
+                        payload=payload,
+                        is_visible=True,
+                        is_draft=True,
+                        parent_interaction_id=None,
+                    )
+                )
+            return self._ticket_reply_draft_to_response(created)
+        except IntegrityError:
+            # See _get_or_create_draft's identical race — two near-
+            # simultaneous debounced saves both observing "no existing
+            # draft" and both attempting to insert one. The loser
+            # re-fetches and updates the winner's row instead of
+            # failing this request.
+            existing = await self.interaction_repository.get_ticket_draft(
+                ticket_id, current_user.user_id, "REPLY"
+            )
+            if existing is not None:
+                updated = await self.interaction_repository.update(
+                    existing, InteractionUpdate(payload=payload)
+                )
+                return self._ticket_reply_draft_to_response(updated)
+            raise
+
+    async def get_ticket_reply_draft(
+        self, ticket_id: UUID, current_user: User
+    ) -> TicketReplyDraftResponse:
+        draft = await self.interaction_repository.get_ticket_draft(
+            ticket_id, current_user.user_id, "REPLY"
+        )
+        if draft is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="No reply draft found on this ticket.",
+            )
+        return self._ticket_reply_draft_to_response(draft)
+
+    async def discard_ticket_reply_draft(
+        self, ticket_id: UUID, current_user: User
+    ) -> DraftDeleteResponse:
+        draft = await self.interaction_repository.get_ticket_draft(
+            ticket_id, current_user.user_id, "REPLY"
+        )
+        if draft is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="No reply draft found on this ticket.",
+            )
+        await self._discard_draft_core(draft)
+        return DraftDeleteResponse(message="Draft discarded.")
+
+    async def send_ticket_reply_draft(
+        self,
+        ticket_id: UUID,
+        current_user: User,
+        attachment_source_interaction_id: UUID | None = None,
+        idempotency_key: str | None = None,
+    ) -> TicketActionResponse:
+        """
+        Sends the current user's Ticket Reply draft — hands its saved
+        fields to the real add_reply (there is deliberately no
+        separate "draft becomes a reply" code path, same principle
+        send_draft/send_compose_draft already established). Unlike
+        those two, a ticket reply draft's own To/Cc/Bcc ARE the real
+        send-time values already (TicketComposer.tsx's "To" picker is
+        ordinary form state here, not a send-time-only override the
+        way Mail's Reply drafts treat it) — so no separate override
+        parameters are threaded through, only what's genuinely only
+        meaningful at Send: freshly-uploaded attachments and the
+        idempotency key.
+        """
+
+        draft = await self.interaction_repository.get_ticket_draft(
+            ticket_id, current_user.user_id, "REPLY"
+        )
+        if draft is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="No reply draft found on this ticket.",
+            )
+
+        payload = draft.payload if isinstance(draft.payload, dict) else {}
+        request = ReplyCreate(
+            message=payload.get("message") or "",
+            body_html=payload.get("body_html"),
+            to_email=payload.get("to_email"),
+            to_emails=payload.get("to_emails") or None,
+            cc=payload.get("cc") or [],
+            bcc=payload.get("bcc") or [],
+            attachment_source_interaction_id=attachment_source_interaction_id,
+            idempotency_key=idempotency_key,
+        )
+
+        response = await self.add_reply(ticket_id, request, current_user)
+        await self.interaction_repository.delete_draft(draft)
+        return response
+
+    @staticmethod
+    def _ticket_note_draft_payload(request: TicketNoteDraftSaveRequest) -> dict[str, Any]:
+        return {
+            "subject": request.subject,
+            "note": request.note,
+            "body_html": request.body_html,
+            "recipient_user_ids": [str(uid) for uid in request.recipient_user_ids],
+            "dispatch_status": "DRAFT",
+        }
+
+    @staticmethod
+    def _ticket_note_draft_to_response(draft: Interaction) -> TicketNoteDraftResponse:
+        payload = draft.payload if isinstance(draft.payload, dict) else {}
+        return TicketNoteDraftResponse(
+            interaction_id=draft.interaction_id,
+            ticket_id=draft.ticket_id,
+            subject=payload.get("subject") or "",
+            note=payload.get("note") or "",
+            body_html=payload.get("body_html"),
+            recipient_user_ids=[UUID(uid) for uid in payload.get("recipient_user_ids") or []],
+            created_at=draft.created_at,
+        )
+
+    async def _ensure_can_draft_ticket_note(self, ticket, current_user: User) -> None:
+        ensure_ticket_not_closed(ticket)
+        await ensure_agent_can_act_on_ticket(
+            ticket,
+            current_user,
+            self.escalation_service.ticket_escalation_repository
+            if self.escalation_service is not None
+            else None,
+            self._escalation_handling_sla_repository_or_none(),
+        )
+        await ensure_account_manager_owns_ticket_client(
+            ticket, current_user, self.client_repository
+        )
+        ensure_has_permission(current_user, "communication:reply_internal")
+
+    async def save_ticket_note_draft(
+        self,
+        ticket_id: UUID,
+        current_user: User,
+        request: TicketNoteDraftSaveRequest,
+    ) -> TicketNoteDraftResponse:
+        ticket = await self._get_ticket_or_404(ticket_id)
+        await self._ensure_can_draft_ticket_note(ticket, current_user)
+
+        payload = self._ticket_note_draft_payload(request)
+        existing = await self.interaction_repository.get_ticket_draft(
+            ticket_id, current_user.user_id, "INTERNAL_NOTE"
+        )
+        if existing is not None:
+            updated = await self.interaction_repository.update(
+                existing, InteractionUpdate(payload=payload)
+            )
+            return self._ticket_note_draft_to_response(updated)
+
+        try:
+            async with self.interaction_repository.db.begin_nested():
+                created = await self.interaction_repository.create(
+                    InteractionCreate(
+                        ticket_id=ticket_id,
+                        interaction_type="INTERNAL_NOTE",
+                        direction=InteractionDirection.INTERNAL,
+                        performed_by=current_user.user_id,
+                        payload=payload,
+                        is_visible=True,
+                        is_draft=True,
+                        parent_interaction_id=None,
+                    )
+                )
+            return self._ticket_note_draft_to_response(created)
+        except IntegrityError:
+            existing = await self.interaction_repository.get_ticket_draft(
+                ticket_id, current_user.user_id, "INTERNAL_NOTE"
+            )
+            if existing is not None:
+                updated = await self.interaction_repository.update(
+                    existing, InteractionUpdate(payload=payload)
+                )
+                return self._ticket_note_draft_to_response(updated)
+            raise
+
+    async def get_ticket_note_draft(
+        self, ticket_id: UUID, current_user: User
+    ) -> TicketNoteDraftResponse:
+        draft = await self.interaction_repository.get_ticket_draft(
+            ticket_id, current_user.user_id, "INTERNAL_NOTE"
+        )
+        if draft is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="No internal note draft found on this ticket.",
+            )
+        return self._ticket_note_draft_to_response(draft)
+
+    async def discard_ticket_note_draft(
+        self, ticket_id: UUID, current_user: User
+    ) -> DraftDeleteResponse:
+        draft = await self.interaction_repository.get_ticket_draft(
+            ticket_id, current_user.user_id, "INTERNAL_NOTE"
+        )
+        if draft is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="No internal note draft found on this ticket.",
+            )
+        await self._discard_draft_core(draft)
+        return DraftDeleteResponse(message="Draft discarded.")
+
+    async def send_ticket_note_draft(
+        self, ticket_id: UUID, current_user: User
+    ) -> InternalNoteResponse:
+        """Sends the current user's Internal Note draft — hands its saved fields to the real add_internal_note, mirroring send_ticket_reply_draft's own delegation pattern."""
+
+        draft = await self.interaction_repository.get_ticket_draft(
+            ticket_id, current_user.user_id, "INTERNAL_NOTE"
+        )
+        if draft is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="No internal note draft found on this ticket.",
+            )
+
+        payload = draft.payload if isinstance(draft.payload, dict) else {}
+
+        try:
+            request = InternalNoteCreate(
+                subject=payload.get("subject") or "",
+                note=payload.get("note") or "",
+                body_html=payload.get("body_html"),
+                recipient_user_ids=[
+                    UUID(uid) for uid in payload.get("recipient_user_ids") or []
+                ],
+            )
+        except PydanticValidationError as exc:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="This draft is missing a subject or note body — finish filling it in before sending.",
+            ) from exc
+
+        response = await self.add_internal_note(ticket_id, request, current_user)
+        await self.interaction_repository.delete_draft(draft)
+        return response
 
     # ---------------------------------------------------------
     # Hide / Delete Interaction

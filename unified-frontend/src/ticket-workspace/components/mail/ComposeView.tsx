@@ -17,14 +17,20 @@ import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
 import { listInternalNoteRecipients } from "@tw/api/interaction";
-import { uploadComposeInlineImage } from "@tw/api/inbox";
+import {
+  createComposeDraft,
+  discardComposeDraft as discardComposeDraftRequest,
+  saveComposeDraft,
+  uploadComposeInlineImage,
+} from "@tw/api/inbox";
 import { listClientContacts } from "@tw/api/clients";
-import { RecipientCombobox } from "@tw/components/common/RecipientCombobox";
+import { MultiRecipientCombobox, type RecipientChip } from "@tw/components/common/MultiRecipientCombobox";
 import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
 import { DistributionListMultiSelect } from "@tw/components/common/DistributionListMultiSelect";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import {
+  escapeHtml,
   filterLiveInlineImageIds,
   htmlToPlainText,
   isRichContent,
@@ -49,8 +55,6 @@ import type {
 // carry a single string value.
 const CATEGORY_FROM_PREFIX = "category:";
 
-const LOCAL_DRAFT_KEY = "utms-mail-compose-draft";
-
 // Who Forward's "To" picker may target — every internal org role
 // except the client-facing Client role (renamed from "Viewer"), in
 // display order. Filtering
@@ -69,9 +73,24 @@ const INTERNAL_RECIPIENT_ROLE_ORDER = [
 
 export interface ComposeInitialValues {
   clientId?: string | null;
+  categoryId?: string | null;
   toEmail?: string;
+  // Every additional "To" recipient past the first — only ever set
+  // when reopening a saved Compose draft that had more than one.
+  toEmails?: string[];
+  cc?: string[];
+  bcc?: string[];
   subject?: string;
   bodyHtml?: string;
+  // Plain-text fallback for restoring a saved Compose draft whose
+  // message was never given rich HTML (body_html null) — same
+  // escape-and-wrap treatment ReplyComposer.tsx uses for its own
+  // initialMessage. Ignored whenever bodyHtml above is present.
+  message?: string;
+  // Set only when reopening a previously-saved Compose draft (see
+  // InboxPage.tsx's handleOpen) — lets this session update that same
+  // draft row on every subsequent save instead of creating a new one.
+  draftInteractionId?: string;
   // Set only when this view was opened via Forward (see
   // InboxPage.tsx's handleForward) — swaps the "To" field from the
   // client picker (Compose's own recipient concept) to an internal-
@@ -91,31 +110,6 @@ export interface ComposeInitialValues {
   // being forwarded before sending; these are already stored server-
   // side (real download_url), never re-uploaded.
   originalAttachments?: AttachmentMeta[];
-}
-
-interface LocalDraft {
-  clientId: string;
-  categoryId?: string;
-  toEmail: string;
-  cc: string;
-  bcc: string;
-  subject: string;
-  bodyHtml: string;
-}
-
-function readLocalDraft(): LocalDraft | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(LOCAL_DRAFT_KEY);
-    return raw ? (JSON.parse(raw) as LocalDraft) : null;
-  } catch {
-    return null;
-  }
-}
-
-function clearLocalDraft() {
-  if (typeof window === "undefined") return;
-  window.localStorage.removeItem(LOCAL_DRAFT_KEY);
 }
 
 interface ComposeViewProps {
@@ -139,6 +133,9 @@ interface ComposeViewProps {
     clientId?: string;
     categoryId?: string;
     toEmail?: string;
+    // Every additional "To" entry past the first — real recipients,
+    // never Cc (see handleSend's non-forward branch).
+    toEmails?: string[];
     subject: string;
     message: string;
     bodyHtml?: string;
@@ -265,8 +262,6 @@ export function ComposeView({
     [composableClients, categories]
   );
 
-  const localDraft = useMemo(() => (initialValues ? null : readLocalDraft()), [initialValues]);
-
   // "From" — which client this message is filed under (still a
   // required field on POST /inbox/compose regardless of who the
   // actual recipient turns out to be). Picking one here is what
@@ -274,18 +269,23 @@ export function ComposeView({
   // doubles as the recipient itself, which is also what fixes the
   // "external address left Send disabled" bug — canSend (below) no
   // longer requires the "To" text to match a client at all.
-  const [clientId, setClientId] = useState(initialValues?.clientId ?? localDraft?.clientId ?? "");
+  const [clientId, setClientId] = useState(initialValues?.clientId ?? "");
   // "From" — category-mailbox counterpart to clientId, mutually
   // exclusive with it. See handleFromChange for how the single
   // Select's value space encodes which of the two is selected.
-  const [categoryId, setCategoryId] = useState(localDraft?.categoryId ?? "");
+  const [categoryId, setCategoryId] = useState(initialValues?.categoryId ?? "");
   // "To" — the actual recipient(s). A plain comma-separated address
   // list, same convention as Cc/Bcc (parseEmails below) rather than a
   // chip UI, so entering more than one is just typing/selecting more
   // than once. Independent of clientId: a manually-typed external
   // address is exactly as valid a recipient as a dropdown-picked
   // contact, which is what makes canSend correct for both cases.
-  const [toEmail, setToEmail] = useState(initialValues?.toEmail ?? localDraft?.toEmail ?? "");
+  const [toEmail, setToEmail] = useState(
+    () =>
+      [initialValues?.toEmail, ...(initialValues?.toEmails ?? [])]
+        .filter((entry): entry is string => Boolean(entry))
+        .join(", ")
+  );
   // Combobox UI state for the (non-forward) "To" field below — the
   // input's value IS toEmail itself (no separate query string).
   const [showToSuggestions, setShowToSuggestions] = useState(false);
@@ -294,8 +294,8 @@ export function ComposeView({
   // TicketComposer.tsx/MessageDetailsView.tsx already use for their
   // own reply "To" pickers.
   const [clientContacts, setClientContacts] = useState<ClientContact[]>([]);
-  const [cc, setCc] = useState(localDraft?.cc ?? "");
-  const [bcc, setBcc] = useState(localDraft?.bcc ?? "");
+  const [cc, setCc] = useState(() => (initialValues?.cc ?? []).join(", "));
+  const [bcc, setBcc] = useState(() => (initialValues?.bcc ?? []).join(", "));
   // Distribution Lists to include as recipients — a genuine
   // additional "To" recipient in both modes (Forward and Compose
   // alike have no fixed thread), resolved server-side to current
@@ -303,10 +303,27 @@ export function ComposeView({
   // into the "To" input's own suggestion list, since a list expands
   // to N members at send time, not one value.
   const [distributionListIds, setDistributionListIds] = useState<string[]>([]);
-  const [subject, setSubject] = useState(initialValues?.subject ?? localDraft?.subject ?? "");
-  const [bodyHtml, setBodyHtml] = useState(initialValues?.bodyHtml ?? localDraft?.bodyHtml ?? "");
+  const [subject, setSubject] = useState(initialValues?.subject ?? "");
+  const [bodyHtml, setBodyHtml] = useState(() => {
+    if (initialValues?.bodyHtml) return initialValues.bodyHtml;
+    if (initialValues?.message) {
+      return `<p>${escapeHtml(initialValues.message).replace(/\n/g, "<br/>")}</p>`;
+    }
+    return "";
+  });
   const [files, setFiles] = useState<File[]>([]);
   const [hasPendingImageUploads, setHasPendingImageUploads] = useState(false);
+  // The server-side Compose draft backing this session, once one
+  // exists — set on the very first autosave/manual Save Draft (see
+  // persistDraft below), or immediately if reopening a previously-
+  // saved draft. A plain ref (not state): persistDraft reads/writes it
+  // synchronously across overlapping debounced calls, and nothing here
+  // needs a re-render when it changes. Never used in Forward mode —
+  // Forward has no draft concept in this pass.
+  const draftInteractionIdRef = useRef<string | null>(initialValues?.draftInteractionId ?? null);
+  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const skipNextAutoSaveRef = useRef(true);
+  const savedIndicatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Interaction ids of any screenshot pasted/dropped into the editor,
   // staged via uploadComposeInlineImage (see RichTextEditor's
   // onImageUpload below) and reassigned onto the real outbound
@@ -345,12 +362,12 @@ export function ComposeView({
   // /api/v1/roles) silently under-populates or empties out entirely
   // for Account Manager/Team Lead/Staff senders.
   const [allInternalUsers, setAllInternalUsers] = useState<InternalNoteRecipientCandidate[]>([]);
-  // The resolved recipient — userId set only when the current value
-  // matches a known internal user (selected from the dropdown, or an
-  // exact-matching typed email); otherwise this is a genuinely custom
-  // external address and only email is set. Exactly one of the two
-  // is sent to the backend (see handleSend's forward branch).
-  const [toRecipient, setToRecipient] = useState<{ userId?: string; email: string }>({ email: "" });
+  // Forward's "To" — multiple recipients (internal users and/or
+  // external addresses), each a chip. Which of the two a chip is
+  // gets resolved at send time (see handleSend's forward branch) by
+  // matching its email against internalRecipientOptions, rather than
+  // stored per-chip — RecipientChip carries only email/label.
+  const [toChips, setToChips] = useState<RecipientChip[]>([]);
 
   useEffect(() => {
     if (!isForward) return;
@@ -384,11 +401,77 @@ export function ComposeView({
     [allInternalUsers]
   );
 
-  useEffect(() => {
-    if (localDraft) {
-      pushToast("Restored your locally saved draft.", "info");
+  // Upserts this session's Compose draft — creates it on the very
+  // first call (once), updates it in place on every subsequent one.
+  // Mirrors ReplyComposer.tsx's persistDraft/onSaveDraft pattern for
+  // pre-ticket Reply drafts; Compose needed its own sibling rather
+  // than reusing that one, since a brand-new outbound message has no
+  // existing thread root to attach a child draft to (see the backend
+  // service methods' own docstrings). Never called in Forward mode.
+  async function persistDraft() {
+    setDraftStatus("saving");
+    const request = {
+      client_id: clientId || null,
+      category_id: categoryId || null,
+      to_email: toEntries[0],
+      to_emails: toEntries.slice(1),
+      cc: parseEmails(cc),
+      bcc: parseEmails(bcc),
+      subject,
+      message: htmlToPlainText(bodyHtml),
+      body_html: isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined,
+    };
+    try {
+      const result = draftInteractionIdRef.current
+        ? await saveComposeDraft(draftInteractionIdRef.current, request)
+        : await createComposeDraft(request);
+      draftInteractionIdRef.current = result.interaction_id;
+      setDraftStatus("saved");
+      if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
+      savedIndicatorTimerRef.current = setTimeout(() => setDraftStatus("idle"), 2500);
+      return result;
+    } catch {
+      setDraftStatus("idle");
+      return null;
     }
+  }
+
+  // Continuous auto-save — debounced, never in Forward mode (Forward
+  // has no draft concept in this pass). Skips the very first render
+  // so opening the composer (possibly already prefilled from a
+  // reopened draft) doesn't immediately re-save what it was just
+  // given. An entirely empty, untouched draft is never saved either —
+  // there's nothing worth persisting until something's actually typed.
+  useEffect(() => {
+    if (isForward) return;
+    if (skipNextAutoSaveRef.current) {
+      skipNextAutoSaveRef.current = false;
+      return;
+    }
+    if (
+      !clientId &&
+      !categoryId &&
+      !toEmail.trim() &&
+      !cc.trim() &&
+      !bcc.trim() &&
+      !subject.trim() &&
+      isRichTextEmpty(bodyHtml)
+    ) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      persistDraft();
+    }, 1200);
+
+    return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId, categoryId, toEmail, cc, bcc, subject, bodyHtml, isForward]);
+
+  useEffect(() => {
+    return () => {
+      if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
+    };
   }, []);
 
   // Fetches the selected "From" client's known contacts whenever it
@@ -457,10 +540,20 @@ export function ComposeView({
     ? Math.max(0, MAX_ATTACHMENT_FILES - originalAttachmentCount)
     : MAX_ATTACHMENT_FILES;
 
+  // Forward's "To" is a chip list (MultiRecipientCombobox) — every
+  // chip it produces is already individually validated at add-time
+  // (or matched against a known internal user), so there's no
+  // separate "invalid entries" condition to check for it the way
+  // plain Compose's comma-separated toEmail field still needs.
+  const hasRecipientSource = isForward
+    ? toChips.length > 0 || distributionListIds.length > 0
+    : toEntries.length > 0 || distributionListIds.length > 0;
+  const hasInvalidTo = isForward ? false : invalidToEntries.length > 0;
+
   const canSend = Boolean(
     (clientId || categoryId) &&
-      (toEntries.length > 0 || distributionListIds.length > 0) &&
-      invalidToEntries.length === 0 &&
+      hasRecipientSource &&
+      !hasInvalidTo &&
       subject.trim() &&
       !isEmpty &&
       invalidCcEntries.length === 0 &&
@@ -539,14 +632,16 @@ export function ComposeView({
     setToEmail("");
   }
 
-  function handleSaveDraft() {
-    const draft: LocalDraft = { clientId, categoryId, toEmail, cc, bcc, subject, bodyHtml };
-    window.localStorage.setItem(LOCAL_DRAFT_KEY, JSON.stringify(draft));
-    pushToast("Draft saved on this device.", "success");
+  async function handleSaveDraft() {
+    const result = await persistDraft();
+    pushToast(result ? "Draft saved." : "Couldn't save draft. Try again.", result ? "success" : "error");
   }
 
-  function handleDiscard() {
-    clearLocalDraft();
+  async function handleDiscard() {
+    if (draftInteractionIdRef.current) {
+      await discardComposeDraftRequest(draftInteractionIdRef.current);
+      draftInteractionIdRef.current = null;
+    }
     onDiscard();
   }
 
@@ -571,13 +666,29 @@ export function ComposeView({
 
     if (isForward) {
       if (!onForwardSend || !initialValues?.interactionId) return;
-      if (!toRecipient.email && distributionListIds.length === 0) return;
+      if (toChips.length === 0 && distributionListIds.length === 0) return;
+      // Each chip is either a known internal user (by email match
+      // against internalRecipientOptions) or a genuinely external
+      // address — resolved here, at send time, rather than stored per
+      // chip, since RecipientChip itself only carries email/label.
+      const recipientUserIds: string[] = [];
+      const recipientEmails: string[] = [];
+      for (const chip of toChips) {
+        const matched = internalRecipientOptions.find(
+          (option) => option.email.toLowerCase() === chip.email.toLowerCase()
+        );
+        if (matched) {
+          recipientUserIds.push(matched.id);
+        } else {
+          recipientEmails.push(chip.email);
+        }
+      }
       const result = await onForwardSend({
         interactionId: initialValues.interactionId,
         clientId: clientId || undefined,
         categoryId: categoryId || undefined,
-        recipientUserIds: toRecipient.userId ? [toRecipient.userId] : [],
-        recipientEmails: !toRecipient.userId && toRecipient.email ? [toRecipient.email] : [],
+        recipientUserIds,
+        recipientEmails,
         distributionListIds,
         cc: ccEntries,
         bcc: bccEntries,
@@ -590,25 +701,25 @@ export function ComposeView({
       });
       if (result) {
         pastedImageInteractionIdsRef.current = [];
-        clearLocalDraft();
       }
       return;
     }
 
-    // onSend/POST /inbox/compose still take one primary `to_email`
-    // (see ComposeEmailRequest on the backend, deliberately
-    // unchanged) — "To" supporting several entries is a UI-level
-    // convenience, so every recipient past the first rides along as
-    // an additional Cc rather than requiring a backend/API change.
+    // POST /inbox/compose now accepts to_emails (plural) alongside
+    // to_email — every "To" entry is sent as a real recipient, never
+    // downgraded into Cc (a real, reported bug: the outbound Graph
+    // message and the persisted Sent record both ended up with the
+    // wrong To/Cc split when more than one address was typed).
     const [primaryTo, ...extraTo] = toEntries;
     const result = await onSend({
       clientId: clientId || undefined,
       categoryId: categoryId || undefined,
       toEmail: primaryTo,
+      toEmails: extraTo,
       subject: subject.trim(),
       message: htmlToPlainText(bodyHtml),
       bodyHtml: richBodyHtml,
-      cc: Array.from(new Set([...extraTo, ...parseEmails(cc)])),
+      cc: parseEmails(cc),
       bcc: parseEmails(bcc),
       files,
       inlineImageInteractionIds: liveInlineImageInteractionIds,
@@ -617,7 +728,14 @@ export function ComposeView({
     });
     if (result) {
       pastedImageInteractionIdsRef.current = [];
-      clearLocalDraft();
+      // The message just sent through the normal compose_email path
+      // above (unchanged, already-tested) — any server-side draft
+      // this session had been autosaving is now obsolete; clean it up
+      // so it doesn't linger in the Drafts list.
+      if (draftInteractionIdRef.current) {
+        await discardComposeDraftRequest(draftInteractionIdRef.current);
+        draftInteractionIdRef.current = null;
+      }
     }
   }
 
@@ -713,31 +831,14 @@ export function ComposeView({
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">To</label>
               {isForward ? (
-                <RecipientCombobox
+                <MultiRecipientCombobox
                   options={internalRecipientOptions}
                   groupOrder={INTERNAL_RECIPIENT_ROLE_ORDER}
-                  value={toRecipient.email}
-                  onChange={({ email, matchedOption }) => {
-                    setToRecipient(
-                      matchedOption
-                        ? { userId: matchedOption.id, email: matchedOption.email }
-                        : { email }
-                    );
-                    // Keeps the pre-existing canSend/invalidToEntries
-                    // validation (computed from toEmail) working
-                    // unchanged for Forward too.
-                    setToEmail(email);
-                  }}
+                  value={toChips}
+                  onChange={setToChips}
                   resetKey={initialValues?.interactionId ?? "compose"}
                   placeholder="Search internal users, or type any email…"
-                  inputClassName="flex h-11 w-full rounded-lg border border-border bg-card px-4 py-2.5 pr-8 text-sm text-foreground transition-colors placeholder:text-muted-foreground focus-visible:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
-                  emptyStateLabel="No matching internal users — the typed address will be used as an external recipient."
-                  // The existing invalidToEntries block just below
-                  // (shared with non-forward Compose's own "To" field)
-                  // already renders this exact message from the same
-                  // toEmail value — showing the combobox's own inline
-                  // error too would duplicate it.
-                  showInlineError={false}
+                  emptyStateLabel="No matching internal users — type a full email address and press Enter to add it as an external recipient."
                 />
               ) : (
                 <div className="relative">
@@ -804,7 +905,7 @@ export function ComposeView({
                   )}
                 </div>
               )}
-              {invalidToEntries.length > 0 && (
+              {!isForward && invalidToEntries.length > 0 && (
                 <p className="mt-1 text-[11px] text-destructive">
                   {invalidToEntries.length === 1
                     ? `Enter a valid email address. "${invalidToEntries[0]}" isn't valid.`
@@ -931,19 +1032,32 @@ export function ComposeView({
       </div>
 
       {canCompose && (
-        <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3.5">
-          <Button variant="outline" onClick={handleSaveDraft} className="gap-1.5">
-            <Save className="h-3.5 w-3.5" />
-            Save Draft
-          </Button>
-          <Button
-            onClick={handleSend}
-            disabled={!canSend || isSending || hasPendingImageUploads}
-            className="gap-1.5"
-          >
-            <Send className="h-3.5 w-3.5" />
-            Send
-          </Button>
+        <div className="flex items-center justify-between gap-2 border-t border-border px-5 py-3.5">
+          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            {!isForward && draftStatus === "saving" && "Saving draft…"}
+            {!isForward && draftStatus === "saved" && "Draft saved"}
+          </div>
+          <div className="flex items-center gap-2">
+            {!isForward && (
+              <Button
+                variant="outline"
+                onClick={handleSaveDraft}
+                disabled={draftStatus === "saving"}
+                className="gap-1.5"
+              >
+                <Save className="h-3.5 w-3.5" />
+                Save Draft
+              </Button>
+            )}
+            <Button
+              onClick={handleSend}
+              disabled={!canSend || isSending || hasPendingImageUploads}
+              className="gap-1.5"
+            >
+              <Send className="h-3.5 w-3.5" />
+              Send
+            </Button>
+          </div>
         </div>
       )}
     </div>

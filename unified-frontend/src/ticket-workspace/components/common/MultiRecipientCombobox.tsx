@@ -123,19 +123,45 @@ export function MultiRecipientCombobox({
     onChange(value.filter((chip) => chip.email.toLowerCase() !== email.toLowerCase()));
   }
 
+  // Splits on commas first so a single paste of
+  // "a@x.com,b@x.com,c@x.com" (which lands in `query` as one string —
+  // a paste never fires the per-character keydown handling below)
+  // becomes N independent chips, each validated on its own, exactly
+  // like typing them one at a time with commas already would. Every
+  // invalid piece is reported together (not just the first) — same
+  // "the send must be rejected if any single one is invalid, not just
+  // the first field checked" principle the backend's own
+  // ensure_recipients_are_valid already applies.
   function commitTyped(raw: string) {
-    const trimmed = raw.trim();
-    if (!trimmed) return;
-    const matched = findExactMatch(options, trimmed);
-    if (matched) {
-      addChip({ email: matched.email, label: matched.label });
-      return;
+    const pieces = raw
+      .split(",")
+      .map((piece) => piece.trim())
+      .filter(Boolean);
+    if (pieces.length === 0) return;
+
+    // Tracks emails added earlier in this same paste — addChip's own
+    // dedupe check reads the `value` prop, which (React state being
+    // batched) won't reflect an earlier addChip call from within this
+    // same synchronous loop yet.
+    const addedThisCall = new Set<string>();
+    const invalid: string[] = [];
+    for (const piece of pieces) {
+      const matched = findExactMatch(options, piece);
+      const email = (matched?.email ?? piece).toLowerCase();
+      if (addedThisCall.has(email)) continue;
+
+      if (matched) {
+        addChip({ email: matched.email, label: matched.label });
+        addedThisCall.add(email);
+      } else if (isValidEmailAddress(piece)) {
+        addChip({ email: piece });
+        addedThisCall.add(email);
+      } else {
+        invalid.push(piece);
+      }
     }
-    if (isValidEmailAddress(trimmed)) {
-      addChip({ email: trimmed });
-      return;
-    }
-    setInvalidEntry(trimmed);
+
+    setInvalidEntry(invalid.length > 0 ? invalid.join(", ") : null);
   }
 
   function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {

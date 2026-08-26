@@ -995,6 +995,14 @@ class InteractionRepository:
         REPLY-type rows, which meant a message sent via Reply showed up
         under both "Sent" and "Replied" in the Mail UI — the two are
         now split so each folder means only what its name says.
+
+        `dispatch_status == "SENT"` is required, not defensive padding:
+        a row is created as PENDING_SEND before Graph is ever called
+        (so Undo Send has something to cancel), and only flips to SENT
+        once Graph actually confirms it — without this filter, a
+        message still inside its Undo window, one Graph rejected
+        (FAILED), or one the user canceled (CANCELED) all rendered
+        identically to a real send.
         """
 
         result = await self.db.execute(
@@ -1005,6 +1013,7 @@ class InteractionRepository:
                 Interaction.direction == InteractionDirection.OUTBOUND,
                 Interaction.performed_by == performed_by,
                 Interaction.is_visible.is_(True),
+                Interaction.dispatch_status == "SENT",
             )
             .order_by(Interaction.created_at.desc())
         )
@@ -1029,6 +1038,13 @@ class InteractionRepository:
         direction=OUTBOUND, is_visible=True — without this exclusion it
         would show up here as already "sent" while still sitting in
         Drafts (a real, separate bug this same split fixes).
+
+        `dispatch_status == "SENT"` is required for the same reason as
+        list_sent's own matching condition above: a reply is created
+        PENDING_SEND before Graph is ever called (for Undo Send), and
+        only becomes SENT once Graph actually confirms it — without
+        this, a still-pending/FAILED/CANCELED reply rendered here
+        identically to a real send.
         """
 
         result = await self.db.execute(
@@ -1039,6 +1055,7 @@ class InteractionRepository:
                 Interaction.performed_by == performed_by,
                 Interaction.is_visible.is_(True),
                 Interaction.is_draft.is_(False),
+                Interaction.dispatch_status == "SENT",
             )
             .order_by(Interaction.created_at.desc())
         )
@@ -1107,6 +1124,37 @@ class InteractionRepository:
             .where(
                 Interaction.parent_interaction_id == root_interaction_id,
                 Interaction.performed_by == performed_by,
+                Interaction.is_draft.is_(True),
+                Interaction.is_visible.is_(True),
+            )
+            .order_by(Interaction.created_at.desc())
+            .limit(1)
+        )
+
+        return result.scalars().first()
+
+    async def get_ticket_draft(
+        self,
+        ticket_id: UUID,
+        performed_by: UUID,
+        interaction_type: str,
+    ) -> Interaction | None:
+        """
+        The given agent's active draft of the given type ("REPLY" or
+        "INTERNAL_NOTE") on this ticket, if any — the ticket-scoped
+        counterpart to get_draft above. A ticket draft has no thread
+        root to be a child of (ticket_id itself is the scope,
+        parent_interaction_id is always NULL) — enforced at the
+        database level by ix_interactions_one_ticket_draft_per_agent_
+        per_type. Same ORDER BY + LIMIT 1 defensive read as get_draft.
+        """
+
+        result = await self.db.execute(
+            select(Interaction)
+            .where(
+                Interaction.ticket_id == ticket_id,
+                Interaction.performed_by == performed_by,
+                Interaction.interaction_type == interaction_type,
                 Interaction.is_draft.is_(True),
                 Interaction.is_visible.is_(True),
             )

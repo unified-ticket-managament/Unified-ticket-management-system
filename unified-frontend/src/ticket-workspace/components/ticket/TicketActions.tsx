@@ -55,13 +55,20 @@ const SELF_ASSIGN_ROLES = new Set(["Team Lead", "Account Manager", "Site Lead", 
 // the dedicated Close Ticket action (More menu), never through this
 // dropdown. Reopening is likewise its own dedicated Reopen Ticket
 // action, not a status value picked here.
-const STATUSES: TicketStatus[] = [
-  "OPEN",
-  "IN_PROGRESS",
-  "PENDING",
-  "WAITING_FOR_CLIENT",
-  "RESOLVED",
-];
+//
+// OPEN and PENDING are also deliberately absent — a product decision
+// to stop exposing them as manually-selectable statuses. This is a
+// UI-only change: the TicketStatus enum (backend Python + Postgres,
+// and this file's own import) is untouched, so historical tickets
+// already sitting in OPEN/PENDING keep rendering/filtering/badging
+// correctly (lib/ticketTone.ts's per-status tone map still has full
+// entries for both) — only the set a user can manually transition a
+// ticket *to* from this dropdown has shrunk. OPEN is still reachable
+// as a system-driven state (a brand-new ticket's own default, and
+// InteractionService.reopen_ticket's target status) — neither goes
+// through this dropdown, so removing it here doesn't conflict with
+// either.
+const STATUSES: TicketStatus[] = ["IN_PROGRESS", "WAITING_FOR_CLIENT", "RESOLVED"];
 
 const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
 
