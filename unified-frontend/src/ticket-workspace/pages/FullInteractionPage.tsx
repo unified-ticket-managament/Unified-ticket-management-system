@@ -21,7 +21,10 @@ import {
 import {
   RENDERED_MESSAGE_HTML_CLASS,
   RENDERED_MESSAGE_TABLE_BORDER_CLASS,
+<<<<<<< Updated upstream
   linkifyPlainText,
+=======
+>>>>>>> Stashed changes
   resolveCidImagesForDisplay,
 } from "@tw/lib/richText";
 import { shortId, formatDateTime } from "@tw/lib/format";
