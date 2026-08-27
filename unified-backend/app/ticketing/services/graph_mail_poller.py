@@ -35,6 +35,9 @@ from app.ticketing.repositories.inbound_mail_failure_repository import (
     InboundMailFailureRepository,
 )
 from app.ticketing.repositories.interaction_repository import InteractionRepository
+from app.ticketing.repositories.mailbox_poll_state_repository import (
+    MailboxPollStateRepository,
+)
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.services.attachment_service import AttachmentService
@@ -46,7 +49,10 @@ from app.ticketing.services.mail_mapping_service import (
     build_upload_files_from_graph_attachments,
     map_external_email_to_interaction,
 )
-from app.ticketing.services.mail_ops_alerts import notify_unmatched_inbox_email
+from app.ticketing.services.mail_ops_alerts import (
+    notify_mailbox_poll_stalled,
+    notify_unmatched_inbox_email,
+)
 from app.ticketing.services.mail_provider import get_mail_provider_client
 from app.ticketing.services.rule_engine_service import build_rule_engine_service
 from app.ticketing.services.sla_service import build_sla_service
@@ -70,13 +76,16 @@ MAX_MESSAGE_RETRY_ATTEMPTS = 3
 
 
 class _PollState:
-    """Module-level, in-process only — deliberately not persisted, same
-    tradeoff as graph_subscription_service._SubscriptionState. A fresh
-    process re-checks the last INITIAL_LOOKBACK_MINUTES for every
-    mailbox rather than resuming a previous process's exact
-    checkpoints; the message_id dedupe check in
-    EmailService.receive_email makes re-seeing an already-stored
-    message from that overlap window harmless.
+    """Module-level, in-process cache of each mailbox's checkpoint —
+    seeded from the persisted `mailbox_poll_state` table
+    (MailboxPollStateRepository) on this process's first tick after a
+    (re)start (see _seed_checkpoints_from_persisted_state below), so a
+    restart no longer means every mailbox falls back all the way to
+    INITIAL_LOOKBACK_MINUTES. That fallback still applies to a mailbox
+    with no persisted row at all (a genuinely new one). Either way,
+    the message_id dedupe check in EmailService.receive_email makes
+    re-seeing an already-stored message from an overlap window
+    harmless.
 
     Keyed per mailbox address (lowercased) rather than a single
     scalar — the legacy shared mailbox and every client-specific
@@ -93,6 +102,12 @@ class _PollState:
 
     checkpoints: dict[str, datetime] = {}
     failure_counts: dict[str, dict[str, int]] = {}
+    # True once this process has attempted the one-time persisted-
+    # checkpoint seed (successfully or not) — attempted at most once
+    # per process, not once per tick, since after the first tick
+    # checkpoints are advanced (and persisted) directly and re-seeding
+    # from the DB would just be a redundant read.
+    checkpoints_seeded: bool = False
 
 
 _state = _PollState()
@@ -183,6 +198,41 @@ async def _resolve_mailboxes_to_poll(settings: Settings) -> list[str]:
     return sorted(mailboxes)
 
 
+async def _seed_checkpoints_from_persisted_state_once() -> None:
+    """
+    Runs at most once per process — on the first tick after a (re)
+    start, before any mailbox is polled — copying every persisted
+    `mailbox_poll_state.checkpoint_at` into `_state.checkpoints` for
+    any mailbox not already tracked in memory. This is what lets a
+    restarted process resume roughly where the last one left off
+    instead of always falling back to INITIAL_LOOKBACK_MINUTES. A
+    failure here (DB unreachable at startup, etc.) is logged and
+    otherwise ignored — every mailbox just keeps its normal
+    INITIAL_LOOKBACK_MINUTES fallback for this process's lifetime,
+    the exact pre-existing behavior.
+    """
+
+    if _state.checkpoints_seeded:
+        return
+
+    _state.checkpoints_seeded = True
+
+    try:
+        async with AsyncSessionLocal() as db:
+            persisted = await MailboxPollStateRepository(db).get_all_checkpoints()
+    except Exception:
+        logger.exception(
+            "Graph mail polling: failed to seed checkpoints from persisted "
+            "mailbox_poll_state — every mailbox falls back to the "
+            "%d-minute lookback for this process.",
+            INITIAL_LOOKBACK_MINUTES,
+        )
+        return
+
+    for mailbox_address, checkpoint_at in persisted.items():
+        _state.checkpoints.setdefault(mailbox_address, checkpoint_at)
+
+
 async def poll_new_messages(settings: Settings) -> None:
     """
     Idempotent, safe to call on every scheduler tick: no-ops whenever
@@ -200,6 +250,8 @@ async def poll_new_messages(settings: Settings) -> None:
         )
         return
 
+    await _seed_checkpoints_from_persisted_state_once()
+
     tick_started_at = datetime.now(timezone.utc)
     mailboxes = await _resolve_mailboxes_to_poll(settings)
 
@@ -215,6 +267,58 @@ async def poll_new_messages(settings: Settings) -> None:
                 "Graph mail polling: mailbox %s tick failed entirely",
                 mailbox_address,
             )
+
+
+async def _record_mailbox_fetch_failure_and_maybe_alert(
+    settings: Settings, mailbox_address: str, *, error_summary: str
+) -> None:
+    """
+    Persists a whole-mailbox fetch failure (a GraphAPIError before any
+    message was even listed — never reaches inbound_mail_failures,
+    which is per-message) and fires notify_mailbox_poll_stalled once
+    this mailbox has been failing continuously for at least
+    Settings.graph_mail_poll_stall_alert_minutes, at most once per
+    stall (never re-alerts on every subsequent tick until either a
+    real success resets it or the alert window has fully elapsed
+    again). Entirely best-effort — any failure here is logged and
+    swallowed, never allowed to affect the poll loop itself.
+    """
+
+    try:
+        async with AsyncSessionLocal() as db:
+            repository = MailboxPollStateRepository(db)
+            await repository.record_failure(
+                mailbox_address=mailbox_address, error_summary=error_summary
+            )
+            await db.commit()
+
+            state = await repository.get(mailbox_address=mailbox_address)
+            if state is None or state.last_success_at is None:
+                return
+
+            now = datetime.now(timezone.utc)
+            stall_threshold = timedelta(minutes=settings.graph_mail_poll_stall_alert_minutes)
+            has_stalled_long_enough = now - state.last_success_at >= stall_threshold
+            already_alerted_this_stall = (
+                state.last_alerted_at is not None
+                and state.last_alerted_at >= state.last_success_at
+                and now - state.last_alerted_at < stall_threshold
+            )
+
+            if has_stalled_long_enough and not already_alerted_this_stall:
+                await notify_mailbox_poll_stalled(
+                    db,
+                    mailbox_address=mailbox_address,
+                    consecutive_failures=state.consecutive_failures,
+                    error_summary=error_summary,
+                )
+                await repository.mark_alerted(mailbox_address=mailbox_address)
+                await db.commit()
+    except Exception:
+        logger.exception(
+            "Graph mail polling: failed to record/alert on mailbox %s fetch failure",
+            mailbox_address,
+        )
 
 
 async def _poll_one_mailbox(
@@ -253,6 +357,9 @@ async def _poll_one_mailbox(
             "retry next tick",
             mailbox_address,
             exc.status_code,
+        )
+        await _record_mailbox_fetch_failure_and_maybe_alert(
+            settings, mailbox_address, error_summary=f"GraphAPIError({exc.status_code}): {exc}"
         )
         return
     except Exception:
@@ -451,14 +558,31 @@ async def _poll_one_mailbox(
         # by EmailService.receive_email's own dedupe check). This is
         # the fix for the previously-accepted gap where a failed
         # message was never retried by any later tick.
-        _state.checkpoints[mailbox_address] = earliest_unresolved_received_at - timedelta(
-            microseconds=1
-        )
+        new_checkpoint = earliest_unresolved_received_at - timedelta(microseconds=1)
     else:
         # Every message this tick either stored successfully or hit a
         # terminal, non-retryable outcome — safe to advance all the
         # way to when this tick started, same as before this fix.
-        _state.checkpoints[mailbox_address] = tick_started_at
+        new_checkpoint = tick_started_at
+
+    _state.checkpoints[mailbox_address] = new_checkpoint
+
+    try:
+        async with AsyncSessionLocal() as db:
+            await MailboxPollStateRepository(db).record_success(
+                mailbox_address=mailbox_address, checkpoint_at=new_checkpoint
+            )
+            await db.commit()
+    except Exception:
+        # A persistence failure here must never affect this tick's own
+        # outcome — the in-memory checkpoint above is already
+        # authoritative for this process's remaining lifetime; only a
+        # future restart would miss out on resuming from this exact
+        # point, falling back to INITIAL_LOOKBACK_MINUTES instead.
+        logger.exception(
+            "Graph mail polling: failed to persist checkpoint for mailbox %s",
+            mailbox_address,
+        )
 
     if messages:
         logger.info(

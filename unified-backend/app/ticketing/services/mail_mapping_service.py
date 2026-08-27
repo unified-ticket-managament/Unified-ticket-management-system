@@ -17,7 +17,11 @@ from bs4 import BeautifulSoup
 from app.ticketing.schemas.email import EmailRequest, LinkedAttachmentCandidate
 from app.ticketing.schemas.mail_integration import GraphAttachmentPayload, IncomingMailPayload
 from app.ticketing.services.bounce_detection import is_bounce_notification
-from app.ticketing.utils.constants import MAX_ATTACHMENT_FILES, MAX_ATTACHMENT_SIZE_BYTES
+from app.ticketing.utils.constants import (
+    IMAGE_EXTENSIONS,
+    MAX_ATTACHMENT_FILES,
+    MAX_ATTACHMENT_SIZE_BYTES,
+)
 from app.ticketing.utils.html_sanitizer import sanitize_inbound_html
 from app.ticketing.utils.validators import sanitize_filename, validate_attachment_type
 
@@ -118,15 +122,17 @@ def body_references_inline_attachment(html: str) -> bool:
 
 def _normalize_content_id(raw: str) -> str:
     """
-    Normalizes a Content-ID for comparison: strips surrounding `<>`
-    (present in raw MIME headers, sometimes echoed by mail clients
-    inside an `<img src="cid:...">` value too) and lowercases, since
-    Content-ID matching must be case-insensitive and bracket-tolerant
-    per RFC 2392 — two systems disagreeing only on case/brackets still
-    refer to the same resource.
+    Normalizes a Content-ID for comparison: URL-decodes (a sending
+    client can percent-encode the value inside an `<img src="cid:...">`
+    attribute even though Graph's own `contentId` field never is),
+    strips surrounding `<>` (present in raw MIME headers, sometimes
+    echoed by mail clients inside the `<img>` value too), and
+    lowercases, since Content-ID matching must be case-insensitive and
+    bracket-tolerant per RFC 2392 — two systems disagreeing only on
+    encoding/case/brackets still refer to the same resource.
     """
 
-    return raw.strip().strip("<>").lower()
+    return unquote(raw).strip().strip("<>").lower()
 
 
 def _extract_referenced_cid_targets(html: str) -> set[str]:
@@ -333,6 +339,34 @@ class _GraphAttachmentUploadFile:
         return self._content
 
 
+def _looks_like_image(attachment: GraphAttachmentPayload) -> bool:
+    """
+    Whether a Graph attachment should be treated as an image for inline
+    cid: resolution purposes. `contentType` is trusted when Graph
+    reports a real `image/*` value, but real-world senders/relays
+    routinely declare a generic or absent contentType (e.g.
+    `application/octet-stream`) even for a genuinely inline logo/
+    signature image — the same unreliability `validate_attachment_type`
+    (utils/validators.py) already works around by treating a declared
+    MIME type as advisory only. Falls back to the attachment's own
+    filename extension against IMAGE_EXTENSIONS (utils/constants.py) —
+    the same trusted, sender-independent signal
+    attachment_service.is_previewable_image already classifies images
+    by — so a real inline image doesn't lose its content_id linkage
+    (and become an unresolvable `cid:` reference, see
+    resolveCidImagesForDisplay in the frontend) just because Graph/the
+    sender declared a generic content type.
+    """
+
+    content_type = attachment.contentType or ""
+    if content_type.startswith("image/"):
+        return True
+
+    name = attachment.name or ""
+    extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    return extension in IMAGE_EXTENSIONS
+
+
 def build_upload_files_from_graph_attachments(
     attachments: list[GraphAttachmentPayload],
     html_body: str | None = None,
@@ -434,7 +468,7 @@ def build_upload_files_from_graph_attachments(
             attachment.contentId
             and _normalize_content_id(attachment.contentId) in referenced_cid_targets
         )
-        is_image = (attachment.contentType or "").startswith("image/")
+        is_image = _looks_like_image(attachment)
 
         is_inline_image = bool(
             attachment.contentId

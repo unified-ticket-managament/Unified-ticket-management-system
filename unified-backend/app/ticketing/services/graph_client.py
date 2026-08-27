@@ -46,6 +46,13 @@ MESSAGE_SELECT_FIELDS = (
     "conversationId,receivedDateTime,internetMessageHeaders,hasAttachments"
 )
 
+# Bound on how many 50-message pages list_new_messages will follow via
+# @odata.nextLink in a single poll tick (~1000 messages) — high enough
+# that a mailbox would need to be receiving mail at an extraordinary
+# rate to hit it, low enough to guarantee the loop below terminates
+# even if Graph ever returned a malformed/looping nextLink chain.
+MAX_LIST_MESSAGES_PAGES = 20
+
 class GraphAPIError(Exception):
     """Raised when Graph returns a non-2xx response to a mail send/fetch
     call, after authentication already succeeded.
@@ -799,14 +806,18 @@ class GraphMailProviderClient(MailProviderClient):
         """
         Polling alternative to the webhook path — this app asks Graph
         directly rather than waiting for a change notification, so it
-        needs no publicly reachable notification URL at all. Reads a
-        single page (up to 50 messages, Graph's own default-friendly
-        page size here); a mailbox receiving more than that within one
-        poll interval would have the remainder picked up on the next
-        tick instead (receivedDateTime ordering guarantees nothing is
-        skipped, only delayed by one interval) rather than silently
-        dropped — not full pagination, a deliberate scope limit for
-        the volumes this integration is built for.
+        needs no publicly reachable notification URL at all. Reads
+        pages of up to 50 messages (Graph's own default-friendly page
+        size), following `@odata.nextLink` until Graph reports no more
+        pages or MAX_LIST_MESSAGES_PAGES is reached — the caller
+        (`graph_mail_poller._poll_one_mailbox`) advances this
+        mailbox's checkpoint all the way to the tick's own start time
+        once every returned message is stored, which is only correct
+        if this method actually returned everything since `since`; a
+        single-page read used to silently violate that contract
+        whenever a mailbox received more than 50 new messages within
+        one poll interval; anything beyond position 50 would never be
+        fetched again once the checkpoint advanced past it.
         """
 
         since_literal = since.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -819,36 +830,44 @@ class GraphMailProviderClient(MailProviderClient):
             f"&$top=50"
         )
 
-        async def _attempt() -> httpx.Response:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                return await client.get(url, headers=await self._authorized_headers())
+        items: list[dict] = []
+        pages_fetched = 0
 
-        response = await call_with_graph_retry(
-            _attempt,
-            operation="listNewMessages",
-            force_refresh_token=self._force_refresh_token,
-        )
+        while url is not None:
 
-        if response.status_code != 200:
-            logger.error(
-                "Graph list messages failed: status=%s since=%s body=%s",
-                response.status_code,
-                since_literal,
-                response.text,
+            async def _attempt(url: str = url) -> httpx.Response:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    return await client.get(url, headers=await self._authorized_headers())
+
+            response = await call_with_graph_retry(
+                _attempt,
+                operation="listNewMessages",
+                force_refresh_token=self._force_refresh_token,
             )
-            raise GraphAPIError(response.status_code, response.text)
 
-        data = response.json()
-        items = data.get("value", [])
+            if response.status_code != 200:
+                logger.error(
+                    "Graph list messages failed: status=%s since=%s body=%s",
+                    response.status_code,
+                    since_literal,
+                    response.text,
+                )
+                raise GraphAPIError(response.status_code, response.text)
 
-        if data.get("@odata.nextLink"):
-            logger.warning(
-                "Graph list messages: more than %d new message(s) since %s — "
-                "the remainder will be picked up on the next poll tick, not "
-                "fetched now (no pagination implemented).",
-                len(items),
-                since_literal,
-            )
+            data = response.json()
+            items.extend(data.get("value", []))
+            pages_fetched += 1
+
+            url = data.get("@odata.nextLink")
+            if url and pages_fetched >= MAX_LIST_MESSAGES_PAGES:
+                logger.error(
+                    "Graph list messages: hit the %d-page cap since %s with "
+                    "more pages still remaining — remainder deferred to the "
+                    "next poll tick.",
+                    MAX_LIST_MESSAGES_PAGES,
+                    since_literal,
+                )
+                url = None
 
         messages: list[IncomingMailPayload] = []
 

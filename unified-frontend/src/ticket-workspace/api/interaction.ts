@@ -72,6 +72,31 @@ export async function getTicketAttachments(
   return data;
 }
 
+// GET /attachments/{id}/download — fetched (not navigated to) so the
+// existing Authorization header applies and the bytes never require a
+// live browser navigation to an external storage URL. UTMS is served
+// over plain HTTP, and Chrome flags a direct navigation/anchor to the
+// storage provider's own HTTPS URL as an "Insecure download" — saving
+// from an in-memory blob instead avoids that external navigation
+// entirely. Works for every attachment type; the caller supplies the
+// filename already known from the attachment's own metadata.
+export async function downloadAttachmentFile(
+  attachmentId: string,
+  filename: string
+): Promise<void> {
+  const { data } = await apiClient.get(`/attachments/${attachmentId}/download`, {
+    responseType: "blob",
+  });
+  const blobUrl = window.URL.createObjectURL(data as Blob);
+  const link = document.createElement("a");
+  link.href = blobUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(blobUrl);
+}
+
 // GET /tickets/interactions — every interaction across every ticket
 // the caller can see, instead of GET /tickets followed by one
 // GET /tickets/{id}/interactions per ticket. Passing `limit` switches

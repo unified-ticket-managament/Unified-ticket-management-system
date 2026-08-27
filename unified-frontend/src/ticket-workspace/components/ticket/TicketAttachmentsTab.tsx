@@ -3,7 +3,7 @@ import { Download, ExternalLink, Loader2, Trash2 } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { SkeletonRows } from "@tw/components/common/Skeleton";
-import { deleteAttachment, getTicketAttachments } from "@tw/api/interaction";
+import { deleteAttachment, downloadAttachmentFile, getTicketAttachments } from "@tw/api/interaction";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { formatBytes, iconForFilename } from "@tw/lib/attachmentMeta";
 import { formatDateTime, shortId } from "@tw/lib/format";
@@ -63,6 +63,7 @@ export function TicketAttachmentsTab({ onChanged, flat = false }: TicketAttachme
   const { activeTicket } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [items, setItems] = useState<TicketAttachmentItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [refreshToken, setRefreshToken] = useState(0);
@@ -71,6 +72,7 @@ export function TicketAttachmentsTab({ onChanged, flat = false }: TicketAttachme
   const { run: runDelete, isLoading: isDeleting } = useApiAction(deleteAttachment, {
     successMessage: "Attachment deleted.",
   });
+  const { run: runDownload, isLoading: isDownloading } = useApiAction(downloadAttachmentFile);
 
   const ticketId = activeTicket?.ticket_id;
 
@@ -139,6 +141,12 @@ export function TicketAttachmentsTab({ onChanged, flat = false }: TicketAttachme
     }
   }
 
+  async function handleDownload(attachment: FlatAttachment) {
+    setDownloadingId(attachment.id);
+    await runDownload(attachment.id, attachment.filename);
+    setDownloadingId(null);
+  }
+
   return (
     <Card flat={flat} title="Attachments" eyebrow={`${attachments.length} file${attachments.length === 1 ? "" : "s"}`}>
       {isLoading ? (
@@ -175,17 +183,33 @@ export function TicketAttachmentsTab({ onChanged, flat = false }: TicketAttachme
                 </span>
 
                 <div className="flex flex-none items-center gap-1">
-                  <a
-                    href={attachment.download_url}
-                    target="_blank"
-                    rel="noreferrer"
-                    download={!attachment.isExternalLink}
-                    aria-label={attachment.isExternalLink ? `Open ${attachment.filename}` : `Download ${attachment.filename}`}
-                    title={attachment.isExternalLink ? "Opens the original OneDrive/SharePoint link" : "Download"}
-                    className="flex h-8 w-8 items-center justify-center rounded-md2 text-muted transition-colors hover:bg-surfaceHover hover:text-accent"
-                  >
-                    {attachment.isExternalLink ? <ExternalLink size={15} /> : <Download size={15} />}
-                  </a>
+                  {attachment.isExternalLink ? (
+                    <a
+                      href={attachment.download_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`Open ${attachment.filename}`}
+                      title="Opens the original OneDrive/SharePoint link"
+                      className="flex h-8 w-8 items-center justify-center rounded-md2 text-muted transition-colors hover:bg-surfaceHover hover:text-accent"
+                    >
+                      <ExternalLink size={15} />
+                    </a>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => handleDownload(attachment)}
+                      disabled={isDownloading && downloadingId === attachment.id}
+                      aria-label={`Download ${attachment.filename}`}
+                      title="Download"
+                      className="flex h-8 w-8 items-center justify-center rounded-md2 text-muted transition-colors hover:bg-surfaceHover hover:text-accent disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isDownloading && downloadingId === attachment.id ? (
+                        <Loader2 size={15} className="animate-spin" />
+                      ) : (
+                        <Download size={15} />
+                      )}
+                    </button>
+                  )}
                   {canDelete && (
                     <button
                       type="button"

@@ -53,6 +53,7 @@ import { listAssignableAgents } from "@tw/api/agent";
 import { listClientContacts } from "@tw/api/clients";
 import {
   discardTicketReplyDraft,
+  downloadAttachmentFile,
   getTicketReplyDraft,
   replyToClient,
   retrySend,
@@ -244,6 +245,16 @@ function Bubble({
     ? resolveCidImagesForDisplay(data.bodyHtml, data.attachments ?? [])
     : renderThreadedMessageHtml(data.body, { name: data.senderName, email: data.senderEmail });
   const { ref, isExpanded, isOverflowing, toggle, clampClassName } = useCollapsibleMessage([renderedBody]);
+  const [downloadingAttachmentId, setDownloadingAttachmentId] = useState<string | null>(null);
+
+  async function handleAttachmentDownload(attachmentId: string, filename: string) {
+    setDownloadingAttachmentId(attachmentId);
+    try {
+      await downloadAttachmentFile(attachmentId, filename);
+    } finally {
+      setDownloadingAttachmentId(null);
+    }
+  }
 
   return (
     <div className="flex gap-3">
@@ -304,26 +315,37 @@ function Bubble({
           const visibleAttachments = data.attachments?.filter((a) => !a.is_inline) ?? [];
           return visibleAttachments.length > 0 && (
           <div className="mt-3 flex flex-col gap-1.5">
-            {visibleAttachments.map((a) => (
-              <a
-                key={a.id}
-                href={a.download_url}
-                target="_blank"
-                rel="noreferrer"
-                title={a.is_external_link ? "Opens the original OneDrive/SharePoint link" : undefined}
-                className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-[11.5px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5"
-              >
-                {a.is_external_link ? (
+            {visibleAttachments.map((a) =>
+              a.is_external_link ? (
+                <a
+                  key={a.id}
+                  href={a.download_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Opens the original OneDrive/SharePoint link"
+                  className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-[11.5px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5"
+                >
                   <ExternalLink className="h-3 w-3 flex-none text-muted-foreground" />
-                ) : (
-                  <Paperclip className="h-3 w-3 flex-none text-muted-foreground" />
-                )}
-                <span className="truncate">{a.filename}</span>
-                {a.is_external_link && (
+                  <span className="truncate">{a.filename}</span>
                   <span className="flex-none text-[10px] font-normal text-muted-foreground">(link)</span>
-                )}
-              </a>
-            ))}
+                </a>
+              ) : (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => handleAttachmentDownload(a.id, a.filename)}
+                  disabled={downloadingAttachmentId === a.id}
+                  className="flex w-full items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-left text-[11.5px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {downloadingAttachmentId === a.id ? (
+                    <Loader2 className="h-3 w-3 flex-none animate-spin text-muted-foreground" />
+                  ) : (
+                    <Paperclip className="h-3 w-3 flex-none text-muted-foreground" />
+                  )}
+                  <span className="truncate">{a.filename}</span>
+                </button>
+              )
+            )}
           </div>
           );
         })()}

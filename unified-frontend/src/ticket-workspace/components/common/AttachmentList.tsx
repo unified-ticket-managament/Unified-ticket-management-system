@@ -1,5 +1,7 @@
-import { Download, ExternalLink } from "lucide-react";
+import { useState } from "react";
+import { Download, ExternalLink, Loader2 } from "lucide-react";
 import type { AttachmentMeta } from "@tw/types";
+import { downloadAttachmentFile } from "@tw/api/interaction";
 import { formatBytes, iconForFilename, isImageAttachment } from "@tw/lib/attachmentMeta";
 
 interface AttachmentListProps {
@@ -12,8 +14,18 @@ export function AttachmentList({ attachments, className = "" }: AttachmentListPr
   // cid:) already render inside the message body itself — listing
   // them here too would show the same image twice.
   const visibleAttachments = attachments.filter((attachment) => !attachment.is_inline);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   if (visibleAttachments.length === 0) return null;
+
+  async function handleDownload(attachment: AttachmentMeta) {
+    setDownloadingId(attachment.id);
+    try {
+      await downloadAttachmentFile(attachment.id, attachment.filename);
+    } finally {
+      setDownloadingId(null);
+    }
+  }
 
   return (
     <div className={`flex flex-col gap-2 ${className}`}>
@@ -21,17 +33,10 @@ export function AttachmentList({ attachments, className = "" }: AttachmentListPr
         const isExternal = Boolean(attachment.is_external_link);
         const Icon = isExternal ? ExternalLink : iconForFilename(attachment.filename);
         const isImage = !isExternal && isImageAttachment(attachment);
+        const isDownloading = downloadingId === attachment.id;
 
-        return (
-          <a
-            key={attachment.id}
-            href={isImage ? attachment.preview_url ?? attachment.download_url : attachment.download_url}
-            target="_blank"
-            rel="noreferrer"
-            download={!isImage && !isExternal}
-            title={isExternal ? "Opens the original OneDrive/SharePoint link" : undefined}
-            className="group flex items-center gap-3 rounded-md2 border border-border bg-surface px-3 py-2 text-[12px] font-medium text-slate-700 shadow-xs transition-colors hover:border-accent/30 hover:bg-accent/5"
-          >
+        const content = (
+          <>
             {isImage && attachment.preview_url ? (
               <img
                 src={attachment.preview_url}
@@ -51,10 +56,61 @@ export function AttachmentList({ attachments, className = "" }: AttachmentListPr
             </span>
             {isExternal ? (
               <ExternalLink size={14} className="flex-none text-muted transition-colors group-hover:text-accent" />
+            ) : isDownloading ? (
+              <Loader2 size={14} className="flex-none animate-spin text-muted" />
             ) : (
               <Download size={14} className="flex-none text-muted transition-colors group-hover:text-accent" />
             )}
-          </a>
+          </>
+        );
+
+        const rowClassName =
+          "group flex items-center gap-3 rounded-md2 border border-border bg-surface px-3 py-2 text-[12px] font-medium text-slate-700 shadow-xs transition-colors hover:border-accent/30 hover:bg-accent/5";
+
+        // External links and image previews are plain navigations (a
+        // preview_url load isn't a "download" at all, and an external
+        // link opens Microsoft's own host) — only a real, non-image
+        // stored-file download needs to go through the authenticated
+        // fetch-then-blob path below.
+        if (isExternal) {
+          return (
+            <a
+              key={attachment.id}
+              href={attachment.download_url}
+              target="_blank"
+              rel="noreferrer"
+              title="Opens the original OneDrive/SharePoint link"
+              className={rowClassName}
+            >
+              {content}
+            </a>
+          );
+        }
+
+        if (isImage && attachment.preview_url) {
+          return (
+            <a
+              key={attachment.id}
+              href={attachment.preview_url}
+              target="_blank"
+              rel="noreferrer"
+              className={rowClassName}
+            >
+              {content}
+            </a>
+          );
+        }
+
+        return (
+          <button
+            key={attachment.id}
+            type="button"
+            onClick={() => handleDownload(attachment)}
+            disabled={isDownloading}
+            className={`${rowClassName} w-full text-left disabled:cursor-not-allowed disabled:opacity-60`}
+          >
+            {content}
+          </button>
         );
       })}
     </div>

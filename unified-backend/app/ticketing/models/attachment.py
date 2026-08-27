@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -19,6 +19,20 @@ class Attachment(Base):
     """
 
     __tablename__ = "attachments"
+
+    # Composite, not table-wide: see content_id's own comment below for
+    # why. `postgresql_where` keeps NULL content_id (every ordinary,
+    # non-inline attachment) out of the index entirely, matching the
+    # original table-wide index's own partial-index behavior.
+    __table_args__ = (
+        Index(
+            "ix_attachments_content_id",
+            "interaction_id",
+            "content_id",
+            unique=True,
+            postgresql_where=text("content_id IS NOT NULL"),
+        ),
+    )
 
     attachment_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -78,15 +92,28 @@ class Attachment(Base):
         nullable=False,
     )
 
-    # Only set for an attachment explicitly uploaded as a pasted
-    # inline image (see AttachmentService.create_inline_image) — a
-    # short, server-generated token embedded as `cid:<content_id>` in
-    # the composer's HTML body and cross-referenced back to this exact
-    # row at send time (see email_envelope.py/graph_client.py). NULL
-    # for every ordinary attachment, including a real photo a user
-    # deliberately attaches as a downloadable file rather than pasting
-    # inline. Never client-supplied — minted server-side to avoid one
-    # upload spoofing/colliding with another's cid: reference.
+    # Set for an inline image, two different ways depending on origin:
+    # a pasted-into-the-composer screenshot gets a short,
+    # server-generated token (AttachmentService.create_inline_image),
+    # cross-referenced back to this row at send time
+    # (email_envelope.py/graph_client.py); an inbound Graph message's
+    # own inline image instead carries Graph's own `contentId` value
+    # UNCHANGED (mail_mapping_service.build_upload_files_from_graph_
+    # attachments) — required so the stored body's own
+    # `cid:{contentId}` reference still resolves. NULL for every
+    # ordinary attachment, including a real photo a user deliberately
+    # attaches as a downloadable file rather than pasting/embedding
+    # inline.
+    #
+    # Only unique *within one interaction* (see ix_attachments_
+    # content_id below) — a `cid:` reference only ever needs to
+    # resolve unambiguously inside its own message's body. It is NOT
+    # globally unique: Graph/Outlook legitimately reuses the exact
+    # same contentId for the same inline image (typically a signature/
+    # logo) across many unrelated messages from the same sender — this
+    # used to collide against a table-wide unique index, which
+    # (because the resulting IntegrityError was never caught) silently
+    # dropped the entire inbound email, not just its attachment.
     content_id: Mapped[str | None] = mapped_column(
         String(64),
         nullable=True,
