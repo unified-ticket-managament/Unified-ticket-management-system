@@ -43,6 +43,12 @@ export const CONDITION_FIELDS: Record<string, ConditionFieldDef> = {
     fixedOperator: "equals",
     kind: "boolean",
   },
+  otp_detected: {
+    value: "otp_detected",
+    label: "OTP Detected",
+    fixedOperator: "equals",
+    kind: "boolean",
+  },
   recipient_cc: {
     value: "recipient_cc",
     label: "Cc contains",
@@ -76,6 +82,7 @@ export const CONDITION_FIELDS_BY_CATEGORY: Record<RuleCategory, ConditionFieldDe
     CONDITION_FIELDS.attachment_type_contains,
   ],
   otp_rule: [
+    CONDITION_FIELDS.otp_detected,
     CONDITION_FIELDS.subject_contains,
     CONDITION_FIELDS.body_contains,
     CONDITION_FIELDS.client_multi,

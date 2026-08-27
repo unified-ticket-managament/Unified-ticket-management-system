@@ -23,6 +23,7 @@ class RuleEmailContext:
     cc_recipients: list[str] = field(default_factory=list)
     attachment_filenames: list[str] = field(default_factory=list)
     attachment_mime_types: list[str] = field(default_factory=list)
+    otp_detected: bool = False
 
     sender_domain: str = field(init=False)
 
@@ -83,6 +84,9 @@ def _condition_matches(condition, context: RuleEmailContext) -> bool:
 
     if field_name == RuleConditionField.ATTACHMENT_TYPE_CONTAINS:
         return _text_matches_any(operator, context.attachment_mime_types, str(value))
+
+    if field_name == RuleConditionField.OTP_DETECTED:
+        return context.otp_detected == bool(value)
 
     return False
 

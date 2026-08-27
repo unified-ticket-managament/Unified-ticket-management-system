@@ -5,8 +5,10 @@ import { Link } from "react-router-dom";
 import {
   Archive,
   ArrowLeft,
+  Check,
   ExternalLink,
   FilePlus,
+  FolderInput,
   Forward as ForwardIcon,
   Link2,
   Loader2,
@@ -32,6 +34,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -1042,6 +1046,50 @@ export function MessageDetailsView({
         </Button>
       )}
 
+      {!isTicketed && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="sm" variant="outline" className="gap-1.5">
+              <FolderInput className="h-3.5 w-3.5" />
+              Move to
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            {folders.length === 0 ? (
+              <DropdownMenuItem disabled>
+                No folders yet — create one from the sidebar
+              </DropdownMenuItem>
+            ) : (
+              <>
+                <DropdownMenuLabel>Move to folder</DropdownMenuLabel>
+                {folders.map((folder) => (
+                  <DropdownMenuItem
+                    key={folder.folder_id}
+                    onClick={() => onAssignFolder(email.interaction_id, folder.folder_id)}
+                  >
+                    <Check
+                      className={cn(
+                        "h-3.5 w-3.5",
+                        email.folder_id === folder.folder_id ? "opacity-100" : "opacity-0"
+                      )}
+                    />
+                    {folder.name.trim()}
+                  </DropdownMenuItem>
+                ))}
+                {email.folder_id && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => onAssignFolder(email.interaction_id, null)}>
+                      Unfiled
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+
       <Button
         size="sm"
         variant="outline"
@@ -1203,25 +1251,6 @@ export function MessageDetailsView({
               placeholder="Add a tag..."
               className="h-6 w-28 px-2 text-[11px]"
             />
-
-            {!isTicketed && folders.length > 0 && (
-              <Select
-                value={email.folder_id ?? "__none__"}
-                onValueChange={(v) => onAssignFolder(email.interaction_id, v === "__none__" ? null : v)}
-              >
-                <SelectTrigger className="ml-auto h-7 w-36 text-[11px]">
-                  <SelectValue placeholder="Folder" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">No folder</SelectItem>
-                  {folders.map((folder) => (
-                    <SelectItem key={folder.folder_id} value={folder.folder_id}>
-                      {folder.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
           </section>
 
           <section>

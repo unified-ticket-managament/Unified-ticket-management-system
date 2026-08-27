@@ -9,6 +9,7 @@ from app.ticketing.models.rule import Rule
 from app.ticketing.repositories.distribution_list_repository import (
     DistributionListRepository,
 )
+from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.schemas.mail_folder import MailFolderCreate, MailFolderResponse
@@ -184,6 +185,7 @@ class MailFolderService:
         current_user: User,
         rule_repository: RuleRepository,
         distribution_list_repository: DistributionListRepository,
+        interaction_repository: InteractionRepository | None = None,
     ) -> None:
         folder = await self.mail_folder_repository.get_by_id(folder_id)
 
@@ -196,5 +198,15 @@ class MailFolderService:
         await self.ensure_visible(
             folder, current_user, rule_repository, distribution_list_repository
         )
+
+        # interactions.folder_id has no ON DELETE behavior on its FK to
+        # mail_folders, so deleting a folder that still has messages
+        # filed under it would raise an unhandled FK violation. Unlike
+        # RuleService.delete's cleanup (which only auto-deletes
+        # rule-exclusively-owned folders), this is a direct manual
+        # delete of any folder — always unfile first, regardless of
+        # who created it or how it's referenced.
+        if interaction_repository is not None:
+            await interaction_repository.clear_folder_for_folder_id(folder_id)
 
         await self.mail_folder_repository.delete(folder)

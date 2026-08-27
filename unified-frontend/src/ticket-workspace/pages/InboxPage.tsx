@@ -296,6 +296,8 @@ export function InboxPage() {
         folderCounts={mail.folderCounts}
         activeFolderId={mail.activeFolderId}
         onSelectFolder={handleSelectFolder}
+        onCreateFolder={mail.createFolder}
+        onDeleteFolder={mail.deleteFolder}
         canManageRules={canManageRules}
         rulesActive={rulesOpen}
         onOpenRules={handleOpenRules}

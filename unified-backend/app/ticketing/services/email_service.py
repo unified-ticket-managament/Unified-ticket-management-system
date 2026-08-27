@@ -709,6 +709,7 @@ class EmailService:
                 attachment_mime_types=[
                     meta.mime_type for meta in attachment_metas if meta.mime_type
                 ],
+                otp_detected=otp_classification.is_otp,
             )
             await self.rule_engine_service.evaluate_and_execute_for_email(
                 interaction=created,

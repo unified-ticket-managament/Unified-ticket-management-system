@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, type ReactNode } from "react";
+import { memo, type ReactNode, useState } from "react";
 import {
   Archive,
   Bell,
@@ -8,17 +8,31 @@ import {
   Folder,
   Inbox as InboxIcon,
   Pencil,
+  Plus,
   Reply,
   Send,
   Ticket as TicketIcon,
+  Trash2,
   UserCheck,
   UserX,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { CreateFolderDialog } from "@tw/components/mail/CreateFolderDialog";
+import { useApiAction } from "@tw/hooks/useApiAction";
 import type { MailViewKey } from "@tw/hooks/useMailInbox";
 import type { MailFolder } from "@tw/types";
 
@@ -61,6 +75,8 @@ interface MailSidebarProps {
   folderCounts: Record<string, number>;
   activeFolderId: string | null;
   onSelectFolder: (folderId: string) => void;
+  onCreateFolder: (name: string) => Promise<MailFolder>;
+  onDeleteFolder: (folderId: string) => Promise<void>;
   // Rules moved under Mail — visible only to the roles holding
   // rule:manage (Super Admin, Site Lead, Account Manager, Team Lead).
   // Mutually exclusive with every view/folder above, same as Compose.
@@ -104,12 +120,30 @@ export const MailSidebar = memo(function MailSidebar({
   folderCounts,
   activeFolderId,
   onSelectFolder,
+  onCreateFolder,
+  onDeleteFolder,
   canManageRules,
   rulesActive,
   onOpenRules,
   variant = "standalone",
 }: MailSidebarProps) {
   const viewItems = hideMyClaims ? VIEW_ITEMS.filter((item) => item.key !== "mine") : VIEW_ITEMS;
+  const [createOpen, setCreateOpen] = useState(false);
+  const [deletingFolder, setDeletingFolder] = useState<MailFolder | null>(null);
+  const { run: runDeleteFolder, isLoading: isDeletingFolder } = useApiAction(onDeleteFolder, {
+    successMessage: "Folder deleted.",
+  });
+
+  async function handleConfirmDelete() {
+    if (!deletingFolder) return;
+    const result = await runDeleteFolder(deletingFolder.folder_id);
+    // useApiAction returns undefined (not null) for a void action's
+    // success — only a genuine thrown error resolves to null, so any
+    // non-null result (including undefined) here means the delete
+    // actually went through.
+    if (result !== null) setDeletingFolder(null);
+  }
+
   return (
     <aside
       className={cn(
@@ -173,34 +207,88 @@ export const MailSidebar = memo(function MailSidebar({
         </div>
       )}
 
-      {folders.length > 0 && (
-        <div className="flex flex-col gap-0.5 border-t border-border pt-3">
-          <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+      <div className="flex flex-col gap-0.5 border-t border-border pt-3">
+        <div className="flex items-center justify-between px-3 pb-1">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
             Folders
           </p>
-          {folders.map((folder) => {
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5 text-muted-foreground hover:text-foreground"
+            onClick={() => setCreateOpen(true)}
+            aria-label="Create folder"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+        {folders.length === 0 ? (
+          <p className="px-3 py-1 text-[12px] text-muted-foreground">
+            No folders yet — create one to organize mail.
+          </p>
+        ) : (
+          folders.map((folder) => {
             const isActive = !isComposing && activeFolderId === folder.folder_id;
             return (
-              <button
+              <div
                 key={folder.folder_id}
-                type="button"
                 data-active={isActive}
-                onClick={() => onSelectFolder(folder.folder_id)}
                 className={cn(
-                  "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-left text-[13px] font-medium transition-all duration-150",
+                  "group flex items-center gap-2.5 rounded-lg pl-3 pr-1.5 py-2 text-left text-[13px] font-medium transition-all duration-150",
                   isActive
                     ? "bg-primary/10 text-primary"
-                    : "text-foreground/80 hover:translate-x-0.5 hover:bg-muted hover:text-foreground"
+                    : "text-foreground/80 hover:bg-muted hover:text-foreground"
                 )}
               >
-                <Folder className={cn("h-4 w-4 flex-none", isActive ? "text-primary" : "text-muted-foreground")} />
-                <span className="truncate">{folder.name.trim()}</span>
-                <CountBadge count={folderCounts[folder.folder_id] ?? 0} />
-              </button>
+                <button
+                  type="button"
+                  onClick={() => onSelectFolder(folder.folder_id)}
+                  className="flex flex-1 items-center gap-2.5 overflow-hidden text-left"
+                >
+                  <Folder className={cn("h-4 w-4 flex-none", isActive ? "text-primary" : "text-muted-foreground")} />
+                  <span className="truncate">{folder.name.trim()}</span>
+                  <CountBadge count={folderCounts[folder.folder_id] ?? 0} />
+                </button>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDeletingFolder(folder);
+                  }}
+                  aria-label={`Delete ${folder.name.trim()}`}
+                  className="flex-none rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
             );
-          })}
-        </div>
-      )}
+          })
+        )}
+      </div>
+
+      <CreateFolderDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={onCreateFolder} />
+
+      <AlertDialog
+        open={!!deletingFolder}
+        onOpenChange={(open) => !open && setDeletingFolder(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete folder</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delete folder &quot;{deletingFolder?.name.trim()}&quot;? Any emails filed here will
+              become unfiled.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={isDeletingFolder} onClick={handleConfirmDelete}>
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </aside>
   );
 });

@@ -60,6 +60,9 @@ class _FakeInteractionRepository:
     async def get_by_message_ids(self, message_ids):
         return []
 
+    async def find_orphans_awaiting_parent(self, message_id):
+        return []
+
     async def create(self, interaction_create):
         class _Created:
             pass
@@ -115,9 +118,11 @@ class _FakeRuleEngineService:
     def __init__(self, call_log, raises: bool = False):
         self._call_log = call_log
         self._raises = raises
+        self.last_context = None
 
     async def evaluate_and_execute_for_email(self, *, interaction, context):
         self._call_log.append("rule_engine_called")
+        self.last_context = context
         if self._raises:
             raise RuntimeError("forward failed")
         return True
@@ -239,3 +244,50 @@ async def test_normal_email_does_not_complete_sla(monkeypatch):
 
     assert sla_service.completed_calls == []
     assert response.message == "Email received successfully."
+
+
+async def test_genuine_otp_context_passed_to_rule_engine_has_otp_detected_true(monkeypatch):
+    # The rule engine's OTP_DETECTED condition must reuse the exact
+    # same classification the SLA-completion branch above already
+    # computed, not a second, independent detector.
+    call_log = []
+    sla_service = _FakeSLAService()
+    rule_engine_service = _FakeRuleEngineService(call_log)
+
+    service = _build_service(monkeypatch, sla_service=sla_service, rule_engine_service=rule_engine_service)
+
+    await service.receive_email(_email_request(**_GENUINE_OTP_EMAIL))
+
+    assert rule_engine_service.last_context is not None
+    assert rule_engine_service.last_context.otp_detected is True
+
+
+async def test_normal_email_context_passed_to_rule_engine_has_otp_detected_false(monkeypatch):
+    call_log = []
+    sla_service = _FakeSLAService()
+    rule_engine_service = _FakeRuleEngineService(call_log)
+
+    service = _build_service(monkeypatch, sla_service=sla_service, rule_engine_service=rule_engine_service)
+
+    await service.receive_email(_email_request())
+
+    assert rule_engine_service.last_context is not None
+    assert rule_engine_service.last_context.otp_detected is False
+
+
+async def test_support_request_mentioning_otp_context_has_otp_detected_false(monkeypatch):
+    # Regression guard for the classifier's confidence-ceiling
+    # behavior (a support complaint that merely mentions "OTP" must
+    # not be misclassified as a genuine OTP email), now also visible
+    # through the rule engine's context rather than only through SLA
+    # completion.
+    call_log = []
+    sla_service = _FakeSLAService()
+    rule_engine_service = _FakeRuleEngineService(call_log)
+
+    service = _build_service(monkeypatch, sla_service=sla_service, rule_engine_service=rule_engine_service)
+
+    await service.receive_email(_email_request(**_SUPPORT_REQUEST_EMAIL))
+
+    assert rule_engine_service.last_context is not None
+    assert rule_engine_service.last_context.otp_detected is False
