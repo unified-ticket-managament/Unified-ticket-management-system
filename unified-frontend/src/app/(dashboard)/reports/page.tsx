@@ -77,7 +77,7 @@ export default function ReportsPage() {
   );
 
   useEffect(() => {
-    listClients()
+    listClients({ mine: true })
       .then(setClients)
       .catch(() => setClients([]));
     listCategories()

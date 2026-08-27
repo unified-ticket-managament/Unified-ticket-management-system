@@ -1,8 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Paperclip,
   RefreshCw,
   Search,
@@ -23,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { cn } from "@/lib/utils";
+import { useSettingsStore } from "@/store/settings-store";
 import { TIME_FILTERS, type TimeFilterKey } from "@tw/hooks/useMailInbox";
 import { formatRelativeTime } from "@/lib/utils";
 import type { CategoryResponse, ClientResponse, InboxItem, SLAPolicyResponse, TicketPriority } from "@tw/types";
@@ -40,6 +45,22 @@ import { mergedClientFilterOptions } from "@tw/lib/clientFilter";
 
 type SortKey = "newest" | "oldest" | "sender";
 type SlaRiskFilter = "ALL" | SlaTier;
+
+// The only valid "Messages per page" choices — kept in sync with
+// settings-store.ts's mailMessagesPerPage default (50) and its own
+// top-of-file comment pointing back here.
+const PAGE_SIZE_OPTIONS = [50, 100, 200, 500] as const;
+type MessageListPageSize = (typeof PAGE_SIZE_OPTIONS)[number];
+
+function isValidPageSize(value: number): value is MessageListPageSize {
+  return (PAGE_SIZE_OPTIONS as readonly number[]).includes(value);
+}
+
+// A generous, purely-defensive ceiling on how many on-demand batches
+// "Last Page" will fetch in one go (see goToLast below) — not a real
+// limit tied to any actual inbox size, just a runaway-fetch safety
+// net for a pathologically large result set.
+const MAX_LOAD_MORE_BATCHES_FOR_LAST_PAGE = 50;
 
 // Coarser than the single-message countdown's 1s tick (SlaFirstResponseBadge/
 // useFirstResponseCountdown) — this drives a whole list's sort/badges, not a
@@ -196,6 +217,33 @@ export function MessageList({
   const [attachmentsOnly, setAttachmentsOnly] = useState(false);
   const [slaRiskFilter, setSlaRiskFilter] = useState<SlaRiskFilter>("ALL");
 
+  // Pagination — operates on `filtered` (this list's own current
+  // result set, after every existing filter/sort), not on `items`
+  // directly, so it stays correct for whichever folder/view/search/
+  // filter combination is currently active. Page size is a persisted,
+  // device-local preference (shared across every MessageList instance
+  // via the store); the current page number is local, per-instance
+  // state — deliberately not persisted, only the size preference is.
+  const persistedPageSize = useSettingsStore((s) => s.mailMessagesPerPage);
+  const setPersistedPageSize = useSettingsStore((s) => s.setMailMessagesPerPage);
+  const pageSize: MessageListPageSize = isValidPageSize(persistedPageSize) ? persistedPageSize : 50;
+  const [page, setPage] = useState(1);
+  // True while "Last Page" is fetching additional batches to find the
+  // real final page — see goToLast below.
+  const [isJumpingToLast, setIsJumpingToLast] = useState(false);
+  // True while "Next"/"Last" triggered exactly one on-demand batch
+  // fetch to fill the page being navigated to.
+  const [isLoadingNextBatch, setIsLoadingNextBatch] = useState(false);
+  // Mirrors the `hasMore` prop for goToLastPage's loop below — an
+  // async function's own local reference to a prop captured at call
+  // time never sees later renders' updated value, so the loop reads
+  // this ref (kept current via the effect right after it) instead of
+  // closing over the stale `hasMore` parameter directly.
+  const hasMoreRef = useRef(hasMore);
+  useEffect(() => {
+    hasMoreRef.current = hasMore;
+  }, [hasMore]);
+
   // First Response SLA tier, computed client-side — no dedicated read
   // endpoint exists (same reason SlaFirstResponseBadge/
   // useFirstResponseCountdown recompute it), so this fetches the one
@@ -258,7 +306,17 @@ export function MessageList({
   // since pinning Escalated/Breached/At Risk mail to the top buried
   // genuinely new incoming mail underneath older escalated items.
   const filtered = useMemo(() => {
-    let rows = items;
+    // De-duped by interaction_id before anything else — `items` can
+    // legitimately contain the same row twice once pagination's
+    // "Next"/"Last" actually exercises the pre-existing load-more
+    // path (see onLoadMore below): offset-based pagination re-fetches
+    // a shifted window if a new email arrives between batches, and
+    // the appended batch can re-include a row already present from an
+    // earlier one. Same fix shape as useMailInbox.ts's own inboxAll/
+    // mine construction (Map keyed by interaction_id) — this is the
+    // one path that array doesn't already cover, since load-more had
+    // no UI trigger before this pagination feature added one.
+    let rows = Array.from(new Map(items.map((item) => [item.interaction_id, item])).values());
     if (unreadOnly) rows = rows.filter((item) => isItemUnread(item, openedIds));
     if (attachmentsOnly) rows = rows.filter((item) => item.has_attachments);
     if (slaRiskFilter !== "ALL") {
@@ -277,6 +335,149 @@ export function MessageList({
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, unreadOnly, attachmentsOnly, sort, openedIds, slaRiskFilter, targetMinutes, now]);
+
+  // `filtered.length` is "everything currently loaded and matching
+  // every active filter" — the real total once `hasMore` is false, or
+  // a known-so-far lower bound while more batches are still fetchable
+  // on demand (see goToNext/goToLast below, and the "+" suffix in the
+  // render further down, matching this file's own pre-existing
+  // {hasMore ? "+" : ""} convention on the message count).
+  const totalPagesKnown = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const isOnLastKnownPage = page >= totalPagesKnown;
+  // goToLastPage needs the post-fetch result count once its own fetch
+  // loop finishes, not the count captured when it was first called —
+  // same stale-closure problem/fix as hasMoreRef above.
+  const filteredLengthRef = useRef(filtered.length);
+  useEffect(() => {
+    filteredLengthRef.current = filtered.length;
+  }, [filtered.length]);
+  const pageStartIndex = (page - 1) * pageSize;
+  const pageItems = useMemo(
+    () => filtered.slice(pageStartIndex, pageStartIndex + pageSize),
+    [filtered, pageStartIndex, pageSize]
+  );
+  const pageEndIndex = pageStartIndex + pageItems.length;
+
+  // Resets to page 1 whenever the page size changes or any filter/
+  // sort this component owns changes — `items` itself (the folder/
+  // view's underlying data, or a search/priority/category/time-filter
+  // change applied upstream in useMailInbox) is included so switching
+  // folders or changing an upstream filter also resets, matching the
+  // pre-existing "resets to page 1 on folder/search/filter change"
+  // convention this Mail page has always followed.
+  useEffect(() => {
+    setPage(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pageSize, items, unreadOnly, attachmentsOnly, sort, slaRiskFilter]);
+
+  // Separate safety net for section 13's "data changed under you"
+  // case (e.g. a mutation removes a row from the current page while
+  // the user hasn't touched any filter/page-size control) — clamps
+  // down to the nearest valid page instead of resetting all the way
+  // to 1, so an in-place data change never strands the user on an
+  // empty page.
+  useEffect(() => {
+    setPage((current) => Math.min(current, totalPagesKnown));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [totalPagesKnown]);
+
+  // Keeps the CURRENT page topped up with real data — the actual fix
+  // for "selecting 200/500 per page doesn't display that many": the
+  // app only ever fetches MAIL_TAB_FETCH_SIZE (200) rows up front, so
+  // without this, choosing a page size (or a page) that needs more
+  // than what's already loaded would just silently render whatever's
+  // available instead of the requested count. Fires on page/pageSize
+  // change (and again each time a fetch it triggered lands and
+  // `filtered.length` grows, since that's this effect's own
+  // dependency) until either the current page is fully filled or
+  // `hasMore` goes false — the same "keep fetching bounded batches
+  // until satisfied" idea as goToLastPage, just driven by whichever
+  // page is currently on screen rather than a one-off jump. Skips
+  // entirely while goToNextPage/goToLastPage already have their own
+  // fetch in flight (isLoadingNextBatch/isJumpingToLast), so this
+  // never races or double-fetches against them. Guarded against a
+  // persistent fetch failure retrying in a tight loop: unlike
+  // goToNextPage/goToLastPage (one-shot click handlers, so a failure
+  // just leaves the button re-clickable), this effect re-fires
+  // reactively — without tracking a failed attempt, a rejected
+  // onLoadMore() would immediately retry the exact same fetch forever
+  // (filtered.length/hasMore never having changed to make the guard
+  // above false). Keyed on the state that would have to change for a
+  // retry to be worth attempting again; a later successful fetch
+  // (e.g. a manual refresh) changes filtered.length and naturally
+  // clears this.
+  const lastFailedAttemptKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (isLoadingNextBatch || isJumpingToLast) return;
+    const rowsNeededForCurrentPage = page * pageSize;
+    if (filtered.length >= rowsNeededForCurrentPage || !hasMore) return;
+    const attemptKey = `${page}:${pageSize}:${filtered.length}`;
+    if (lastFailedAttemptKeyRef.current === attemptKey) return;
+    setIsLoadingNextBatch(true);
+    onLoadMore()
+      .catch(() => {
+        lastFailedAttemptKeyRef.current = attemptKey;
+      })
+      .finally(() => setIsLoadingNextBatch(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, pageSize, filtered.length, hasMore, isLoadingNextBatch, isJumpingToLast]);
+
+  function goToFirstPage() {
+    setPage(1);
+  }
+
+  function goToPreviousPage() {
+    setPage((current) => Math.max(1, current - 1));
+  }
+
+  // Only fetches when the page being navigated to needs rows beyond
+  // what's already loaded — reuses the existing bounded batch fetch
+  // (onLoadMore/hasMore, see useMailInbox's MAIL_TAB_FETCH_SIZE)
+  // rather than ever pulling the whole result set up front.
+  async function goToNextPage() {
+    const needsMoreData = page * pageSize >= filtered.length && hasMore;
+    if (needsMoreData) {
+      setIsLoadingNextBatch(true);
+      try {
+        await onLoadMore();
+      } finally {
+        setIsLoadingNextBatch(false);
+      }
+    }
+    setPage((current) => current + 1);
+  }
+
+  // Jumps to the true final page — if more data is fetchable, fetches
+  // it in bounded batches (same MAIL_TAB_FETCH_SIZE-sized calls as
+  // "Next"/the existing Load More affordance) until hasMore genuinely
+  // goes false or the defensive cap above is hit, then lands on the
+  // real last page rather than an interim "last known so far" one.
+  async function goToLastPage() {
+    if (!hasMoreRef.current) {
+      setPage(totalPagesKnown);
+      return;
+    }
+    setIsJumpingToLast(true);
+    try {
+      let batches = 0;
+      while (hasMoreRef.current && batches < MAX_LOAD_MORE_BATCHES_FOR_LAST_PAGE) {
+        await onLoadMore();
+        // Yield one macrotask so React can commit the re-render the
+        // fetch's setState calls scheduled (and this component's own
+        // hasMoreRef/filteredLengthRef-syncing effects can run) before
+        // the loop re-checks hasMoreRef — without this, the just-
+        // awaited fetch's result wouldn't be reflected yet and every
+        // iteration would look like it still "has more," fetching far
+        // more than actually needed.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        batches += 1;
+      }
+      const freshTotalPages = Math.max(1, Math.ceil(filteredLengthRef.current / pageSize));
+      setPage(freshTotalPages);
+    } finally {
+      setIsJumpingToLast(false);
+    }
+  }
 
   const activeFilterCount = [
     priorityFilter !== "ALL",
@@ -473,7 +674,7 @@ export function MessageList({
           </div>
         ) : (
           <ul className="divide-y divide-border">
-            {filtered.map((item) => {
+            {pageItems.map((item) => {
               const openId = item.open_interaction_id ?? item.interaction_id;
               const isUnread = isItemUnread(item, openedIds);
               const status = statusMeta(item);
@@ -571,11 +772,80 @@ export function MessageList({
       </div>
 
       {filtered.length > 0 && (
-        <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-2.5">
+        <div className="flex flex-col gap-1.5 border-t border-border px-4 py-2.5">
           <p className="text-[11.5px] text-muted-foreground">
-            {filtered.length} message{filtered.length === 1 ? "" : "s"}
-            {hasMore ? "+" : ""}
+            Showing {pageStartIndex + 1}–{pageEndIndex} of {filtered.length}
+            {hasMore ? "+" : ""} message{filtered.length === 1 ? "" : "s"}
           </p>
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
+              <span className="whitespace-nowrap">Messages per page:</span>
+              <Select
+                value={String(pageSize)}
+                onValueChange={(v) => setPersistedPageSize(Number(v))}
+                disabled={isLoadingNextBatch || isJumpingToLast}
+              >
+                <SelectTrigger className="h-7 w-[76px] text-[11.5px]" aria-label="Messages per page">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <SelectItem key={size} value={String(size)}>
+                      {size}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-0.5">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                disabled={page === 1 || isLoadingNextBatch || isJumpingToLast}
+                onClick={goToFirstPage}
+                aria-label="First page"
+              >
+                <ChevronsLeft className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                disabled={page === 1 || isLoadingNextBatch || isJumpingToLast}
+                onClick={goToPreviousPage}
+                aria-label="Previous page"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </Button>
+              <span className="whitespace-nowrap px-1.5 text-[11.5px] text-muted-foreground">
+                Page {page} of {totalPagesKnown}
+                {hasMore ? "+" : ""}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                disabled={(isOnLastKnownPage && !hasMore) || isLoadingNextBatch || isJumpingToLast}
+                onClick={goToNextPage}
+                aria-label="Next page"
+              >
+                <ChevronRight className={cn("h-3.5 w-3.5", isLoadingNextBatch && "animate-pulse")} />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                disabled={(isOnLastKnownPage && !hasMore) || isLoadingNextBatch || isJumpingToLast}
+                onClick={goToLastPage}
+                aria-label="Last page"
+              >
+                <ChevronsRight className={cn("h-3.5 w-3.5", isJumpingToLast && "animate-pulse")} />
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

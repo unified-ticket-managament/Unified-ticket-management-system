@@ -87,10 +87,10 @@ export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
   );
 
   useEffect(() => {
-    listClients()
+    listClients({ mine: true })
       .then(setClients)
       .catch(() => setClients([]));
-    listCategories()
+    listCategories({ mine: true })
       .then(setCategories)
       .catch(() => setCategories([]));
   }, []);
