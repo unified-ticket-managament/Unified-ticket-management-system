@@ -87,20 +87,20 @@ export function DistributionListDialog({
           await removeDistributionListMember(distributionList.distribution_list_id, userId);
         }
 
-        toast({ title: "Distribution list updated" });
+        toast({ title: "Distribution group updated" });
       } else {
         await createDistributionList({
           name: name.trim(),
           description: description.trim() || null,
           member_user_ids: memberIds,
         });
-        toast({ title: "Distribution list created" });
+        toast({ title: "Distribution group created" });
       }
       onOpenChange(false);
       onSaved();
     } catch (error: any) {
       toast({
-        title: error?.response?.data?.detail ?? "Couldn't save this distribution list",
+        title: error?.response?.data?.detail ?? "Couldn't save this distribution group",
         variant: "destructive",
       });
     } finally {
@@ -112,7 +112,7 @@ export function DistributionListDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{isEditing ? "Edit Distribution List" : "New Distribution List"}</DialogTitle>
+          <DialogTitle>{isEditing ? "Edit Distribution Group" : "New Distribution Group"}</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4">

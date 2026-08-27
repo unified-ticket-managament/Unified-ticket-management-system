@@ -36,13 +36,13 @@ import { useApiAction } from "@tw/hooks/useApiAction";
 import type { MailViewKey } from "@tw/hooks/useMailInbox";
 import type { MailFolder } from "@tw/types";
 
-// Exact order required by the Mail spec: Compose, Inbox, Unassigned,
+// Exact order required by the Mail spec: Compose, All, Inbox,
 // My Claims, Sent, Drafts, Replied, Ticketed, Archived.
 // Compose is rendered separately above this list (it's an action,
 // not a folder view).
 const VIEW_ITEMS: Array<{ key: MailViewKey; label: string; icon: LucideIcon }> = [
-  { key: "pending", label: "Inbox", icon: InboxIcon },
-  { key: "unassigned", label: "Unassigned", icon: UserX },
+  { key: "pending", label: "All", icon: InboxIcon },
+  { key: "unassigned", label: "Inbox", icon: UserX },
   { key: "mine", label: "My Tickets", icon: UserCheck },
   { key: "sent", label: "Sent", icon: Send },
   { key: "drafts", label: "Drafts", icon: FileEdit },

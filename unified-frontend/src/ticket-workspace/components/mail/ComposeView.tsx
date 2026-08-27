@@ -929,7 +929,7 @@ export function ComposeView({
 
             <div>
               <DistributionListMultiSelect
-                label="Distribution Lists"
+                label="Distribution Groups"
                 hint="Each active member is added as a real additional To recipient."
                 selectedIds={distributionListIds}
                 onChange={setDistributionListIds}

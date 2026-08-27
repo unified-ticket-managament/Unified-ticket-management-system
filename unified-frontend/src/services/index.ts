@@ -7,6 +7,7 @@ import {
   EligibleApproverUser,
   ImpersonationStartResponse,
   LoginForm,
+  MyPermissionsResponse,
   OrganizationNode,
   Permission,
   PermissionOverride,
@@ -54,6 +55,12 @@ export const authService = {
       permissions: response.data.permissions ?? [],
       scoped_permissions: response.data.scoped_permissions ?? {},
     };
+  },
+
+  getMyPermissions: async (): Promise<MyPermissionsResponse> => {
+    const response = await api.get<MyPermissionsResponse>("/auth/me/permissions");
+
+    return response.data;
   },
 
   updateProfile: async (data: ProfileForm) => {

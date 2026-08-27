@@ -356,7 +356,7 @@ export function ReplyComposer({
         )}
         <div className="pt-1">
           <DistributionListMultiSelect
-            label="Distribution Lists (Cc)"
+            label="Distribution Groups (Cc)"
             selectedIds={distributionListIds}
             onChange={setDistributionListIds}
           />

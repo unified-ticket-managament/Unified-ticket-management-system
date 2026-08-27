@@ -61,7 +61,7 @@ export function DistributionListsPanel() {
       })
       .catch((error) => {
         if (axios.isCancel(error)) return;
-        setLoadError("Failed to load distribution lists. Please try again.");
+        setLoadError("Failed to load distribution groups. Please try again.");
       });
   }
 
@@ -82,7 +82,7 @@ export function DistributionListsPanel() {
       setEditingList(detail);
       setDialogOpen(true);
     } catch {
-      toast({ title: "Couldn't load this distribution list", variant: "destructive" });
+      toast({ title: "Couldn't load this distribution group", variant: "destructive" });
     }
   }
 
@@ -91,7 +91,7 @@ export function DistributionListsPanel() {
       await setDistributionListActive(summary.distribution_list_id, isActive);
       refresh();
     } catch {
-      toast({ title: "Couldn't update this distribution list", variant: "destructive" });
+      toast({ title: "Couldn't update this distribution group", variant: "destructive" });
     }
   }
 
@@ -99,21 +99,21 @@ export function DistributionListsPanel() {
     if (!pendingDelete) return;
     try {
       await deleteDistributionList(pendingDelete.distribution_list_id);
-      toast({ title: "Distribution list deleted" });
+      toast({ title: "Distribution group deleted" });
       setPendingDelete(null);
       refresh();
     } catch {
-      toast({ title: "Couldn't delete this distribution list", variant: "destructive" });
+      toast({ title: "Couldn't delete this distribution group", variant: "destructive" });
     }
   }
 
   return (
     <Card>
       <CardHeader className="flex flex-col gap-3 space-y-0 sm:flex-row sm:items-center sm:justify-between">
-        <CardTitle className="text-lg font-semibold">Distribution Lists</CardTitle>
+        <CardTitle className="text-lg font-semibold">Distribution Groups</CardTitle>
         <Button size="sm" onClick={handleNew}>
           <Plus className="mr-2 h-4 w-4" />
-          New Distribution List
+          New Distribution Group
         </Button>
       </CardHeader>
       <CardContent className="p-0">
@@ -129,12 +129,12 @@ export function DistributionListsPanel() {
         ) : lists.length === 0 ? (
           <div className="p-6">
             <EmptyState
-              title="No Distribution Lists Yet"
-              description="Create a distribution list to group recipients for Mail Rule and OTP Rule forwarding."
+              title="No Distribution Groups Yet"
+              description="Create a distribution group to group recipients for Mail Rule and OTP Rule forwarding."
               action={
                 <Button onClick={handleNew}>
                   <Plus className="mr-2 h-4 w-4" />
-                  New Distribution List
+                  New Distribution Group
                 </Button>
               }
             />
@@ -171,7 +171,7 @@ export function DistributionListsPanel() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        aria-label="Edit distribution list"
+                        aria-label="Edit distribution group"
                         onClick={() => handleEdit(list)}
                       >
                         <Pencil className="h-4 w-4" />
@@ -179,7 +179,7 @@ export function DistributionListsPanel() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        aria-label="Delete distribution list"
+                        aria-label="Delete distribution group"
                         onClick={() => setPendingDelete(list)}
                       >
                         <Trash2 className="h-4 w-4" />

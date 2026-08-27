@@ -6,6 +6,7 @@ import { KeyRound, Pencil, Shield, Users } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 
 import { PageHeader } from "@/components/layout/dashboard-shell";
+import { MyPermissionsDialog } from "@/components/roles/my-permissions-dialog";
 import { RolePermissionsDialog } from "@/components/roles/role-permissions-dialog";
 import { Breadcrumbs } from "@/components/shared/breadcrumbs";
 import { EmptyState, ErrorState } from "@/components/shared/stats";
@@ -15,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { WorkflowLoader } from "@/components/common/WorkflowLoader";
-import { formatDate } from "@/lib/utils";
+import { cn, formatDate } from "@/lib/utils";
 import { permissionService, roleService, userService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 import { Permission, Role, User } from "@/types";
@@ -31,6 +32,7 @@ export default function RoleDetailsPage() {
   // wrong on both ends (missed Site Lead, over-granted Account Manager).
   const canManagePermissions = hasPermission("permission:update");
   const [permissionsDialogOpen, setPermissionsDialogOpen] = useState(false);
+  const [myPermissionsOpen, setMyPermissionsOpen] = useState(false);
 
   const roleQuery = useQuery({
     queryKey: ["role-detail", params.id],
@@ -160,24 +162,49 @@ export default function RoleDetailsPage() {
               ) : assignedUsers.length === 0 ? (
                 <EmptyState title="No users assigned" description="Users with this role will appear here." />
               ) : (
-                assignedUsers.map((user) => (
-                  <div
-                    key={user.user_id}
-                    className="flex items-center gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-muted/50"
-                  >
-                    <Avatar className="h-9 w-9">
-                      <AvatarFallback>{user.name.charAt(0).toUpperCase()}</AvatarFallback>
-                    </Avatar>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{user.name}</p>
-                      <p className="truncate text-xs text-muted-foreground">{user.email}</p>
+                assignedUsers.map((user) => {
+                  const isSelf = !!currentUser?.user_id && user.user_id === currentUser.user_id;
+
+                  return (
+                    <div
+                      key={user.user_id}
+                      role={isSelf ? "button" : undefined}
+                      tabIndex={isSelf ? 0 : undefined}
+                      onClick={isSelf ? () => setMyPermissionsOpen(true) : undefined}
+                      onKeyDown={
+                        isSelf
+                          ? (e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                setMyPermissionsOpen(true);
+                              }
+                            }
+                          : undefined
+                      }
+                      className={cn(
+                        "flex items-center gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-muted/50",
+                        isSelf && "cursor-pointer"
+                      )}
+                    >
+                      <Avatar className="h-9 w-9">
+                        <AvatarFallback>{user.name.charAt(0).toUpperCase()}</AvatarFallback>
+                      </Avatar>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{user.name}</p>
+                        <p className="truncate text-xs text-muted-foreground">{user.email}</p>
+                      </div>
+                      {isSelf && (
+                        <Badge variant="secondary" className="shrink-0">
+                          You — View Permissions
+                        </Badge>
+                      )}
+                      <Badge variant={user.is_active ? "success" : "destructive"} className="shrink-0">
+                        {user.is_active ? "Active" : "Inactive"}
+                      </Badge>
+                      <span className="shrink-0 text-xs text-muted-foreground">{formatDate(user.created_at)}</span>
                     </div>
-                    <Badge variant={user.is_active ? "success" : "destructive"} className="shrink-0">
-                      {user.is_active ? "Active" : "Inactive"}
-                    </Badge>
-                    <span className="shrink-0 text-xs text-muted-foreground">{formatDate(user.created_at)}</span>
-                  </div>
-                ))
+                  );
+                })
               )}
             </CardContent>
           </Card>
@@ -189,6 +216,8 @@ export default function RoleDetailsPage() {
         open={permissionsDialogOpen}
         onOpenChange={setPermissionsDialogOpen}
       />
+
+      <MyPermissionsDialog open={myPermissionsOpen} onOpenChange={setMyPermissionsOpen} />
     </div>
   );
 }

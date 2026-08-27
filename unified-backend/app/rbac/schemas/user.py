@@ -89,6 +89,7 @@ class UserUpdate(BaseModel):
     teamlead_id: UUID | None = None
     reporting_manager_id: UUID | None = None
     category_id: UUID | None = None
+    category_ids: list[UUID] | None = None
     is_active: bool | None = None
     is_on_leave: bool | None = None
     employee_number: str | None = None

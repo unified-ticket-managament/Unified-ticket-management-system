@@ -49,6 +49,25 @@ export interface AuthUser {
   default_dashboard?: string | null;
 }
 
+// GET /auth/me/permissions — the authenticated user's own complete
+// effective permission catalog (self-view only, no user-id param).
+export interface MyPermissionItem {
+  permission_id: string;
+  permission_name: string;
+  description: string | null;
+  granted: boolean;
+  source: "role" | "override" | "none";
+  scoped_ticket_ids: string[];
+}
+
+export interface MyPermissionsResponse {
+  user_id: string;
+  name: string;
+  email: string;
+  role: string;
+  permissions: MyPermissionItem[];
+}
+
 export interface User {
   user_id: string;
   name: string;

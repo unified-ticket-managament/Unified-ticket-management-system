@@ -21,8 +21,8 @@ import { RulesPanel } from "@/components/rules/RulesPanel";
 import type { AttachmentMeta } from "@tw/types";
 
 const VIEW_LABELS: Record<MailViewKey, string> = {
-  pending: "Inbox",
-  unassigned: "Unassigned",
+  pending: "All",
+  unassigned: "Inbox",
   mine: "My Tickets",
   sent: "Sent",
   drafts: "Drafts",

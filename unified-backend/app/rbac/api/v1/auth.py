@@ -7,12 +7,15 @@ from app.rbac.repositories.audit_log_repository import AuditLogRepository
 from app.rbac.repositories.permission_override_repository import (
     PermissionOverrideRepository,
 )
+from app.rbac.repositories.permission_repository import PermissionRepository
 from app.rbac.repositories.role_permission_repository import RolePermissionRepository
 from app.rbac.repositories.user_repository import UserRepository
 from app.rbac.schemas.auth import (
     ChangePasswordRequest,
     CurrentUser,
     LoginRequest,
+    MyPermissionsResponse,
+    MyPermissionItem,
     RefreshTokenRequest,
     TokenResponse,
     UpdateProfileRequest,
@@ -150,6 +153,62 @@ async def get_current_user(
     Returns currently authenticated user.
     """
     return await service.get_current_user(current_user)
+
+
+# --------------------------------------------------
+# My Effective Permissions
+# --------------------------------------------------
+
+
+@router.get(
+    "/me/permissions",
+    response_model=MyPermissionsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="My Effective Permissions",
+)
+async def get_my_permissions(
+    current_user=Depends(get_current_active_user),
+    service: AuthService = Depends(get_auth_service),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns the authenticated user's own complete effective permission
+    catalog — every known permission, flagged granted/not, with role
+    vs. personal-override source. Self-view only: there is no user-id
+    parameter, so this can never be used to inspect anyone else's
+    permissions. Reuses PermissionResolverService (via
+    service.get_current_user) rather than recomputing effective
+    permissions a second way.
+    """
+    me = await service.get_current_user(current_user)
+    all_permissions, _ = await PermissionRepository(db).get_all(page=1, page_size=1000)
+
+    granted_names = set(me.permissions)
+    override_names = set(me.override_permissions)
+
+    items = [
+        MyPermissionItem(
+            permission_id=p.permission_id,
+            permission_name=p.permission_name,
+            description=p.description,
+            granted=p.permission_name in granted_names,
+            source=(
+                "override"
+                if p.permission_name in override_names
+                else "role" if p.permission_name in granted_names else "none"
+            ),
+            scoped_ticket_ids=me.scoped_permissions.get(p.permission_name, []),
+        )
+        for p in all_permissions
+    ]
+
+    return MyPermissionsResponse(
+        user_id=me.user_id,
+        name=me.name,
+        email=me.email,
+        role=me.role,
+        permissions=items,
+    )
 
 
 # --------------------------------------------------

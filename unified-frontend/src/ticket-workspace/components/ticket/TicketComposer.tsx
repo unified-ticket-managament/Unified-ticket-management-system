@@ -667,7 +667,7 @@ export function TicketComposer({
               </p>
             )}
             <DistributionListMultiSelect
-              label="Distribution Lists (Cc)"
+              label="Distribution Groups (Cc)"
               selectedIds={replyDistributionListIds}
               onChange={setReplyDistributionListIds}
             />
@@ -690,7 +690,7 @@ export function TicketComposer({
               onChange={setNoteToIds}
             />
             <DistributionListMultiSelect
-              label="Distribution Lists (To)"
+              label="Distribution Groups (To)"
               hint="Each active member is added as a note recipient, same as an individually-picked user."
               selectedIds={noteDistributionListIds}
               onChange={setNoteDistributionListIds}
