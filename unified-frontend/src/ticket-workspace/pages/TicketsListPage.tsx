@@ -306,10 +306,25 @@ export function TicketsListPage() {
     }
   }
 
+  // ticket:acknowledge_escalation is deliberately NOT checked here —
+  // the backend (InteractionService.acknowledge_and_assign_escalation)
+  // strictly requires owner_ids membership, with no permission
+  // fallback of any kind (see that method's own comment: the
+  // permission is granted "Full" to Account Manager/Team Lead/Site
+  // Lead/Super Admin by role default, so honoring it as an OR-bypass
+  // would let any of them jump the escalation queue). This file used
+  // to also check the permission; removed as a no-op cleanup, not a
+  // behavior change — ticket.is_escalation_owner below already
+  // mirrors the real owner_ids gate and was already a required AND
+  // condition, so no realistic case existed where the permission
+  // clause alone decided visibility. See RBAC Enforcement Audit,
+  // Phase 3, and SlaCard.tsx's canAcknowledge (already correct on
+  // this exact point). ESCALATION_TAB_ROLES below is unrelated and
+  // unchanged — that's the same coarse role-based tab-visibility
+  // pattern the backend's own ticket:view_escalated gate uses.
   const canAcknowledgeRow = (ticket: TicketResponse) =>
     !!currentUser &&
-    (ESCALATION_TAB_ROLES.has(currentUser.role) ||
-      currentUser.permissions.includes("ticket:acknowledge_escalation")) &&
+    ESCALATION_TAB_ROLES.has(currentUser.role) &&
     ticket.is_escalated &&
     ticket.escalation_status === "ACTIVE" &&
     // Not just "this ticket is escalated" — the chain must have
@@ -373,6 +388,48 @@ export function TicketsListPage() {
     (ESCALATION_TAB_ROLES.has(currentUser.role) ||
       currentUser.permissions.includes("ticket:view_escalated"));
 
+  // RBAC Enforcement Audit, Phase 27: mirrors the backend's own gate on
+  // view=="all" (ticket_service.py, ticket:view_others) and the existing
+  // canSeeEscalatedTab pattern above — a pure tab-visibility check,
+  // independent of row-level category/client scoping (TicketRepository.
+  // _visibility_conditions is unaffected). Every agent-capable role holds
+  // ticket:view_others by role default with no revoke mechanism for it
+  // (see the audit's Phase 26 findings), so this is zero access change in
+  // practice today.
+  const canSeeAllTab =
+    !!currentUser && currentUser.permissions.includes("ticket:view_others");
+
+  // RBAC Enforcement Audit, Phase 30: mirrors canSeeAllTab's own pattern
+  // for the two remaining unguarded tabs — pure tab-visibility checks,
+  // independent of row-level scoping (unaffected either way). Every
+  // agent-capable role holds both by role default with no revoke
+  // mechanism currently exercised, so this is zero access change today.
+  const canSeePoolTab =
+    !!currentUser && currentUser.permissions.includes("ticket:view_unassigned");
+  const canSeeMineTab =
+    !!currentUser && currentUser.permissions.includes("ticket:view_own");
+
+  // Guards the tab default: poolTab's initial state is hardcoded to
+  // "pool" (useState above), so if a future personal-override revoke
+  // ever removed one of these permissions for a real user, the page
+  // must not strand them on a now-hidden tab. Falls back to the first
+  // tab the current permission set actually allows. No-op today —
+  // every reachable role holds all four tab permissions by default.
+  const visibleTabKeys = useMemo(() => {
+    const keys: PoolTab[] = [];
+    if (canSeePoolTab) keys.push("pool");
+    if (canSeeMineTab) keys.push("mine");
+    if (canSeeAllTab) keys.push("all");
+    if (canSeeEscalatedTab) keys.push("escalated");
+    return keys;
+  }, [canSeePoolTab, canSeeMineTab, canSeeAllTab, canSeeEscalatedTab]);
+
+  useEffect(() => {
+    if (visibleTabKeys.length > 0 && !visibleTabKeys.includes(poolTab)) {
+      setPoolTab(visibleTabKeys[0]);
+    }
+  }, [visibleTabKeys, poolTab]);
+
   function handleRefresh() {
     loadTickets(page);
     loadViewCounts();
@@ -397,9 +454,15 @@ export function TicketsListPage() {
         <div className="flex items-center gap-1 rounded-md2 border border-border bg-surface p-1.5 shadow-xs">
           {(
             [
-              { key: "pool" as const, label: "Open Pool", count: viewCounts.pool },
-              { key: "mine" as const, label: "My Tickets", count: viewCounts.mine },
-              { key: "all" as const, label: "All", count: viewCounts.all },
+              ...(canSeePoolTab
+                ? [{ key: "pool" as const, label: "Open Pool", count: viewCounts.pool }]
+                : []),
+              ...(canSeeMineTab
+                ? [{ key: "mine" as const, label: "My Tickets", count: viewCounts.mine }]
+                : []),
+              ...(canSeeAllTab
+                ? [{ key: "all" as const, label: "All", count: viewCounts.all }]
+                : []),
               ...(canSeeEscalatedTab
                 ? [{ key: "escalated" as const, label: "Escalated", count: viewCounts.escalated }]
                 : []),

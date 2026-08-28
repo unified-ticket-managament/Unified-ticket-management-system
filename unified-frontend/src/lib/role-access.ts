@@ -69,8 +69,10 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
 // activity, linked for every agent role.
 //
 // Site Lead's sidebar is intentionally IDENTICAL to Super Admin's (per
-// an explicit product decision — see canDeleteRecords/canManageRoles
-// below for how the two roles then diverge on actions, not navigation).
+// an explicit product decision — see canDeleteRecords below for one
+// remaining place the two roles diverge on actions, not navigation;
+// role:update/role:delete no longer diverge here — see that function's
+// own comment for why).
 // Account Manager/Team Lead/Staff still don't manage users or roles.
 //
 // Super Admin and Site Lead land on RBAC's own SuperAdminDashboard for
@@ -99,10 +101,10 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
 //
 // "Permission Requests" was removed from the sidebar for every role that
 // has Users-page access (Super Admin/Site Lead/Account Manager/Team
-// Lead/Staff — exactly USERS_PAGE_ALLOWED_ROLES in
-// app/(dashboard)/users/page.tsx) and replaced with a button on that page
-// instead (visible unconditionally there, since the page itself already
-// gates who can reach it). Viewer deliberately KEEPS this nav item — it
+// Lead/Staff — every non-Client role, per app/(dashboard)/users/page.tsx's
+// own user:view-plus-non-Client gate) and replaced with a button on that
+// page instead (visible unconditionally there, since the page itself
+// already gates who can reach it). Viewer deliberately KEEPS this nav item — it
 // has no Users-page access at all, so removing its only entry point would
 // strand it with no way to reach a page that's still meant to be usable
 // (the module/page/backend are otherwise completely untouched).
@@ -184,12 +186,22 @@ export function canDeleteRecords(role: string | undefined): boolean {
   return role === ROLE_NAMES.SUPER_ADMIN;
 }
 
-// Role creation/editing/deletion ("modifying role structure") stays
-// Super Admin-only; Site Lead's Roles page is view-only (role info,
-// permissions, assigned users).
-export function canManageRoles(role: string | undefined): boolean {
-  return role === ROLE_NAMES.SUPER_ADMIN;
-}
+// RBAC Enforcement Audit: role:update/role:delete used to be gated by
+// a hardcoded canManageRoles() === Super Admin check here, wrapping
+// the otherwise-correct PermissionGuard("role:update")/("role:delete")
+// on the Roles page's Edit/Delete dropdown and making them
+// unreachable — the same shape as the role:create bug already fixed
+// (see that button's own site), and confirmed incorrect for the same
+// reason: Site Lead holds both permissions by role default and could
+// already reach both routes via a direct API call, so the hardcoded
+// check was strictly narrower than backend authorization, not a
+// deliberate business rule (unlike canDeleteRecords above, which is
+// consistently documented as intentional everywhere it's used).
+// Removed outright — the Roles page now computes its own
+// permission-driven visibility check inline (hasPermission("role:update")
+// || hasPermission("role:delete")), consistent with canManagePermissions
+// just above it in that file, and lets PermissionGuard alone decide
+// each individual action exactly as it already did for role:create.
 
 // "Login as User" impersonation row action on the Users page. The
 // backend (POST /admin/impersonation/start) is the real enforcement —

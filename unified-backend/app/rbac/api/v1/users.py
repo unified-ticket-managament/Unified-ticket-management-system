@@ -12,6 +12,7 @@ from app.rbac.repositories.role_repository import RoleRepository
 from app.rbac.repositories.user_repository import UserRepository
 from app.rbac.schemas.organization import OrganizationNode
 from app.rbac.schemas.user import (
+    AdminPasswordReset,
     UserCreate,
     UserListResponse,
     UserResponse,
@@ -297,6 +298,9 @@ async def delete_user(
     """
     Delete a user.
     """
+
+    ensure_has_permission(current_user, "user:delete")
+
     await service.delete_user(user_id, actor=current_user)
 
 
@@ -348,3 +352,32 @@ async def deactivate_user(
     ensure_has_permission(current_user, "user:disable")
 
     return await service.deactivate_user(user_id, actor=current_user)
+
+
+# --------------------------------------------------
+# Admin Password Reset
+# --------------------------------------------------
+
+
+@router.patch(
+    "/{user_id}/reset-password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Admin Password Reset",
+)
+async def reset_password(
+    user_id: UUID,
+    password_data: AdminPasswordReset,
+    service: UserService = Depends(get_user_service),
+    current_user=Depends(get_current_active_user),
+):
+    """
+    Reset another user's password. Distinct from self-service
+    change-password — requires user:reset_password, not the caller's
+    own old password.
+    """
+
+    ensure_has_permission(current_user, "user:reset_password")
+
+    await service.reset_password(
+        user_id, password_data.new_password, actor=current_user
+    )

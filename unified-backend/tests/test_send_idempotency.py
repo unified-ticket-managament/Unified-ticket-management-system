@@ -230,7 +230,7 @@ async def test_compose_email_recovers_from_concurrent_integrity_error():
         user_id=uuid.uuid4(),
         name="Agent",
         role=SimpleNamespace(name="Staff"),
-        permissions=["communication:reply_external"],
+        permissions=["communication:create"],
         designation=None,
         department=None,
         phone_number=None,

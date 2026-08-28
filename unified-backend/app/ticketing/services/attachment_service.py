@@ -29,7 +29,7 @@ from app.ticketing.schemas.email import LinkedAttachmentCandidate
 from app.ticketing.schemas.interaction import InteractionCreate
 from app.ticketing.schemas.payloads import EnvelopeAttachment
 from app.ticketing.services.access_control import (
-    SUPERVISOR_ROLE_NAMES,
+    GLOBAL_INBOX_ROLE_NAMES,
     ensure_account_manager_owns_ticket_client,
     ensure_agent_can_act_on_ticket,
     ensure_agent_can_view_ticket,
@@ -758,9 +758,16 @@ class AttachmentService:
                 await ensure_account_manager_owns_ticket_client(
                     ticket, current_user, self.client_repository
                 )
-        elif current_user.role.name not in SUPERVISOR_ROLE_NAMES:
+        elif current_user.role.name not in GLOBAL_INBOX_ROLE_NAMES:
             # Not yet attached to a ticket — falls back to the
             # inbox's own scoping (the agent it was assigned to).
+            # Narrowed from SUPERVISOR_ROLE_NAMES to
+            # GLOBAL_INBOX_ROLE_NAMES (BD-HC6, approved Phase 6) to
+            # match every sibling pending-item gate in
+            # access_control.py — Team Lead/Account Manager no longer
+            # get an unconditional bypass on a path they can't
+            # otherwise see or act on via any other pending-item
+            # route.
             payload_agent = interaction.payload.get("agent_name")
             if payload_agent is not None and payload_agent != current_user.name:
                 raise HTTPException(

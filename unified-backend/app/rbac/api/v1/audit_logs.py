@@ -1,10 +1,15 @@
+import csv
+import io
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
 from app.database.session import get_db
+from app.rbac.models.audit_log import AuditLog
 from app.rbac.repositories.audit_log_repository import AuditLogRepository
 from app.rbac.schemas.audit_log import (
     AuditLogCreate,
@@ -23,10 +28,14 @@ router = APIRouter(
 # user/role CRUD, permission overrides/requests) — org-wide with no
 # client/ticket/team concept to scope by, unlike app.ticketing's own
 # per-ticket audit trail (see TicketService.list_all_audit_logs, which
-# every other role reaches instead via GET /tickets/audit-logs). Every
-# role's own audit-log requirements are already satisfied by that other
-# endpoint except Super Admin's — see the Audit Logs role-scoping notes
-# in CLAUDE.md.
+# every other role reaches instead via GET /tickets/audit-logs).
+# list_audit_logs is gated by the audit:view permission (BD-HC2,
+# approved Phase 6) rather than this role name — Site Lead holds
+# audit:view by default and the RBAC-native Audit Logs frontend page
+# already assumed that access, so the prior hardcoded Super-Admin-only
+# check was a real functional gap for Site Lead, not an intentional
+# restriction. create_audit_log's own reasoning is unaffected — see
+# its own docstring.
 SUPER_ADMIN_ROLE_NAME = "Super Admin"
 
 
@@ -106,16 +115,13 @@ async def list_audit_logs(
     current_user=Depends(get_current_active_user),
 ):
     """
-    Returns paginated audit logs. Super Admin only — see this
+    Returns paginated audit logs. Requires audit:view (BD-HC2, approved
+    Phase 6) — Super Admin and Site Lead hold this by default; see this
     module's own top-of-file note on why every other role's audit-log
     needs are served by GET /tickets/audit-logs instead.
     """
 
-    if current_user.role.name != SUPER_ADMIN_ROLE_NAME:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only Super Admin can view system-level audit logs.",
-        )
+    ensure_has_permission(current_user, "audit:view")
 
     logs, total = await service.list_logs(
         page=page,
@@ -125,6 +131,142 @@ async def list_audit_logs(
     return AuditLogListResponse(
         logs=logs,
         total=total,
+    )
+
+
+# --------------------------------------------------
+# Export Audit Logs
+# --------------------------------------------------
+#
+# Registered before GET /{audit_log_id} (same static-before-dynamic
+# ordering convention as e.g. app/ticketing/api/distribution_list.py's
+# /active route) — otherwise FastAPI would try to parse "export" as a
+# UUID path param and 422 before this route is ever reached.
+
+
+def _is_failure_action(action: str) -> bool:
+    # Mirrors the frontend's own isFailureAction (audit-logs/page.tsx)
+    # exactly, so the exported CSV's Status column always agrees with
+    # what the on-screen table already shows for the same row.
+    value = action.lower()
+    return "failed" in value or "reject" in value
+
+
+def _parse_export_date_range(
+    date_from: str | None,
+    date_to: str | None,
+) -> tuple[datetime | None, datetime | None]:
+    # date_from/date_to arrive as plain "YYYY-MM-DD" strings from the
+    # frontend's <input type="date"> fields. Mirrors that same page's
+    # client-side range math (start of date_from's day, through the
+    # end of date_to's day) so an export taken with a date filter
+    # applied downloads the same rows the on-screen table would show.
+    parsed_from: datetime | None = None
+    parsed_to: datetime | None = None
+
+    if date_from:
+        try:
+            parsed_from = datetime.combine(
+                date.fromisoformat(date_from), datetime.min.time(), tzinfo=timezone.utc
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="date_from must be in YYYY-MM-DD format.",
+            )
+
+    if date_to:
+        try:
+            parsed_to = (
+                datetime.combine(
+                    date.fromisoformat(date_to), datetime.min.time(), tzinfo=timezone.utc
+                )
+                + timedelta(days=1)
+                - timedelta(microseconds=1)
+            )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="date_to must be in YYYY-MM-DD format.",
+            )
+
+    return parsed_from, parsed_to
+
+
+@router.get(
+    "/export",
+    status_code=status.HTTP_200_OK,
+    summary="Export Audit Logs",
+)
+async def export_audit_logs(
+    search: str | None = Query(None),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    service: AuditLogService = Depends(get_audit_log_service),
+    current_user=Depends(get_current_active_user),
+):
+    """
+    Streams the full (unpaginated) matching audit log set as a CSV
+    download. Requires BOTH audit:view and audit:export — audit:export
+    alone is not sufficient, since a personal permission override could
+    in principle grant audit:export without audit:view (overrides have
+    no cross-permission validation, see PermissionOverrideService.grant)
+    and this route must never become a way to see audit data through a
+    different door than the one audit:view already gates. The
+    underlying query (AuditLogRepository.list_for_export) is the exact
+    same unscoped audit-log data list_audit_logs/get_log already expose
+    — this route only changes pagination (none) and the response shape
+    (CSV instead of JSON), never the authorization/visibility model.
+    """
+
+    ensure_has_permission(current_user, "audit:view")
+    ensure_has_permission(current_user, "audit:export")
+
+    parsed_from, parsed_to = _parse_export_date_range(date_from, date_to)
+
+    logs: list[AuditLog] = await service.export_logs(
+        search=search,
+        date_from=parsed_from,
+        date_to=parsed_to,
+    )
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        ["User", "Email", "Role", "Action", "Entity", "Entity ID", "Status", "Timestamp", "IP Address"]
+    )
+
+    for log in logs:
+        user = log.user
+        if user is not None:
+            user_name = user.name
+            user_email = user.email or ""
+            user_role = user.role.name if user.role is not None else ""
+        else:
+            user_name = "Unknown User" if log.user_id else "System"
+            user_email = ""
+            user_role = ""
+
+        writer.writerow(
+            [
+                user_name,
+                user_email,
+                user_role,
+                log.action,
+                log.entity_type,
+                log.entity_id or "",
+                "Failed" if _is_failure_action(log.action) else "Success",
+                log.timestamp.isoformat() if log.timestamp else "",
+                log.ip_address or "",
+            ]
+        )
+
+    filename = f"audit-logs-export-{datetime.now(timezone.utc).date().isoformat()}.csv"
+
+    return StreamingResponse(
+        iter([buffer.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -183,38 +325,16 @@ async def get_user_audit_logs(
 
 
 # --------------------------------------------------
-# Delete Audit Log
+# Delete Audit Log — retired (BD-HC3, approved Phase 6)
 # --------------------------------------------------
-
-
-@router.delete(
-    "/{audit_log_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete Audit Log",
-)
-async def delete_audit_log(
-    audit_log_id: UUID,
-    service: AuditLogService = Depends(get_audit_log_service),
-    current_user=Depends(get_current_active_user),
-):
-    """
-    Delete an audit log.
-
-    Super Admin only — same reasoning as create_audit_log above.
-    Audit logs are meant to be an append-only, permanent record;
-    previously this route had no authorization check at all beyond
-    authentication, meaning any logged-in user of any role could
-    permanently delete any audit log row. Confirmed no legitimate
-    caller (frontend or backend) invokes this route today, so this is
-    a pure hardening change.
-    """
-
-    if current_user.role.name != SUPER_ADMIN_ROLE_NAME:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only Super Admin can delete system-level audit logs.",
-        )
-
-    await service.delete_log(
-        audit_log_id,
-    )
+#
+# DELETE /audit-logs/{audit_log_id} was removed outright: audit logs
+# are an append-only, permanent record by design (see
+# docs/03-business-workflows/audit/audit-workflow.md), and a
+# repo-wide search (frontend, backend, services, background jobs,
+# scripts, tests, docs) confirmed zero legitimate callers ever existed
+# for this route. AuditLogService.delete_log and
+# AuditLogRepository.delete (app/rbac side) were removed alongside it
+# — both had exactly this route as their only caller. Audit log
+# creation, viewing, and export are unaffected; no historical row was
+# touched; the audit_logs table/model is untouched.

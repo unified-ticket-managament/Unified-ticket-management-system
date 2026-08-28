@@ -3,7 +3,11 @@ from uuid import UUID
 from fastapi import HTTPException, status
 
 from app.rbac.models.permission import Permission
-from app.rbac.repositories import PermissionRepository
+from app.rbac.repositories import (
+    PermissionRepository,
+    RolePermissionRepository,
+    UserRepository,
+)
 from app.rbac.schemas.permission import PermissionCreate, PermissionUpdate
 
 
@@ -15,8 +19,12 @@ class PermissionService:
     def __init__(
         self,
         permission_repository: PermissionRepository,
+        role_permission_repository: RolePermissionRepository,
+        user_repository: UserRepository,
     ):
         self.permission_repository = permission_repository
+        self.role_permission_repository = role_permission_repository
+        self.user_repository = user_repository
 
     # --------------------------------------------------
     # Create Permission
@@ -140,5 +148,26 @@ class PermissionService:
 
         permission = await self.get_permission(permission_id)
 
+        # Every role currently holding this permission must be resolved
+        # *before* the delete below — the join this depends on returns
+        # nothing once the row is gone. Bumping permission_version for
+        # each affected role's users (same bulk UPDATE
+        # RolePermissionService.assign_permission/remove_permission/
+        # replace_permissions already runs on any role-permission
+        # change) closes the gap where a deleted permission would
+        # otherwise remain live in an already-issued JWT/cached session
+        # for the rest of that token's natural lifetime instead of the
+        # usual RBAC-cache TTL window.
+        affected_role_ids = (
+            await self.role_permission_repository.get_role_ids_by_permission(
+                permission_id
+            )
+        )
+
         await self.permission_repository.delete(permission)
+
+        for role_id in affected_role_ids:
+            await self.user_repository.bump_permission_version_for_role(
+                role_id
+            )
 

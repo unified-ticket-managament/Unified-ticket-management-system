@@ -176,26 +176,29 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
 
   if (!activeTicket) return null;
 
-  const isStaff = currentUser?.role === "Staff";
-  const isCloseReopenBypassRole =
-    currentUser?.role === "Site Lead" || currentUser?.role === "Super Admin";
   const canChangePriority = (currentUser?.permissions ?? []).includes(
     "ticket:change_priority"
   );
-  const canTransfer = isStaff
-    ? (currentUser?.permissions ?? []).includes("ticket:transfer")
-    : true;
-  // Mirrors the backend's ensure_can_close_ticket/ensure_can_reopen_ticket
-  // hybrid gates exactly: only Site Lead/Super Admin bypass via role —
-  // Account Manager, Team Lead, and Staff all fall through to the real
-  // permission (Full for Account Manager, override-only for the other two,
-  // per the RBAC matrix doc).
-  const canClose = isCloseReopenBypassRole
-    ? true
-    : (currentUser?.permissions ?? []).includes("ticket:close_ticket");
-  const canReopen = isCloseReopenBypassRole
-    ? true
-    : (currentUser?.permissions ?? []).includes("ticket:reopen");
+  // RBAC Enforcement Audit, Phase 40: previously isStaff ? hasPermission(...)
+  // : true — a role-bypass that exactly matched ticket:transfer's own
+  // default grants (Team Lead/Account Manager/Site Lead/Super Admin all
+  // hold it by default; only Staff is override-only), so collapsing to a
+  // plain permission check changes no one's real access. Ticket-state/
+  // escalation-freeze eligibility is handled separately by this button's
+  // own `disabled` prop below, untouched by this change.
+  const canTransfer = (currentUser?.permissions ?? []).includes("ticket:transfer");
+  // RBAC Enforcement Audit, Phase 40: previously isCloseReopenBypassRole
+  // (Site Lead/Super Admin) ? true : hasPermission(...) — the bypass set
+  // was always a subset of ticket:close_ticket's/ticket:reopen's own
+  // default holders (Super Admin/Site Lead/Account Manager), so this
+  // collapses to a plain permission check with no access change. This
+  // also fixes a pre-existing cosmetic gap: the button's old render
+  // condition separately OR'd in `!isStaff`, showing Close/Reopen to
+  // Team Lead even without the permission (a click would already 403).
+  // The genuine ticket-state rules (!isTicketClosed / isTicketClosed)
+  // and the escalation-freeze `disabled` prop are both untouched below.
+  const canClose = (currentUser?.permissions ?? []).includes("ticket:close_ticket");
+  const canReopen = (currentUser?.permissions ?? []).includes("ticket:reopen");
   const isUnclaimed = activeTicket.agent_id == null;
   // "Myself" is only offered here when the ticket is already claimed
   // and the caller's role can actually self-assign via transfer_agent
@@ -251,6 +254,18 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   // hold, so a user without access sees why rather than discovering it
   // via a rejected request.
   const isOwnTicket = activeTicket.agent_id === currentUser?.user_id;
+  // RBAC Enforcement Audit, Phase 27: mirrors the backend's own
+  // ensure_agent_can_act_on_ticket own-ticket branch (access_control.py),
+  // which requires ticket:editown_ticket on top of ownership — this file
+  // previously checked ownership alone. Additive onto isOwnTicket, never a
+  // replacement for it: every SUPERVISOR_ROLE_NAMES role bypasses via
+  // hasEditOther regardless (all 4 hold ticket:editother_ticket by role
+  // default), so this only changes behavior for Staff, and only in the
+  // anomalous state where their ticket:editown_ticket grant is missing
+  // (previously an enabled-then-403 control, now correctly disabled).
+  const canEditOwnTicket = (currentUser?.permissions ?? []).includes(
+    "ticket:editown_ticket"
+  );
   const hasEditOther =
     (currentUser?.permissions ?? []).includes("ticket:editother_ticket") ||
     (currentUser?.scoped_permissions?.["ticket:editother_ticket"] ?? []).includes(
@@ -271,12 +286,25 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   // instant it escalated to them, before ever clicking Acknowledge — a
   // real, confirmed bug, not a hypothetical one.
   const isFrozenByEscalation = !!activeTicket.escalation_pending_acceptance;
-  const canActOnTicket = !isFrozenByEscalation && (isOwnTicket || hasEditOther);
+  const canActOnTicket =
+    !isFrozenByEscalation && ((isOwnTicket && canEditOwnTicket) || hasEditOther);
   const noAccessTitle = isFrozenByEscalation
     ? "This ticket has been escalated and is awaiting acknowledgment and assignment — it cannot be worked until a supervisor acknowledges and assigns it"
     : canActOnTicket
       ? undefined
       : "You don't have access to work on this ticket";
+  // Backend requires ticket:update_status/ticket:upload_attachment on
+  // top of ownership (ensure_agent_can_act_on_ticket +
+  // ensure_has_permission, interaction_service.py) — these controls
+  // previously only checked canActOnTicket, so an owner without the
+  // specific permission saw an enabled control that 403'd on click.
+  // See RBAC Enforcement Audit, Phase 3. Ownership/edit-access/
+  // escalation-freeze logic above is unchanged — this ANDs the
+  // permission in, it doesn't replace canActOnTicket.
+  const canUpdateStatus = (currentUser?.permissions ?? []).includes("ticket:update_status");
+  const canUploadAttachment = (currentUser?.permissions ?? []).includes(
+    "ticket:upload_attachment"
+  );
 
   function closeModal() {
     setModal(null);
@@ -373,8 +401,16 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
         <Button
           variant="secondary"
           size="sm"
-          disabled={isTicketClosed || !canActOnTicket}
-          title={isTicketClosed ? "This ticket is closed" : noAccessTitle}
+          disabled={isTicketClosed || !canActOnTicket || !canUpdateStatus}
+          title={
+            isTicketClosed
+              ? "This ticket is closed"
+              : !canActOnTicket
+                ? noAccessTitle
+                : canUpdateStatus
+                  ? undefined
+                  : "Requires the Change Status permission"
+          }
           onClick={() => setModal("status")}
         >
           <Settings2 size={14} />
@@ -420,14 +456,22 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
               <button
                 type="button"
                 className={menuItemClass}
-                disabled={isTicketClosed || !canActOnTicket}
-                title={noAccessTitle}
+                disabled={isTicketClosed || !canActOnTicket || !canUploadAttachment}
+                title={
+                  isTicketClosed
+                    ? "This ticket is closed"
+                    : !canActOnTicket
+                      ? noAccessTitle
+                      : canUploadAttachment
+                        ? undefined
+                        : "Requires the Upload Attachment permission"
+                }
                 onClick={() => openMoreItem("attachment")}
               >
                 <Paperclip size={14} className="text-muted" />
                 Upload Attachment
               </button>
-              {(!isStaff || canTransfer) && (
+              {canTransfer && (
                 <button
                   type="button"
                   className={menuItemClass}
@@ -451,7 +495,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
                   Request Ticket Access
                 </button>
               )}
-              {!isTicketClosed && (!isStaff || canClose) && (
+              {!isTicketClosed && canClose && (
                 <button
                   type="button"
                   className={menuItemClass}
@@ -463,7 +507,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
                   Close Ticket
                 </button>
               )}
-              {isTicketClosed && (!isStaff || canReopen) && (
+              {isTicketClosed && canReopen && (
                 <button
                   type="button"
                   className={menuItemClass}

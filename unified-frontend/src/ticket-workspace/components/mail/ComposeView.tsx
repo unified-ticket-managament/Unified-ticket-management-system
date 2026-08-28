@@ -219,19 +219,24 @@ export function ComposeView({
   const { pushToast } = useToast();
   const isForward = initialValues?.mode === "forward";
 
-  // `communication:reply_external` (the same permission that gates
+  // Compose (this component's own mode, isForward === false) and
+  // Forward (isForward === true) require different permissions — a
+  // deliberate split, not a shared "compose external mail" gate
+  // anymore (RBAC Enforcement Audit, Phase 18/BD-11): Compose is
+  // gated by communication:create, Forward stays on
+  // communication:reply_external (the same permission that also gates
   // Reply/Reply All on an already-ticketed message, see
-  // MessageDetailsView.tsx's canReplyExternal) is the source of truth
-  // for whether the current user may compose external mail at all —
-  // this used to be a hardcoded role check that ignored it entirely
-  // (any role other than Account Manager/Site Lead/Super Admin was
-  // unconditionally blocked, even one granted the permission via the
-  // Roles UI, e.g. Team Lead). The backend's ensure_can_compose_for_
-  // client (interaction_service.compose_email's authorization) is the
-  // matching, final source of truth — this is only the UI-side gate,
-  // kept in sync with it rather than duplicating a separate rule.
+  // MessageDetailsView.tsx's canReplyExternal — Reply/Reply All never
+  // render through this component at all, see ReplyComposer.tsx).
+  // This used to be one shared communication:reply_external check for
+  // both modes; splitting it means holding one no longer implies the
+  // other. The backend's ensure_can_compose_for_client/_category
+  // (interaction_service.compose_email/forward_to_internal_user's own
+  // authorization, each passing the matching permission) is the real,
+  // final source of truth — this is only the UI-side gate, kept in
+  // sync with it rather than duplicating a separate rule.
   const canComposeExternally = !!currentUser?.permissions.includes(
-    "communication:reply_external"
+    isForward ? "communication:reply_external" : "communication:create"
   );
 
   const composableClients = useMemo(() => {
@@ -662,7 +667,9 @@ export function ComposeView({
             {!currentUser
               ? "Loading..."
               : !canComposeExternally
-                ? "You don't have permission to compose external mail. Ask an administrator to grant you the \"communication:reply_external\" permission."
+                ? isForward
+                  ? "You don't have permission to forward mail. Ask an administrator to grant you the \"communication:reply_external\" permission."
+                  : "You don't have permission to compose mail. Ask an administrator to grant you the \"communication:create\" permission."
                 : "There are no clients or category mailboxes available for you to compose mail from."}
           </div>
         ) : (

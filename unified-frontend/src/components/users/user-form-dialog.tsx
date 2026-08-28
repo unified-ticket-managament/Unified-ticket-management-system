@@ -222,6 +222,8 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
+  const hasPermission = useAuthStore((s) => s.hasPermission);
+  const canResetPassword = hasPermission("user:reset_password");
   const mode: "create" | "edit" = user ? "edit" : "create";
   const [showPassword, setShowPassword] = useState(false);
 
@@ -441,7 +443,7 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
           : {};
 
       if (mode === "edit" && user) {
-        return userService.update(user.user_id, {
+        const updated = await userService.update(user.user_id, {
           name: values.name,
           email: values.email,
           role_id: values.role_id,
@@ -451,6 +453,16 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
           ...internalProfileFields,
           ...contactEmailFields,
         });
+
+        // Only reachable when canResetPassword is true, since that's
+        // the only case the password field renders in edit mode at
+        // all (see the field's own guard below) — the backend
+        // independently re-checks user:reset_password regardless.
+        if (canResetPassword && values.password) {
+          await userService.resetPassword(user.user_id, values.password);
+        }
+
+        return updated;
       }
 
       return userService.create({
@@ -615,10 +627,10 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
             </div>
           )}
 
-          {!showClientHierarchy && (
+          {!showClientHierarchy && (mode === "create" || canResetPassword) && (
             <div className="space-y-2">
               <Label htmlFor="password">
-                {mode === "create" ? "Password" : "New Password (optional)"}
+                {mode === "create" ? "Password" : "Reset Password (optional)"}
               </Label>
               <div className="relative">
                 <Input

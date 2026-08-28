@@ -1284,4 +1284,48 @@ class UserService:
             )
         )
 
+    # --------------------------------------------------
+    # Admin password reset (RBAC Enforcement Audit, Phase 23) — distinct
+    # from AuthService.change_password's self-service flow. Gated by
+    # user:reset_password on the caller's own route (see users.py), not
+    # here — checked by the route, not the service. No old_password is
+    # required or accepted, since the actor is not the account owner.
+    # Reuses the same hashing utility and User.password_hash column
+    # self-service change_password already uses — no second hashing
+    # mechanism. Deliberately does not bump permission_version or
+    # otherwise touch session/JWT state, mirroring change_password's
+    # own behavior exactly: password is not a JWT claim, and this
+    # codebase's stateless-JWT architecture has no session table to
+    # invalidate either way (see AuthService.logout's own docstring).
+
+    async def reset_password(
+        self,
+        user_id: UUID,
+        new_password: str,
+        actor: User | None = None,
+    ) -> None:
+
+        user, client = await self._resolve_user_or_client(user_id)
+
+        if client is not None:
+            # A Client has no login of its own (see root CLAUDE.md's
+            # Client-role section) — nothing to reset.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This account has no password to reset.",
+            )
+
+        user.password_hash = get_password_hash(new_password)
+
+        await self.user_repository.update(user)
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="user.reset_password",
+                entity_type="user",
+                entity_id=str(user.user_id),
+            )
+        )
+
         return user

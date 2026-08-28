@@ -129,7 +129,15 @@ class InboxTicketService:
         current_user: User,
     ) -> TicketFromInteractionResponse:
 
-        ensure_has_permission(current_user, "communication:convert_to_ticket")
+        # RBAC Enforcement Audit, Phase 18/BD-6: ticket:create is now the
+        # canonical permission for this capability (previously
+        # communication:convert_to_ticket, confirmed Phase 17 to be the
+        # same real-world capability under two names, with identical
+        # default role grants). communication:convert_to_ticket's own
+        # catalog row/grants are deliberately left in place, unenforced
+        # from here on — see the RBAC audit artifact for the safe-
+        # future-retirement recommendation.
+        ensure_has_permission(current_user, "ticket:create")
 
         interaction = await self._get_pending_interaction(
             request.interaction_id

@@ -112,6 +112,16 @@ class UserUpdate(BaseModel):
     contact_emails: list[EmailStr] | None = None
 
 
+# Admin-initiated password reset (RBAC Enforcement Audit, Phase 23) —
+# distinct from AuthService's self-service ChangePasswordRequest
+# (which requires the caller's own old_password). This is used only by
+# an authorized administrator resetting another user's password
+# (user:reset_password, see users.py's reset_password route) — no
+# old_password field, since the actor is not the account owner.
+class AdminPasswordReset(BaseModel):
+    new_password: str = Field(min_length=8)
+
+
 # -----------------------------
 # User Response
 # -----------------------------

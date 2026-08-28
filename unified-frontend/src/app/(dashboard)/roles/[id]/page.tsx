@@ -30,6 +30,15 @@ export default function RoleDetailsPage() {
   // change for why the old Super Admin/Account Manager hardcode was
   // wrong on both ends (missed Site Lead, over-granted Account Manager).
   const canManagePermissions = hasPermission("permission:update");
+  // RBAC Enforcement Audit, Phase 27: the backend gates GET
+  // /roles/{id}/permissions on permission:view alone (role_permissions.py:68)
+  // — this card previously fetched unconditionally and only branched on
+  // isLoading, so a 403 (e.g. Team Lead, who holds role:view but not
+  // permission:view) rendered identically to a genuinely empty role,
+  // "No permissions granted". Gating the fetch on the same permission the
+  // backend already requires fixes that misleading render with no access
+  // change for anyone who could already see real data.
+  const canViewPermissions = hasPermission("permission:view");
   const [permissionsDialogOpen, setPermissionsDialogOpen] = useState(false);
 
   const roleQuery = useQuery({
@@ -45,6 +54,7 @@ export default function RoleDetailsPage() {
   const permissionsQuery = useQuery({
     queryKey: ["role-permissions", params.id],
     queryFn: () => permissionService.getRolePermissions(params.id),
+    enabled: canViewPermissions,
   });
 
   const role: Role | undefined = roleQuery.data;
@@ -132,7 +142,12 @@ export default function RoleDetailsPage() {
               </Button>
             </CardHeader>
             <CardContent>
-              {permissionsQuery.isLoading ? (
+              {!canViewPermissions ? (
+                <EmptyState
+                  title="Access restricted"
+                  description="You do not have permission to view this role's permissions."
+                />
+              ) : permissionsQuery.isLoading ? (
                 <WorkflowLoader loading size={40} />
               ) : permissions.length === 0 ? (
                 <EmptyState title="No permissions granted" description="This role has no permissions assigned yet." />

@@ -9,7 +9,7 @@ Source: `app/ticketing/api/sla.py` (two routers: ticket-scoped under `/tickets`,
 | GET | `/tickets/{id}/sla` | Current state of both SLA clocks | `get_current_user` + `ensure_agent_can_view_ticket_including_escalated` |
 | POST | `/tickets/{id}/sla/pause` | Manually pause the Resolution SLA | `get_current_agent`; role-restricted in service |
 | POST | `/tickets/{id}/sla/resume` | Manually resume a paused clock | `get_current_agent` |
-| POST | `/tickets/{id}/escalate` | Manually raise/advance the internal escalation | `get_current_agent` + `ticket:escalate` (enforced in service) |
+| POST | `/tickets/{id}/escalate` | Manually raise/advance the internal escalation | `get_current_agent` + ticket visibility/ownership (not permission-gated — `ticket:escalate` is a defined but currently unenforced permission; see `EscalationService.manual_escalate`) |
 | POST | `/tickets/{id}/escalation/acknowledge` | Acknowledge the current escalation level (step 1 of 2) | `get_current_agent` |
 | POST | `/tickets/{id}/escalation/confirm-assignment` | Keep the current assignee (the one path that completes acceptance without `claim`/`transfer`) | `get_current_agent` |
 | GET | `/tickets/{id}/escalation/acknowledge-candidates` | Role-scoped candidate list for Acknowledge & Assign | `get_current_agent` |

@@ -60,6 +60,7 @@ export default function AuditLogsPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [sorting, setSorting] = useState<SortingState>([{ id: "timestamp", desc: true }]);
+  const [isExporting, setIsExporting] = useState(false);
 
   const auditQuery = useQuery({
     queryKey: ["audit-logs-table"],
@@ -247,33 +248,31 @@ export default function AuditLogsPage() {
     return <ErrorState message="Failed to load audit logs. Please try again." />;
   }
 
-  const handleExport = () => {
-    const header = ["User", "Email", "Role", "Action", "Entity", "Entity ID", "Status", "Timestamp", "IP Address"];
-    const csvRows = filteredRows.map((log) =>
-      [
-        log.userName,
-        log.userEmail ?? "",
-        log.userRole ?? "",
-        log.action,
-        log.entity_type,
-        log.entity_id ?? "",
-        isFailureAction(log.action) ? "Failed" : "Success",
-        log.timestamp,
-        log.ip_address ?? "",
-      ]
-        .map((value) => `"${String(value).replace(/"/g, '""')}"`)
-        .join(",")
-    );
-    const csv = [header.join(","), ...csvRows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `audit-logs-export-${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+  const handleExport = async () => {
+    setIsExporting(true);
+    try {
+      const blob = await auditService.export({
+        search: search.trim() || undefined,
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `audit-logs-export-${new Date().toISOString().slice(0, 10)}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
 
-    toast({ title: "Export ready", description: `${filteredRows.length} log(s) exported.` });
+      toast({ title: "Export ready", description: "Audit logs exported." });
+    } catch {
+      toast({
+        title: "Export failed",
+        description: "You may not have permission to export audit logs, or the request failed. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   const isLoading = auditQuery.isLoading || usersQuery.isLoading || rolesQuery.isLoading;
@@ -306,9 +305,9 @@ export default function AuditLogsPage() {
               <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
             </Button>
             {hasPermission("audit:export") && (
-              <Button variant="outline" className="gap-2" onClick={handleExport}>
+              <Button variant="outline" className="gap-2" onClick={handleExport} disabled={isExporting}>
                 <Download className="h-4 w-4" />
-                Export
+                {isExporting ? "Exporting..." : "Export"}
               </Button>
             )}
           </div>

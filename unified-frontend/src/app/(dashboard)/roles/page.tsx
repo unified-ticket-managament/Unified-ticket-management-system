@@ -29,7 +29,7 @@ import {
   groupPermissionsByModule,
 } from "@/components/roles/role-permissions-dialog";
 import { UserFormDialog } from "@/components/users/user-form-dialog";
-import { EmptyState, ErrorState } from "@/components/shared/stats";
+import { AccessDenied, EmptyState, ErrorState } from "@/components/shared/stats";
 import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import {
   AlertDialog,
@@ -55,7 +55,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { cn, formatDate, getApiErrorMessage } from "@/lib/utils";
-import { canManageRoles, getCreatableRoleNames, ROLE_NAMES } from "@/lib/role-access";
+import { getCreatableRoleNames, ROLE_NAMES } from "@/lib/role-access";
 import { permissionService, roleService } from "@/services";
 import { useAuthStore } from "@/store/auth-store";
 import { Permission, Role, User } from "@/types";
@@ -179,7 +179,21 @@ export default function RolesPage() {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
   const hasPermission = useAuthStore((s) => s.hasPermission);
-  const canManage = canManageRoles(currentUser?.role);
+  // RBAC Enforcement Audit: previously canManageRoles(currentUser?.role)
+  // — a hardcoded Super-Admin-only check that wrapped the Edit/Delete
+  // dropdown below and made its own already-correct
+  // PermissionGuard("role:update")/("role:delete") unreachable for
+  // anyone else, same bug as role:create's button had (see that
+  // button's own comment). Site Lead holds both permissions by role
+  // default and could already reach both routes via a direct API
+  // call, so the hardcoded check was strictly narrower than backend
+  // authorization — not a deliberate business rule. This is purely a
+  // visibility convenience (avoids showing a "..." trigger that opens
+  // to an empty menu for someone holding neither permission);
+  // PermissionGuard below remains the actual authorization mechanism
+  // for each individual action.
+  const canManageRoleActions =
+    hasPermission("role:update") || hasPermission("role:delete");
   // Mirrors the backend's PUT /roles/{id}/permissions gate exactly
   // (permission:update — Full for Super Admin/Site Lead, Override-only
   // for everyone else, including Account Manager). Previously
@@ -382,6 +396,16 @@ export default function RolesPage() {
     },
   });
 
+  // RBAC Enforcement Audit, Phase 27: role:view is already the backend's
+  // sole gate on every route this page calls (roles.py:104,137,181-182) —
+  // this page previously had no matching frontend gate at all, so a
+  // denied role (Staff) fell through to the generic ErrorState below
+  // instead of a proper AccessDenied. Zero access change: every role
+  // that could already load this page still can.
+  if (currentUser && !hasPermission("role:view")) {
+    return <AccessDenied message="You do not have access to the Roles page." />;
+  }
+
   if (rolesQuery.isError) {
     return <ErrorState message="Failed to load roles. Please try again." />;
   }
@@ -401,20 +425,29 @@ export default function RolesPage() {
         title={t("roles.title")}
         description={`${t("roles.description")}${rolesQuery.data ? ` — ${rolesQuery.data.total} ${t("common.total")}` : ""}.`}
         action={
-          canManage && (
-            <PermissionGuard permission="role:create">
-              <Button
-                className="gap-2"
-                onClick={() => {
-                  setEditingRole(null);
-                  setFormOpen(true);
-                }}
-              >
-                <Plus className="h-4 w-4" />
-                Create Role
-              </Button>
-            </PermissionGuard>
-          )
+          // RBAC Enforcement Audit, Phase 48: previously wrapped in
+          // `canManage &&` (canManageRoles — hardcoded Super-Admin-only),
+          // which incorrectly hid this button from Site Lead (who holds
+          // the real role:create permission by default and can already
+          // succeed via a direct API call) and from any user individually
+          // granted role:create via a personal permission override (the
+          // hardcoded check has no way to see an override at all). The
+          // PermissionGuard below was already present but inert underneath
+          // that stricter wrapper. The separate Edit (role:update)/Delete
+          // (role:delete) dropdown below had the identical bug — fixed in
+          // a later phase using the same approach.
+          <PermissionGuard permission="role:create">
+            <Button
+              className="gap-2"
+              onClick={() => {
+                setEditingRole(null);
+                setFormOpen(true);
+              }}
+            >
+              <Plus className="h-4 w-4" />
+              Create Role
+            </Button>
+          </PermissionGuard>
         }
       />
 
@@ -485,7 +518,7 @@ export default function RolesPage() {
                       </div>
                     </div>
 
-                    {canManage && (
+                    {canManageRoleActions && (
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button

@@ -14,6 +14,7 @@ import {
   Timer,
   UserCheck,
 } from "lucide-react";
+import { AccessDenied } from "@/components/shared/stats";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { Card } from "@tw/components/common/Card";
 import { Badge } from "@tw/components/common/Badge";
@@ -160,6 +161,22 @@ export function Dashboard() {
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // RBAC Enforcement Audit, Phase 46: mirrors the backend's own
+  // unconditional, bypass-free ensure_has_permission(current_user,
+  // "ticket:view_dashboard_kpis") check in TicketService.get_dashboard_stats
+  // (ticket_service.py:803) — previously this page had no permission-
+  // specific gate at all, only the unrelated, coarser layout-level
+  // exclusion of Client (app/(dashboard)/dashboard/layout.tsx), which
+  // protects against Client but not against an individually-revoked
+  // agent role. Placed after every hook above (Rules-of-Hooks safe),
+  // matching the exact pattern Phase 42 already used for InboxPage.tsx.
+  const canViewDashboardKpis =
+    !!currentUser && currentUser.permissions.includes("ticket:view_dashboard_kpis");
+
+  if (currentUser && !canViewDashboardKpis) {
+    return <AccessDenied message="You do not have access to the Dashboard." />;
+  }
 
   async function handleRefresh() {
     setIsRefreshing(true);

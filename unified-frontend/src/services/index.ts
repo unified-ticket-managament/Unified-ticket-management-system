@@ -162,6 +162,10 @@ export const userService = {
 
     return response.data;
   },
+
+  resetPassword: async (id: string, newPassword: string) => {
+    await api.patch(`/users/${id}/reset-password`, { new_password: newPassword });
+  },
 };
 
 /* -------------------------------------------------------------------------- */
@@ -588,6 +592,24 @@ export const auditService = {
   getUserLogs: async (userId: string): Promise<AuditLog[]> => {
     const response = await api.get<AuditLog[]>(
       `/audit-logs/user/${userId}`
+    );
+
+    return response.data;
+  },
+
+  // Backed by a real, permission-gated backend route (audit:view +
+  // audit:export, see unified-backend's audit_logs.py) — the CSV
+  // itself is generated server-side from the same unscoped audit-log
+  // query list/get already use, not assembled client-side.
+  export: async (
+    params?: Record<string, string | undefined>
+  ): Promise<Blob> => {
+    const response = await api.get(
+      "/audit-logs/export",
+      {
+        params,
+        responseType: "blob",
+      }
     );
 
     return response.data;

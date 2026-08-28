@@ -15,7 +15,10 @@ from app.ticketing.schemas.client import (
     ClientDetailsResponse,
     ClientResponse,
 )
-from app.ticketing.services.access_control import ensure_can_view_client_details
+from app.ticketing.services.access_control import (
+    ensure_can_view_client_details,
+    ensure_has_permission,
+)
 from app.ticketing.services.client_service import ClientService
 from app.rbac.repositories.category_repository import CategoryRepository
 
@@ -39,6 +42,13 @@ async def create_client(
     Onboards a new client company: a name, its dedicated shared
     inbox address, and the Account Manager who owns it.
     """
+
+    # Reuses client:view (the same permission GET /clients/{id}/details
+    # already gates via ensure_can_view_client_details) rather than a
+    # new client:create — no pre-existing object to scope ownership
+    # against on creation, so a plain permission check is the whole
+    # gate. See RBAC Enforcement Audit, Phase 2C.
+    ensure_has_permission(current_user, "client:view")
 
     service = ClientService(
         client_repository=ClientRepository(db),

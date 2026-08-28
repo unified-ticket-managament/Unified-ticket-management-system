@@ -7,6 +7,7 @@ import { SkeletonRows } from "@tw/components/common/Skeleton";
 import { getTicketAuditLogs } from "@tw/api/auditLog";
 import { auditMetaFor, diffFields, formatFieldValue, humanizeFieldKey } from "@tw/lib/auditLogMeta";
 import { formatDateTime } from "@tw/lib/format";
+import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import type { ActorRole } from "@tw/types";
 
@@ -30,7 +31,25 @@ interface TicketAuditLogProps {
 
 export function TicketAuditLog({ refreshToken, flat = false }: TicketAuditLogProps) {
   const { activeTicket } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
   const ticketId = activeTicket?.ticket_id;
+
+  // Mirrors the backend's own gate exactly (InteractionService.
+  // get_ticket_audit_logs -> ensure_agent_can_view_ticket_including_
+  // escalated): ticket:view_audit_trail, OR ticket:view_escalated
+  // while the ticket currently has an active escalation. Reaching
+  // this tab at all already implies ordinary/escalation-widened
+  // ticket visibility (TicketService.get_by_id runs the identical
+  // check before the ticket ever loads), so those two permissions are
+  // the only remaining variables — is_escalated is the same
+  // escalation-repository fact the backend checks, just already
+  // attached to the ticket the page loaded. Purely additive
+  // defense-in-depth: the backend still enforces this on every real
+  // fetch regardless of this check.
+  const canViewAuditTrail =
+    !!currentUser?.permissions.includes("ticket:view_audit_trail") ||
+    (!!currentUser?.permissions.includes("ticket:view_escalated") &&
+      !!activeTicket?.is_escalated);
 
   const [entries, setEntries] = useState<
     Awaited<ReturnType<typeof getTicketAuditLogs>>
@@ -39,7 +58,7 @@ export function TicketAuditLog({ refreshToken, flat = false }: TicketAuditLogPro
   const requestIdRef = useRef(0);
 
   useEffect(() => {
-    if (!ticketId) return;
+    if (!ticketId || !canViewAuditTrail) return;
 
     let cancelled = false;
     const thisRequestId = ++requestIdRef.current;
@@ -81,7 +100,7 @@ export function TicketAuditLog({ refreshToken, flat = false }: TicketAuditLogPro
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticketId, refreshToken]);
+  }, [ticketId, refreshToken, canViewAuditTrail]);
 
   return (
     <Card
@@ -97,7 +116,13 @@ export function TicketAuditLog({ refreshToken, flat = false }: TicketAuditLogPro
         </span>
       }
     >
-      {isLoading && entries.length === 0 ? (
+      {!canViewAuditTrail ? (
+        <EmptyState
+          icon="🔒"
+          title="Access restricted"
+          description="You don't have permission to view this ticket's audit trail."
+        />
+      ) : isLoading && entries.length === 0 ? (
         <SkeletonRows rows={3} />
       ) : entries.length === 0 ? (
         <EmptyState

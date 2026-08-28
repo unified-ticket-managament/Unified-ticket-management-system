@@ -117,7 +117,7 @@ async def test_create_ticket_succeeds_for_already_replied_interaction(db_session
     """
 
     team_lead = await _get_team_lead(db_session)
-    team_lead.permissions = ["communication:convert_to_ticket"]
+    team_lead.permissions = ["ticket:create"]
     client = await _make_client(db_session, account_manager_id=team_lead.manager_id or team_lead.user_id)
     interaction = await _make_root_interaction(
         db_session, client_id=client.client_id, status=InteractionStatus.ASSIGNED
@@ -155,7 +155,7 @@ async def test_create_ticket_succeeds_for_freshly_composed_interaction(db_sessio
     """
 
     team_lead = await _get_team_lead(db_session)
-    team_lead.permissions = ["communication:convert_to_ticket"]
+    team_lead.permissions = ["ticket:create"]
     client = await _make_client(db_session, account_manager_id=team_lead.manager_id or team_lead.user_id)
     interaction = await _make_root_interaction(
         db_session, client_id=client.client_id, status=InteractionStatus.ASSIGNED
@@ -184,7 +184,7 @@ async def test_create_ticket_still_rejects_already_ticketed_interaction(db_sessi
     """
 
     team_lead = await _get_team_lead(db_session)
-    team_lead.permissions = ["communication:convert_to_ticket"]
+    team_lead.permissions = ["ticket:create"]
     client = await _make_client(db_session, account_manager_id=team_lead.manager_id or team_lead.user_id)
     interaction = await _make_root_interaction(
         db_session, client_id=client.client_id, status=InteractionStatus.ASSIGNED

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { AccessDenied } from "@/components/shared/stats";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { ComposeView, type ComposeInitialValues } from "@tw/components/mail/ComposeView";
 import { MailReadingPaneEmptyState } from "@tw/components/mail/MailReadingPaneEmptyState";
@@ -193,6 +194,26 @@ export function InboxPage() {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
+
+  // RBAC Enforcement Audit, Phase 42: mirrors the backend's own
+  // GET /inbox gate (inbox_service.py's get_inbox — Site Lead/Super
+  // Admin/Account Manager need communication:view_all, everyone else
+  // needs communication:view_assigned) and this page's own existing
+  // in-tree precedent for a permission-gated panel (RulesPanel.tsx,
+  // rendered inside this same page, checks its own permission and
+  // returns AccessDenied after its data-fetching hooks have already
+  // run — same shape here). Purely additive defense-in-depth: the
+  // backend already 403s an unauthorized request regardless of this
+  // check, and _resolve_scope's own record-level filtering is
+  // completely untouched by it.
+  const canViewInbox =
+    !!currentUser &&
+    ((currentUser.permissions ?? []).includes("communication:view_assigned") ||
+      (currentUser.permissions ?? []).includes("communication:view_all"));
+
+  if (currentUser && !canViewInbox) {
+    return <AccessDenied message="You do not have access to Mail." />;
+  }
 
   function handleForward(values: {
     clientId: string | null;

@@ -12,6 +12,7 @@
 # matching this module's own "only explicitly domain-focused tests
 # make a real DNS query" convention (see test_recipient_validation.py).
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -21,6 +22,18 @@ from fastapi import HTTPException
 from app.ticketing.schemas.mail_integration import OutgoingEmailRequest
 from app.ticketing.services import outgoing_mail_service as outgoing_mail_service_module
 from app.ticketing.services.outgoing_mail_service import OutgoingMailService
+
+# Phase 2C added a required current_user parameter to send_email (used
+# only by the client_id branch's ensure_can_compose_for_client check —
+# see test_outgoing_mail_client_id_authorization.py for that
+# coverage). Every request built by _request() below omits client_id,
+# so ensure_can_compose_for_client itself is never reached — but Phase
+# 2E (BD-16 interim mitigation) added a real role check to the
+# from_email branch these tests DO exercise, so the placeholder now
+# needs a role that passes it (Super Admin, one of the two allowed) —
+# these tests are about recipient validation, not this authorization
+# boundary, and shouldn't be blocked by it.
+_UNUSED_ACTOR = SimpleNamespace(role=SimpleNamespace(name="Super Admin"))
 
 
 def _request(**overrides) -> OutgoingEmailRequest:
@@ -46,7 +59,7 @@ async def test_send_email_never_dispatches_when_recipient_validation_fails(monke
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await service.send_email(_request())
+        await service.send_email(_request(), _UNUSED_ACTOR)
 
     assert exc_info.value.status_code == 400
     mail_provider_client.send_email.assert_not_called()
@@ -65,7 +78,7 @@ async def test_send_email_dispatches_once_recipient_validation_passes(monkeypatc
     )
 
     request = _request(cc=["cc@example.com"], bcc=["bcc@example.com"])
-    await service.send_email(request)
+    await service.send_email(request, _UNUSED_ACTOR)
 
     validate.assert_awaited_once_with(
         to=request.to_email, cc=request.cc, bcc=request.bcc

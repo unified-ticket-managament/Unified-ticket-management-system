@@ -545,32 +545,44 @@ async def ensure_agent_can_view_pending_interaction(
         )
 
 
-def ensure_can_compose_for_client(client, current_user: User) -> None:
+def ensure_can_compose_for_client(
+    client, current_user: User, required_permission: str = "communication:reply_external"
+) -> None:
     """
-    Gates POST /inbox/compose — who may author a brand-new outbound
-    email (no prior inbound message) to one of the platform's
-    clients. `communication:reply_external` (RBAC's own Manage-
-    Permissions editor — the same permission Reply/Reply All on an
-    already-ticketed message already gate on, see
-    MessageDetailsView.tsx's canReplyExternal) is the source of truth
-    for whether a role/user may compose external mail at all; this
-    used to be a hardcoded role-name check (Site Lead/Super Admin
+    Gates who may author an outbound email to one of the platform's
+    clients from a specific mailbox (a client's own inbox). Two real
+    callers use this today, each requiring a different permission for
+    the same underlying ownership rule (see `required_permission`
+    below):
+    - `InteractionService.compose_email` (brand-new outbound message,
+      no prior inbound thread — Mail's own "Compose" button) requires
+      `communication:create` (RBAC Enforcement Audit, Phase 18/BD-11 —
+      Compose was deliberately split out from Reply/Forward's shared
+      permission once the two were confirmed to represent genuinely
+      distinct capabilities).
+    - `InteractionService.forward_to_internal_user` (forwarding an
+      existing thread) and `OutgoingMailService` (the standalone
+      `POST /api/mail/outgoing` primitive, client_id branch, see BD-15)
+      both keep the original `communication:reply_external` — this
+      function's default — unchanged.
+    This used to be a hardcoded role-name check (Site Lead/Super Admin
     unconditionally, Account Manager only their own clients, every
     other role — including a Team Lead explicitly granted the
     permission — unconditionally denied), which meant granting the
     permission through the RBAC UI had no effect here.
 
     Business ownership stays exactly as before on top of the
-    permission check: Site Lead/Super Admin remain unrestricted,
-    Account Manager stays scoped to their own clients (this is a data-
+    permission check, and is identical regardless of which permission
+    was required: Site Lead/Super Admin remain unrestricted, Account
+    Manager stays scoped to their own clients (this is a data-
     ownership rule, not a permission gap, so it isn't satisfied by
     holding the permission alone). Any other role holding the
-    permission (e.g. Team Lead) is unrestricted like Site Lead/Super
-    Admin — Compose has no per-role client-ownership concept outside
-    Account Manager's own-clients rule.
+    permission is unrestricted like Site Lead/Super Admin — this
+    function has no per-role client-ownership concept outside Account
+    Manager's own-clients rule.
     """
 
-    ensure_has_permission(current_user, "communication:reply_external")
+    ensure_has_permission(current_user, required_permission)
 
     if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
         return
@@ -587,24 +599,29 @@ def ensure_can_compose_for_client(client, current_user: User) -> None:
 
 
 async def ensure_can_compose_for_category(
-    category, current_user: User, reporting_manager_repository
+    category,
+    current_user: User,
+    reporting_manager_repository,
+    required_permission: str = "communication:reply_external",
 ) -> None:
     """
     Gates sending as a CATEGORY shared mailbox (Compose/Forward's From
     field, when a category rather than a client is selected) — the
-    same `communication:reply_external` baseline ensure_can_compose_
-    for_client requires, plus the category equivalent of that
-    function's Account-Manager-owns-client rule: an Account Manager
-    may only send as a category they're the Reporting Manager for
-    (ReportingManagerTeam), the same ownership check
-    ensure_agent_can_view_pending_interaction already applies to a
-    category-mailbox item on the read side. Every other permission-
-    holding role (Site Lead/Super Admin, and any role explicitly
-    granted the permission) is unrestricted, mirroring
-    ensure_can_compose_for_client exactly.
+    category equivalent of ensure_can_compose_for_client's Account-
+    Manager-owns-client rule: an Account Manager may only send as a
+    category they're the Reporting Manager for (ReportingManagerTeam),
+    the same ownership check ensure_agent_can_view_pending_interaction
+    already applies to a category-mailbox item on the read side. See
+    ensure_can_compose_for_client's docstring for which permission each
+    real caller passes (Compose: communication:create; Forward and the
+    standalone outgoing-mail primitive: communication:reply_external,
+    this function's default). Every other permission-holding role
+    (Site Lead/Super Admin, and any role explicitly granted the
+    permission) is unrestricted, mirroring ensure_can_compose_for_client
+    exactly.
     """
 
-    ensure_has_permission(current_user, "communication:reply_external")
+    ensure_has_permission(current_user, required_permission)
 
     if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
         return

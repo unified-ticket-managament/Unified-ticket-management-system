@@ -2257,7 +2257,15 @@ class InteractionService:
                     detail="Client not found.",
                 )
 
-            ensure_can_compose_for_client(client, current_user)
+            # Compose (a brand-new thread, no prior inbound message)
+            # requires communication:create, not the broader
+            # communication:reply_external Reply/Reply All/Forward
+            # still use — see access_control.
+            # ensure_can_compose_for_client's own docstring (RBAC
+            # Enforcement Audit, Phase 18/BD-11).
+            ensure_can_compose_for_client(
+                client, current_user, required_permission="communication:create"
+            )
         else:
             # Sending as a CATEGORY's own shared mailbox instead of a
             # client's — mirrors the client branch above, but resolved
@@ -2289,6 +2297,7 @@ class InteractionService:
                 category,
                 current_user,
                 ReportingManagerRepository(self.user_repository.db),
+                required_permission="communication:create",
             )
 
         # Compose has no fixed thread, so a picked Distribution List

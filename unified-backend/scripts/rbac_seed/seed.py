@@ -30,7 +30,6 @@ DEFAULT_PERMISSIONS = [
     ("permission:view", "View permissions"),
     ("permission:update", "Update role permissions"),
     ("permission:override_grant", "Grant a one-off permission exception to a specific user"),
-    ("permission:override_revoke", "Revoke a previously granted permission exception"),
     ("audit:view", "View audit logs"),
     ("audit:export", "Export the audit log"),
     # Roles-page Client tab — gates VIEWING a client company's own
@@ -59,14 +58,9 @@ DEFAULT_PERMISSIONS = [
     ("communication:view_assigned", "See communications assigned to you or your team"),
     ("communication:reply_external", "Reply to a communication so the client sees it"),
     ("communication:reply_internal", "Add a staff-only note on a communication"),
-    ("communication:forward", "Forward a communication to someone else"),
-    ("communication:convert_to_ticket", "Turn a communication into a formal ticket"),
     ("communication:attach_to_ticket", "Attach a communication to an existing ticket"),
-    ("communication:merge", "Merge a communication into an existing ticket"),
     ("communication:archive", "Close out a communication without a ticket"),
     ("communication:view_timeline", "See a communication's full history"),
-    ("communication:assign", "Hand a communication to a specific person or team"),
-    ("communication:override_grant", "Grant a one-off communication permission exception"),
     # Ticket Management capabilities (ticketing-service) — RBAC's own
     # permission records for the ticket workspace. These aren't
     # enforced by the Ticketing backend (it authorizes purely by role
@@ -93,7 +87,6 @@ DEFAULT_PERMISSIONS = [
     ("ticket:update_status", "Change ticket status"),
     ("ticket:close_ticket", "Close a ticket"),
     ("ticket:reopen", "Reopen a closed ticket"),
-    ("ticket:escalate", "Flag a ticket as needing attention from someone more senior"),
     ("ticket:upload_attachment", "Upload a ticket attachment"),
     ("ticket:archive_attachment", "Delete/archive a ticket attachment"),
     ("ticket:hide_interaction", "Hide (soft-delete) a ticket interaction"),
@@ -101,9 +94,6 @@ DEFAULT_PERMISSIONS = [
     ("ticket:view_global_audit_log", "View the global ticket audit log"),
     ("ticket:view_dashboard_kpis", "View ticket workspace dashboard KPIs"),
     ("ticket:view_escalated", "View Escalated Tickets"),
-    ("ticket:acknowledge_escalation", "Acknowledge an escalated ticket"),
-    ("ticket:manage_agents", "Activate or deactivate agent accounts"),
-    ("ticket:manage_roles_permissions", "Manage roles and permissions for the ticket workspace"),
     ("ticket:system_config", "Configure ticket system and storage settings"),
     # SLA policy admin — company-wide First Response/Resolution SLA
     # targets per priority, distinct from the existing (unenforced)
@@ -191,10 +181,10 @@ DEFAULT_ROLES = {
     "Account Manager": [
         # Communication — full ownership of the client-facing inbox.
         "communication:create", "communication:view_all", "communication:view_assigned",
-        "communication:reply_external", "communication:reply_internal", "communication:forward",
-        "communication:convert_to_ticket", "communication:attach_to_ticket", "communication:merge",
+        "communication:reply_external", "communication:reply_internal",
+        "communication:attach_to_ticket",
         "communication:archive",
-        "communication:view_timeline", "communication:assign", "communication:override_grant",
+        "communication:view_timeline",
         # Ticket — everything except deep system configuration and the
         # global (cross-ticket) audit log, which the RBAC matrix doc
         # keeps override-only even for Account Manager.
@@ -202,11 +192,10 @@ DEFAULT_ROLES = {
         "ticket:assign", "ticket:transfer", "ticket:change_priority", "ticket:change_category",
         "ticket:change_sla", "ticket:update_status", "ticket:reply",
         "ticket:editown_ticket", "ticket:editother_ticket",
-        "ticket:close_ticket", "ticket:reopen", "ticket:escalate",
+        "ticket:close_ticket", "ticket:reopen",
         "ticket:upload_attachment", "ticket:archive_attachment", "ticket:hide_interaction",
         "ticket:view_audit_trail", "ticket:view_dashboard_kpis",
-        "ticket:view_escalated", "ticket:acknowledge_escalation",
-        "ticket:manage_agents", "ticket:manage_roles_permissions",
+        "ticket:view_escalated",
         # User management — can manage Team Leads and Staff.
         "user:view", "user:create", "user:update", "user:disable", "user:reset_password",
         # Can create the work-specialization categories the Staff/Team
@@ -214,7 +203,7 @@ DEFAULT_ROLES = {
         "category:create",
         # Role & permission — can view and grant/revoke scoped overrides
         # for their own reports, but not edit role definitions.
-        "role:view", "permission:view", "permission:override_grant", "permission:override_revoke",
+        "role:view", "permission:view", "permission:override_grant",
         # Roles-page Client tab — already saw this unrestricted before
         # client:view existed; kept explicit here rather than relying
         # on any other grant to imply it.
@@ -229,13 +218,13 @@ DEFAULT_ROLES = {
         # override-only for all four (see REVOKED_GRANTS for the two
         # that need an explicit one-time revocation on top of this).
         "communication:view_assigned", "communication:reply_external", "communication:reply_internal",
-        "communication:forward", "communication:view_timeline",
+        "communication:view_timeline",
         "ticket:view_own", "ticket:view_unassigned", "ticket:view_others", "ticket:assign",
         "ticket:transfer", "ticket:update_status", "ticket:reply",
         "ticket:editown_ticket", "ticket:editother_ticket",
-        "ticket:escalate", "ticket:upload_attachment",
+        "ticket:upload_attachment",
         "ticket:view_audit_trail", "ticket:view_dashboard_kpis",
-        "ticket:view_escalated", "ticket:acknowledge_escalation",
+        "ticket:view_escalated",
         "user:view", "user:update",
         "role:view",
         # Mail/OTP Rules engine — Team Lead is one of the four roles
@@ -349,6 +338,145 @@ DEPRECATED_PERMISSIONS = [
     # doc) + ticket:archive_attachment (Override-only for Team Lead/
     # Staff) — the combined permission couldn't express that split.
     "ticket:manage_attachments",
+    # Retired via the RBAC Enforcement Audit (Phases 7-16, BD-7/BD-4).
+    # Manual escalation has never been permission-gated in the current
+    # design — EscalationService.manual_escalate authorizes via ticket
+    # visibility (to start a fresh escalation) and strict owner_ids
+    # membership (to advance an already-active one), never this
+    # permission. Confirmed unenforced across 5 independent repo-wide
+    # investigations before retirement (Phases 7, 9, 10, 11, 16).
+    "ticket:escalate",
+    # Revoking a permission is already fully covered by two real,
+    # independently-designed mechanisms: PermissionOverrideService's
+    # shared permission:override_grant gate (direct override revoke)
+    # and PermissionRequestService.revoke()'s strict ownership check
+    # (approved-request revoke, original approver or Super Admin only).
+    # This row never independently gated either — confirmed unenforced
+    # across 4 independent investigations before retirement (Phases 7,
+    # 9, 10, 16). Retiring it does not touch either real revoke
+    # mechanism.
+    "permission:override_revoke",
+    # Retired via the RBAC Enforcement Audit (Phases 17-21, BD-6).
+    # Superseded by ticket:create — confirmed the same real-world
+    # capability (converting a pending communication into a ticket)
+    # under two catalog names, with byte-identical default role grants.
+    # inbox_ticket_service.create_ticket_from_interaction and
+    # MessageDetailsView.tsx's Create Ticket button both switched to
+    # ticket:create in Phase 18; this row has had zero live callers
+    # since. Confirmed unenforced across dedicated re-verifications in
+    # Phases 19, 20, and 21 before retirement, including an executable
+    # regression test (test_permission_alignment_phase18.py) proving
+    # this permission alone is insufficient to authorize ticket
+    # creation. Retiring it does not touch ticket:create.
+    "communication:convert_to_ticket",
+    # Retired via the RBAC Enforcement Audit (Phases 19-21, BD-8).
+    # Superseded by user:disable — the real activate/deactivate-agent
+    # capability is gated by user:disable at
+    # app/rbac/api/v1/users.py's activate_user/deactivate_user routes;
+    # no ticketing-specific "manage agents" concept distinct from
+    # RBAC's generic user activate/deactivate was ever found. Confirmed
+    # unenforced across independent investigations in Phases 19, 20,
+    # and 21 before retirement, with identical default role grants to
+    # user:disable (Super Admin, Site Lead, Account Manager). Retiring
+    # it does not touch user:disable.
+    "ticket:manage_agents",
+    # Retired via the RBAC Enforcement Audit (Phases 19-21, BD-9).
+    # Superseded by a family of real, independently-enforced
+    # permissions — role:create/role:update/role:delete/role:view
+    # (app/rbac/api/v1/roles.py) for role administration, plus
+    # permission:update/permission:view (permissions.py,
+    # role_permissions.py) for the permission catalog and role-
+    # permission assignment — never solely permission:update as an
+    # earlier pass assumed. Confirmed unenforced across independent
+    # investigations in Phases 19, 20, and 21 before retirement.
+    # Retiring it does not touch any member of the replacement family.
+    # NOTE: the replacement family is Super-Admin/Site-Lead-only, while
+    # this dead row was also granted to Account Manager — a pre-
+    # existing grant-DESIGN mismatch, explicitly out of scope for this
+    # retirement and tracked as a separate follow-up item (see the RBAC
+    # audit artifact, Phase 20/21).
+    "ticket:manage_roles_permissions",
+    # Retired via the RBAC Enforcement Audit (Phases 19-21, BD-8/BD-9
+    # tracker, communication:override_grant entry). A pure naming
+    # collision with permission:override_grant, RBAC's real, fully-
+    # enforced override-granting permission
+    # (permission_override_service.py's ensure_can_manage_overrides,
+    # and permission_request_service.py's REQUIRED_GRANT_PERMISSION) —
+    # confirmed via full reads of both services that the literal string
+    # communication:override_grant appears in neither file's
+    # authorization logic, with identical default role grants to
+    # permission:override_grant (Super Admin, Site Lead, Account
+    # Manager). Confirmed unenforced across independent investigations
+    # in Phases 19, 20, and 21 before retirement. Retiring it does not
+    # touch permission:override_grant.
+    "communication:override_grant",
+    # Retired via the RBAC Enforcement Audit (Phases 19, 20, 22, 23).
+    # Its intended capability — "hand a still-pending communication to
+    # a specific person or team" — has no mechanism anywhere: Internal
+    # Note's real "To" recipients are gated by communication:
+    # reply_internal, Mail's Forward is gated by communication:
+    # reply_external, and ticket:assign/ticket:transfer only apply once
+    # a communication has already become a ticket (a different object;
+    # pre-ticket handoff is claim, an ownership mechanism, not a
+    # permission). Confirmed genuinely dead across five independent
+    # investigations (Phases 19, 20, 22, 23, and a final targeted
+    # re-trace immediately before this retirement). Retiring it touches
+    # no other permission or mechanism.
+    "communication:assign",
+    # Retired via the RBAC Enforcement Audit (Phases 9, 31, 32, 33).
+    # Superseded by communication:reply_external — the real, sole
+    # backend gate for Reply, Reply All, AND Forward alike
+    # (interaction_service.py's own comment names all three
+    # explicitly), confirmed via ComposeView.tsx's own branch
+    # (`isForward ? "communication:reply_external" : "communication:
+    # create"`) and its denial-toast text, which names reply_external
+    # directly. This row had zero enforcement anywhere in the codebase
+    # across three independent investigations (Phase 9's original
+    # capability trace, Phase 31's re-verification, Phase 32's
+    # adversarial re-trace with an expanded keyword sweep). Its role
+    # grants were NOT identical to reply_external's (Staff held
+    # reply_external but not this permission) — confirmed this was
+    # never a real restriction: Staff already had full effective
+    # Forward capability through reply_external regardless, so
+    # retiring this row changes no role's effective access. Retiring
+    # it does not touch communication:reply_external.
+    "communication:forward",
+    # Retired via the RBAC Enforcement Audit (Phases 9, 31, 32, 33).
+    # Superseded by communication:attach_to_ticket — the real, sole
+    # mechanism for taking a standalone pre-ticket communication and
+    # associating it with an existing ticket's history
+    # (inbox_ticket_service.py's attach_to_existing_ticket), which is
+    # precisely the operation this permission's own catalog
+    # description ("Merge a communication into an existing ticket")
+    # names. This row had zero enforcement anywhere in the codebase,
+    # confirmed across an exhaustive, adversarial "merge" keyword
+    # sweep of the entire repository in Phase 32 that found no
+    # distinct thread/communication-consolidation capability anywhere
+    # — every "merge" hit elsewhere was an unrelated operation (query-
+    # result combining, contact-list combining, recipient-list
+    # combining). Role grants were identical to attach_to_ticket's
+    # (both Account-Manager-only among non-Super-Admin/Site-Lead
+    # roles, on the same seed.py line). Retiring it does not touch
+    # communication:attach_to_ticket.
+    "communication:merge",
+    # Retired via the RBAC Enforcement Audit (Phases 3, 31, 34). Zero
+    # enforcement anywhere in the backend (confirmed by a fresh
+    # repo-wide grep immediately before this retirement — no
+    # ensure_has_permission/has_permission call references this string
+    # anywhere in app/). Escalation acknowledgement is, and always has
+    # been, strictly owner_ids-membership gated
+    # (EscalationService.acknowledge/confirm_assignment,
+    # escalation_service.py) — a deliberate design, not an oversight:
+    # this permission is granted "Full" (unscoped) to Account
+    # Manager/Team Lead/Site Lead/Super Admin regardless of whether the
+    # escalation chain has actually reached their level, so honoring it
+    # as a permission-based fallback would let a supervisor "jump the
+    # queue" before their level is reached — exactly the bug the
+    # owner_ids-only design prevents (see that method's own extensive
+    # comments). Retiring this catalog row does not touch, weaken, or
+    # replace that ownership mechanism in any way — escalation
+    # acknowledgement continues to work exactly as it does today.
+    "ticket:acknowledge_escalation",
 ]
 
 # Specific (role, permission) grants that existed under the old
@@ -366,6 +494,24 @@ REVOKED_GRANTS = [
     # the exclusion existed (the main seeding loop is additive-only,
     # same reasoning as every other entry in this list).
     ("Site Lead", "user:impersonate"),
+    # Identical shape to the user:impersonate entry directly above:
+    # audit:export has been in _SITE_LEAD_EXCLUDED since the exact
+    # commit that created the Site Lead role (audit:export was never
+    # once part of DEFAULT_ROLES["Site Lead"] in this file's history),
+    # yet the live database still granted it to Site Lead — confirmed,
+    # via a dedicated RBAC-audit investigation, to be an out-of-band
+    # grant from a one-week window (2026-07-07 to 2026-07-14) when the
+    # Role Permissions UI existed but role-permission-change audit
+    # logging did not yet exist, leaving no trace of how it happened.
+    # No source in this codebase (this file, CLAUDE.md, the RBAC docs,
+    # or the frontend's own role-access.ts) has ever described Site
+    # Lead as holding audit:export — "Site Lead: all permissions except
+    # ticket:system_config/audit:export" is the consistent, documented
+    # design everywhere. The stray live grant was revoked directly via
+    # RolePermissionService.remove_permission (audit-logged as
+    # role.permissions_removed); this entry is the same explicit,
+    # one-time claw-back so a future reseed can never reintroduce it.
+    ("Site Lead", "audit:export"),
     ("Staff", "ticket:create"),
     ("Staff", "ticket:transfer"),
     ("Staff", "ticket:reopen"),
