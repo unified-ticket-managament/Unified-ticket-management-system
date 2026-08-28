@@ -20,10 +20,22 @@ import re
 import nh3
 from bs4 import BeautifulSoup, Tag
 
+# nh3 unwraps a disallowed tag rather than dropping its content — a
+# heading or blockquote missing from this set doesn't disappear, it
+# collapses into the surrounding flow with no block boundary at all
+# (e.g. "<h2>Action needed</h2><p>...</p>" becomes one run of text with
+# no separation), which is indistinguishable from real body text losing
+# its formatting. h1-h6/blockquote are common in real inbound sender
+# HTML (an external sender's own formatting, not something this app's
+# composer produces) and blockquote is also what buildForwardHtml
+# (frontend richText.ts) and the composer's own Blockquote toolbar
+# button already wrap outbound quoted/forwarded content in — both were
+# silently losing that wrapper before this fix.
 _ALLOWED_TAGS = {
     "p", "br", "div",
     "b", "strong", "i", "em", "u",
     "ul", "ol", "li",
+    "h1", "h2", "h3", "h4", "h5", "h6", "blockquote",
     "table", "thead", "tbody", "tr", "td", "th",
     "a", "img",
 }

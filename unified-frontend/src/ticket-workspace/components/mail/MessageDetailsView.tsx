@@ -301,12 +301,22 @@ function Bubble({
         <div
           ref={ref}
           className={cn(
-            "mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-foreground/90 [&_a]:break-all [&_a]:underline [&_a]:text-primary",
-            RENDERED_MESSAGE_HTML_CLASS,
+            "mt-2 text-[13px] leading-relaxed text-foreground/90 [&_a]:break-all [&_a]:underline [&_a]:text-primary",
+            // whitespace-pre-wrap only belongs on the plain-text-
+            // flattened fallback (renderThreadedMessageHtml), where it
+            // preserves runs of spaces/line breaks that were just
+            // turned into literal characters — real body_html already
+            // carries its own block structure (<p>/<li>/...) and forcing
+            // pre-wrap on it instead preserves the *source* HTML's own
+            // insignificant whitespace (indentation/newlines between
+            // tags), fighting the browser's normal whitespace collapsing
+            // for genuine markup. Same branching TicketConversationFeed/
+            // InteractionDetailsDrawer/FullInteractionPage already use.
+            data.bodyHtml ? RENDERED_MESSAGE_HTML_CLASS : "whitespace-pre-wrap",
             // Table-grid borders only for agent-authored replies — never
             // for the client's own inbound email, whose <table> markup
             // is just as often pure layout scaffolding as a real table.
-            !data.isClient && RENDERED_MESSAGE_TABLE_BORDER_CLASS,
+            data.bodyHtml && !data.isClient && RENDERED_MESSAGE_TABLE_BORDER_CLASS,
             clampClassName
           )}
           dangerouslySetInnerHTML={{ __html: renderedBody }}

@@ -197,12 +197,21 @@ export function resolveCidImagesForDisplay(
 // at all, so without this a real table renders with no grid lines —
 // easy to mistake for "not formatted".
 //
+// Also carries the same <p>/<ul>/<ol>/<li>/<blockquote>/heading reset
+// RichTextEditor.tsx's own editorProps.attributes.class already applies
+// at compose time, for the same reason: Tailwind's global Preflight
+// base styles zero list-style/margin/padding on every <ul>/<ol>/<li>/<p>
+// on the page (not just here), so a real <ol><li> list rendered with no
+// numbering, no indentation, and no spacing between paragraphs — a
+// semantically-intact message looking like a flattened wall of text.
+// This container never had the compose-side's counterpart reset.
+//
 // Deliberately excludes any border/grid styling — those live in
 // RENDERED_MESSAGE_TABLE_BORDER_CLASS below and must only be applied
 // to agent-authored content, never inbound sender HTML. See that
 // constant's own comment for why.
 export const RENDERED_MESSAGE_HTML_CLASS =
-  "[&_table]:my-2 [&_table]:max-w-full [&_td]:p-1.5 [&_td]:align-top [&_th]:p-1.5 [&_th]:text-left [&_th]:font-semibold [&_img]:mb-2 [&_img]:max-w-full [&_img]:rounded [&_a]:break-all [&_a]:underline [&_a]:text-primary";
+  "[&_table]:my-2 [&_table]:max-w-full [&_td]:p-1.5 [&_td]:align-top [&_th]:p-1.5 [&_th]:text-left [&_th]:font-semibold [&_img]:mb-2 [&_img]:max-w-full [&_img]:rounded [&_a]:break-all [&_a]:underline [&_a]:text-primary [&_p]:mb-2 [&_p:last-child]:mb-0 [&_ul]:mb-2 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:mb-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:mb-1 [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground [&_h1]:mb-2 [&_h1]:mt-3 [&_h1]:text-lg [&_h1]:font-semibold [&_h2]:mb-2 [&_h2]:mt-3 [&_h2]:text-base [&_h2]:font-semibold [&_h3]:mb-2 [&_h3]:mt-3 [&_h3]:text-base [&_h3]:font-semibold [&_h4]:mb-1 [&_h4]:mt-2 [&_h4]:font-semibold [&_h5]:mb-1 [&_h5]:mt-2 [&_h5]:font-semibold [&_h6]:mb-1 [&_h6]:mt-2 [&_h6]:font-semibold";
 
 // Draws a visible grid (borders + header background) around every
 // <td>/<th>. Only safe to add for agent-authored content (a composer
