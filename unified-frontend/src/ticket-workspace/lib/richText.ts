@@ -202,7 +202,7 @@ export function resolveCidImagesForDisplay(
 // to agent-authored content, never inbound sender HTML. See that
 // constant's own comment for why.
 export const RENDERED_MESSAGE_HTML_CLASS =
-  "[&_table]:my-2 [&_table]:w-full [&_td]:p-1.5 [&_td]:align-top [&_th]:p-1.5 [&_th]:text-left [&_th]:font-semibold [&_img]:mb-2 [&_img]:max-w-full [&_img]:rounded [&_a]:break-all [&_a]:underline [&_a]:text-primary";
+  "[&_table]:my-2 [&_table]:max-w-full [&_td]:p-1.5 [&_td]:align-top [&_th]:p-1.5 [&_th]:text-left [&_th]:font-semibold [&_img]:mb-2 [&_img]:max-w-full [&_img]:rounded [&_a]:break-all [&_a]:underline [&_a]:text-primary";
 
 // Draws a visible grid (borders + header background) around every
 // <td>/<th>. Only safe to add for agent-authored content (a composer

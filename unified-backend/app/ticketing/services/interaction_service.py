@@ -2413,7 +2413,7 @@ class InteractionService:
             "distribution_list_ids": [str(i) for i in request.distribution_list_ids],
         }
         if envelope.body_html:
-            interaction_payload["body_html"] = envelope.body_html
+            interaction_payload["html_body"] = envelope.body_html
 
         try:
             interaction = await self.interaction_repository.create(
