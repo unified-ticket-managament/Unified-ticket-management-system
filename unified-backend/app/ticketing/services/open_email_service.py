@@ -227,6 +227,7 @@ class OpenEmailService:
             client_name=payload.client_name or "Unknown",
             category_id=interaction.category_id,
             category_name=payload.category_name,
+            direction=interaction.direction,
             to_email=payload.to_email,
             to_emails=payload.to_emails,
             from_email=payload.from_email,

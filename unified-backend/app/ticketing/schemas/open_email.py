@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from app.ticketing.enums import InteractionStatus
+from app.ticketing.enums import InteractionDirection, InteractionStatus
 from app.ticketing.schemas.attachment import AttachmentMetadata
 from app.ticketing.schemas.interaction import InteractionResponse
 from app.ticketing.schemas.sla import FirstResponseSLAState
@@ -29,6 +29,17 @@ class OpenEmailResponse(BaseModel):
     category_id: UUID | None = None
 
     category_name: str | None = None
+
+    # This root's own direction — INBOUND for a real email that
+    # arrived, OUTBOUND for a Compose-authored root (a brand-new
+    # email an agent sent, never received from anywhere). The reply
+    # composer needs this to know which of to_email/from_email is the
+    # external party: for an INBOUND root it's from_email, but for an
+    # OUTBOUND root the fields are populated the opposite way (see
+    # compose_email's own EmailPayload construction) — reading
+    # from_email unconditionally as "the reply-to address" is exactly
+    # the bug this field exists to let the frontend avoid.
+    direction: InteractionDirection
 
     to_email: str | None
 

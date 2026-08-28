@@ -236,7 +236,11 @@ class OutgoingEmailResponse(BaseModel):
     """Response returned after the (mocked) provider send call."""
 
     message: str
-    provider_message_id: str
+    # Mirrors MailProviderSendResult.provider_message_id — None for a
+    # real Graph sendMail/reply send (Graph returns no id synchronously
+    # for either), a real value for the Mock provider or a real Graph
+    # draft-based send.
+    provider_message_id: str | None
     status: str
     dispatched_at: datetime
     envelope: OutboundEnvelope

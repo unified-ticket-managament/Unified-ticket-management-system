@@ -1,16 +1,23 @@
 # graph_client.py
 #
 # The real Microsoft Graph implementation of the MailProviderClient
-# seam (mail_provider.py) — send_email() calls Graph's sendMail API
-# for a brand-new message, or Graph's reply/replyAll message action
-# (via _send_reply) when the envelope carries
-# reply_to_provider_message_id, i.e. it's replying to a specific
-# existing Graph message rather than composing a new one.
+# seam (mail_provider.py) — send_email() creates-then-sends a real
+# Graph draft (via _send_via_draft) whenever there's no already-known
+# reply_to_provider_message_id (a brand-new Compose, or a reply whose
+# thread root never captured a real Graph id), so that message gets a
+# real, resolvable id a later reply can thread against — Graph's
+# sendMail action returns 202 with no body, so it can never yield one.
+# Once a real target id IS known, send_email uses Graph's own reply/
+# replyAll message action (via _send_reply) instead, which is what
+# actually makes Outlook group the reply into the original
+# conversation (Graph sets conversationId/In-Reply-To/References
+# itself for a real reply/replyAll action against a real message).
 # fetch_message() calls Graph's message-by-id API. Both are used only
 # once GraphAuthClient successfully authenticates (see graph_auth.py);
 # get_mail_provider_client() is the single place that decides whether
 # this class or MockMailProviderClient backs the rest of the app.
 
+import asyncio
 import base64
 import html
 import logging
@@ -258,6 +265,22 @@ class GraphMailProviderClient(MailProviderClient):
             envelope.attachments
         )
 
+        if not envelope.reply_to_provider_message_id:
+            # No already-known Graph-native target to reply against —
+            # either a brand-new Compose, or a reply whose thread root
+            # never captured a real Graph id. sendMail's own 202-with-
+            # no-body response can never yield one, so this always
+            # creates-then-sends a real draft instead (see
+            # _send_via_draft/_create_new_draft) regardless of
+            # attachment size — the real, resolvable id that comes back
+            # is what lets a LATER reply thread against this message
+            # via Graph's own reply action instead of falling back to
+            # plain, unthreaded sendMail forever (a real, previously-
+            # shipped bug this fixes — see MailProviderSendResult's own
+            # docstring for why sendMail's lack of an id must never be
+            # worked around by substituting a locally-generated one).
+            return await self._send_via_draft(envelope, small_attachments, large_attachments)
+
         if large_attachments:
             # sendMail/reply's inline-JSON attachments can't carry
             # anything this big — build a real draft message instead,
@@ -265,61 +288,7 @@ class GraphMailProviderClient(MailProviderClient):
             # a genuine Graph upload session, then send the draft.
             return await self._send_via_draft(envelope, small_attachments, large_attachments)
 
-        if envelope.reply_to_provider_message_id:
-            return await self._send_reply(envelope)
-
-        message = _build_send_mail_message(envelope)
-
-        url = f"{self._api_base_url}/users/{self._mailbox_address}/sendMail"
-
-        async def _attempt() -> httpx.Response:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                return await client.post(
-                    url,
-                    headers=await self._authorized_headers(),
-                    json={"message": message, "saveToSentItems": True},
-                )
-
-        # SEND policy: sendMail returns 202 with no body — a 5xx or a
-        # transport failure is genuinely ambiguous about whether Graph
-        # already accepted the send, so neither is retried here (see
-        # graph_retry.py's module docstring). Only 429 (a definitive
-        # synchronous rejection) and 401 (handled via token refresh)
-        # are retried.
-        response = await call_with_graph_retry(
-            _attempt,
-            operation="sendMail",
-            force_refresh_token=self._force_refresh_token,
-            retry_5xx=False,
-            retry_on_transport_error=False,
-        )
-
-        if response.status_code != 202:
-            logger.error(
-                "Graph sendMail failed: status=%s to=%s subject=%r body=%s",
-                response.status_code,
-                envelope.to_email,
-                envelope.subject,
-                response.text,
-            )
-            raise GraphAPIError(response.status_code, response.text, operation="sendMail")
-
-        logger.info(
-            "graph provider send: message_id=%s to=%s subject=%r",
-            envelope.message_id,
-            envelope.to_email,
-            envelope.subject,
-        )
-
-        # sendMail returns 202 Accepted with no body and no provider-side
-        # message id — Graph doesn't hand one back synchronously. Our own
-        # envelope.message_id (already stored on the Interaction before
-        # this call, see email_envelope.py) remains the only id this
-        # platform ever tracks for the outbound message.
-        return MailProviderSendResult(
-            provider_message_id=envelope.message_id,
-            status="SENT",
-        )
+        return await self._send_reply(envelope)
 
     async def _send_reply(self, envelope: OutboundEnvelope) -> MailProviderSendResult:
         """
@@ -388,20 +357,30 @@ class GraphMailProviderClient(MailProviderClient):
         )
 
         # Same as sendMail — reply/replyAll also return 202 Accepted
-        # with no body, so envelope.message_id remains the only id
-        # this platform tracks for the outbound message.
+        # with no body. See MailProviderSendResult's own docstring for
+        # why this must be None rather than envelope.message_id — this
+        # is fine here specifically because _send_reply only ever runs
+        # once a real reply_to_provider_message_id is already known
+        # (the thread ROOT's id, see add_interaction_reply/add_reply),
+        # and that's the only id this codebase ever replies against
+        # regardless of nesting depth — this reply's own id is never
+        # read back by anything.
         return MailProviderSendResult(
-            provider_message_id=envelope.message_id,
+            provider_message_id=None,
             status="SENT",
         )
 
     # ------------------------------------------------------------
-    # Large-attachment path: create a real draft, attach files to
-    # it (small ones inline, large ones via a genuine Graph upload
-    # session), then send the draft. Used only when send_email finds
-    # at least one attachment over the inline-embed threshold — every
-    # send with none takes the sendMail/_send_reply fast path above,
-    # completely unchanged.
+    # Draft-based path: create a real draft, attach files to it
+    # (small ones inline, large ones via a genuine Graph upload
+    # session), then send the draft. Used by send_email whenever
+    # there's no already-known real reply target (every brand-new
+    # Compose, and any reply whose thread root never captured a real
+    # Graph id — see send_email's own comment) regardless of
+    # attachment size, and also for a genuine reply that happens to
+    # carry a large attachment. The only remaining fast path is
+    # _send_reply, for a reply with a real known target and no large
+    # attachment.
     # ------------------------------------------------------------
 
     async def _send_via_draft(
@@ -411,9 +390,9 @@ class GraphMailProviderClient(MailProviderClient):
         large_attachments: list[EnvelopeAttachment],
     ) -> MailProviderSendResult:
         if envelope.reply_to_provider_message_id:
-            draft_id = await self._create_reply_draft(envelope)
+            draft_id, conversation_id = await self._create_reply_draft(envelope)
         else:
-            draft_id = await self._create_new_draft(envelope)
+            draft_id, conversation_id = await self._create_new_draft(envelope)
 
         try:
             for attachment in small_attachments:
@@ -433,32 +412,136 @@ class GraphMailProviderClient(MailProviderClient):
             exc.orphaned_draft_id = draft_id
             raise
 
+        # The draft's own id does NOT survive Graph's send action on
+        # every mailbox configuration this platform has been confirmed
+        # against — a shared mailbox sent via app-only Graph permissions
+        # was empirically observed to hand the message a genuinely
+        # different id once it lands in Sent Items (GET on the
+        # pre-send draft id 404s with ErrorItemNotFound afterward,
+        # while the item is findable in Sent Items under a different
+        # id). conversationId, by contrast, IS stable across that same
+        # move (confirmed the same way) — so the real, resolvable
+        # post-send id is looked up via conversationId instead of ever
+        # trusting draft_id past this point. A resolution failure
+        # degrades to None (the same honest "no real id known" state
+        # sendMail already produces) rather than falling back to
+        # draft_id, which would just reintroduce the exact malformed/
+        # not-found-id bug this whole mechanism exists to prevent.
+        provider_message_id = await self._resolve_sent_message_id(conversation_id)
+
         logger.info(
             "graph provider send (draft, %d large attachment(s)): draft_id=%s "
-            "message_id=%s to=%s subject=%r",
+            "resolved_provider_message_id=%s message_id=%s to=%s subject=%r",
             len(large_attachments),
             draft_id,
+            provider_message_id,
             envelope.message_id,
             envelope.to_email,
             envelope.subject,
         )
 
-        # Unlike sendMail/_send_reply (which return 202 with no body,
-        # so envelope.message_id is the only id ever known), this
-        # path genuinely creates a real Graph message first — its id
-        # is known and worth returning instead of falling back to our
-        # own envelope.message_id.
         return MailProviderSendResult(
-            provider_message_id=draft_id,
+            provider_message_id=provider_message_id,
             status="SENT",
         )
 
-    async def _create_new_draft(self, envelope: OutboundEnvelope) -> str:
+    async def _resolve_sent_message_id(self, conversation_id: str | None) -> str | None:
+        """
+        Looks up the real, final Graph id of the message just sent via
+        _send_via_draft, since draft_id itself is not a reliable
+        post-send identifier (see _send_via_draft's own comment).
+        conversationId is captured at draft-creation time (before it
+        could possibly change) and is stable across the Drafts ->
+        Sent Items move, so filtering Sent Items by it reliably finds
+        the real item.
+
+        Deliberately no `$orderby` on this query — combining `$filter`
+        and `$orderby` on this endpoint is rejected outright by Graph
+        (`InefficientFilter`, "The restriction or sort order is too
+        complex for this operation"), confirmed empirically. Instead,
+        `sentDateTime` is selected alongside `id` and the newest of up
+        to a handful of matches is picked in Python — matters for a
+        reply (which shares its thread's existing conversationId with
+        every prior message already in it), so the one just sent is
+        the one returned rather than an older item in the same thread.
+
+        Best-effort: returns None (never raises) if conversation_id is
+        unknown, the lookup fails, or Sent Items hasn't indexed the
+        message yet by the time this runs — the send itself already
+        succeeded by this point, so a resolution failure should only
+        cost this one message its own real id (falling back to the
+        same plain, unthreaded-on-the-next-reply behavior sendMail
+        already has), never fail the whole send.
+        """
+
+        if not conversation_id:
+            return None
+
+        url = (
+            f"{self._api_base_url}/users/{self._mailbox_address}/mailFolders/"
+            f"sentitems/messages"
+            f"?$filter=conversationId eq '{conversation_id}'"
+            f"&$select=id,sentDateTime&$top=5"
+        )
+
+        async def _attempt() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.get(url, headers=await self._authorized_headers())
+
+        # A short bounded retry specifically for "not indexed yet" (a
+        # 200 with an empty value list) — distinct from
+        # call_with_graph_retry's own transport/5xx retries, which
+        # already apply underneath each individual attempt here.
+        for attempt_index in range(3):
+            try:
+                response = await call_with_graph_retry(
+                    _attempt,
+                    operation="resolveSentMessageId",
+                    force_refresh_token=self._force_refresh_token,
+                )
+            except Exception:
+                logger.exception(
+                    "Graph resolveSentMessageId failed for conversation_id=%s — "
+                    "falling back to no real provider_message_id.",
+                    conversation_id,
+                )
+                return None
+
+            if response.status_code != 200:
+                logger.warning(
+                    "Graph resolveSentMessageId non-200: status=%s conversation_id=%s "
+                    "body=%s — falling back to no real provider_message_id.",
+                    response.status_code,
+                    conversation_id,
+                    response.text,
+                )
+                return None
+
+            values = response.json().get("value") or []
+            if values:
+                newest = max(values, key=lambda v: v.get("sentDateTime") or "")
+                return newest["id"]
+
+            if attempt_index < 2:
+                await asyncio.sleep(2 * (attempt_index + 1))
+
+        logger.warning(
+            "Graph resolveSentMessageId found no Sent Items match for "
+            "conversation_id=%s after retrying — falling back to no real "
+            "provider_message_id.",
+            conversation_id,
+        )
+        return None
+
+    async def _create_new_draft(self, envelope: OutboundEnvelope) -> tuple[str, str | None]:
         """
         Creates a plain (non-reply) draft message — same shape as
         _build_send_mail_message, minus attachments (added afterward,
         individually, by the caller: a not-yet-created message can't
         have its large attachments' upload sessions targeted at it).
+        Returns (draft_id, conversation_id) — see _send_via_draft's own
+        comment for why the caller must not treat draft_id itself as
+        the message's real post-send id.
         """
 
         message = _build_send_mail_message(envelope)
@@ -490,15 +573,19 @@ class GraphMailProviderClient(MailProviderClient):
             )
             raise GraphAPIError(response.status_code, response.text, operation="createDraft")
 
-        return response.json()["id"]
+        body = response.json()
+        return body["id"], body.get("conversationId")
 
-    async def _create_reply_draft(self, envelope: OutboundEnvelope) -> str:
+    async def _create_reply_draft(self, envelope: OutboundEnvelope) -> tuple[str, str | None]:
         """
         Creates a real reply/replyAll draft via Graph's createReply/
         createReplyAll action (as opposed to the direct reply/replyAll
         action _send_reply uses, which sends immediately and returns
         no id) — the draft can then have attachments added to it
-        before being sent for real via _send_draft.
+        before being sent for real via _send_draft. Returns (draft_id,
+        conversation_id) — see _send_via_draft's own comment for why
+        the caller must not treat draft_id itself as the message's
+        real post-send id.
 
         createReply/createReplyAll auto-populate recipients from the
         original message (reply: the original sender; replyAll: the
@@ -549,7 +636,9 @@ class GraphMailProviderClient(MailProviderClient):
             )
             raise GraphAPIError(response.status_code, response.text, operation=action)
 
-        draft_id = response.json()["id"]
+        created = response.json()
+        draft_id = created["id"]
+        conversation_id = created.get("conversationId")
 
         patch_url = f"{self._api_base_url}/users/{self._mailbox_address}/messages/{draft_id}"
         patch_body = {
@@ -585,7 +674,7 @@ class GraphMailProviderClient(MailProviderClient):
                 operation="draftRecipientPatch",
             )
 
-        return draft_id
+        return draft_id, conversation_id
 
     async def _add_small_attachment(
         self, draft_id: str, attachment: EnvelopeAttachment
