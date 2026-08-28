@@ -1263,6 +1263,103 @@ def test_build_upload_files_from_graph_attachments_case_and_bracket_insensitive_
     assert files[0].is_inline is True
 
 
+def test_build_upload_files_from_graph_attachments_generic_content_type_inline_image_by_extension():
+    """
+    Regression test for the ReachMyDr logo bug: a genuinely inline
+    image whose sender/relay declared a generic contentType (Graph
+    passes this through unchanged from the original message) must
+    still be classified as an inline image — via its own filename
+    extension against IMAGE_EXTENSIONS — or its content_id linkage to
+    the body's own <img src="cid:..."> reference is lost and the
+    frontend can never resolve it (see resolveCidImagesForDisplay in
+    richText.ts, which falls back to "[image unavailable]" for any
+    <img src="cid:..."> with no matching attachment content_id).
+    """
+
+    html = '<img src="cid:logo@reachmydr.example">'
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="logo.png",
+                contentType="application/octet-stream",
+                isInline=True,
+                contentId="logo@reachmydr.example",
+            )
+        ],
+        html,
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is True
+    assert files[0].content_id == "logo@reachmydr.example"
+
+
+def test_build_upload_files_from_graph_attachments_missing_content_type_inline_image_by_extension():
+    """Same as above, but Graph/the sender omitted contentType entirely."""
+
+    html = '<img src="cid:logo@reachmydr.example">'
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="logo.png",
+                contentType=None,
+                isInline=True,
+                contentId="logo@reachmydr.example",
+            )
+        ],
+        html,
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is True
+    assert files[0].content_id == "logo@reachmydr.example"
+
+
+def test_build_upload_files_from_graph_attachments_generic_content_type_non_image_stays_ordinary():
+    """
+    Control for the two tests above: the filename-extension fallback
+    must never widen classification for a genuine non-image attachment
+    that merely happens to also carry a generic contentType.
+    """
+
+    files = build_upload_files_from_graph_attachments(
+        [_graph_attachment(name="invoice.pdf", contentType="application/octet-stream")]
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is False
+    assert files[0].content_id is None
+
+
+def test_build_upload_files_from_graph_attachments_percent_encoded_cid_reference_matches():
+    """
+    A sending client can percent-encode the cid: value inside the
+    <img src="..."> attribute (e.g. "%40" for "@") even though Graph's
+    own contentId field for the same attachment never is — the match
+    must still succeed.
+    """
+
+    html = '<img src="cid:logo%40reachmydr.example">'
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="logo.png",
+                contentType="image/png",
+                isInline=False,
+                contentId="logo@reachmydr.example",
+            )
+        ],
+        html,
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is True
+    assert files[0].content_id == "logo@reachmydr.example"
+
+
 def test_build_upload_files_from_graph_attachments_multiple_inline_and_genuine_mixed():
     html = (
         '<img src="cid:logo1@x"><p>body</p><img src="cid:logo2@x">'
@@ -1613,6 +1710,17 @@ def test_map_external_email_to_interaction_sanitizes_dangerous_inbound_html():
 
 
 def test_map_external_email_to_interaction_preserves_a_real_table():
+    """
+    A genuine 2x2 inbound data table must both survive structurally
+    and now get the same visible-grid border styling an agent-authored
+    table gets, via sanitize_inbound_html's shape-based classifier
+    (_is_genuine_data_table) — the fix for the "genuine inbound tables
+    never got borders" half of the table-border regression. This is
+    deliberately the opposite shape from the nested-layout-table
+    regression test above (2 rows x 2 columns vs 1x1-per-level nesting)
+    so the two tests can never be satisfied by the same broken logic.
+    """
+
     payload = _graph_payload(
         "<table><tbody><tr><td>Name</td><td>Status</td></tr>"
         "<tr><td>Raju</td><td>Open</td></tr></tbody></table>",
@@ -1622,9 +1730,12 @@ def test_map_external_email_to_interaction_preserves_a_real_table():
     email = map_external_email_to_interaction(payload)
 
     assert email.html_body is not None
-    assert "<table>" in email.html_body
-    assert "<td>Raju</td>" in email.html_body
-    assert "<td>Status</td>" in email.html_body
+    assert "<table" in email.html_body
+    assert "border-collapse:collapse" in email.html_body
+    assert "border:1px solid" in email.html_body
+    assert "<td>Raju</td>" not in email.html_body  # styled now, not the bare tag
+    assert "Raju</td>" in email.html_body
+    assert "Status</td>" in email.html_body
 
 
 def test_map_external_email_to_interaction_passes_through_landed_mailbox():

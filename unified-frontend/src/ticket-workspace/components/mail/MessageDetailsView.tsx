@@ -5,8 +5,10 @@ import { Link } from "react-router-dom";
 import {
   Archive,
   ArrowLeft,
+  Check,
   ExternalLink,
   FilePlus,
+  FolderInput,
   Forward as ForwardIcon,
   Link2,
   Loader2,
@@ -32,6 +34,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -51,7 +55,16 @@ import { useAuthStore } from "@/store/auth-store";
 import { archiveInteraction, replyToInteraction, uploadDraftInlineImage } from "@tw/api/inbox";
 import { listAssignableAgents } from "@tw/api/agent";
 import { listClientContacts } from "@tw/api/clients";
-import { replyToClient, retrySend, uploadAttachment, uploadTicketInlineImage } from "@tw/api/interaction";
+import {
+  discardTicketReplyDraft,
+  downloadAttachmentFile,
+  getTicketReplyDraft,
+  replyToClient,
+  retrySend,
+  saveTicketReplyDraft,
+  uploadAttachment,
+  uploadTicketInlineImage,
+} from "@tw/api/interaction";
 import { attachInteractionToTicket, createTicketFromInteraction, listTickets } from "@tw/api/ticket";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
@@ -78,6 +91,7 @@ import type {
   MailFolder,
   OpenEmailResponse,
   TicketPriority,
+  TicketReplyDraftResponse,
   TicketResponse,
 } from "@tw/types";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
@@ -235,6 +249,16 @@ function Bubble({
     ? resolveCidImagesForDisplay(data.bodyHtml, data.attachments ?? [])
     : renderThreadedMessageHtml(data.body, { name: data.senderName, email: data.senderEmail });
   const { ref, isExpanded, isOverflowing, toggle, clampClassName } = useCollapsibleMessage([renderedBody]);
+  const [downloadingAttachmentId, setDownloadingAttachmentId] = useState<string | null>(null);
+
+  async function handleAttachmentDownload(attachmentId: string, filename: string) {
+    setDownloadingAttachmentId(attachmentId);
+    try {
+      await downloadAttachmentFile(attachmentId, filename);
+    } finally {
+      setDownloadingAttachmentId(null);
+    }
+  }
 
   return (
     <div className="flex gap-3">
@@ -295,26 +319,37 @@ function Bubble({
           const visibleAttachments = data.attachments?.filter((a) => !a.is_inline) ?? [];
           return visibleAttachments.length > 0 && (
           <div className="mt-3 flex flex-col gap-1.5">
-            {visibleAttachments.map((a) => (
-              <a
-                key={a.id}
-                href={a.download_url}
-                target="_blank"
-                rel="noreferrer"
-                title={a.is_external_link ? "Opens the original OneDrive/SharePoint link" : undefined}
-                className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-[11.5px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5"
-              >
-                {a.is_external_link ? (
+            {visibleAttachments.map((a) =>
+              a.is_external_link ? (
+                <a
+                  key={a.id}
+                  href={a.download_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Opens the original OneDrive/SharePoint link"
+                  className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-[11.5px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5"
+                >
                   <ExternalLink className="h-3 w-3 flex-none text-muted-foreground" />
-                ) : (
-                  <Paperclip className="h-3 w-3 flex-none text-muted-foreground" />
-                )}
-                <span className="truncate">{a.filename}</span>
-                {a.is_external_link && (
+                  <span className="truncate">{a.filename}</span>
                   <span className="flex-none text-[10px] font-normal text-muted-foreground">(link)</span>
-                )}
-              </a>
-            ))}
+                </a>
+              ) : (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => handleAttachmentDownload(a.id, a.filename)}
+                  disabled={downloadingAttachmentId === a.id}
+                  className="flex w-full items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-left text-[11.5px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {downloadingAttachmentId === a.id ? (
+                    <Loader2 className="h-3 w-3 flex-none animate-spin text-muted-foreground" />
+                  ) : (
+                    <Paperclip className="h-3 w-3 flex-none text-muted-foreground" />
+                  )}
+                  <span className="truncate">{a.filename}</span>
+                </button>
+              )
+            )}
           </div>
           );
         })()}
@@ -541,6 +576,7 @@ export function MessageDetailsView({
   const isTicketed = Boolean(email.ticket_id);
   const isClosed = email.ticket_status === "CLOSED";
   const hasDraft = Boolean(email.draft_message);
+  const [ticketReplyDraft, setTicketReplyDraft] = useState<TicketReplyDraftResponse | null>(null);
   const status = STATUS_META[email.status] ?? { label: email.status, variant: "secondary" as const };
 
   useEffect(() => {
@@ -550,6 +586,36 @@ export function MessageDetailsView({
     setReplyMode(hasDraft ? (email.draft_cc.length > 0 || email.draft_bcc.length > 0 ? "replyAll" : "reply") : null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email.interaction_id, email.ticket_id]);
+
+  // Ticketed counterpart of the effect above — OpenEmailResponse's
+  // own draft_message/draft_cc/draft_bcc fields are populated purely
+  // from the pre-ticket draft path (InteractionRepository.get_draft),
+  // never a ticket-scoped one, so a ticketed thread's saved draft (if
+  // any) is fetched here instead and pre-fills ReplyComposer via
+  // ticketReplyDraft below. A 404 (no draft) is expected, not an
+  // error. Only the first saved "To" recipient is restored here
+  // (ReplyComposer's own `toEmail` prop is still a single address) —
+  // a known, minor gap versus a multi-recipient ticket draft; subject/
+  // body/Cc/Bcc all restore in full.
+  useEffect(() => {
+    if (!isTicketed || !email.ticket_id) {
+      setTicketReplyDraft(null);
+      return;
+    }
+    let cancelled = false;
+    getTicketReplyDraft(email.ticket_id)
+      .then((draft) => {
+        if (cancelled) return;
+        setTicketReplyDraft(draft);
+        setReplyMode(draft.cc.length > 0 || draft.bcc.length > 0 ? "replyAll" : "reply");
+      })
+      .catch(() => {
+        if (!cancelled) setTicketReplyDraft(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isTicketed, email.ticket_id]);
 
   function loadAssignableAgents(category: string) {
     setAssignableAgentsError(false);
@@ -684,6 +750,11 @@ export function MessageDetailsView({
       if (result) {
         idempotencyKeyRef.current = generateIdempotencyKey();
         pastedImageInteractionIdsRef.current = [];
+        // The reply just sent through the normal path above — any
+        // draft this session had been autosaving for this ticket is
+        // now obsolete. Best-effort: a 404 (nothing was ever saved)
+        // is expected, not an error.
+        discardTicketReplyDraft(email.ticket_id).catch(() => {});
         showUndoSendToast(pushToast, result.interaction_id, "Reply sent.");
         setReplyMode(null);
         onRefreshList();
@@ -759,6 +830,9 @@ export function MessageDetailsView({
   }
 
   async function handleSaveDraft(message: string, cc: string[], bcc: string[], bodyHtml?: string) {
+    if (isTicketed && email.ticket_id) {
+      return saveTicketReplyDraft(email.ticket_id, { message, cc, bcc, body_html: bodyHtml });
+    }
     return onSaveDraft(email.interaction_id, message, cc, bcc, bodyHtml);
   }
 
@@ -797,6 +871,11 @@ export function MessageDetailsView({
   }
 
   async function handleDiscardDraft() {
+    if (isTicketed && email.ticket_id) {
+      const result = await discardTicketReplyDraft(email.ticket_id);
+      if (result) onRefreshList();
+      return result;
+    }
     const result = await onDiscardDraft(email.interaction_id);
     if (result) onRefreshList();
     return result;
@@ -982,6 +1061,50 @@ export function MessageDetailsView({
         </Button>
       )}
 
+      {!isTicketed && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button size="sm" variant="outline" className="gap-1.5">
+              <FolderInput className="h-3.5 w-3.5" />
+              Move to
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            {folders.length === 0 ? (
+              <DropdownMenuItem disabled>
+                No folders yet — create one from the sidebar
+              </DropdownMenuItem>
+            ) : (
+              <>
+                <DropdownMenuLabel>Move to folder</DropdownMenuLabel>
+                {folders.map((folder) => (
+                  <DropdownMenuItem
+                    key={folder.folder_id}
+                    onClick={() => onAssignFolder(email.interaction_id, folder.folder_id)}
+                  >
+                    <Check
+                      className={cn(
+                        "h-3.5 w-3.5",
+                        email.folder_id === folder.folder_id ? "opacity-100" : "opacity-0"
+                      )}
+                    />
+                    {folder.name.trim()}
+                  </DropdownMenuItem>
+                ))}
+                {email.folder_id && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={() => onAssignFolder(email.interaction_id, null)}>
+                      Unfiled
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+
       <Button
         size="sm"
         variant="outline"
@@ -1015,7 +1138,9 @@ export function MessageDetailsView({
         </div>
         <div className="flex gap-2">
           <span className="w-12 flex-none font-medium text-muted-foreground">To</span>
-          <span className="min-w-0 flex-1 truncate text-foreground">{email.to_email ?? "—"}</span>
+          <span className="min-w-0 flex-1 truncate text-foreground">
+            {email.to_emails.length > 0 ? email.to_emails.join(", ") : email.to_email ?? "—"}
+          </span>
         </div>
         {email.cc.length > 0 && (
           <div className="flex gap-2">
@@ -1141,25 +1266,6 @@ export function MessageDetailsView({
               placeholder="Add a tag..."
               className="h-6 w-28 px-2 text-[11px]"
             />
-
-            {!isTicketed && folders.length > 0 && (
-              <Select
-                value={email.folder_id ?? "__none__"}
-                onValueChange={(v) => onAssignFolder(email.interaction_id, v === "__none__" ? null : v)}
-              >
-                <SelectTrigger className="ml-auto h-7 w-36 text-[11px]">
-                  <SelectValue placeholder="Folder" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="__none__">No folder</SelectItem>
-                  {folders.map((folder) => (
-                    <SelectItem key={folder.folder_id} value={folder.folder_id}>
-                      {folder.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
           </section>
 
           <section>
@@ -1200,12 +1306,20 @@ export function MessageDetailsView({
       {!isClosed && replyMode && (
         <ReplyComposer
           mode={replyMode}
-          toEmail={email.from_email}
+          toEmail={ticketReplyDraft?.to_email ?? email.from_email}
           contacts={contacts}
           subject={email.subject}
-          initialCc={hasDraft ? email.draft_cc : replyMode === "replyAll" ? computeReplyAllCc(email) : []}
-          initialBcc={hasDraft ? email.draft_bcc : []}
-          initialMessage={hasDraft ? email.draft_message ?? "" : ""}
+          initialCc={
+            ticketReplyDraft
+              ? ticketReplyDraft.cc
+              : hasDraft
+                ? email.draft_cc
+                : replyMode === "replyAll"
+                  ? computeReplyAllCc(email)
+                  : []
+          }
+          initialBcc={ticketReplyDraft ? ticketReplyDraft.bcc : hasDraft ? email.draft_bcc : []}
+          initialMessage={ticketReplyDraft ? ticketReplyDraft.message : hasDraft ? email.draft_message ?? "" : ""}
           isTicketed={isTicketed}
           draftAttachments={email.draft_attachments}
           isSending={isReplying || isReplyingTicket || isUploadingAttachment}

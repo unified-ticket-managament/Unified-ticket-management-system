@@ -123,7 +123,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
         // Keep the empty list — better than a broken picker.
       });
 
-    listClients()
+    listClients({ mine: true })
       .then((fetched) => {
         if (!cancelled) {
           setClients(fetched);
@@ -137,7 +137,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
         }
       });
 
-    listCategories()
+    listCategories({ mine: true })
       .then((fetched) => {
         if (!cancelled) setCategories(fetched);
       })

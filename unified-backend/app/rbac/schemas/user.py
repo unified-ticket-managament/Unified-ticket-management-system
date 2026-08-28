@@ -89,6 +89,7 @@ class UserUpdate(BaseModel):
     teamlead_id: UUID | None = None
     reporting_manager_id: UUID | None = None
     category_id: UUID | None = None
+    category_ids: list[UUID] | None = None
     is_active: bool | None = None
     is_on_leave: bool | None = None
     employee_number: str | None = None
@@ -119,6 +120,14 @@ class UserUpdate(BaseModel):
 # (user:reset_password, see users.py's reset_password route) — no
 # old_password field, since the actor is not the account owner.
 class AdminPasswordReset(BaseModel):
+    new_password: str = Field(min_length=8)
+
+
+# -----------------------------
+# Reset Password (Super Admin / user:reset_password only)
+# -----------------------------
+
+class ResetPasswordRequest(BaseModel):
     new_password: str = Field(min_length=8)
 
 

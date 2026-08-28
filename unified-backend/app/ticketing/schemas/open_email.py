@@ -32,6 +32,12 @@ class OpenEmailResponse(BaseModel):
 
     to_email: str | None
 
+    # Every real "To" recipient of a Compose-authored root, when more
+    # than one — see EmailPayload.to_emails's own docstring. Empty for
+    # an inbound email or a single-recipient send; a display surface
+    # should fall back to to_email above when this is empty.
+    to_emails: list[str] = []
+
     from_email: str | None
 
     from_name: str | None

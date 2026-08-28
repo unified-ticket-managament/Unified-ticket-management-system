@@ -16,6 +16,7 @@ from app.ticketing.schemas.client import (
     ClientResponse,
 )
 from app.ticketing.services.access_control import (
+    ACCOUNT_MANAGER_ROLE_NAME,
     ensure_can_view_client_details,
     ensure_has_permission,
 )
@@ -64,20 +65,36 @@ async def create_client(
     response_model=list[ClientResponse],
 )
 async def list_clients(
+    mine: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Lists every onboarded client — used to populate the shared-inbox
-    picker on the mail simulator and the client filter on the inbox.
+    Lists onboarded clients — used to populate the shared-inbox picker
+    on the mail simulator, the Roles page's Client-tab roster, the
+    Rules engine's client picker, and the Client filter dropdowns
+    across Tickets/Interactions/Audit Log/Mail/Dashboard/Reports.
+
+    `?mine=true` narrows the list to the clients owned by the calling
+    Account Manager (Client.account_manager_id == their user_id) —
+    a no-op for every other role. Omitting it (every caller that
+    predates this flag) is byte-identical to the old unconditional
+    behavior, so the Roles page roster and the Rules engine picker
+    deliberately don't pass it and keep seeing every client.
     """
+
+    account_manager_id = (
+        current_user.user_id
+        if mine and current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME
+        else None
+    )
 
     service = ClientService(
         client_repository=ClientRepository(db),
         user_repository=UserRepository(db),
     )
 
-    return await service.list_all()
+    return await service.list_all(account_manager_id=account_manager_id)
 
 
 @router.get(

@@ -127,3 +127,91 @@ async def test_all_malformed_returns_empty_list_not_an_exception(monkeypatch):
     messages = await client.list_new_messages(since=datetime.now(timezone.utc))
 
     assert messages == []
+
+
+class _FakeSequentialAsyncClient:
+    """Returns one _FakeResponse per call to .get(), in order — models
+    Graph handing back a chain of @odata.nextLink pages, unlike
+    _FakeAsyncClient above which always returns the same response
+    regardless of how many times it's called."""
+
+    _responses: list[_FakeResponse] = []
+    call_count = 0
+
+    def __init__(self, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def get(self, url: str, headers: dict) -> httpx.Response:
+        response = type(self)._responses[type(self).call_count]
+        type(self).call_count += 1
+        return response
+
+
+def _install_sequential_responses(monkeypatch, responses: list[_FakeResponse]):
+    fake_cls = type(
+        "_FakeSequentialAsyncClientInstance", (_FakeSequentialAsyncClient,), {}
+    )
+    fake_cls._responses = responses
+    fake_cls.call_count = 0
+    monkeypatch.setattr(
+        graph_client_module.httpx, "AsyncClient", lambda **kwargs: fake_cls(**kwargs)
+    )
+    return fake_cls
+
+
+async def test_follows_odata_next_link_across_pages(monkeypatch):
+    page_1 = _FakeResponse(
+        {
+            "value": [_valid_graph_item("<page1-1@example.com>")],
+            "@odata.nextLink": "https://graph.example.test/v1.0/users/inbox@example.com/mailFolders('Inbox')/messages?$skip=50",
+        }
+    )
+    page_2 = _FakeResponse({"value": [_valid_graph_item("<page2-1@example.com>")]})
+
+    fake_cls = _install_sequential_responses(monkeypatch, [page_1, page_2])
+
+    client = GraphMailProviderClient(
+        auth_client=_FakeAuthClient(),
+        mailbox_address="inbox@example.com",
+        api_base_url="https://graph.example.test/v1.0",
+    )
+
+    messages = await client.list_new_messages(since=datetime.now(timezone.utc))
+
+    assert fake_cls.call_count == 2
+    assert {m.internetMessageId for m in messages} == {
+        "<page1-1@example.com>",
+        "<page2-1@example.com>",
+    }
+
+
+async def test_stops_at_page_cap_with_nextlink_still_present(monkeypatch):
+    # Every page still reports a further @odata.nextLink — without a
+    # cap this would loop forever.
+    page = _FakeResponse(
+        {
+            "value": [_valid_graph_item("<looping@example.com>")],
+            "@odata.nextLink": "https://graph.example.test/v1.0/users/inbox@example.com/mailFolders('Inbox')/messages?$skip=50",
+        }
+    )
+
+    fake_cls = _install_sequential_responses(
+        monkeypatch, [page] * graph_client_module.MAX_LIST_MESSAGES_PAGES
+    )
+
+    client = GraphMailProviderClient(
+        auth_client=_FakeAuthClient(),
+        mailbox_address="inbox@example.com",
+        api_base_url="https://graph.example.test/v1.0",
+    )
+
+    messages = await client.list_new_messages(since=datetime.now(timezone.utc))
+
+    assert fake_cls.call_count == graph_client_module.MAX_LIST_MESSAGES_PAGES
+    assert len(messages) == graph_client_module.MAX_LIST_MESSAGES_PAGES

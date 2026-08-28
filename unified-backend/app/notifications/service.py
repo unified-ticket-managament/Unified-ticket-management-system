@@ -86,6 +86,18 @@ class NotificationType:
     # Client/Category/Interaction row. See graph_mail_poller.py /
     # mail_integration.py's notify_unmatched_inbox_email.
     UNMATCHED_INBOX_EMAIL = "UNMATCHED_INBOX_EMAIL"
+    # A polled mailbox (graph_mail_poller.py) has failed to fetch
+    # messages on consecutive ticks for long enough to cross
+    # `Settings.graph_mail_poll_stall_alert_minutes` — most commonly a
+    # Graph permission/auth problem (403/404) on that specific
+    # mailbox. Unlike UNMATCHED_INBOX_EMAIL above, no message was ever
+    # even listed, so nothing reaches `inbound_mail_failures` either —
+    # this was previously visible only as a repeating warning log line
+    # with no alert at all. Sent to the same Site Lead/Super Admin
+    # audience as GRAPH_SUBSCRIPTION_FAILED, at most once per stall
+    # (see MailboxPollStateRepository.mark_alerted) rather than every
+    # tick.
+    MAILBOX_POLL_STALLED = "MAILBOX_POLL_STALLED"
 
 
 class NotificationService:

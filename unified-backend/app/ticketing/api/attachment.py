@@ -1,9 +1,10 @@
 # attachment.py
 
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import User
 
@@ -46,22 +47,42 @@ async def get_attachment(
     return await service.get_attachment(attachment_id, current_user=current_user)
 
 
-@router.get(
-    "/{attachment_id}/download",
-    status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-)
+@router.get("/{attachment_id}/download")
 async def download_attachment(
     attachment_id: UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Redirects to a short-lived presigned URL — bytes flow directly
-    from object storage to the browser, not through this backend.
+    Streams the attachment's bytes through this backend rather than
+    redirecting to the storage provider's own URL — UTMS is served
+    over plain HTTP, and a browser navigating from that page straight
+    to an external HTTPS storage URL is what Chrome's "Insecure
+    download blocked" warning was reacting to. Requires a real
+    Authorization bearer token (not a query-param token), since this
+    is called via an authenticated fetch/axios request, never a raw
+    browser navigation.
     """
     service = _build_service(db)
-    url = await service.get_download_url(attachment_id, current_user=current_user)
-    return RedirectResponse(url=url, status_code=status.HTTP_307_TEMPORARY_REDIRECT)
+    attachment, content = await service.download_attachment_content(
+        attachment_id, current_user=current_user
+    )
+    ascii_filename = (
+        attachment.filename.encode("ascii", "replace")
+        .decode("ascii")
+        .replace("\\", "_")
+        .replace('"', "_")
+        .translate({0x0D: None, 0x0A: None})
+    )
+    disposition = (
+        f'attachment; filename="{ascii_filename}"; '
+        f"filename*=UTF-8''{quote(attachment.filename)}"
+    )
+    return Response(
+        content=content,
+        media_type=attachment.mime_type or "application/octet-stream",
+        headers={"Content-Disposition": disposition},
+    )
 
 
 @router.delete(

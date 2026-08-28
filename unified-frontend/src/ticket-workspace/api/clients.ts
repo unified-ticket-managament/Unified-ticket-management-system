@@ -6,9 +6,14 @@ import type {
   ClientResponse,
 } from "@tw/types";
 
-// GET /clients
-export async function listClients(): Promise<ClientResponse[]> {
-  const { data } = await apiClient.get<ClientResponse[]>("/clients");
+// GET /clients — `mine: true` narrows the list to the calling Account
+// Manager's own clients (a no-op for every other role); omitted for
+// every caller that should keep seeing every client (Roles page
+// roster, Rules engine picker, Create/Edit User contact prefill).
+export async function listClients(options?: { mine?: boolean }): Promise<ClientResponse[]> {
+  const { data } = await apiClient.get<ClientResponse[]>("/clients", {
+    params: options?.mine ? { mine: true } : undefined,
+  });
   return data;
 }
 

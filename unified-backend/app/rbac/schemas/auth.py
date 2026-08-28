@@ -54,6 +54,25 @@ class CurrentUser(BaseModel):
     default_dashboard: str | None = None
 
 
+class MyPermissionItem(BaseModel):
+    permission_id: UUID
+    permission_name: str
+    description: str | None = None
+    granted: bool
+    # "role" (granted via the caller's role defaults), "override"
+    # (granted via a personal UserPermissionOverride), or "none".
+    source: str
+    scoped_ticket_ids: list[str] = []
+
+
+class MyPermissionsResponse(BaseModel):
+    user_id: UUID
+    name: str
+    email: EmailStr
+    role: str
+    permissions: list[MyPermissionItem]
+
+
 class ChangePasswordRequest(BaseModel):
     old_password: str
     new_password: str

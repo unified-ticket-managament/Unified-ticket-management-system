@@ -33,6 +33,7 @@ from app.ticketing.models.audit_log import AuditLog
 from app.ticketing.models.client import Client
 from app.ticketing.models.ticket import Ticket
 from app.ticketing.repositories.audit_log_repository import AuditLogRepository
+from app.ticketing.repositories.category_repository import CategoryRepository
 from app.ticketing.schemas.category import CategoryResponse
 
 
@@ -129,3 +130,68 @@ async def test_audit_log_ticket_type_filter_narrows_to_matching_category(db_sess
     )
     other_ticket_ids = {row[0].ticket_id for row in other_page.items}
     assert ticket.ticket_id not in other_ticket_ids
+
+
+# --- CategoryRepository.list_all(category_ids=...) -------------------
+#
+# Regression coverage for the "All Clients filter leaks other Account
+# Managers' category shared inboxes" fix (see root CLAUDE.md's
+# Organization Structure / reporting_manager_teams section): GET
+# /categories?mine=true resolves an Account Manager's own category ids
+# via ReportingManagerRepository, then filters here. These tests cover
+# the SQL filter itself, independent of that resolution step (which is
+# covered separately, without a DB, in test_category_mine_filter.py).
+
+
+async def _make_category(session, name_prefix: str = "RM Filter Test") -> Category:
+    category = Category(
+        category_id=uuid.uuid4(),
+        category_name=f"{name_prefix} {uuid.uuid4().hex[:8]}",
+    )
+    session.add(category)
+    await session.flush()
+    return category
+
+
+async def test_category_repository_list_all_unfiltered_returns_everything(db_session):
+    category = await _make_category(db_session)
+
+    repository = CategoryRepository(db_session)
+    all_categories = await repository.list_all()
+
+    assert category.category_id in {c.category_id for c in all_categories}
+
+
+async def test_category_repository_list_all_filters_by_category_ids(db_session):
+    category_a = await _make_category(db_session, name_prefix="RM Filter A")
+    category_b = await _make_category(db_session, name_prefix="RM Filter B")
+
+    repository = CategoryRepository(db_session)
+    filtered = await repository.list_all(category_ids=[category_a.category_id])
+
+    filtered_ids = {c.category_id for c in filtered}
+    assert category_a.category_id in filtered_ids
+    assert category_b.category_id not in filtered_ids
+
+
+async def test_category_repository_list_all_empty_category_ids_returns_nothing(db_session):
+    await _make_category(db_session)
+
+    repository = CategoryRepository(db_session)
+    filtered = await repository.list_all(category_ids=[])
+
+    assert filtered == []
+
+
+async def test_category_repository_list_all_multiple_ids_no_duplication(db_session):
+    category_a = await _make_category(db_session, name_prefix="RM Filter Multi A")
+    category_b = await _make_category(db_session, name_prefix="RM Filter Multi B")
+
+    repository = CategoryRepository(db_session)
+    filtered = await repository.list_all(
+        category_ids=[category_a.category_id, category_b.category_id]
+    )
+
+    filtered_ids = [c.category_id for c in filtered]
+    assert filtered_ids.count(category_a.category_id) == 1
+    assert filtered_ids.count(category_b.category_id) == 1

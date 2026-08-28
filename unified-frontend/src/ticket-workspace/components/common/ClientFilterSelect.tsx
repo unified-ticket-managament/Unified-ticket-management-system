@@ -14,23 +14,23 @@ interface ClientFilterSelectProps {
 
 // Shared Client filter, reused everywhere a Tickets/Audit-Log/
 // Interactions/Dashboard/Reports page needs one — sourced from
-// WorkflowContext's already-cached `clients` list (GET /clients is
-// ungated for every role, see that endpoint's own docstring), never a
-// separate fetch per page.
+// WorkflowContext's already-cached `clients`/`categories` lists,
+// never a separate fetch per page.
 //
-// Deliberately NOT scoped by Account-Manager ownership (Client.
-// account_manager_id) — this used to filter an Account Manager's own
-// options down to just their owned clients, but that meant an AM who
-// owns zero (or only inactive) clients saw an almost-empty dropdown
-// with real company clients missing, while the Mail Inbox's own
-// equivalent dropdown (MessageList.tsx) has never applied any such
-// scoping and shows every client to every role. Matching that: every
-// role sees the same full option list here too. This is UI-only —
-// every backend endpoint this selection ultimately feeds into still
-// enforces the real per-role visibility scoping server-side
-// (account_manager_id-owned-clients conditions, unaffected by this),
-// so picking a client outside the caller's own scope just returns an
-// empty result, exactly like Mail already behaves for every role.
+// Both `clients` (GET /clients?mine=true) and `categories`
+// (GET /categories?mine=true) already arrive pre-scoped to the
+// calling Account Manager's own ownership — Client.account_manager_id
+// for clients, the reporting_manager_teams mapping for category
+// shared inboxes — and unscoped (every client/category) for every
+// other role, matching how Mail's own equivalent dropdown
+// (MessageList.tsx) already reads from the same two lists. This
+// component itself applies no further ownership filtering beyond
+// mergedClientFilterOptions' existing is_active/mailbox/name-collision
+// merge logic; every backend endpoint this selection ultimately feeds
+// into still separately enforces its own real per-role visibility
+// scoping server-side, so picking an option outside the caller's own
+// scope (not normally offered here anymore) would still just return
+// an empty result.
 export function ClientFilterSelect({
   clients,
   categories,

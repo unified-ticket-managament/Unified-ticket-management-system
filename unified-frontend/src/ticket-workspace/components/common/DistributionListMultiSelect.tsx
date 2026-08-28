@@ -105,7 +105,7 @@ export function DistributionListMultiSelect({
             onFocus={() => setIsOpen(true)}
             onBlur={() => window.setTimeout(() => setIsOpen(false), 150)}
             onKeyDown={handleKeyDown}
-            placeholder={selected.length === 0 ? "Search distribution lists…" : ""}
+            placeholder={selected.length === 0 ? "Search distribution groups…" : ""}
             className="min-w-[140px] flex-1 border-none bg-transparent p-0 py-0.5 text-sm text-slate-900 placeholder:text-muted/60 focus:outline-none focus:ring-0"
           />
         </div>
@@ -113,13 +113,13 @@ export function DistributionListMultiSelect({
         {isOpen && (
           <div className="absolute z-20 mt-1 max-h-56 w-full overflow-y-auto rounded-md2 border border-border bg-surface shadow-cardHover">
             {isLoading ? (
-              <p className="px-3.5 py-2.5 text-xs text-muted">Loading distribution lists…</p>
+              <p className="px-3.5 py-2.5 text-xs text-muted">Loading distribution groups…</p>
             ) : loadError ? (
               <p className="px-3.5 py-2.5 text-xs text-destructive">
-                Couldn&apos;t load distribution lists. Please try again.
+                Couldn&apos;t load distribution groups. Please try again.
               </p>
             ) : filtered.length === 0 ? (
-              <p className="px-3.5 py-2.5 text-xs text-muted">No matching distribution lists.</p>
+              <p className="px-3.5 py-2.5 text-xs text-muted">No matching distribution groups.</p>
             ) : (
               filtered.map((list) => (
                 <button

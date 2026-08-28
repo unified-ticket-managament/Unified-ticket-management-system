@@ -12,7 +12,7 @@ from app.rbac.repositories.role_repository import RoleRepository
 from app.rbac.repositories.user_repository import UserRepository
 from app.rbac.schemas.organization import OrganizationNode
 from app.rbac.schemas.user import (
-    AdminPasswordReset,
+    ResetPasswordRequest,
     UserCreate,
     UserListResponse,
     UserResponse,
@@ -281,6 +281,40 @@ async def update_user(
 
 
 # --------------------------------------------------
+# Reset Password
+# --------------------------------------------------
+
+
+@router.post(
+    "/{user_id}/reset-password",
+    status_code=status.HTTP_200_OK,
+    summary="Reset User Password",
+)
+async def reset_password(
+    user_id: UUID,
+    password_data: ResetPasswordRequest,
+    service: UserService = Depends(get_user_service),
+    current_user=Depends(get_current_active_user),
+):
+    """
+    Force-reset another user's password (e.g. Super Admin resetting a
+    locked-out user's credentials). Distinct from the self-service
+    POST /auth/change-password, which requires the caller's own old
+    password.
+    """
+
+    ensure_has_permission(current_user, "user:reset_password")
+
+    await service.reset_password(
+        user_id,
+        password_data.new_password,
+        actor=current_user,
+    )
+
+    return {"message": "Password reset successfully."}
+
+
+# --------------------------------------------------
 # Delete User
 # --------------------------------------------------
 
@@ -352,32 +386,3 @@ async def deactivate_user(
     ensure_has_permission(current_user, "user:disable")
 
     return await service.deactivate_user(user_id, actor=current_user)
-
-
-# --------------------------------------------------
-# Admin Password Reset
-# --------------------------------------------------
-
-
-@router.patch(
-    "/{user_id}/reset-password",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Admin Password Reset",
-)
-async def reset_password(
-    user_id: UUID,
-    password_data: AdminPasswordReset,
-    service: UserService = Depends(get_user_service),
-    current_user=Depends(get_current_active_user),
-):
-    """
-    Reset another user's password. Distinct from self-service
-    change-password — requires user:reset_password, not the caller's
-    own old password.
-    """
-
-    ensure_has_permission(current_user, "user:reset_password")
-
-    await service.reset_password(
-        user_id, password_data.new_password, actor=current_user
-    )

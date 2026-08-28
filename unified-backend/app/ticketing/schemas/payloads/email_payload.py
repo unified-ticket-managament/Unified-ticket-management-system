@@ -78,6 +78,16 @@ class EmailPayload(BaseModel):
     # convention). Never set on a Compose-authored root.
     to_recipients: list[EmailStr] = Field(default_factory=list)
 
+    # Outbound-only counterpart to to_recipients above: every real "To"
+    # recipient of a Compose-authored root (manually-typed addresses
+    # plus any resolved Distribution List members) — see
+    # InteractionService.compose_email's own `effective_to`. `to_email`
+    # remains just the first for backward compatibility; this is what
+    # a display surface should read to show the complete list. Empty
+    # for an inbound email and for anything composed before this field
+    # existed (falls back to a single-entry display via `to_email`).
+    to_emails: list[EmailStr] = Field(default_factory=list)
+
     # Microsoft Graph's own native message id, when this email arrived
     # via the Graph transport (None for N8N-transport rows, which have
     # no such concept, and for anything ingested before this field

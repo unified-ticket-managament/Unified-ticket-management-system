@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from fastapi import HTTPException, UploadFile, status
 from shared_models.models import User
+from sqlalchemy.exc import IntegrityError
 
 from app.ticketing.enums import (
     ActorRole,
@@ -402,25 +403,61 @@ class AttachmentService:
                 content_type=file.content_type or "application/octet-stream",
             )
 
-            attachment = await self.attachment_repository.create(
-                AttachmentCreate(
-                    interaction_id=interaction_id,
-                    filename=filename,
-                    mime_type=file.content_type,
-                    size_bytes=len(data),
-                    storage_key=object_key,
-                    bucket_name=self.storage_service.bucket,
-                    # Present only on a _GraphAttachmentUploadFile
-                    # carrying a real inline image (see
-                    # mail_mapping_service.build_upload_files_from_
-                    # graph_attachments) — absent on every plain
-                    # fastapi.UploadFile (ticket upload, the N8N
-                    # transport), which reproduces this call's exact
-                    # pre-existing behavior unchanged.
-                    content_id=getattr(file, "content_id", None),
-                    is_inline=bool(getattr(file, "is_inline", False)),
-                )
+            attachment_data = AttachmentCreate(
+                interaction_id=interaction_id,
+                filename=filename,
+                mime_type=file.content_type,
+                size_bytes=len(data),
+                storage_key=object_key,
+                bucket_name=self.storage_service.bucket,
+                # Present only on a _GraphAttachmentUploadFile
+                # carrying a real inline image (see
+                # mail_mapping_service.build_upload_files_from_
+                # graph_attachments) — absent on every plain
+                # fastapi.UploadFile (ticket upload, the N8N
+                # transport), which reproduces this call's exact
+                # pre-existing behavior unchanged.
+                content_id=getattr(file, "content_id", None),
+                is_inline=bool(getattr(file, "is_inline", False)),
             )
+
+            if tolerate_failures:
+                # A duplicate content_id (most commonly: an inbound
+                # Graph message re-embedding the same signature/logo
+                # image an earlier, unrelated message already stored —
+                # ix_attachments_content_id, see that migration's own
+                # docstring) must never abort the whole inbound email.
+                # Every other exception this INSERT could realistically
+                # raise is likewise a problem with this one attachment,
+                # not the message as a whole, so the same tolerant
+                # handling applies to any IntegrityError here, not only
+                # a content_id collision specifically. A SAVEPOINT
+                # (begin_nested) is required, not a bare try/except —
+                # once flush() raises, Postgres marks the *entire*
+                # surrounding transaction aborted and refuses any
+                # further statement on it (including the Interaction
+                # row already flushed earlier in the same
+                # EmailService.receive_email call) until that specific
+                # savepoint is rolled back. Same idiom already used for
+                # a concurrent-draft race in
+                # InteractionService's _get_or_create_draft/
+                # _get_or_create_ticket_reply_draft/_get_or_create_
+                # ticket_note_draft.
+                try:
+                    async with self.attachment_repository.db.begin_nested():
+                        attachment = await self.attachment_repository.create(
+                            attachment_data
+                        )
+                except IntegrityError as exc:
+                    logger.warning(
+                        "validate_and_store_files: dropping %r — insert failed (%s)",
+                        filename,
+                        exc.__cause__ or exc,
+                    )
+                    continue
+            else:
+                attachment = await self.attachment_repository.create(attachment_data)
+
             attachments.append(attachment)
 
         return attachments
@@ -798,6 +835,20 @@ class AttachmentService:
             filename=attachment.filename,
             inline=False,
         )
+
+    async def download_attachment_content(
+        self,
+        attachment_id: UUID,
+        current_user: User,
+    ) -> tuple[Attachment, bytes]:
+        attachment = await self._resolve_and_authorize(attachment_id, current_user)
+        if attachment.is_external_link or not attachment.storage_key:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This attachment is a linked file, not a stored file — open it via its own link.",
+            )
+        content = await self.storage_service.download(object_key=attachment.storage_key)
+        return attachment, content
 
     async def delete_attachment(
         self,

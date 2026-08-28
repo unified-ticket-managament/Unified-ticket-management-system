@@ -32,6 +32,24 @@ class TestHasAttachmentValueValidation:
             )
 
 
+class TestOtpDetectedValueValidation:
+    def test_boolean_value_is_accepted(self):
+        item = RuleConditionItem(
+            field=RuleConditionField.OTP_DETECTED,
+            operator=RuleConditionOperator.EQUALS,
+            value=True,
+        )
+        assert item.value is True
+
+    def test_string_value_is_rejected(self):
+        with pytest.raises(ValidationError):
+            RuleConditionItem(
+                field=RuleConditionField.OTP_DETECTED,
+                operator=RuleConditionOperator.EQUALS,
+                value="true",
+            )
+
+
 def _mail_rule_payload(**overrides) -> dict:
     payload = dict(
         name="Route invoices",
@@ -113,4 +131,50 @@ class TestMailRuleOnlyConditionFields:
                     "rules": [{"field": field, "operator": operator, "value": value}],
                 },
                 actions=[{"type": "forward_to", "employee_user_ids": [str(uuid4())]}],
+            )
+
+
+class TestOtpDetectedConditionScope:
+    def test_otp_detected_is_valid_on_an_otp_rule(self):
+        rule = RuleCreate(
+            name="Forward OTP",
+            category=RuleCategory.OTP_RULE,
+            is_enabled=True,
+            conditions={
+                "combinator": "AND",
+                "rules": [
+                    {"field": RuleConditionField.OTP_DETECTED, "operator": RuleConditionOperator.EQUALS, "value": True},
+                ],
+            },
+            actions=[{"type": "forward_to", "employee_user_ids": [str(uuid4())]}],
+        )
+        assert rule.conditions.rules[0].field == RuleConditionField.OTP_DETECTED
+
+    def test_otp_detected_combined_with_client_is_valid_on_an_otp_rule(self):
+        rule = RuleCreate(
+            name="Forward OTP for Client X",
+            category=RuleCategory.OTP_RULE,
+            is_enabled=True,
+            conditions={
+                "combinator": "AND",
+                "rules": [
+                    {"field": RuleConditionField.OTP_DETECTED, "operator": RuleConditionOperator.EQUALS, "value": True},
+                    {"field": RuleConditionField.CLIENT, "operator": RuleConditionOperator.IN, "value": [str(uuid4())]},
+                ],
+            },
+            actions=[{"type": "forward_to", "employee_user_ids": [str(uuid4())]}],
+        )
+        assert {r.field for r in rule.conditions.rules} == {RuleConditionField.OTP_DETECTED, RuleConditionField.CLIENT}
+
+    def test_otp_detected_is_rejected_on_a_mail_rule(self):
+        with pytest.raises(ValidationError):
+            RuleCreate(
+                **_mail_rule_payload(
+                    conditions={
+                        "combinator": "AND",
+                        "rules": [
+                            {"field": RuleConditionField.OTP_DETECTED, "operator": RuleConditionOperator.EQUALS, "value": True},
+                        ],
+                    }
+                )
             )

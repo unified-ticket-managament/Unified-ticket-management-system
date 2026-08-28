@@ -70,9 +70,13 @@ export function groupIcon(key: string) {
 }
 
 // Same module-grouping rule used to build the editable checklist below —
-// exported so a read-only consumer never has to re-implement it.
-export function groupPermissionsByModule(permissions: Permission[]): Array<[string, Permission[]]> {
-  const map = new Map<string, Permission[]>();
+// exported so a read-only consumer never has to re-implement it. Generic
+// over anything shaped like a Permission (e.g. MyPermissionItem) so the
+// self-service "My Permissions" viewer can reuse it too.
+export function groupPermissionsByModule<T extends { permission_name: string }>(
+  permissions: T[]
+): Array<[string, T[]]> {
+  const map = new Map<string, T[]>();
   permissions.forEach((permission) => {
     const [moduleKey] = permission.permission_name.split(":");
     const key = moduleKey || "other";

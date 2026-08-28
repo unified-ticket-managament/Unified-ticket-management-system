@@ -269,6 +269,12 @@ export interface InboxItem {
   // this superseded. Optional so any stale-shaped cached response
   // still degrades to the old openedIds-based rendering.
   is_read?: boolean;
+  // Only set (true) on a Drafts-tab row derived from a Compose draft
+  // (draftItemToInboxItem, when the underlying DraftItem.root_
+  // interaction_id was null — a Reply draft always has a real root).
+  // Opening such a row must reopen the Compose form pre-filled, never
+  // the generic "open this thread" flow (there is no thread to open).
+  is_compose_draft?: boolean;
 }
 
 export interface InboxResponse {
@@ -324,6 +330,10 @@ export interface OpenEmailResponse {
   category_id?: string | null;
   category_name?: string | null;
   to_email: string | null;
+  // Every real "To" recipient when a Compose-authored send had more
+  // than one — empty for an inbound email or a single-recipient send,
+  // in which case a display surface should fall back to to_email.
+  to_emails: string[];
   from_email: string | null;
   from_name: string | null;
   cc: string[];
@@ -426,6 +436,85 @@ export interface DraftSaveResponse {
 
 export interface DraftDeleteResponse {
   message: string;
+}
+
+// Compose's own server-backed draft — a brand-new EMAIL-type root
+// with is_draft=true and no parent (see the backend's
+// ComposeDraftResponse), a deliberate sibling to DraftSaveResponse
+// above (a pre-ticket Reply draft, keyed off a resolved thread root)
+// rather than a shared shape, since a Compose draft carries its own
+// client/category/recipient fields that a Reply draft borrows from
+// its root instead.
+export interface ComposeDraftResponse {
+  interaction_id: string;
+  client_id?: string | null;
+  category_id?: string | null;
+  to_email?: string | null;
+  to_emails: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string;
+  message: string;
+  body_html?: string | null;
+  attachments: AttachmentMeta[];
+  created_at: string;
+}
+
+export interface ComposeDraftSaveRequest {
+  client_id?: string | null;
+  category_id?: string | null;
+  to_email?: string | null;
+  to_emails?: string[];
+  cc?: string[];
+  bcc?: string[];
+  subject?: string;
+  message?: string;
+  body_html?: string | null;
+}
+
+// Ticket-scoped drafts — Save Draft for Ticket Reply and Internal
+// Note (also used by Mail's own ticketed ReplyComposer, which sends
+// through the same ticket-reply endpoints). A deliberate sibling to
+// the pre-ticket/Compose draft shapes above, not a shared one — a
+// ticket draft has no thread root or standalone-message concept, the
+// ticket itself is the scope, and Reply/Internal-Note genuinely need
+// different fields.
+export interface TicketReplyDraftSaveRequest {
+  to_email?: string | null;
+  to_emails?: string[];
+  cc?: string[];
+  bcc?: string[];
+  message?: string;
+  body_html?: string | null;
+}
+
+export interface TicketReplyDraftResponse {
+  interaction_id: string;
+  ticket_id: string;
+  to_email: string | null;
+  to_emails: string[];
+  cc: string[];
+  bcc: string[];
+  message: string;
+  body_html: string | null;
+  created_at: string;
+}
+
+export interface TicketNoteDraftSaveRequest {
+  subject?: string;
+  note?: string;
+  body_html?: string | null;
+  recipient_user_ids?: string[];
+}
+
+export interface TicketNoteDraftResponse {
+  interaction_id: string;
+  ticket_id: string;
+  subject: string;
+  note: string;
+  body_html: string | null;
+  recipient_user_ids: string[];
+  created_at: string;
 }
 
 export interface InteractionReplyRequest {

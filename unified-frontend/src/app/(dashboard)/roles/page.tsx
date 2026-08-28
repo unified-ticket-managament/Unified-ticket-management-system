@@ -21,6 +21,7 @@ import {
 import { PermissionGuard } from "@/components/auth/PermissionGuard";
 import { PageHeader } from "@/components/layout/dashboard-shell";
 import { Breadcrumbs } from "@/components/shared/breadcrumbs";
+import { MyPermissionsDialog } from "@/components/roles/my-permissions-dialog";
 import { RoleFormDialog } from "@/components/roles/role-form-dialog";
 import {
   RolePermissionsDialog,
@@ -221,6 +222,7 @@ export default function RolesPage() {
   const [editingRole, setEditingRole] = useState<Role | null>(null);
   const [deletingRole, setDeletingRole] = useState<Role | null>(null);
   const [permissionsDialogOpen, setPermissionsDialogOpen] = useState(false);
+  const [myPermissionsOpen, setMyPermissionsOpen] = useState(false);
 
   // Client-role detail state — Client data/contacts live in
   // `clients`/`client_contacts`, never `users` (see root CLAUDE.md's
@@ -699,29 +701,58 @@ export default function RolesPage() {
               ) : assignedUsers.length === 0 ? (
                 <EmptyState title="No users assigned" description="Users with this role will appear here." />
               ) : (
-                assignedUsers.map((user) => (
-                  <div
-                    key={user.user_id}
-                    className="flex flex-wrap items-center gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-muted/50"
-                  >
-                    <Avatar className="h-9 w-9">
-                      <AvatarFallback>{user.name.charAt(0).toUpperCase()}</AvatarFallback>
-                    </Avatar>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{user.name}</p>
-                      <p className="truncate text-xs text-muted-foreground">{user.email}</p>
+                assignedUsers.map((user) => {
+                  // Comparison is by the stable user_id, never by
+                  // name/email — this is the only affordance that opens
+                  // the self-service "My Permissions" viewer, and it
+                  // must never be reachable for anyone else's row.
+                  const isSelf = !!currentUser?.user_id && user.user_id === currentUser.user_id;
+
+                  return (
+                    <div
+                      key={user.user_id}
+                      role={isSelf ? "button" : undefined}
+                      tabIndex={isSelf ? 0 : undefined}
+                      onClick={isSelf ? () => setMyPermissionsOpen(true) : undefined}
+                      onKeyDown={
+                        isSelf
+                          ? (e) => {
+                              if (e.key === "Enter" || e.key === " ") {
+                                e.preventDefault();
+                                setMyPermissionsOpen(true);
+                              }
+                            }
+                          : undefined
+                      }
+                      className={cn(
+                        "flex flex-wrap items-center gap-3 rounded-lg px-2 py-2.5 transition-colors hover:bg-muted/50",
+                        isSelf && "cursor-pointer"
+                      )}
+                    >
+                      <Avatar className="h-9 w-9">
+                        <AvatarFallback>{user.name.charAt(0).toUpperCase()}</AvatarFallback>
+                      </Avatar>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">{user.name}</p>
+                        <p className="truncate text-xs text-muted-foreground">{user.email}</p>
+                      </div>
+                      {isSelf && (
+                        <Badge variant="secondary" className="shrink-0">
+                          You — View Permissions
+                        </Badge>
+                      )}
+                      <Badge variant="outline" className="shrink-0">
+                        {selectedRole.name}
+                      </Badge>
+                      <Badge variant={user.is_active ? "success" : "destructive"} className="shrink-0">
+                        {user.is_active ? "Active" : "Inactive"}
+                      </Badge>
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {formatDate(user.created_at)}
+                      </span>
                     </div>
-                    <Badge variant="outline" className="shrink-0">
-                      {selectedRole.name}
-                    </Badge>
-                    <Badge variant={user.is_active ? "success" : "destructive"} className="shrink-0">
-                      {user.is_active ? "Active" : "Inactive"}
-                    </Badge>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {formatDate(user.created_at)}
-                    </span>
-                  </div>
-                ))
+                  );
+                })
               )}
             </CardContent>
           </Card>
@@ -868,6 +899,8 @@ export default function RolesPage() {
         open={permissionsDialogOpen}
         onOpenChange={setPermissionsDialogOpen}
       />
+
+      <MyPermissionsDialog open={myPermissionsOpen} onOpenChange={setMyPermissionsOpen} />
 
       <AlertDialog open={!!deletingRole} onOpenChange={(open) => !open && setDeletingRole(null)}>
         <AlertDialogContent>

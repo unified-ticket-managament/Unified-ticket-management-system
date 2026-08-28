@@ -1,5 +1,7 @@
 # client_service.py
 
+from uuid import UUID
+
 from fastapi import HTTPException, status
 from shared_models.models import User
 
@@ -111,8 +113,8 @@ class ClientService:
             account_manager_active=True,
         )
 
-    async def list_all(self) -> list[ClientResponse]:
-        clients = await self.client_repository.list_all()
+    async def list_all(self, account_manager_id: UUID | None = None) -> list[ClientResponse]:
+        clients = await self.client_repository.list_all(account_manager_id=account_manager_id)
 
         manager_ids = [client.account_manager_id for client in clients]
         names = await self.user_repository.get_names_by_ids(manager_ids)

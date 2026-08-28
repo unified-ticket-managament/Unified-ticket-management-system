@@ -1,6 +1,8 @@
 import { apiClient } from "./client";
 import type {
   AttachmentMeta,
+  ComposeDraftResponse,
+  ComposeDraftSaveRequest,
   ComposeEmailResponse,
   DraftDeleteResponse,
   DraftListResponse,
@@ -314,6 +316,11 @@ export interface ComposeEmailPayload {
   // recipient). At least one of the two must resolve to a real
   // address or the backend 400s.
   toEmail?: string;
+  // Every additional manually-typed "To" recipient past the first —
+  // real recipients, sent to the backend's own to_emails (plural)
+  // field, never downgraded into Cc (see ComposeEmailRequest's
+  // backend docstring for the full rationale).
+  toEmails?: string[];
   distributionListIds?: string[];
   subject: string;
   message: string;
@@ -369,6 +376,7 @@ export async function composeEmail(
   if (payload.clientId) formData.append("client_id", payload.clientId);
   if (payload.categoryId) formData.append("category_id", payload.categoryId);
   if (payload.toEmail) formData.append("to_email", payload.toEmail);
+  payload.toEmails?.forEach((email) => formData.append("to_emails", email));
   payload.distributionListIds?.forEach((id) => formData.append("distribution_list_ids", id));
   formData.append("subject", payload.subject);
   formData.append("message", payload.message);
@@ -387,6 +395,102 @@ export async function composeEmail(
   const { data } = await apiClient.post<ComposeEmailResponse>(
     "/inbox/compose",
     formData
+  );
+  return data;
+}
+
+// POST /inbox/compose-draft — creates a brand-new Compose draft (a
+// parentless EMAIL-type root with is_draft=true). The one missing
+// piece Compose needed to move off client-only localStorage — every
+// subsequent save/attach/send/discard reuses this draft's own
+// interaction_id, mirroring the pre-ticket Reply-draft flow above.
+export async function createComposeDraft(
+  payload: ComposeDraftSaveRequest
+): Promise<ComposeDraftResponse> {
+  const { data } = await apiClient.post<ComposeDraftResponse>(
+    "/inbox/compose-draft",
+    payload
+  );
+  return data;
+}
+
+// PUT /inbox/compose-draft/{interaction_id} — upserts the current
+// user's Compose draft in place.
+export async function saveComposeDraft(
+  interactionId: string,
+  payload: ComposeDraftSaveRequest
+): Promise<ComposeDraftResponse> {
+  const { data } = await apiClient.put<ComposeDraftResponse>(
+    `/inbox/compose-draft/${interactionId}`,
+    payload
+  );
+  return data;
+}
+
+// GET /inbox/compose-draft/{interaction_id} — fetches a Compose
+// draft to restore its form on reopen/refresh.
+export async function getComposeDraft(
+  interactionId: string
+): Promise<ComposeDraftResponse> {
+  const { data } = await apiClient.get<ComposeDraftResponse>(
+    `/inbox/compose-draft/${interactionId}`
+  );
+  return data;
+}
+
+// POST /inbox/compose-draft/{interaction_id}/attachments — attach
+// files to the current user's in-progress Compose draft, uploaded
+// immediately (before Send), same pattern as uploadDraftAttachment
+// above for Reply drafts.
+export async function uploadComposeDraftAttachment(
+  interactionId: string,
+  files: File[]
+): Promise<AttachmentMeta[]> {
+  const formData = new FormData();
+  files.forEach((file) => formData.append("files", file));
+
+  const { data } = await apiClient.post<AttachmentMeta[]>(
+    `/inbox/compose-draft/${interactionId}/attachments`,
+    formData
+  );
+  return data;
+}
+
+// POST /inbox/compose-draft/{interaction_id}/send — sends the
+// current user's Compose draft as a real outbound email.
+export async function sendComposeDraft(
+  interactionId: string,
+  options?: {
+    files?: File[];
+    inlineImageInteractionIds?: string[];
+    idempotencyKey?: string;
+  }
+): Promise<ComposeEmailResponse> {
+  const formData = new FormData();
+  options?.files?.forEach((file) => formData.append("files", file));
+  if (options?.inlineImageInteractionIds?.length) {
+    formData.append(
+      "inline_image_interaction_ids",
+      options.inlineImageInteractionIds.join(",")
+    );
+  }
+  if (options?.idempotencyKey) formData.append("idempotency_key", options.idempotencyKey);
+
+  const { data } = await apiClient.post<ComposeEmailResponse>(
+    `/inbox/compose-draft/${interactionId}/send`,
+    formData
+  );
+  return data;
+}
+
+// DELETE /inbox/compose-draft/{interaction_id} — discards the
+// current user's Compose draft (and any of its attachments) without
+// sending it.
+export async function discardComposeDraft(
+  interactionId: string
+): Promise<DraftDeleteResponse> {
+  const { data } = await apiClient.delete<DraftDeleteResponse>(
+    `/inbox/compose-draft/${interactionId}`
   );
   return data;
 }

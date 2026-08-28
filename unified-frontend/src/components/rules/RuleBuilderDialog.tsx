@@ -142,7 +142,9 @@ export function RuleBuilderDialog({
     ) &&
     actions.length > 0 &&
     actions.every((a) =>
-      a.type === "forward_to" ? (a.employee_user_ids ?? []).length > 0 : !!a.folder_name?.trim()
+      a.type === "forward_to"
+        ? (a.employee_user_ids ?? []).length > 0 || (a.distribution_list_ids ?? []).length > 0
+        : !!a.folder_name?.trim()
     );
 
   async function handleSave() {
@@ -241,11 +243,11 @@ export function RuleBuilderDialog({
             <Label>Shared With</Label>
             <p className="text-xs text-muted-foreground">
               Leave empty to keep this rule (and the folder it files mail into) private to you.
-              Add people or Distribution Lists here to let them view and manage it too.
+              Add people or Distribution Groups here to let them view and manage it too.
             </p>
             <EmployeeMultiSelect selectedIds={sharedUserIds} onChange={setSharedUserIds} />
             <DistributionListMultiSelect
-              label="Or Share With Distribution Lists"
+              label="Or Share With Distribution Groups"
               selectedIds={sharedDistributionListIds}
               onChange={setSharedDistributionListIds}
             />

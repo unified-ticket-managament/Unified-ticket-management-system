@@ -9,6 +9,7 @@ from app.dependencies.auth import get_current_agent
 from app.ticketing.repositories.distribution_list_repository import (
     DistributionListRepository,
 )
+from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.schemas.mail_folder import MailFolderCreate, MailFolderResponse
@@ -65,5 +66,9 @@ async def delete_folder(
 ):
     service = MailFolderService(MailFolderRepository(db))
     await service.delete(
-        folder_id, current_user, RuleRepository(db), DistributionListRepository(db)
+        folder_id,
+        current_user,
+        RuleRepository(db),
+        DistributionListRepository(db),
+        InteractionRepository(db),
     )

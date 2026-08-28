@@ -131,6 +131,51 @@ class TestHasAttachmentCondition:
         assert rule_matches(conditions, _group(RuleCombinator.AND, []), _context(has_attachments=False))
 
 
+class TestOtpDetectedCondition:
+    def test_true_matches_when_classifier_flagged_otp(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.OTP_DETECTED, "operator": RuleConditionOperator.EQUALS, "value": True}],
+        )
+        assert rule_matches(conditions, _group(RuleCombinator.AND, []), _context(otp_detected=True))
+
+    def test_true_does_not_match_when_classifier_did_not_flag_otp(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.OTP_DETECTED, "operator": RuleConditionOperator.EQUALS, "value": True}],
+        )
+        assert not rule_matches(conditions, _group(RuleCombinator.AND, []), _context(otp_detected=False))
+
+    def test_false_matches_when_classifier_did_not_flag_otp(self):
+        conditions = _group(
+            RuleCombinator.AND,
+            [{"field": RuleConditionField.OTP_DETECTED, "operator": RuleConditionOperator.EQUALS, "value": False}],
+        )
+        assert rule_matches(conditions, _group(RuleCombinator.AND, []), _context(otp_detected=False))
+
+    def test_combined_with_client_condition_under_and_requires_both(self):
+        client_id = uuid4()
+        conditions = _group(
+            RuleCombinator.AND,
+            [
+                {"field": RuleConditionField.OTP_DETECTED, "operator": RuleConditionOperator.EQUALS, "value": True},
+                {"field": RuleConditionField.CLIENT, "operator": RuleConditionOperator.IN, "value": [str(client_id)]},
+            ],
+        )
+        # Both otp_detected and client match.
+        assert rule_matches(
+            conditions, _group(RuleCombinator.AND, []), _context(otp_detected=True, client_id=client_id)
+        )
+        # otp_detected matches but client doesn't.
+        assert not rule_matches(
+            conditions, _group(RuleCombinator.AND, []), _context(otp_detected=True, client_id=uuid4())
+        )
+        # client matches but otp_detected doesn't.
+        assert not rule_matches(
+            conditions, _group(RuleCombinator.AND, []), _context(otp_detected=False, client_id=client_id)
+        )
+
+
 class TestRecipientCcCondition:
     def test_contains_matches_when_cc_address_present(self):
         conditions = _group(

@@ -23,7 +23,7 @@ import {
   type ForwardToInternalUserPayload,
 } from "@tw/api/inbox";
 import { deleteAttachment } from "@tw/api/interaction";
-import { listMailFolders } from "@tw/api/mailFolder";
+import { createMailFolder, deleteMailFolder, listMailFolders } from "@tw/api/mailFolder";
 import { getNotifications, markNotificationRead } from "@tw/api/notifications";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
@@ -132,6 +132,11 @@ function draftItemToInboxItem(item: DraftItem): InboxItem {
   return {
     interaction_id: item.interaction_id,
     open_interaction_id: item.root_interaction_id ?? item.interaction_id,
+    // A Compose draft never has a root (it's a parentless EMAIL-type
+    // interaction, not a REPLY child of one) — a Reply draft always
+    // does. This is what lets the click handler tell the two apart
+    // and reopen a Compose draft as a Compose form, not a thread.
+    is_compose_draft: item.root_interaction_id === null,
     client_id: item.client_id,
     client_name: item.client_name,
     from_email: null,
@@ -1025,6 +1030,29 @@ export function useMailInbox() {
     }
   }, [pushToast, activeFolderId, selectFolder]);
 
+  // Manual folder management (Create/Delete), independent of the Mail
+  // Rules engine — both reuse refreshFolders' existing "sidebar folders
+  // list + active-folder-deleted fallback" logic rather than
+  // duplicating it. Errors are intentionally left to propagate to the
+  // caller (CreateFolderDialog/MailSidebar wrap these in useApiAction,
+  // which surfaces a 409/other failure via the standard toast path).
+  const createFolder = useCallback(
+    async (name: string) => {
+      const folder = await createMailFolder(name);
+      await refreshFolders();
+      return folder;
+    },
+    [refreshFolders]
+  );
+
+  const deleteFolder = useCallback(
+    async (folderId: string) => {
+      await deleteMailFolder(folderId);
+      await refreshFolders();
+    },
+    [refreshFolders]
+  );
+
   // A lighter alternative to refresh() for after a single mutation
   // (tag/folder/draft-send/discard/compose) — re-pulls the cheap view
   // count aggregate plus only the tab(s) the mutation actually
@@ -1583,6 +1611,8 @@ export function useMailInbox() {
     managedClientCount,
     refresh,
     refreshFolders,
+    createFolder,
+    deleteFolder,
     openThread,
     markRead,
     markUnread,

@@ -34,6 +34,7 @@ class RuleConditionField:
     RECIPIENT_CC = "recipient_cc"
     ATTACHMENT_NAME_CONTAINS = "attachment_name_contains"
     ATTACHMENT_TYPE_CONTAINS = "attachment_type_contains"
+    OTP_DETECTED = "otp_detected"
 
     ALL = (
         SENDER_EMAIL,
@@ -45,6 +46,7 @@ class RuleConditionField:
         RECIPIENT_CC,
         ATTACHMENT_NAME_CONTAINS,
         ATTACHMENT_TYPE_CONTAINS,
+        OTP_DETECTED,
     )
 
     # Which condition fields each rule category may use — enforced at
@@ -68,6 +70,7 @@ class RuleConditionField:
             ATTACHMENT_TYPE_CONTAINS,
         ),
         RuleCategory.OTP_RULE: (
+            OTP_DETECTED,
             SUBJECT_CONTAINS,
             BODY_CONTAINS,
             CLIENT,
@@ -98,6 +101,7 @@ class RuleConditionOperator:
         RuleConditionField.RECIPIENT_CC: CONTAINS,
         RuleConditionField.ATTACHMENT_NAME_CONTAINS: CONTAINS,
         RuleConditionField.ATTACHMENT_TYPE_CONTAINS: CONTAINS,
+        RuleConditionField.OTP_DETECTED: EQUALS,
     }
 
 

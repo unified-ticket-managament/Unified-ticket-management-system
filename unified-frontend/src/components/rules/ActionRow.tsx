@@ -70,7 +70,7 @@ export function ActionRow({ category, action, onChange, onRemove }: ActionRowPro
               onChange={(ids) => onChange({ ...action, employee_user_ids: ids })}
             />
             <DistributionListMultiSelect
-              label="Or Forward To Distribution Lists"
+              label="Or Forward To Distribution Groups"
               selectedIds={action.distribution_list_ids ?? []}
               onChange={(ids) => onChange({ ...action, distribution_list_ids: ids })}
             />

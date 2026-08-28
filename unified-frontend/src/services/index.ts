@@ -7,6 +7,7 @@ import {
   EligibleApproverUser,
   ImpersonationStartResponse,
   LoginForm,
+  MyPermissionsResponse,
   OrganizationNode,
   Permission,
   PermissionOverride,
@@ -54,6 +55,12 @@ export const authService = {
       permissions: response.data.permissions ?? [],
       scoped_permissions: response.data.scoped_permissions ?? {},
     };
+  },
+
+  getMyPermissions: async (): Promise<MyPermissionsResponse> => {
+    const response = await api.get<MyPermissionsResponse>("/auth/me/permissions");
+
+    return response.data;
   },
 
   updateProfile: async (data: ProfileForm) => {
@@ -151,6 +158,15 @@ export const userService = {
     await api.delete(`/users/${id}`);
   },
 
+  resetPassword: async (id: string, new_password: string) => {
+    const response = await api.post<{ message: string }>(
+      `/users/${id}/reset-password`,
+      { new_password }
+    );
+
+    return response.data;
+  },
+
   activate: async (id: string) => {
     const response = await api.patch<User>(`/users/${id}/activate`);
 
@@ -161,10 +177,6 @@ export const userService = {
     const response = await api.patch<User>(`/users/${id}/deactivate`);
 
     return response.data;
-  },
-
-  resetPassword: async (id: string, newPassword: string) => {
-    await api.patch(`/users/${id}/reset-password`, { new_password: newPassword });
   },
 };
 

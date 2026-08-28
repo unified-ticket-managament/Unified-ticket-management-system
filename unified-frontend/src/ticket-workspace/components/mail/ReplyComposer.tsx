@@ -194,12 +194,14 @@ export function ReplyComposer({
     return result;
   }
 
-  // Continuous auto-save — debounced, pre-ticket only (a ticketed
-  // thread has no draft row to save onto). Skips the very first
-  // render so opening the composer doesn't immediately re-save
-  // whatever it was just prefilled with.
+  // Continuous auto-save — debounced. Ticketed threads now also have
+  // a real draft row to save onto (the ticket-scoped draft
+  // architecture — see MessageDetailsView.tsx's handleSaveDraft,
+  // which branches onto saveTicketReplyDraft for this case), so this
+  // no longer skips them. Skips the very first render so opening the
+  // composer doesn't immediately re-save whatever it was just
+  // prefilled with (a saved draft, or the default recipient).
   useEffect(() => {
-    if (isTicketed) return;
     if (skipNextAutoSave.current) {
       skipNextAutoSave.current = false;
       return;
@@ -354,7 +356,7 @@ export function ReplyComposer({
         )}
         <div className="pt-1">
           <DistributionListMultiSelect
-            label="Distribution Lists (Cc)"
+            label="Distribution Groups (Cc)"
             selectedIds={distributionListIds}
             onChange={setDistributionListIds}
           />
@@ -385,32 +387,49 @@ export function ReplyComposer({
           )}
 
           <div className="mt-3 flex items-center justify-between gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="gap-1.5"
-              onClick={() => setShowAttachments((prev) => !prev)}
-            >
-              <Paperclip className="h-3.5 w-3.5" />
-              Attach Files{files.length > 0 ? ` (${files.length})` : ""}
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="gap-1.5"
+                onClick={() => setShowAttachments((prev) => !prev)}
+              >
+                <Paperclip className="h-3.5 w-3.5" />
+                Attach Files{files.length > 0 ? ` (${files.length})` : ""}
+              </Button>
+              <span className="text-[11px] text-muted-foreground">
+                {draftStatus === "saving" && "Saving draft…"}
+                {draftStatus === "saved" && "Draft saved"}
+              </span>
+            </div>
 
-            <Button
-              size="sm"
-              className="gap-1.5"
-              disabled={
-                isEmpty || isSending || hasPendingImageUploads || hasInvalidRecipient || selectedTo.length === 0
-              }
-              onClick={handleSend}
-            >
-              {isSending ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Send className="h-3.5 w-3.5" />
-              )}
-              Send Reply
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={isEmpty || draftStatus === "saving"}
+                onClick={persistDraft}
+              >
+                Save Draft
+              </Button>
+              <Button
+                size="sm"
+                className="gap-1.5"
+                disabled={
+                  isEmpty || isSending || hasPendingImageUploads || hasInvalidRecipient || selectedTo.length === 0
+                }
+                onClick={handleSend}
+              >
+                {isSending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Send className="h-3.5 w-3.5" />
+                )}
+                Send Reply
+              </Button>
+            </div>
           </div>
         </>
       ) : (

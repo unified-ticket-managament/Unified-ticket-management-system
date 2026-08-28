@@ -25,7 +25,12 @@ from app.ticketing.repositories.message_read_receipt_repository import (
 from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
-from app.ticketing.schemas.compose import ComposeEmailRequest, ComposeEmailResponse
+from app.ticketing.schemas.compose import (
+    ComposeDraftResponse,
+    ComposeDraftSaveRequest,
+    ComposeEmailRequest,
+    ComposeEmailResponse,
+)
 from app.ticketing.schemas.forward import (
     ForwardToInternalUserRequest,
     ForwardToInternalUserResponse,
@@ -384,6 +389,7 @@ async def compose_email(
     client_id: UUID | None = Form(default=None),
     category_id: UUID | None = Form(default=None),
     to_email: str = Form(default=""),
+    to_emails: list[str] = Form(default=[]),
     distribution_list_ids: list[UUID] = Form(default=[]),
     subject: str = Form(...),
     message: str = Form(...),
@@ -405,10 +411,13 @@ async def compose_email(
     POST /tickets/{id}/attachments.
 
     `to_email` is now optional — the primary recipient can come
-    entirely from `distribution_list_ids` (resolved server-side to
+    entirely from `to_emails` (every additional manually-typed "To"
+    address — previously the frontend had no way to send more than one
+    typed recipient and downgraded every extra one into Cc instead, a
+    real bug) and/or `distribution_list_ids` (resolved server-side to
     real "To" recipients, merged into one send via the same additive
-    OutboundEnvelope.to_emails mechanism Forward uses); at least one
-    of the two must resolve to a real address or the service 400s.
+    OutboundEnvelope.to_emails mechanism Forward uses); at least one of
+    the three must resolve to a real address or the service 400s.
 
     `inline_image_interaction_ids` carries the staging interaction
     ids minted by POST /inbox/compose/attachments/inline-image for
@@ -423,9 +432,14 @@ async def compose_email(
     # rather than a clean 400. See recipient_validation.py's own
     # module docstring for the full syntax+domain rationale.
     parsed_to_email = to_email.strip() or None
+    parsed_to_emails = [addr.strip() for addr in to_emails if addr.strip()]
     parsed_cc = _split_emails(cc)
     parsed_bcc = _split_emails(bcc)
-    await ensure_recipients_are_valid(to=parsed_to_email, cc=parsed_cc, bcc=parsed_bcc)
+    await ensure_recipients_are_valid(
+        to=([parsed_to_email] if parsed_to_email else []) + parsed_to_emails,
+        cc=parsed_cc,
+        bcc=parsed_bcc,
+    )
 
     interaction_repository = InteractionRepository(db)
     ticket_repository = TicketRepository(db)
@@ -449,6 +463,7 @@ async def compose_email(
             client_id=client_id,
             category_id=category_id,
             to_email=parsed_to_email,
+            to_emails=parsed_to_emails,
             distribution_list_ids=distribution_list_ids,
             subject=subject,
             message=message,
@@ -835,6 +850,185 @@ async def update_interaction_folder(
         request=request,
         current_user=current_user,
     )
+
+
+# ---------------------------------------------------------
+# Compose Drafts — a brand-new outbound message has no existing
+# thread/interaction for the "/{interaction_id}/draft" routes below to
+# attach to (they all resolve a pre-existing thread root first); these
+# give Compose a real, server-backed draft the same way Reply already
+# has one, replacing the client-only localStorage draft that used to
+# be Compose's only option. Registered before "/{interaction_id}" for
+# the same static-path-before-UUID-param reason /compose itself is.
+# ---------------------------------------------------------
+
+@router.post(
+    "/compose-draft",
+    response_model=ComposeDraftResponse,
+    status_code=201,
+)
+async def create_compose_draft(
+    request: ComposeDraftSaveRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Creates a brand-new Compose draft — the one missing piece the real draft architecture needed to cover Compose, not just Reply."""
+
+    service = InteractionService(
+        interaction_repository=InteractionRepository(db),
+        ticket_repository=TicketRepository(db),
+        user_repository=UserRepository(db),
+        client_repository=ClientRepository(db),
+        attachment_repository=AttachmentRepository(db),
+        storage_service=get_storage_service(),
+    )
+
+    return await service.create_compose_draft(current_user=current_user, request=request)
+
+
+@router.put(
+    "/compose-draft/{interaction_id}",
+    response_model=ComposeDraftResponse,
+    status_code=200,
+)
+async def save_compose_draft(
+    interaction_id: UUID,
+    request: ComposeDraftSaveRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upserts the current user's Compose draft in place."""
+
+    service = InteractionService(
+        interaction_repository=InteractionRepository(db),
+        ticket_repository=TicketRepository(db),
+        user_repository=UserRepository(db),
+        client_repository=ClientRepository(db),
+        attachment_repository=AttachmentRepository(db),
+        storage_service=get_storage_service(),
+    )
+
+    return await service.save_compose_draft(
+        interaction_id=interaction_id, current_user=current_user, request=request
+    )
+
+
+@router.get(
+    "/compose-draft/{interaction_id}",
+    response_model=ComposeDraftResponse,
+    status_code=200,
+)
+async def get_compose_draft(
+    interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fetches the current user's Compose draft — used to restore the form on reopen/refresh."""
+
+    service = InteractionService(
+        interaction_repository=InteractionRepository(db),
+        ticket_repository=TicketRepository(db),
+        user_repository=UserRepository(db),
+        client_repository=ClientRepository(db),
+        attachment_repository=AttachmentRepository(db),
+        storage_service=get_storage_service(),
+    )
+
+    return await service.get_compose_draft(interaction_id=interaction_id, current_user=current_user)
+
+
+@router.post(
+    "/compose-draft/{interaction_id}/attachments",
+    response_model=list[AttachmentMetadata],
+    status_code=201,
+)
+async def upload_compose_draft_attachment(
+    interaction_id: UUID,
+    files: list[UploadFile] = File(...),
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Attaches files to the current user's in-progress Compose draft — same immediate-upload-before-Send pattern as a Reply draft's attachments."""
+
+    service = InteractionService(
+        interaction_repository=InteractionRepository(db),
+        ticket_repository=TicketRepository(db),
+        user_repository=UserRepository(db),
+        client_repository=ClientRepository(db),
+        attachment_repository=AttachmentRepository(db),
+        storage_service=get_storage_service(),
+    )
+
+    return await service.upload_compose_draft_attachment(
+        interaction_id=interaction_id, files=files, current_user=current_user
+    )
+
+
+@router.post(
+    "/compose-draft/{interaction_id}/send",
+    response_model=ComposeEmailResponse,
+    status_code=201,
+)
+async def send_compose_draft(
+    interaction_id: UUID,
+    files: list[UploadFile] = File(default=[]),
+    inline_image_interaction_ids: str = Form(default=""),
+    idempotency_key: str | None = Form(default=None),
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sends the current user's Compose draft as a real outbound email — hands its saved fields to compose_email, exactly mirroring send_draft's own delegation pattern for Reply drafts."""
+
+    attachment_repository = AttachmentRepository(db)
+    storage_service = get_storage_service()
+
+    service = InteractionService(
+        interaction_repository=InteractionRepository(db),
+        ticket_repository=TicketRepository(db),
+        user_repository=UserRepository(db),
+        client_repository=ClientRepository(db),
+        attachment_repository=attachment_repository,
+        storage_service=storage_service,
+        distribution_list_repository=DistributionListRepository(db),
+    )
+
+    composed = await service.send_compose_draft(
+        interaction_id=interaction_id,
+        current_user=current_user,
+        files=files,
+        inline_image_interaction_ids=_split_uuids(inline_image_interaction_ids),
+        idempotency_key=idempotency_key,
+    )
+
+    if files or inline_image_interaction_ids:
+        stored = await attachment_repository.list_by_interaction_id(composed.interaction_id)
+        composed.attachments = await attachments_to_metadata(stored, storage_service)
+
+    return composed
+
+
+@router.delete(
+    "/compose-draft/{interaction_id}",
+    response_model=DraftDeleteResponse,
+    status_code=200,
+)
+async def discard_compose_draft(
+    interaction_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deletes the current user's Compose draft (and any of its attachments) without sending it."""
+
+    service = InteractionService(
+        interaction_repository=InteractionRepository(db),
+        ticket_repository=TicketRepository(db),
+        user_repository=UserRepository(db),
+        client_repository=ClientRepository(db),
+        attachment_repository=AttachmentRepository(db),
+        storage_service=get_storage_service(),
+    )
+
+    return await service.discard_compose_draft(interaction_id=interaction_id, current_user=current_user)
 
 
 # ---------------------------------------------------------

@@ -57,6 +57,13 @@ class InteractionUpdate(BaseModel):
     is_visible: bool | None = None
     removed_by: UUID | None = None
     removed_at: datetime | None = None
+    # Additive — lets a Compose draft's real client_id/category_id
+    # columns track its "From" selection as it's edited (create_compose_
+    # draft/save_compose_draft), without affecting any existing caller
+    # that never sets these (exclude_unset=True on the repository's
+    # update() means an omitted field here is never touched).
+    client_id: UUID | None = None
+    category_id: UUID | None = None
     # See InteractionCreate's matching fields — same dual-write
     # convention.
     dispatch_status: str | None = None

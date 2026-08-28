@@ -122,10 +122,11 @@ class ClientRepository:
         )
         return result.scalar_one_or_none() is not None
 
-    async def list_all(self) -> list[Client]:
-        result = await self.db.execute(
-            select(Client).order_by(Client.created_at.desc())
-        )
+    async def list_all(self, account_manager_id: UUID | None = None) -> list[Client]:
+        stmt = select(Client).order_by(Client.created_at.desc())
+        if account_manager_id is not None:
+            stmt = stmt.where(Client.account_manager_id == account_manager_id)
+        result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
     async def list_by_ids(self, client_ids: list[UUID]) -> list[Client]:

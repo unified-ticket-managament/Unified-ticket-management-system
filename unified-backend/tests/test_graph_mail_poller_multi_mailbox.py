@@ -54,9 +54,14 @@ class _FakeCategoryRepository:
 def setup_function(function):
     # Fresh per-mailbox checkpoint/failure-count state for every test —
     # this module state is otherwise shared/mutated across the whole
-    # test process.
+    # test process. checkpoints_seeded reset too, so
+    # poll_new_messages's one-time persisted-checkpoint seed is
+    # exercised (and must be safely no-op'd via a mocked
+    # AsyncSessionLocal, never a real DB touch) by every test that
+    # calls it, not just whichever happens to run first in the module.
     graph_mail_poller_module._state.checkpoints = {}
     graph_mail_poller_module._state.failure_counts = {}
+    graph_mail_poller_module._state.checkpoints_seeded = False
 
 
 async def test_resolve_mailboxes_to_poll_includes_shared_and_client_mailboxes(monkeypatch):
@@ -190,6 +195,13 @@ async def test_one_mailbox_failure_does_not_block_another_mailboxs_tick(monkeypa
     monkeypatch.setattr(
         graph_mail_poller_module, "get_mail_provider_client", _fake_get_mail_provider_client
     )
+    # Keeps this a pure-logic test per the module docstring — without
+    # this, the GraphAPIError branch's mailbox-stall bookkeeping
+    # (MailboxPollStateRepository.record_failure) would open a real
+    # AsyncSessionLocal() against the live DB.
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
+    )
 
     # Should not raise, despite one mailbox failing.
     await graph_mail_poller_module.poll_new_messages(settings)
@@ -223,6 +235,12 @@ async def test_per_mailbox_checkpoints_are_independent(monkeypatch):
     )
     monkeypatch.setattr(
         graph_mail_poller_module, "get_mail_provider_client", _fake_get_mail_provider_client
+    )
+    # Keeps this a pure-logic test per the module docstring — see the
+    # identical comment in test_one_mailbox_failure_does_not_block_
+    # another_mailboxs_tick above.
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
     )
 
     await graph_mail_poller_module.poll_new_messages(settings)
@@ -524,3 +542,274 @@ async def test_poll_clears_failure_count_once_a_previously_failing_message_succe
         mailbox, {}
     )
     assert graph_mail_poller_module._state.checkpoints[mailbox] == tick_started_at
+
+
+# ---------------------------------------------------------------
+# Persisted-checkpoint seeding (Fix 2) and mailbox-stall alerting
+# (Fix 3) — the mail-ingestion-reliability fix on top of the
+# already-covered per-message retry/dead-letter logic above.
+# ---------------------------------------------------------------
+
+
+class _FakeMailboxPollState:
+    def __init__(
+        self,
+        consecutive_failures=0,
+        last_success_at=None,
+        last_alerted_at=None,
+    ):
+        self.consecutive_failures = consecutive_failures
+        self.last_success_at = last_success_at
+        self.last_alerted_at = last_alerted_at
+
+
+class _FakeMailboxPollStateRepository:
+    """Shared, in-memory stand-in for MailboxPollStateRepository —
+    same instance handed back for every `MailboxPollStateRepository(db)`
+    construction within a test (see the factory below), so state
+    written by one call is visible to the next, exactly like the real
+    upsert-backed table would be within one process."""
+
+    def __init__(self, checkpoints=None, states=None):
+        self.checkpoints = dict(checkpoints or {})
+        self.states = dict(states or {})
+        self.record_success_calls = []
+        self.record_failure_calls = []
+        self.mark_alerted_calls = []
+
+    def __call__(self, db):
+        return self
+
+    async def get_all_checkpoints(self):
+        return dict(self.checkpoints)
+
+    async def record_success(self, *, mailbox_address, checkpoint_at):
+        self.record_success_calls.append((mailbox_address, checkpoint_at))
+        self.checkpoints[mailbox_address] = checkpoint_at
+        self.states[mailbox_address] = _FakeMailboxPollState(
+            consecutive_failures=0,
+            last_success_at=checkpoint_at,
+            last_alerted_at=self.states.get(mailbox_address)
+            and self.states[mailbox_address].last_alerted_at,
+        )
+
+    async def record_failure(self, *, mailbox_address, error_summary):
+        self.record_failure_calls.append((mailbox_address, error_summary))
+        existing = self.states.get(mailbox_address)
+        new_count = (existing.consecutive_failures if existing else 0) + 1
+        self.states[mailbox_address] = _FakeMailboxPollState(
+            consecutive_failures=new_count,
+            last_success_at=existing.last_success_at if existing else None,
+            last_alerted_at=existing.last_alerted_at if existing else None,
+        )
+        return new_count
+
+    async def mark_alerted(self, *, mailbox_address):
+        self.mark_alerted_calls.append(mailbox_address)
+        state = self.states[mailbox_address]
+        state.last_alerted_at = datetime.now(timezone.utc)
+
+    async def get(self, *, mailbox_address):
+        return self.states.get(mailbox_address)
+
+
+async def test_poll_new_messages_seeds_checkpoint_from_persisted_state(monkeypatch):
+    """
+    Fix 2: a fresh process (empty _state.checkpoints, as after a
+    restart) must resume from the persisted mailbox_poll_state
+    checkpoint rather than always falling back to
+    INITIAL_LOOKBACK_MINUTES.
+    """
+
+    settings = _settings()
+    persisted_checkpoint = datetime.now(timezone.utc) - timedelta(hours=6)
+    mailbox = "restarted@probeps.com"
+
+    fake_repo = _FakeMailboxPollStateRepository(checkpoints={mailbox: persisted_checkpoint})
+    monkeypatch.setattr(graph_mail_poller_module, "MailboxPollStateRepository", fake_repo)
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
+    )
+
+    async def _fake_resolve_mailboxes(settings):
+        return [mailbox]
+
+    monkeypatch.setattr(
+        graph_mail_poller_module, "_resolve_mailboxes_to_poll", _fake_resolve_mailboxes
+    )
+
+    seen_since = {}
+
+    class _CapturingClient(_FakeGraphMailProviderClient):
+        async def list_new_messages(self, since):
+            seen_since["value"] = since
+            return await super().list_new_messages(since)
+
+    # __name__ isn't inherited for this defensive check's purposes —
+    # _poll_one_mailbox compares __class__.__name__ literally, same
+    # reason _FakeGraphMailProviderClient itself needs the same patch
+    # above.
+    _CapturingClient.__name__ = "GraphMailProviderClient"
+
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "get_mail_provider_client",
+        lambda settings, mailbox_address=None: _CapturingClient(messages=[]),
+    )
+
+    await graph_mail_poller_module.poll_new_messages(settings)
+
+    # Used the persisted checkpoint as `since`, not
+    # now - INITIAL_LOOKBACK_MINUTES.
+    assert seen_since["value"] == persisted_checkpoint
+    # And the successful tick persisted its own new checkpoint back.
+    assert len(fake_repo.record_success_calls) == 1
+    assert fake_repo.record_success_calls[0][0] == mailbox
+
+
+async def test_poll_new_messages_only_seeds_once_per_process(monkeypatch):
+    """Fix 2: the persisted-checkpoint seed only ever runs once per
+    process (checkpoints_seeded), not once per tick — a second tick
+    must not re-read/override an in-memory checkpoint that's already
+    been advanced past the persisted value."""
+
+    settings = _settings()
+    mailbox = "seeded-once@probeps.com"
+    stale_persisted = datetime.now(timezone.utc) - timedelta(hours=6)
+
+    fake_repo = _FakeMailboxPollStateRepository(checkpoints={mailbox: stale_persisted})
+    monkeypatch.setattr(graph_mail_poller_module, "MailboxPollStateRepository", fake_repo)
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
+    )
+
+    async def _fake_resolve_mailboxes(settings):
+        return [mailbox]
+
+    monkeypatch.setattr(
+        graph_mail_poller_module, "_resolve_mailboxes_to_poll", _fake_resolve_mailboxes
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "get_mail_provider_client",
+        lambda settings, mailbox_address=None: _FakeGraphMailProviderClient(messages=[]),
+    )
+
+    await graph_mail_poller_module.poll_new_messages(settings)
+    advanced_checkpoint = graph_mail_poller_module._state.checkpoints[mailbox]
+    assert advanced_checkpoint > stale_persisted
+
+    # A second tick must not re-seed from the (now stale) persisted
+    # value — get_all_checkpoints should not be called again.
+    fake_repo.checkpoints[mailbox] = stale_persisted  # simulate a stale read if it were re-seeded
+    await graph_mail_poller_module.poll_new_messages(settings)
+    assert graph_mail_poller_module._state.checkpoints[mailbox] >= advanced_checkpoint
+
+
+async def test_mailbox_stall_triggers_alert_after_threshold(monkeypatch):
+    """Fix 3: a mailbox that's been failing to fetch since before
+    Settings.graph_mail_poll_stall_alert_minutes must trigger exactly
+    one notify_mailbox_poll_stalled call, and mark_alerted so a later
+    tick doesn't repeat it every time."""
+
+    settings = _settings(graph_mail_poll_stall_alert_minutes=15)
+    mailbox = "stalled@probeps.com"
+    long_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+
+    fake_repo = _FakeMailboxPollStateRepository(
+        states={
+            mailbox: _FakeMailboxPollState(
+                consecutive_failures=3, last_success_at=long_ago, last_alerted_at=None
+            )
+        }
+    )
+    monkeypatch.setattr(graph_mail_poller_module, "MailboxPollStateRepository", fake_repo)
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
+    )
+
+    alert_calls = []
+
+    async def _fake_notify(db, *, mailbox_address, consecutive_failures, error_summary):
+        alert_calls.append((mailbox_address, consecutive_failures))
+
+    monkeypatch.setattr(graph_mail_poller_module, "notify_mailbox_poll_stalled", _fake_notify)
+
+    await graph_mail_poller_module._record_mailbox_fetch_failure_and_maybe_alert(
+        settings, mailbox, error_summary="GraphAPIError(403): forbidden"
+    )
+
+    assert alert_calls == [(mailbox, 4)]
+    assert fake_repo.mark_alerted_calls == [mailbox]
+
+
+async def test_mailbox_stall_does_not_alert_before_threshold(monkeypatch):
+    """A mailbox that only just started failing (well within the
+    stall-alert window) must not alert yet."""
+
+    settings = _settings(graph_mail_poll_stall_alert_minutes=15)
+    mailbox = "just-started-failing@probeps.com"
+    recently = datetime.now(timezone.utc) - timedelta(minutes=2)
+
+    fake_repo = _FakeMailboxPollStateRepository(
+        states={
+            mailbox: _FakeMailboxPollState(
+                consecutive_failures=1, last_success_at=recently, last_alerted_at=None
+            )
+        }
+    )
+    monkeypatch.setattr(graph_mail_poller_module, "MailboxPollStateRepository", fake_repo)
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
+    )
+
+    alert_calls = []
+
+    async def _fake_notify(db, *, mailbox_address, consecutive_failures, error_summary):
+        alert_calls.append(mailbox_address)
+
+    monkeypatch.setattr(graph_mail_poller_module, "notify_mailbox_poll_stalled", _fake_notify)
+
+    await graph_mail_poller_module._record_mailbox_fetch_failure_and_maybe_alert(
+        settings, mailbox, error_summary="GraphAPIError(403): forbidden"
+    )
+
+    assert alert_calls == []
+    assert fake_repo.mark_alerted_calls == []
+
+
+async def test_mailbox_stall_does_not_realert_immediately(monkeypatch):
+    """A mailbox already alerted on within this same stall window must
+    not be re-alerted on every subsequent tick."""
+
+    settings = _settings(graph_mail_poll_stall_alert_minutes=15)
+    mailbox = "already-alerted@probeps.com"
+    long_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    recently_alerted = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    fake_repo = _FakeMailboxPollStateRepository(
+        states={
+            mailbox: _FakeMailboxPollState(
+                consecutive_failures=5,
+                last_success_at=long_ago,
+                last_alerted_at=recently_alerted,
+            )
+        }
+    )
+    monkeypatch.setattr(graph_mail_poller_module, "MailboxPollStateRepository", fake_repo)
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
+    )
+
+    alert_calls = []
+
+    async def _fake_notify(db, *, mailbox_address, consecutive_failures, error_summary):
+        alert_calls.append(mailbox_address)
+
+    monkeypatch.setattr(graph_mail_poller_module, "notify_mailbox_poll_stalled", _fake_notify)
+
+    await graph_mail_poller_module._record_mailbox_fetch_failure_and_maybe_alert(
+        settings, mailbox, error_summary="GraphAPIError(403): forbidden"
+    )
+
+    assert alert_calls == []

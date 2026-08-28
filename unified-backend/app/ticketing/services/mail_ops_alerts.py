@@ -47,3 +47,35 @@ async def notify_unmatched_inbox_email(
         message=f"From {from_email or '(unknown sender)'}: {subject_snippet}",
     )
     await db.commit()
+
+
+async def notify_mailbox_poll_stalled(
+    db: AsyncSession,
+    *,
+    mailbox_address: str,
+    consecutive_failures: int,
+    error_summary: str,
+) -> None:
+    """
+    A polled mailbox has failed to fetch messages for
+    Settings.graph_mail_poll_stall_alert_minutes straight — most
+    commonly a Graph 403/404 on that specific mailbox
+    (graph_mail_poller.py's GraphAPIError branch). Unlike
+    notify_unmatched_inbox_email above, no message was ever even
+    listed here, so this never touches inbound_mail_failures either —
+    same Site Lead/Super Admin audience, same "purely a notification,
+    creates no Client/Category/Interaction row" shape.
+    """
+
+    recipient_ids = await resolve_global_inbox_user_ids(UserRepository(db))
+
+    await NotificationService(NotificationRepository(db)).notify(
+        recipient_ids,
+        NotificationType.MAILBOX_POLL_STALLED,
+        title=f"Mail polling stalled: {mailbox_address}",
+        message=(
+            f"Failed {consecutive_failures} consecutive poll ticks: "
+            f"{error_summary[:_SUBJECT_SNIPPET_MAX_CHARS]}"
+        ),
+    )
+    await db.commit()

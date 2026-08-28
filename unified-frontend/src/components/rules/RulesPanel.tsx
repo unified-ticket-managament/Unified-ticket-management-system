@@ -63,7 +63,7 @@ function summarizeActions(rule: RuleResponse): string {
           const employeeCount = (a.employee_user_ids ?? []).length;
           const listCount = (a.distribution_list_ids ?? []).length;
           if (employeeCount > 0) parts.push(`${employeeCount} employee(s)`);
-          if (listCount > 0) parts.push(`${listCount} distribution list(s)`);
+          if (listCount > 0) parts.push(`${listCount} distribution group(s)`);
           return `Forward to ${parts.join(" + ") || "0 recipients"}`;
         }
         if (a.type === "create_folder") return `Create Folder "${a.folder_name}"`;
@@ -395,7 +395,7 @@ export function RulesPanel({
             <TabsList>
               <TabsTrigger value="mail_rule">Mail Rules</TabsTrigger>
               <TabsTrigger value="otp_rule">OTP Rules</TabsTrigger>
-              <TabsTrigger value="distribution_lists">Distribution Lists</TabsTrigger>
+              <TabsTrigger value="distribution_lists">Distribution Groups</TabsTrigger>
             </TabsList>
           </div>
 

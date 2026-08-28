@@ -59,6 +59,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { formatDate, getApiErrorMessage } from "@/lib/utils";
@@ -105,6 +106,7 @@ export default function UsersPage() {
   const [deletingUser, setDeletingUser] = useState<User | null>(null);
   const [viewingUser, setViewingUser] = useState<User | null>(null);
   const [impersonatingUser, setImpersonatingUser] = useState<UserRow | null>(null);
+  const [statusChangeUser, setStatusChangeUser] = useState<UserRow | null>(null);
   const startImpersonation = useImpersonationStore((s) => s.startImpersonation);
 
   const usersQuery = useQuery({
@@ -229,6 +231,7 @@ export default function UsersPage() {
       toast({
         title: variables.activate ? "User activated" : "User deactivated",
       });
+      setStatusChangeUser(null);
     },
     onError: () => {
       toast({ variant: "destructive", title: "Failed to update user status" });
@@ -380,82 +383,97 @@ export default function UsersPage() {
         cell: ({ row }) => {
           const user = row.original;
           return (
-            <div
-              className="flex items-center justify-end gap-1"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                aria-label="View user"
-                onClick={() => setViewingUser(user)}
+            <TooltipProvider delayDuration={200}>
+              <div
+                className="flex items-center justify-end gap-1"
+                onClick={(e) => e.stopPropagation()}
               >
-                <Eye className="h-4 w-4" />
-              </Button>
-              <PermissionGuard permission="user:update">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  aria-label="Edit user"
-                  onClick={() => setEditingUser(user)}
-                >
-                  <Pencil className="h-4 w-4" />
-                </Button>
-              </PermissionGuard>
-              {/* Activate/Deactivate is a distinct capability from Edit
-                  (user:disable, not user:update) — the backend's
-                  PATCH /users/{id}/activate and /deactivate routes
-                  have always required user:disable specifically. This
-                  was previously bundled under the same user:update
-                  guard as Edit, so a role granted user:update without
-                  user:disable saw a working-looking button that 403'd
-                  on click. See RBAC Enforcement Audit, Phase 3. */}
-              <PermissionGuard permission="user:disable">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8"
-                  aria-label={user.is_active ? "Deactivate user" : "Activate user"}
-                  onClick={() =>
-                    statusMutation.mutate({ id: user.user_id, activate: !user.is_active })
-                  }
-                >
-                  {user.is_active ? (
-                    <Ban className="h-4 w-4" />
-                  ) : (
-                    <CheckCircle2 className="h-4 w-4" />
-                  )}
-                </Button>
-              </PermissionGuard>
-              {canDelete && (
-                <PermissionGuard permission="user:delete">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 text-destructive hover:text-destructive"
-                    aria-label="Delete user"
-                    onClick={() => setDeletingUser(user)}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      aria-label="View user"
+                      onClick={() => setViewingUser(user)}
+                    >
+                      <Eye className="h-4 w-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>View</TooltipContent>
+                </Tooltip>
+                <PermissionGuard permission="user:update">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        aria-label="Edit user"
+                        onClick={() => setEditingUser(user)}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Edit</TooltipContent>
+                  </Tooltip>
                 </PermissionGuard>
-              )}
-              {canImpersonate(currentUser?.user_id, user.user_id, user.roleName, user.is_active) && (
-                <PermissionGuard permission="user:impersonate">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8"
-                    aria-label="Login as user"
-                    onClick={() => setImpersonatingUser(user)}
-                  >
-                    <LogIn className="h-4 w-4" />
-                  </Button>
+                {/* Activate/Deactivate is a distinct capability from Edit
+                    (user:disable, not user:update) — the backend's
+                    PATCH /users/{id}/activate and /deactivate routes
+                    have always required user:disable specifically. This
+                    was previously bundled under the same user:update
+                    guard as Edit, so a role granted user:update without
+                    user:disable saw a working-looking button that 403'd
+                    on click. See RBAC Enforcement Audit, Phase 3. */}
+                <PermissionGuard permission="user:disable">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        aria-label={user.is_active ? "Deactivate user" : "Activate user"}
+                        onClick={() => setStatusChangeUser(user)}
+                      >
+                        {user.is_active ? (
+                          <Ban className="h-4 w-4" />
+                        ) : (
+                          <CheckCircle2 className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{user.is_active ? "Deactivate" : "Activate"}</TooltipContent>
+                  </Tooltip>
                 </PermissionGuard>
-              )}
-            </div>
+                {canDelete && (
+                  <PermissionGuard permission="user:delete">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 text-destructive hover:text-destructive"
+                      aria-label="Delete user"
+                      onClick={() => setDeletingUser(user)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </PermissionGuard>
+                )}
+                {canImpersonate(currentUser?.user_id, user.user_id, user.roleName, user.is_active) && (
+                  <PermissionGuard permission="user:impersonate">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      aria-label="Login as user"
+                      onClick={() => setImpersonatingUser(user)}
+                    >
+                      <LogIn className="h-4 w-4" />
+                    </Button>
+                  </PermissionGuard>
+                )}
+              </div>
+            </TooltipProvider>
           );
         },
       },
@@ -671,6 +689,43 @@ export default function UsersPage() {
               onClick={() => deletingUser && deleteMutation.mutate(deletingUser.user_id)}
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={!!statusChangeUser}
+        onOpenChange={(open) => !open && setStatusChangeUser(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              {statusChangeUser?.is_active ? (
+                <Ban className="h-5 w-5 text-destructive" />
+              ) : (
+                <CheckCircle2 className="h-5 w-5" />
+              )}
+              {statusChangeUser?.is_active ? "Deactivate User?" : "Activate User?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to {statusChangeUser?.is_active ? "deactivate" : "activate"}{" "}
+              <strong>{statusChangeUser?.name}</strong>?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={statusMutation.isPending}
+              onClick={() =>
+                statusChangeUser &&
+                statusMutation.mutate({
+                  id: statusChangeUser.user_id,
+                  activate: !statusChangeUser.is_active,
+                })
+              }
+            >
+              {statusChangeUser?.is_active ? "Deactivate" : "Activate"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

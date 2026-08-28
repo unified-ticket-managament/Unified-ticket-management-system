@@ -15,14 +15,15 @@ import { SystemMailDetailsView } from "@tw/components/mail/SystemMailDetailsView
 import { SystemMailList } from "@tw/components/mail/SystemMailList";
 import { useIsDesktopViewport } from "@tw/hooks/useIsDesktopViewport";
 import { useMailInbox, type MailViewKey } from "@tw/hooks/useMailInbox";
+import { getComposeDraft } from "@tw/api/inbox";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { RulesPanel } from "@/components/rules/RulesPanel";
 import type { AttachmentMeta } from "@tw/types";
 
 const VIEW_LABELS: Record<MailViewKey, string> = {
-  pending: "Inbox",
-  unassigned: "Unassigned",
+  pending: "All",
+  unassigned: "Inbox",
   mine: "My Tickets",
   sent: "Sent",
   drafts: "Drafts",
@@ -149,6 +150,29 @@ export function InboxPage() {
   }, [setSelectedEmail, mail.selectFolder]);
 
   async function handleOpen(interactionId: string) {
+    // A Compose draft (is_compose_draft, see draftItemToInboxItem) has
+    // no thread to open at all — reopen it as a Compose form,
+    // pre-filled from the saved draft, instead of the generic
+    // mail.openThread flow every other row (including a Reply draft,
+    // opened via its real thread root) still uses.
+    const draftItem = mail.filteredItems.find((item) => item.interaction_id === interactionId);
+    if (draftItem?.is_compose_draft) {
+      const draft = await getComposeDraft(interactionId);
+      openCompose({
+        clientId: draft.client_id ?? undefined,
+        categoryId: draft.category_id ?? undefined,
+        toEmail: draft.to_email ?? undefined,
+        toEmails: draft.to_emails,
+        cc: draft.cc,
+        bcc: draft.bcc,
+        subject: draft.subject,
+        bodyHtml: draft.body_html ?? undefined,
+        message: draft.message,
+        draftInteractionId: draft.interaction_id,
+      });
+      return;
+    }
+
     setComposeOpen(false);
     setRulesOpen(false);
     await mail.openThread(interactionId);
@@ -261,6 +285,7 @@ export function InboxPage() {
     clientId?: string;
     categoryId?: string;
     toEmail?: string;
+    toEmails?: string[];
     subject: string;
     message: string;
     bodyHtml?: string;
@@ -292,6 +317,8 @@ export function InboxPage() {
         folderCounts={mail.folderCounts}
         activeFolderId={mail.activeFolderId}
         onSelectFolder={handleSelectFolder}
+        onCreateFolder={mail.createFolder}
+        onDeleteFolder={mail.deleteFolder}
         canManageRules={canManageRules}
         rulesActive={rulesOpen}
         onOpenRules={handleOpenRules}

@@ -22,10 +22,15 @@ interface SettingsState {
   // The OTHER divider in that same workspace (folders | list) is
   // deliberately not persisted here. See MailWorkspaceLayout.tsx.
   mailMessageListWidth: number | null;
+  // Mail Inbox message-list pagination page size — device-local,
+  // same persistence convention as the two fields above. See
+  // MessageList.tsx's PAGE_SIZE_OPTIONS (the only valid values).
+  mailMessagesPerPage: number;
   setLanguage: (language: Language) => void;
   setSecurity: (key: keyof SecurityPreferences, value: boolean) => void;
   setSidebarWidth: (width: number) => void;
   setMailMessageListWidth: (width: number) => void;
+  setMailMessagesPerPage: (pageSize: number) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -38,6 +43,7 @@ export const useSettingsStore = create<SettingsState>()(
       },
       sidebarWidth: 256,
       mailMessageListWidth: null,
+      mailMessagesPerPage: 50,
       setLanguage: (language) => set({ language }),
       setSecurity: (key, value) =>
         set((state) => ({
@@ -45,6 +51,7 @@ export const useSettingsStore = create<SettingsState>()(
         })),
       setSidebarWidth: (sidebarWidth) => set({ sidebarWidth }),
       setMailMessageListWidth: (mailMessageListWidth) => set({ mailMessageListWidth }),
+      setMailMessagesPerPage: (mailMessagesPerPage) => set({ mailMessagesPerPage }),
     }),
     { name: "settings-storage" }
   )

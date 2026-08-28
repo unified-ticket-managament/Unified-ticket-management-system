@@ -75,6 +75,14 @@ class Settings(BaseSettings):
     # not change production behavior by default.
     graph_mail_poll_interval_seconds: int = 60
 
+    # Mail-ingestion-reliability fix: how long a mailbox may keep
+    # failing every poll tick (most commonly a Graph 403/404 on that
+    # specific mailbox — see graph_mail_poller.py's GraphAPIError
+    # branch) before a MAILBOX_POLL_STALLED notification fires.
+    # Time-based, not tick-count-based, so it stays correct if
+    # graph_mail_poll_interval_seconds is ever changed independently.
+    graph_mail_poll_stall_alert_minutes: int = 15
+
     # Phase 2 hardening: how many days an abandoned draft (or a pasted
     # inline image never attached to anything sent) may sit before the
     # scheduled retention sweep (app/core/draft_retention_scheduler.py)

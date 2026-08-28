@@ -5,7 +5,7 @@ import { Button } from "@tw/components/common/Button";
 import { EnvelopePreview } from "@tw/components/common/EnvelopePreview";
 import { FileDropzone } from "@tw/components/common/FileDropzone";
 import { TextInput } from "@tw/components/common/FormField";
-import { RecipientCombobox } from "@tw/components/common/RecipientCombobox";
+import { MultiRecipientCombobox, type RecipientChip } from "@tw/components/common/MultiRecipientCombobox";
 import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
 import { UserMultiSelect } from "@tw/components/common/UserMultiSelect";
@@ -16,8 +16,14 @@ import { useApiAction } from "@tw/hooks/useApiAction";
 import { listClientContacts } from "@tw/api/clients";
 import {
   addInternalNote,
+  discardTicketNoteDraft,
+  discardTicketReplyDraft,
+  getTicketNoteDraft,
+  getTicketReplyDraft,
   listInternalNoteRecipients,
   replyToClient,
+  saveTicketNoteDraft,
+  saveTicketReplyDraft,
   uploadAttachment,
   uploadTicketInlineImage,
 } from "@tw/api/interaction";
@@ -28,6 +34,7 @@ import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { isValidEmailAddress } from "@tw/lib/validation";
 import { showUndoSendToast } from "@tw/lib/undoSend";
 import {
+  escapeHtml,
   filterLiveInlineImageIds,
   htmlToPlainText,
   isRichContent,
@@ -121,7 +128,15 @@ export function TicketComposer({
   const idempotencyKeyRef = useRef<string>(generateIdempotencyKey());
   const [noteSubject, setNoteSubject] = useState("");
   const [contacts, setContacts] = useState<ClientContact[]>([]);
-  const [selectedTo, setSelectedTo] = useState("");
+  // Reply's "To" — multiple recipients supported via to_emails (the
+  // backend's ReplyCreate already has both to_email and its plural
+  // to_emails counterpart; only this frontend picker was capped at
+  // one). Each chip is either a known contact or a manually-typed
+  // external address — MultiRecipientCombobox validates/adds both the
+  // same way, so there's no separate per-chip "matched" tracking
+  // needed here (unlike Forward's internal-user-vs-external split in
+  // ComposeView.tsx).
+  const [toChips, setToChips] = useState<RecipientChip[]>([]);
 
   // Reply Cc/Bcc — both optional, mirroring the backend's own
   // ReplyCreate schema (cc/bcc default to empty lists already; this
@@ -246,12 +261,167 @@ export function TicketComposer({
   }, [activeTicket?.client_company_id]);
 
   // Defaults to the latest inbound email's sender whenever the open
-  // ticket changes — the agent can still override it below.
+  // ticket changes — the agent can still override it below. Also
+  // resets every other field a saved draft might otherwise leave
+  // stale from a previously-open ticket — the draft-load effect just
+  // below re-populates them from a real saved draft, if one exists,
+  // right after this runs.
   useEffect(() => {
-    setSelectedTo(fromEmail ?? "");
+    setToChips(fromEmail ? [{ email: fromEmail }] : []);
+    setReplyCc("");
+    setReplyBcc("");
+    setNoteSubject("");
+    setNoteToIds([]);
+    setMessageHtml("");
     idempotencyKeyRef.current = generateIdempotencyKey();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTicket?.ticket_id]);
+
+  const replyDraftIdRef = useRef<string | null>(null);
+  const noteDraftIdRef = useRef<string | null>(null);
+  const [draftStatus, setDraftStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const savedIndicatorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const skipNextAutoSaveRef = useRef(true);
+
+  // Loads any existing draft for the current (ticket, mode) pair and
+  // pre-fills the composer — mirrors Mail's own "opening a thread
+  // that already has a saved draft auto-populates the composer"
+  // behavior for pre-ticket Reply drafts (see ReplyComposer.tsx/
+  // MessageDetailsView.tsx). A 404 (no draft) is expected, not an
+  // error — the fields above were already reset to blank by the
+  // ticket-change effect right above, or are simply left as-is on a
+  // mode toggle within the same ticket (matching this component's
+  // own pre-existing "messageHtml is shared across Reply/Note" design
+  // — a mode switch was never a hard reset even before drafts).
+  useEffect(() => {
+    if (!activeTicket) return;
+    skipNextAutoSaveRef.current = true;
+    let cancelled = false;
+
+    if (activeMode === "reply") {
+      replyDraftIdRef.current = null;
+      getTicketReplyDraft(activeTicket.ticket_id)
+        .then((draft) => {
+          if (cancelled) return;
+          replyDraftIdRef.current = draft.interaction_id;
+          const chips: RecipientChip[] = [
+            ...(draft.to_email ? [{ email: draft.to_email }] : []),
+            ...draft.to_emails.map((email) => ({ email })),
+          ];
+          if (chips.length > 0) setToChips(chips);
+          if (draft.cc.length > 0) setReplyCc(draft.cc.join(", "));
+          if (draft.bcc.length > 0) setReplyBcc(draft.bcc.join(", "));
+          if (draft.body_html) {
+            setMessageHtml(draft.body_html);
+          } else if (draft.message) {
+            setMessageHtml(`<p>${escapeHtml(draft.message).replace(/\n/g, "<br/>")}</p>`);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) replyDraftIdRef.current = null;
+        });
+    } else {
+      noteDraftIdRef.current = null;
+      getTicketNoteDraft(activeTicket.ticket_id)
+        .then((draft) => {
+          if (cancelled) return;
+          noteDraftIdRef.current = draft.interaction_id;
+          setNoteSubject(draft.subject);
+          if (draft.recipient_user_ids.length > 0) setNoteToIds(draft.recipient_user_ids);
+          if (draft.body_html) {
+            setMessageHtml(draft.body_html);
+          } else if (draft.note) {
+            setMessageHtml(`<p>${escapeHtml(draft.note).replace(/\n/g, "<br/>")}</p>`);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) noteDraftIdRef.current = null;
+        });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTicket?.ticket_id, activeMode]);
+
+  // Upserts the current mode's draft on this ticket — creates it on
+  // the first call, updates it in place on every subsequent one.
+  // Attachments are deliberately never part of this (see this
+  // composer's own replyFiles/attachFiles — both stay local, uploaded
+  // fresh at Send time, unchanged from before drafts existed).
+  async function persistDraft() {
+    if (!activeTicket) return null;
+    setDraftStatus("saving");
+    try {
+      if (activeMode === "reply") {
+        const toEntries = toChips.map((chip) => chip.email);
+        const result = await saveTicketReplyDraft(activeTicket.ticket_id, {
+          to_email: toEntries[0],
+          to_emails: toEntries.slice(1),
+          cc: parseEmails(replyCc),
+          bcc: parseEmails(replyBcc),
+          message: htmlToPlainText(messageHtml),
+          body_html: isRichContent(messageHtml) ? resolveInlineImageSources(messageHtml) : undefined,
+        });
+        replyDraftIdRef.current = result.interaction_id;
+      } else {
+        const result = await saveTicketNoteDraft(activeTicket.ticket_id, {
+          subject: noteSubject,
+          note: htmlToPlainText(messageHtml),
+          body_html: isRichContent(messageHtml) ? resolveInlineImageSources(messageHtml) : undefined,
+          recipient_user_ids: noteToIds,
+        });
+        noteDraftIdRef.current = result.interaction_id;
+      }
+      setDraftStatus("saved");
+      if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
+      savedIndicatorTimerRef.current = setTimeout(() => setDraftStatus("idle"), 2500);
+      return true;
+    } catch {
+      setDraftStatus("idle");
+      return null;
+    }
+  }
+
+  // Continuous auto-save — debounced, skips the very first render
+  // after a ticket/mode switch (the effect above may still be loading
+  // a saved draft, or the fields were just reset to blank) so opening
+  // the composer never immediately re-saves whatever it was just
+  // given. An entirely untouched draft (nothing typed/selected yet)
+  // is never saved either.
+  useEffect(() => {
+    if (!activeTicket) return;
+    if (skipNextAutoSaveRef.current) {
+      skipNextAutoSaveRef.current = false;
+      return;
+    }
+    const isUntouched =
+      activeMode === "reply"
+        ? toChips.length === 0 &&
+          !replyCc.trim() &&
+          !replyBcc.trim() &&
+          isRichTextEmpty(messageHtml)
+        : !noteSubject.trim() && noteToIds.length === 0 && isRichTextEmpty(messageHtml);
+    if (isUntouched) return;
+
+    const timer = setTimeout(() => {
+      persistDraft();
+    }, 1200);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTicket?.ticket_id, activeMode, toChips, replyCc, replyBcc, noteSubject, noteToIds, messageHtml]);
+
+  useEffect(() => {
+    return () => {
+      if (savedIndicatorTimerRef.current) clearTimeout(savedIndicatorTimerRef.current);
+    };
+  }, []);
+
+  async function handleSaveDraft() {
+    const result = await persistDraft();
+    pushToast(result ? "Draft saved." : "Couldn't save draft. Try again.", result ? "success" : "error");
+  }
 
   const toRecipientOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -297,12 +467,10 @@ export function TicketComposer({
   async function handleSend() {
     if (!activeTicket || isRichTextEmpty(messageHtml) || !hasComposePermission) return;
     if (!isReply && !noteSubject.trim()) return;
-    // Reply's "To" previously had no email-format validation at all
-    // (it only ever offered known contacts) — now that it also
-    // accepts a manually-typed address, an invalid one must block
-    // Send rather than silently reaching the backend's own EmailStr
-    // rejection.
-    if (isReply && selectedTo && !isValidEmailAddress(selectedTo)) return;
+    // Every "To" chip is already validated (or matched against a
+    // known contact) at add-time by MultiRecipientCombobox, so there's
+    // no separate invalid-entry check needed here the way Cc/Bcc's
+    // plain comma-separated text fields still need.
     if (isReply && (invalidReplyCcEntries.length > 0 || invalidReplyBccEntries.length > 0)) return;
     // A pasted screenshot's upload is still in flight — block Send
     // rather than silently sending the message without it.
@@ -340,7 +508,7 @@ export function TicketComposer({
       ? await runReply(activeTicket.ticket_id, {
           message: plainMessage,
           body_html: bodyHtml,
-          to_email: selectedTo || undefined,
+          to_emails: toChips.length > 0 ? toChips.map((chip) => chip.email) : undefined,
           cc: parseEmails(replyCc),
           bcc: parseEmails(replyBcc),
           distribution_list_ids: replyDistributionListIds,
@@ -379,6 +547,16 @@ export function TicketComposer({
       setNoteCcIds([]);
       setNoteBccIds([]);
       setNoteDistributionListIds([]);
+      // The message just sent through the normal reply/note path
+      // above (unchanged, already-tested) — any draft this session
+      // had been autosaving is now obsolete.
+      if (isReply && replyDraftIdRef.current) {
+        discardTicketReplyDraft(activeTicket.ticket_id).catch(() => {});
+        replyDraftIdRef.current = null;
+      } else if (!isReply && noteDraftIdRef.current) {
+        discardTicketNoteDraft(activeTicket.ticket_id).catch(() => {});
+        noteDraftIdRef.current = null;
+      }
       onSent();
     }
   }
@@ -448,23 +626,18 @@ export function TicketComposer({
         <>
         {isReply ? (
           <>
-            <RecipientCombobox
+            <MultiRecipientCombobox
               label="To"
               options={toRecipientOptions}
-              value={selectedTo}
-              onChange={({ email }) => setSelectedTo(email)}
+              value={toChips}
+              onChange={setToChips}
               resetKey={activeTicket.ticket_id}
               placeholder="Select a contact or type an email…"
             />
-            {selectedTo && !isValidEmailAddress(selectedTo) && (
-              <p className="-mt-1 text-[11px] text-red-600">
-                Enter a valid email address. &quot;{selectedTo}&quot; isn&apos;t valid.
-              </p>
-            )}
             <EnvelopePreview
               senderName={currentUser?.name ?? "you"}
               viaEmail={toEmail}
-              toEmail={selectedTo || fromEmail}
+              toEmail={toChips.length > 0 ? toChips.map((chip) => chip.email).join(", ") : fromEmail}
               subject={subject}
             />
             <TextInput
@@ -494,7 +667,7 @@ export function TicketComposer({
               </p>
             )}
             <DistributionListMultiSelect
-              label="Distribution Lists (Cc)"
+              label="Distribution Groups (Cc)"
               selectedIds={replyDistributionListIds}
               onChange={setReplyDistributionListIds}
             />
@@ -517,7 +690,7 @@ export function TicketComposer({
               onChange={setNoteToIds}
             />
             <DistributionListMultiSelect
-              label="Distribution Lists (To)"
+              label="Distribution Groups (To)"
               hint="Each active member is added as a note recipient, same as an individually-picked user."
               selectedIds={noteDistributionListIds}
               onChange={setNoteDistributionListIds}
@@ -604,26 +777,39 @@ export function TicketComposer({
           </div>
         )}
 
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            isLoading={isLoading}
-            disabled={
-              !hasComposePermission ||
-              isRichTextEmpty(messageHtml) ||
-              (!isReply && !noteSubject.trim()) ||
-              (isReply && Boolean(selectedTo) && !isValidEmailAddress(selectedTo)) ||
-              (isReply && (invalidReplyCcEntries.length > 0 || invalidReplyBccEntries.length > 0)) ||
-              hasPendingImageUploads
-            }
-            onClick={handleSend}
-          >
-            {isReply ? "Send Reply" : "Add Note"}
-          </Button>
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[11px] text-muted">
+            {draftStatus === "saving" && "Saving draft…"}
+            {draftStatus === "saved" && "Draft saved"}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={!hasComposePermission || draftStatus === "saving"}
+              onClick={handleSaveDraft}
+            >
+              Save Draft
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              isLoading={isLoading}
+              disabled={
+                !hasComposePermission ||
+                isRichTextEmpty(messageHtml) ||
+                (!isReply && !noteSubject.trim()) ||
+                (isReply && (invalidReplyCcEntries.length > 0 || invalidReplyBccEntries.length > 0)) ||
+                hasPendingImageUploads
+              }
+              onClick={handleSend}
+            >
+              {isReply ? "Send Reply" : "Add Note"}
+            </Button>
+          </div>
         </div>
         </>
         )}
