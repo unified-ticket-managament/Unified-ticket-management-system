@@ -149,6 +149,21 @@ export function resolveInlineImageSources(html: string): string {
 // presigned download/preview URL, found by matching content_id
 // against the message's own already-fetched attachment list (no
 // extra request — every AttachmentMeta already carries content_id).
+// Mirrors the backend's _normalize_content_id (mail_mapping_service.py):
+// URL-decode, strip surrounding <>, lowercase — so a real sender's cid:
+// text that differs from Graph's stored contentId only by case, bracket
+// presence, or percent-encoding still resolves, per RFC 2392.
+function normalizeContentId(raw: string): string {
+  let decoded = raw;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    // Malformed percent-encoding must never throw and break the rest
+    // of the message's render — fall back to the raw value.
+  }
+  return decoded.trim().replace(/^<|>$/g, "").toLowerCase();
+}
+
 export function resolveCidImagesForDisplay(
   html: string,
   attachments: Array<{ content_id?: string | null; download_url?: string; preview_url?: string | null }>
@@ -156,7 +171,9 @@ export function resolveCidImagesForDisplay(
   if (typeof document === "undefined" || !html.includes("cid:")) return html;
 
   const byContentId = new Map(
-    attachments.filter((a) => a.content_id).map((a) => [a.content_id as string, a])
+    attachments
+      .filter((a) => a.content_id)
+      .map((a) => [normalizeContentId(a.content_id as string), a])
   );
 
   const container = document.createElement("div");
@@ -164,8 +181,8 @@ export function resolveCidImagesForDisplay(
 
   container.querySelectorAll("img").forEach((img) => {
     const src = img.getAttribute("src") ?? "";
-    if (!src.startsWith("cid:")) return;
-    const attachment = byContentId.get(src.slice("cid:".length));
+    if (!/^cid:/i.test(src)) return;
+    const attachment = byContentId.get(normalizeContentId(src.replace(/^cid:/i, "")));
     if (attachment) {
       img.setAttribute("src", attachment.preview_url || attachment.download_url || "");
       return;

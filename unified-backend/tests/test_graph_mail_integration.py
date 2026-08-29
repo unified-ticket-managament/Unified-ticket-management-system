@@ -1477,6 +1477,65 @@ def test_build_upload_files_from_graph_attachments_case_and_bracket_insensitive_
     assert files[0].is_inline is True
 
 
+def test_build_upload_files_from_graph_attachments_graph_content_id_brackets_are_preserved_raw():
+    """
+    Graph itself can report a bracketed contentId (some relays echo the
+    raw MIME Content-ID header, brackets included, straight into this
+    field) — matching against the body's own bracket-free cid: value
+    must still succeed via _normalize_content_id, but the stored
+    Attachment.content_id must keep Graph's original raw value exactly
+    as reported, brackets and all. Frontend-side resolution of this
+    exact mismatch shape is handled by richText.ts's own
+    normalizeContentId, not here.
+    """
+
+    html = '<img src="cid:test-image@example.com">'
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="test-image.png",
+                contentType="image/png",
+                isInline=False,
+                contentId="<test-image@example.com>",
+            )
+        ],
+        html,
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is True
+    assert files[0].content_id == "<test-image@example.com>"
+
+
+def test_build_upload_files_from_graph_attachments_combined_content_id_mismatch_bracket_case_percent():
+    """
+    Stress _normalize_content_id across all three dimensions at once
+    (bracketed + mixed-case + percent-encoded), beyond the existing
+    single-dimension tests above (case_and_bracket_insensitive_match,
+    percent_encoded_cid_reference_matches) — a real sender can combine
+    all three in one message.
+    """
+
+    html = '<img src="CID:%3CLogo%40ReachMyDr.Example%3E">'
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="logo.png",
+                contentType="image/png",
+                isInline=False,
+                contentId="logo@reachmydr.example",
+            )
+        ],
+        html,
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is True
+    assert files[0].content_id == "logo@reachmydr.example"
+
+
 def test_build_upload_files_from_graph_attachments_generic_content_type_inline_image_by_extension():
     """
     Regression test for the ReachMyDr logo bug: a genuinely inline

@@ -333,6 +333,7 @@ export function InboxPage() {
       categoryFilter={mail.messageCategoryFilter}
       onCategoryFilterChange={mail.setMessageCategoryFilter}
       availableCategories={mail.categories}
+      clientFilterCategories={allCategories}
       clients={mail.clients}
       onOpen={handleOpen}
       onOpenFullScreen={handleOpenFullScreen}
@@ -372,6 +373,7 @@ export function InboxPage() {
       categoryFilter={mail.messageCategoryFilter}
       onCategoryFilterChange={mail.setMessageCategoryFilter}
       availableCategories={mail.categories}
+      clientFilterCategories={allCategories}
       clients={mail.clients}
       onOpen={handleOpen}
       onOpenFullScreen={handleOpenFullScreen}
@@ -563,6 +565,7 @@ export function InboxPage() {
                 categoryFilter={mail.messageCategoryFilter}
                 onCategoryFilterChange={mail.setMessageCategoryFilter}
                 availableCategories={mail.categories}
+                clientFilterCategories={allCategories}
                 clients={mail.clients}
                 onOpen={handleOpen}
                 onOpenFullScreen={handleOpenFullScreen}
@@ -611,6 +614,7 @@ export function InboxPage() {
                 categoryFilter={mail.messageCategoryFilter}
                 onCategoryFilterChange={mail.setMessageCategoryFilter}
                 availableCategories={mail.categories}
+                clientFilterCategories={allCategories}
                 clients={mail.clients}
                 onOpen={handleOpen}
                 onOpenFullScreen={handleOpenFullScreen}
