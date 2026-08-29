@@ -436,7 +436,12 @@ export function MessageDetailsView({
   // single mount (i.e. every time a message was opened) — it's now
   // shared, session-wide lookup data fetched once by WorkflowContext
   // instead (see that context's own comment).
-  const { setSelectedEmail, categories } = useWorkflowContext();
+  const {
+    setSelectedEmail,
+    allCategories,
+    allCategoriesLoading,
+    allCategoriesError,
+  } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const { pushToast } = useToast();
   // ticket:create is the canonical permission for this button (RBAC
@@ -1346,18 +1351,31 @@ export function MessageDetailsView({
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Category</label>
-              <Select value={ticketType} onValueChange={setTicketType}>
+              <Select value={ticketType} onValueChange={setTicketType} disabled={allCategoriesLoading}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select" />
+                  <SelectValue
+                    placeholder={
+                      allCategoriesLoading
+                        ? "Loading categories…"
+                        : allCategoriesError
+                          ? "Failed to load categories"
+                          : "Select"
+                    }
+                  />
                 </SelectTrigger>
                 <SelectContent>
-                  {categories.map((c) => (
+                  {allCategories.map((c) => (
                     <SelectItem key={c.category_id} value={c.category_name}>
                       {c.category_name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {allCategoriesError && (
+                <p className="mt-1 text-xs text-destructive">
+                  Couldn't load categories. Please try again or contact an admin.
+                </p>
+              )}
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Priority</label>

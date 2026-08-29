@@ -55,6 +55,26 @@ interface WorkflowContextValue {
   clientsLoading: boolean;
   clientsError: boolean;
 
+  // Same reasoning, for the Create Ticket dialog's Category dropdown —
+  // it used to render an empty <Select> identically whether categories
+  // were still loading, genuinely empty, or the fetch had failed.
+  categoriesLoading: boolean;
+  categoriesError: boolean;
+
+  // Every category, completely unscoped — deliberately separate from
+  // `categories` above. `categories` is intentionally narrowed for an
+  // Account Manager (Reporting-Manager mapping, via `mine: true`) for
+  // the "All Clients" filter / Change-Category pickers, where that
+  // scoping exists to prevent leaking another Account Manager's
+  // category-owned shared inbox (see root CLAUDE.md's Organization
+  // Structure section). Ticket creation is a different concern with a
+  // different rule: anyone holding `ticket:create` may create a ticket
+  // in any category, regardless of role/ownership/reporting-manager
+  // scoping — the Create Ticket dialog reads from this field instead.
+  allCategories: CategoryResponse[];
+  allCategoriesLoading: boolean;
+  allCategoriesError: boolean;
+
   selectedEmail: OpenEmailResponse | null;
   setSelectedEmail: (email: OpenEmailResponse | null) => void;
 
@@ -98,6 +118,11 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
   const [clientsLoading, setClientsLoading] = useState(true);
   const [clientsError, setClientsError] = useState(false);
   const [categories, setCategories] = useState<CategoryResponse[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(true);
+  const [categoriesError, setCategoriesError] = useState(false);
+  const [allCategories, setAllCategories] = useState<CategoryResponse[]>([]);
+  const [allCategoriesLoading, setAllCategoriesLoading] = useState(true);
+  const [allCategoriesError, setAllCategoriesError] = useState(false);
   const [selectedEmail, setSelectedEmail] = useState<OpenEmailResponse | null>(
     null
   );
@@ -139,9 +164,31 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
 
     listCategories({ mine: true })
       .then((fetched) => {
-        if (!cancelled) setCategories(fetched);
+        if (!cancelled) {
+          setCategories(fetched);
+          setCategoriesLoading(false);
+        }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!cancelled) {
+          setCategoriesError(true);
+          setCategoriesLoading(false);
+        }
+      });
+
+    listCategories()
+      .then((fetched) => {
+        if (!cancelled) {
+          setAllCategories(fetched);
+          setAllCategoriesLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAllCategoriesError(true);
+          setAllCategoriesLoading(false);
+        }
+      });
 
     return () => {
       cancelled = true;
@@ -161,6 +208,11 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
       clientsLoading,
       clientsError,
       categories,
+      categoriesLoading,
+      categoriesError,
+      allCategories,
+      allCategoriesLoading,
+      allCategoriesError,
       selectedEmail,
       setSelectedEmail,
       activeTicket,
@@ -176,6 +228,11 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
       clientsLoading,
       clientsError,
       categories,
+      categoriesLoading,
+      categoriesError,
+      allCategories,
+      allCategoriesLoading,
+      allCategoriesError,
       selectedEmail,
       activeTicket,
       timeline,

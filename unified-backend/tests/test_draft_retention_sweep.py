@@ -376,6 +376,11 @@ async def test_discard_draft_interactive_endpoint_still_works(db_session):
 
     current_user = AsyncMock()
     current_user.user_id = user_id
+    # discard_draft now re-checks communication:reply_external directly
+    # (the same permission Send already required) after the ownership
+    # check below is mocked out — a real permissions list is needed
+    # for has_permission's `in` check to work against this mock.
+    current_user.permissions = ["communication:reply_external"]
 
     with patch.object(
         service, "_resolve_pending_thread_root", AsyncMock(return_value=root)

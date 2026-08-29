@@ -141,6 +141,8 @@ def resolve_status_after_assignment(
 def ensure_agent_can_view_ticket(
     ticket: Ticket,
     current_user: User,
+    *,
+    view_only: bool = False,
 ) -> None:
     """
     Category-scoped visibility for Team Lead/Staff (see
@@ -171,6 +173,21 @@ def ensure_agent_can_view_ticket(
     action already reaches this same function first, so this one
     check now closes the gap everywhere at once rather than needing a
     separate fix per call site.
+
+    `view_only=True` (passed only by OpenEmailService.get_email_details,
+    for the branch where a still-pending item it already knew how to
+    admit a communication:view_all holder into — see
+    ensure_agent_can_view_pending_interaction's own docstring — has
+    since become a ticket, e.g. filed under a category other than the
+    viewer's own) mirrors that same escape hatch here: a
+    communication:view_all holder is admitted regardless of category.
+    Without this, a mail item explicitly forwarded to someone (or
+    shared via a rule's folder) went from openable to a hard 403 the
+    moment it became a ticket in a category they don't belong to —
+    confirmed live. Every other call site (reply, transfer, escalate,
+    attachments, SLA, ...) never passes this, so acting on a ticket
+    outside one's own category still requires the real thing:
+    ticket:editother_ticket, checked just below.
     """
 
     if current_user.role.name not in AGENT_ROLE_NAMES:
@@ -192,6 +209,9 @@ def ensure_agent_can_view_ticket(
     # has_permission_for_ticket check ensure_agent_can_act_on_ticket
     # already runs for the *action* side of this same scenario.
     if has_permission_for_ticket(current_user, "ticket:editother_ticket", ticket.ticket_id):
+        return
+
+    if view_only and has_permission(current_user, "communication:view_all"):
         return
 
     user_category_names = {
@@ -455,6 +475,7 @@ async def ensure_agent_can_view_pending_interaction(
     client_repository,
     *,
     view_only: bool = False,
+    permission_backed: str | None = None,
 ) -> None:
     """
     Gates a still-pending (pre-ticket) Mail item the same way
@@ -465,9 +486,9 @@ async def ensure_agent_can_view_pending_interaction(
     Manager for that category (ReportingManagerTeam — see
     reporting_manager_repository); or, either way, a global-inbox role
     (Site Lead/Super Admin). Team Lead/Staff are deliberately excluded
-    from both — they never see a pending item in their own inbox list
-    either, so a crafted request for its interaction_id shouldn't work
-    either.
+    from both by *default* — they never see a pending item in their
+    own inbox list either — but see `permission_backed` below for the
+    real, permission-based way past this for the actions that have one.
 
     The category-mailbox check reuses `client_repository`'s own DB
     session (`client_repository.db`) to build a ReportingManagerRepository
@@ -481,32 +502,55 @@ async def ensure_agent_can_view_pending_interaction(
     Shared by InteractionService (claim/archive/snooze/tags/folder/
     drafts) and OpenEmailService (opening the thread itself) so
     "can act on it" and "can see it" stay the same rule — except for
-    the `view_only` escape hatch below, which deliberately only
-    applies to the "can see it" side.
+    the `view_only`/`permission_backed` escape hatches below.
 
-    `view_only=True` (passed only by OpenEmailService.get_email_details,
-    never by any of InteractionService's action call sites) additionally
-    admits anyone holding `communication:view_all` — the same permission
-    InboxService.get_inbox already gates the list view on for Super
-    Admin/Site Lead/Account Manager. Without this, a manager forwarding
-    a still-pending mail item to an internal user (
-    InteractionService.forward_to_internal_user, delivered via a
-    MAIL_FORWARDED Notification rather than the normal scoped inbox
-    query) handed that recipient a link to an item this function would
-    otherwise always 403 for them on — Staff/Team Lead were never in
-    scope here at all, and granting the permission through RBAC's
-    Manage-Permissions editor had no effect, since this check was
-    purely role/ownership-based with no permission read anywhere in it.
-    This intentionally does not widen the *action* call sites (claim/
-    archive/snooze/tags/folder/drafts/forward/reply) — holding
-    communication:view_all lets a role open and read a pending item
-    it was sent, not act on someone else's.
+    `view_only=True` (passed only by OpenEmailService.get_email_details)
+    additionally admits anyone holding `communication:view_all` — the
+    same permission InboxService.get_inbox already gates the list view
+    on for Super Admin/Site Lead/Account Manager, letting a forwarded-
+    to or folder-shared recipient at least open and read the item.
+
+    `permission_backed="<permission name>"` (passed only by the action
+    call sites that already run that exact same `ensure_has_permission`
+    check immediately afterward — Reply/Forward/the four draft actions
+    pass "communication:reply_external", Archive passes
+    "communication:archive") admits anyone holding that permission,
+    ownership aside entirely. This is a deliberate design decision, not
+    an accident: holding communication:reply_external is sufficient on
+    its own to reply to any pending mail item, forwarded or not — the
+    permission itself is the authority, matching how a plain role-
+    granted communication:view_all already lets someone past ownership
+    to *view* anything. Before this, a manager forwarding a still-
+    pending mail item to an internal user (InteractionService.
+    forward_to_internal_user, delivered via a MAIL_FORWARDED
+    Notification rather than the normal scoped inbox query), or
+    sharing a rule-filed folder with one (Rule.shared_user_ids —
+    MailFolderService/InboxService's own folder-sharing bypass), left
+    that recipient able to see the item but never reply to it — even
+    though they held communication:reply_external the whole time, and
+    that permission's own check further down would have been the real,
+    sufficient gate on its own.
+
+    Since `permission_backed` is only ever passed by an action that
+    already independently re-checks the exact same permission right
+    after this call returns, this ownership bypass never grants a
+    capability with nothing else backing it — it isn't a blanket "any
+    permission holder can do anything" widening, just each action
+    deferring entirely to its own permission instead of also requiring
+    ownership. Claim is deliberately excluded (see scripts/rbac_seed/
+    seed.py's retirement note on `communication:assign`: "pre-ticket
+    handoff is claim, an ownership mechanism, not a permission" — there
+    is no RBAC permission for it to defer to), and so are Tags/Folder-
+    assignment, which have no permission check of their own either.
     """
 
     if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
         return
 
     if view_only and has_permission(current_user, "communication:view_all"):
+        return
+
+    if permission_backed and has_permission(current_user, permission_backed):
         return
 
     if interaction.client_id is None and getattr(interaction, "category_id", None) is not None:

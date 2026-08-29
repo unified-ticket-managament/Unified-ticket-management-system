@@ -26,9 +26,10 @@ class _FakeRole:
 
 
 class _FakeUser:
-    def __init__(self, user_id, role_name):
+    def __init__(self, user_id, role_name, permissions=None):
         self.user_id = user_id
         self.role = _FakeRole(role_name)
+        self.permissions = permissions or []
 
 
 class _FakeInteraction:
@@ -155,6 +156,90 @@ async def test_client_mailbox_pending_item_unaffected_by_category_branch(monkeyp
 
     interaction = _FakeInteraction(client_id=uuid4(), category_id=None)
     current_user = _FakeUser(account_manager_id, "Account Manager")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await ensure_agent_can_view_pending_interaction(
+            interaction, current_user, _FakeClientRepository()
+        )
+    assert exc_info.value.status_code == 403
+
+
+# --------------------------------------------------------------------
+# permission_backed — holding the exact permission an action already
+# re-checks afterward (communication:reply_external for Reply/Forward/
+# the draft actions, communication:archive for Archive) is sufficient
+# on its own to act on a pending item, ownership aside entirely — e.g.
+# a Team Lead who was forwarded a mail item, or named in a rule's
+# shared_user_ids for the folder it's filed in, and holds
+# communication:reply_external, can reply to it even though they own
+# neither the client nor the category.
+# --------------------------------------------------------------------
+
+async def test_permission_backed_admits_holder_of_the_named_permission(monkeypatch):
+    interaction = _FakeInteraction(client_id=uuid4(), category_id=None)
+    current_user = _FakeUser(
+        uuid4(), "Team Lead", permissions=["communication:reply_external"]
+    )
+
+    # Must not raise, even though this Team Lead owns neither the
+    # client nor the category — holding the named permission is what
+    # admits them here, full stop.
+    await ensure_agent_can_view_pending_interaction(
+        interaction,
+        current_user,
+        _FakeClientRepository(),
+        permission_backed="communication:reply_external",
+    )
+
+
+async def test_permission_backed_still_rejects_caller_without_the_named_permission(monkeypatch):
+    interaction = _FakeInteraction(client_id=uuid4(), category_id=None)
+    current_user = _FakeUser(uuid4(), "Team Lead", permissions=[])
+
+    with pytest.raises(HTTPException) as exc_info:
+        await ensure_agent_can_view_pending_interaction(
+            interaction,
+            current_user,
+            _FakeClientRepository(),
+            permission_backed="communication:reply_external",
+        )
+    assert exc_info.value.status_code == 403
+
+
+async def test_permission_backed_does_not_admit_via_an_unrelated_permission(monkeypatch):
+    """
+    Holding communication:archive doesn't let you past a call site
+    that only defers to communication:reply_external — permission_backed
+    checks the exact named permission, not "holds anything."
+    """
+
+    interaction = _FakeInteraction(client_id=uuid4(), category_id=None)
+    current_user = _FakeUser(
+        uuid4(), "Team Lead", permissions=["communication:archive"]
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await ensure_agent_can_view_pending_interaction(
+            interaction,
+            current_user,
+            _FakeClientRepository(),
+            permission_backed="communication:reply_external",
+        )
+    assert exc_info.value.status_code == 403
+
+
+async def test_permission_backed_defaults_off_unaffected(monkeypatch):
+    """
+    Regression guard: claim/tags/folder-assignment never pass
+    permission_backed, so holding communication:reply_external doesn't
+    help there either — this widening is opt-in per call site, never a
+    blanket bypass.
+    """
+
+    interaction = _FakeInteraction(client_id=uuid4(), category_id=None)
+    current_user = _FakeUser(
+        uuid4(), "Team Lead", permissions=["communication:reply_external"]
+    )
 
     with pytest.raises(HTTPException) as exc_info:
         await ensure_agent_can_view_pending_interaction(

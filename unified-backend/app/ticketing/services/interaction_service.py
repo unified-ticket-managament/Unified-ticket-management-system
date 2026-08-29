@@ -1936,7 +1936,13 @@ class InteractionService:
         # communication" action — previously had no authorization check
         # of any kind (not even the pending-interaction visibility
         # scoping every other pending-interaction action already has).
-        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        # permission_backed: holding communication:reply_external is
+        # sufficient on its own to reply here, ownership aside — the
+        # ensure_has_permission call right below is the real gate this
+        # defers to.
+        await self._ensure_can_act_on_pending_interaction(
+            root, current_user, permission_backed="communication:reply_external"
+        )
         ensure_has_permission(current_user, "communication:reply_external")
 
         if request.idempotency_key:
@@ -2616,7 +2622,12 @@ class InteractionService:
                 ticket, current_user, self.client_repository
             )
         else:
-            await self._ensure_can_act_on_pending_interaction(original, current_user)
+            # permission_backed: same reasoning as add_interaction_reply
+            # — the ensure_has_permission call right below is the real
+            # gate this defers to.
+            await self._ensure_can_act_on_pending_interaction(
+                original, current_user, permission_backed="communication:reply_external"
+            )
 
         ensure_has_permission(current_user, "communication:reply_external")
 
@@ -4032,15 +4043,30 @@ class InteractionService:
         self,
         interaction: Interaction,
         current_user: User,
+        *,
+        permission_backed: str | None = None,
     ) -> None:
         """
         Thin wrapper around the shared access_control check — kept as
         a method since every call site in this class already calls
         `self._ensure_can_act_on_pending_interaction(...)`.
+
+        `permission_backed="<permission name>"` is passed only by
+        callers that already run that exact same `ensure_has_permission`
+        check immediately after this returns (Reply/Forward/the four
+        draft actions pass "communication:reply_external", Archive
+        passes "communication:archive") — see
+        `ensure_agent_can_view_pending_interaction`'s own docstring for
+        why holding that permission is sufficient on its own, ownership
+        aside, and why this stays opt-in per call site rather than a
+        blanket widening.
         """
 
         await ensure_agent_can_view_pending_interaction(
-            interaction, current_user, self.client_repository
+            interaction,
+            current_user,
+            self.client_repository,
+            permission_backed=permission_backed,
         )
 
     async def claim_interaction(
@@ -4132,7 +4158,13 @@ class InteractionService:
                 detail="This item has already become a ticket.",
             )
 
-        await self._ensure_can_act_on_pending_interaction(interaction, current_user)
+        # permission_backed: holding communication:archive is
+        # sufficient on its own, ownership aside — the
+        # ensure_has_permission call right below is the real gate this
+        # defers to.
+        await self._ensure_can_act_on_pending_interaction(
+            interaction, current_user, permission_backed="communication:archive"
+        )
         ensure_has_permission(current_user, "communication:archive")
 
         archived = await self.interaction_repository.archive(interaction)
@@ -4413,7 +4445,17 @@ class InteractionService:
         """
 
         root = await self._resolve_pending_thread_root(interaction_id)
-        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        # permission_backed: drafting is part of the same Reply
+        # workflow add_interaction_reply itself already defers to
+        # communication:reply_external for — a holder can open the
+        # composer and actually use it, not just watch every debounced
+        # autosave 403 in the background while Send itself would have
+        # worked. ensure_has_permission below is the real gate, same
+        # permission Send already requires.
+        await self._ensure_can_act_on_pending_interaction(
+            root, current_user, permission_backed="communication:reply_external"
+        )
+        ensure_has_permission(current_user, "communication:reply_external")
 
         existing = await self.interaction_repository.get_draft(
             root.interaction_id, current_user.user_id
@@ -4481,7 +4523,12 @@ class InteractionService:
             )
 
         root = await self._resolve_pending_thread_root(interaction_id)
-        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        # permission_backed: same reasoning as save_draft — this is
+        # still part of the same Reply-composition workflow.
+        await self._ensure_can_act_on_pending_interaction(
+            root, current_user, permission_backed="communication:reply_external"
+        )
+        ensure_has_permission(current_user, "communication:reply_external")
 
         draft = await self._get_or_create_draft(root, current_user)
 
@@ -4519,7 +4566,12 @@ class InteractionService:
             )
 
         root = await self._resolve_pending_thread_root(interaction_id)
-        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        # permission_backed: same reasoning as save_draft — this is
+        # still part of the same Reply-composition workflow.
+        await self._ensure_can_act_on_pending_interaction(
+            root, current_user, permission_backed="communication:reply_external"
+        )
+        ensure_has_permission(current_user, "communication:reply_external")
 
         draft = await self._get_or_create_draft(root, current_user)
 
@@ -4719,7 +4771,12 @@ class InteractionService:
         """
 
         root = await self._resolve_pending_thread_root(interaction_id)
-        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        # permission_backed: same reasoning as save_draft — this is
+        # still part of the same Reply-composition workflow.
+        await self._ensure_can_act_on_pending_interaction(
+            root, current_user, permission_backed="communication:reply_external"
+        )
+        ensure_has_permission(current_user, "communication:reply_external")
 
         draft = await self.interaction_repository.get_draft(
             root.interaction_id, current_user.user_id

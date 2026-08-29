@@ -137,7 +137,12 @@ class OpenEmailService:
             if self.ticket_repository is not None:
                 ticket = await self.ticket_repository.get_by_id(interaction.ticket_id)
             if current_user is not None and ticket is not None:
-                ensure_agent_can_view_ticket(ticket, current_user)
+                # view_only=True: same reasoning as the pending-item
+                # branch just below — a communication:view_all holder
+                # who was forwarded this mail (or shared the folder it
+                # was filed in) can still open it after it becomes a
+                # ticket, even outside their own category.
+                ensure_agent_can_view_ticket(ticket, current_user, view_only=True)
         elif current_user is not None:
             await ensure_agent_can_view_pending_interaction(
                 interaction, current_user, self.client_repository, view_only=True
