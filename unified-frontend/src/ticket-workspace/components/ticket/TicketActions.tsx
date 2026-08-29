@@ -193,7 +193,17 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   // plain permission check changes no one's real access. Ticket-state/
   // escalation-freeze eligibility is handled separately by this button's
   // own `disabled` prop below, untouched by this change.
-  const canTransfer = (currentUser?.permissions ?? []).includes("ticket:transfer");
+  //
+  // Assign-vs-transfer permission split: moving a ticket that currently
+  // has NO owner (agent_id is null) to someone else is assignment, not
+  // transfer — gated by ticket:assign, with no role bypass. Only once the
+  // ticket already has an owner does moving it become a transfer, gated
+  // by ticket:transfer as before. Mirrors the backend's
+  // ensure_can_assign_unowned_ticket vs. ensure_can_reassign_ticket split.
+  const permissions = currentUser?.permissions ?? [];
+  const canTransfer = (activeTicket.agent_id == null)
+    ? permissions.includes("ticket:assign")
+    : permissions.includes("ticket:transfer");
   // RBAC Enforcement Audit, Phase 40: previously isCloseReopenBypassRole
   // (Site Lead/Super Admin) ? true : hasPermission(...) — the bypass set
   // was always a subset of ticket:close_ticket's/ticket:reopen's own

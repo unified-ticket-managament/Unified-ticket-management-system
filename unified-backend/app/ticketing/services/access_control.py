@@ -1058,3 +1058,23 @@ def ensure_can_reassign_ticket(current_user: User) -> None:
         return
 
     ensure_has_permission(current_user, "ticket:transfer")
+
+
+def ensure_can_assign_unowned_ticket(current_user: User) -> None:
+    """
+    Moving a ticket that currently has NO owner (agent_id is None) to a
+    specific *other* named agent is assignment, not transfer — it must
+    require ticket:assign, and deliberately has no SUPERVISOR_ROLE_NAMES
+    bypass (unlike ensure_can_reassign_ticket above). Team Lead/Account
+    Manager/Site Lead/Super Admin all hold ticket:assign by role default
+    today, so this changes nothing for them in practice; it only closes
+    the gap where a ticket:transfer-only holder (or a supervisor role
+    whose ticket:assign grant was revoked/overridden away) could assign
+    an unowned ticket without ever holding ticket:assign.
+
+    Callers must check ticket.agent_id is None themselves before calling
+    this — an already-owned ticket must go through
+    ensure_can_reassign_ticket instead.
+    """
+
+    ensure_has_permission(current_user, "ticket:assign")

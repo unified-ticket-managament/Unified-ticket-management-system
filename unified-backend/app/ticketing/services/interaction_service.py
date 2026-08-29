@@ -89,6 +89,7 @@ from app.ticketing.services.access_control import (
     ensure_agent_can_view_pending_interaction,
     ensure_agent_can_view_ticket,
     ensure_agent_can_view_ticket_including_escalated,
+    ensure_can_assign_unowned_ticket,
     ensure_can_close_ticket,
     ensure_can_compose_for_category,
     ensure_can_compose_for_client,
@@ -3527,7 +3528,10 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_agent_can_view_ticket(ticket, current_user)
-        ensure_can_reassign_ticket(current_user)
+        if ticket.agent_id is None:
+            ensure_can_assign_unowned_ticket(current_user)
+        else:
+            ensure_can_reassign_ticket(current_user)
 
         category_user_ids: set[UUID] | None = None
         if category_name:
@@ -3613,7 +3617,14 @@ class InteractionService:
         await ensure_account_manager_owns_ticket_client(
             ticket, current_user, self.client_repository
         )
-        ensure_can_reassign_ticket(current_user)
+        # An unowned ticket is being ASSIGNED, not transferred — requires
+        # ticket:assign, with no SUPERVISOR_ROLE_NAMES bypass. Only once
+        # the ticket already has an owner does moving it to someone else
+        # become a TRANSFER, gated by ensure_can_reassign_ticket instead.
+        if ticket.agent_id is None:
+            ensure_can_assign_unowned_ticket(current_user)
+        else:
+            ensure_can_reassign_ticket(current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
