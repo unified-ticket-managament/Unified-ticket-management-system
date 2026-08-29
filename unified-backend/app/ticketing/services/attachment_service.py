@@ -858,10 +858,10 @@ class AttachmentService:
         attachment = await self._resolve_and_authorize(attachment_id, current_user)
         # Removing an attachment (as opposed to viewing/downloading one,
         # which _resolve_and_authorize alone already gates) is the
-        # ticket:archive_attachment permission — Full for Super Admin/
+        # ticket:delete_attachment permission — Full for Super Admin/
         # Site Lead/Account Manager (own clients, checked above), a
         # personal override for everyone else.
-        ensure_has_permission(current_user, "ticket:archive_attachment")
+        ensure_has_permission(current_user, "ticket:delete_attachment")
 
         # Re-fetch for ticket_id — _resolve_and_authorize already
         # validated access via this same interaction; this is just

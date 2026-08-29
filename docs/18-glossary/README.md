@@ -30,7 +30,7 @@ Terms are grouped by domain. See also [16-known-limitations](../16-known-limitat
 | **Category** | A department/queue grouping that scopes Staff/Team Lead visibility and ticket routing. **As of 2026-08-21, dynamically created at runtime** through the Category CRUD API (`category:create` permission) — no longer a fixed `CategoryName` enum (that Python enum and its backing Postgres type were both deleted). Distinct from the Profile module's free-text `department`/`team` display fields, which carry no authorization weight. |
 | **Open Pool** | The set of unclaimed, category-visible tickets any eligible Staff member in that category can claim. Escalated-but-unclaimed tickets are excluded from the pool (see Escalation below). |
 | **Assignment / Transfer / Claim** | Three ways a ticket's `agent_id` changes: assignment (supervisor picks an agent), transfer (`POST /tickets/{id}/transfer`), claim (agent self-assigns from the pool, `POST /tickets/{id}/claim`). |
-| **Attachment** | A file associated with an Interaction (inbound Graph attachment, or agent-uploaded). Governed by `ticket:upload_attachment` / `ticket:archive_attachment` permissions. |
+| **Attachment** | A file associated with an Interaction (inbound Graph attachment, or agent-uploaded). Governed by `ticket:upload_attachment` / `ticket:delete_attachment` permissions. |
 
 ## SLA
 

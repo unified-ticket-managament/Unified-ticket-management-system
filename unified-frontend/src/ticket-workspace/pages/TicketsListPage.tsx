@@ -384,9 +384,7 @@ export function TicketsListPage() {
   }
 
   const canSeeEscalatedTab =
-    !!currentUser &&
-    (ESCALATION_TAB_ROLES.has(currentUser.role) ||
-      currentUser.permissions.includes("ticket:view_escalated"));
+    !!currentUser && currentUser.permissions.includes("ticket:view_escalated");
 
   // RBAC Enforcement Audit, Phase 27: mirrors the backend's own gate on
   // view=="all" (ticket_service.py, ticket:view_others) and the existing

@@ -23,7 +23,7 @@ No formal data-retention policy document exists in the repository. This page des
 
 | Table | Trigger |
 |---|---|
-| `attachments` | `DELETE /attachments/{id}` — a real delete, gated by `ticket:archive_attachment`. |
+| `attachments` | `DELETE /attachments/{id}` — a real delete, gated by `ticket:delete_attachment`. |
 | `mail_folders` | `DELETE /folders/{id}`. |
 | `rules` | `DELETE /rules/{id}`. |
 | `audit_logs` (RBAC) | Super-Admin-only manual endpoint. |

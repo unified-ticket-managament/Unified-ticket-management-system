@@ -108,24 +108,24 @@ export function TicketAttachmentsTab({ onChanged, flat = false }: TicketAttachme
   if (!activeTicket) return null;
 
   // Mirrors the backend's AttachmentService.delete_attachment gate
-  // exactly: ticket:archive_attachment (Full for Super Admin/Site
+  // exactly: ticket:delete_attachment (Full for Super Admin/Site
   // Lead/Account Manager — own clients, checked server-side via
   // ensure_account_manager_owns_ticket_client — Override-only for Team
   // Lead/Staff). Previously reused ticket:editother_ticket/ownership,
   // which is a different permission for a different action (editing
-  // someone else's ticket, not archiving an attachment) and let anyone
+  // someone else's ticket, not deleting an attachment) and let anyone
   // who could edit the ticket delete files regardless of this
   // permission. A closed ticket is read-only regardless of permission
   // — deleting an attachment is an edit operation like any other.
-  const canArchiveAttachment = (currentUser?.permissions ?? []).includes(
-    "ticket:archive_attachment"
+  const canDeleteAttachment = (currentUser?.permissions ?? []).includes(
+    "ticket:delete_attachment"
   );
   const isTicketClosed = activeTicket.current_status === "CLOSED";
   // Deliberately no edit-access-grant fallback here — unlike
   // ensure_agent_can_act_on_ticket (upload/reply/etc.), the backend's
-  // delete_attachment authorizes purely via ticket:archive_attachment,
+  // delete_attachment authorizes purely via ticket:delete_attachment,
   // with no edit-access-grant bypass.
-  const canDelete = !isTicketClosed && canArchiveAttachment;
+  const canDelete = !isTicketClosed && canDeleteAttachment;
 
   const attachments: FlatAttachment[] = items
     .map(toFlatAttachment)

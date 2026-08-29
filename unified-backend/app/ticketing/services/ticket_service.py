@@ -49,7 +49,6 @@ from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
     AGENT_ROLE_NAMES,
     CATEGORY_SCOPED_ROLE_NAMES,
-    ESCALATION_TAB_ROLE_NAMES,
     GLOBAL_INBOX_ROLE_NAMES,
     STAFF_ROLE_NAME,
     TEAM_LEAD_ROLE_NAME,
@@ -571,7 +570,7 @@ class TicketService:
         is this page's own tab filter, resolved against the caller's
         own id for "mine"; it costs nothing extra since it's just
         another WHERE condition on the same query. `view == "escalated"`
-        is gated to ESCALATION_TAB_ROLE_NAMES — anyone else asking for
+        is gated to ticket:view_escalated — anyone lacking it asking for
         it gets an empty result rather than a 403, matching this
         method's existing "sees nothing" convention for out-of-scope
         requests elsewhere (e.g. an Account Manager who owns no
@@ -579,15 +578,14 @@ class TicketService:
         tab specifically.
         """
 
-        # ticket:view_escalated — Full by role default for Account
-        # Manager/Team Lead/Site Lead/Super Admin (ESCALATION_TAB_ROLE_NAMES),
-        # Override-only for Staff. A Staff member individually granted
-        # this permission via a personal override can now also reach
-        # the tab, rather than being hard-blocked by role membership
-        # alone regardless of an override.
-        if view == "escalated" and current_user.role.name not in ESCALATION_TAB_ROLE_NAMES:
-            if not has_permission(current_user, "ticket:view_escalated"):
-                return [], 0
+        # ticket:view_escalated — a genuine RBAC permission gate, no
+        # role-name bypass. Full by default for Account Manager/Team
+        # Lead/Site Lead/Super Admin/Staff (see seed.py's DEFAULT_ROLES),
+        # so behavior is unchanged for every role under today's seed data —
+        # but an edited role grant or an individual override now actually
+        # takes effect, since has_permission is the sole authority.
+        if view == "escalated" and not has_permission(current_user, "ticket:view_escalated"):
+            return [], 0
 
         # Universal-grant permissions (Full for every role by default
         # per the RBAC matrix) — checked mainly so a personal override
@@ -747,7 +745,7 @@ class TicketService:
         The ticket-list page's four tab badges (Open Pool / My
         Tickets / All / Escalated) in one grouped query — see
         TicketRepository.count_by_view. `escalated` is forced to 0 for
-        anyone outside ESCALATION_TAB_ROLE_NAMES, same "sees nothing"
+        anyone lacking ticket:view_escalated, same "sees nothing"
         convention list_all's own `view == "escalated"` gate uses —
         showing a nonzero badge for a tab the caller can't open would
         be a confusing UI state, so this is overridden here rather
@@ -774,7 +772,7 @@ class TicketService:
             scoped_ticket_ids=scoped_ticket_ids,
         )
 
-        if current_user.role.name not in ESCALATION_TAB_ROLE_NAMES and not can_view_escalated:
+        if not can_view_escalated:
             counts["escalated"] = 0
 
         return counts

@@ -88,7 +88,7 @@ DEFAULT_PERMISSIONS = [
     ("ticket:close_ticket", "Close a ticket"),
     ("ticket:reopen", "Reopen a closed ticket"),
     ("ticket:upload_attachment", "Upload a ticket attachment"),
-    ("ticket:archive_attachment", "Delete/archive a ticket attachment"),
+    ("ticket:delete_attachment", "Delete a ticket attachment"),
     ("ticket:hide_interaction", "Hide (soft-delete) a ticket interaction"),
     ("ticket:view_audit_trail", "View a ticket's own audit trail"),
     ("ticket:view_global_audit_log", "View the global ticket audit log"),
@@ -193,7 +193,7 @@ DEFAULT_ROLES = {
         "ticket:change_sla", "ticket:update_status", "ticket:reply",
         "ticket:editown_ticket", "ticket:editother_ticket",
         "ticket:close_ticket", "ticket:reopen",
-        "ticket:upload_attachment", "ticket:archive_attachment", "ticket:hide_interaction",
+        "ticket:upload_attachment", "ticket:delete_attachment", "ticket:hide_interaction",
         "ticket:view_audit_trail", "ticket:view_dashboard_kpis",
         "ticket:view_escalated",
         # User management — can manage Team Leads and Staff.
@@ -335,9 +335,14 @@ DEPRECATED_PERMISSIONS = [
     # Renamed to match the RBAC matrix doc's exact permission name.
     "ticket:close",
     # Split into ticket:upload_attachment (Full for everyone per the
-    # doc) + ticket:archive_attachment (Override-only for Team Lead/
+    # doc) + ticket:delete_attachment (Override-only for Team Lead/
     # Staff) — the combined permission couldn't express that split.
     "ticket:manage_attachments",
+    # Renamed to ticket:delete_attachment — "archive" implied a
+    # soft-delete/archival state that never existed; the permission has
+    # always gated a real, hard delete of the attachment (storage
+    # object + DB row), so the name was corrected to match.
+    "ticket:archive_attachment",
     # Retired via the RBAC Enforcement Audit (Phases 7-16, BD-7/BD-4).
     # Manual escalation has never been permission-gated in the current
     # design — EscalationService.manual_escalate authorizes via ticket

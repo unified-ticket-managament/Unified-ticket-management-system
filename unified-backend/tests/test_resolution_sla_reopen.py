@@ -243,7 +243,7 @@ async def test_reopen_ticket_starts_the_resolution_sla_immediately(db_session):
     team_lead.permissions = [
         "ticket:update_status",
         "ticket:close_ticket",
-        "ticket:archive_attachment",
+        "ticket:delete_attachment",
     ]
     service = _build_service(db_session)
 
@@ -297,7 +297,7 @@ async def test_reopen_then_priority_change_bumps_escalation_cycle_only_once(db_s
     team_lead.permissions = [
         "ticket:update_status",
         "ticket:close_ticket",
-        "ticket:archive_attachment",
+        "ticket:delete_attachment",
         "ticket:reopen",
         "ticket:editother_ticket",
         "ticket:change_priority",
