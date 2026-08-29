@@ -5,6 +5,7 @@ from fastapi import HTTPException, status
 
 from shared_models.models import User
 
+from app.core.rbac_cache import get_rbac_cache
 from app.rbac.repositories import (
     PermissionRepository,
     RolePermissionRepository,
@@ -17,6 +18,26 @@ from app.rbac.services.access_control import (
     ensure_can_manage_role_permissions,
 )
 from app.rbac.services.audit_log_service import AuditLogService
+
+
+def _invalidate_stale_cache_entries(
+    previous_versions: list[tuple],
+) -> None:
+    """
+    Evicts each affected user's now-superseded (user_id, old_version)
+    entry from rbac_cache right away, so an already-warm cache hit
+    can't keep serving their pre-grant/pre-revoke permission set for
+    the rest of its TTL window — see RBACCache.invalidate's own
+    docstring for why this is the intended way to force an immediate
+    re-check. Their next request simply misses the cache and falls
+    through to the existing DB-verified path, which already handles
+    a permission_version mismatch correctly (401, then the frontend's
+    existing refresh-and-retry).
+    """
+
+    cache = get_rbac_cache()
+    for user_id, old_version in previous_versions:
+        cache.invalidate(str(user_id), old_version)
 
 
 class RolePermissionService:
@@ -99,7 +120,8 @@ class RolePermissionService:
         # of their already-issued sessions on next DB-verified request
         # instead of leaving them on the old, now-incomplete permission
         # list for the rest of that token's natural TTL.
-        await self.user_repository.bump_permission_version_for_role(role_id)
+        previous_versions = await self.user_repository.bump_permission_version_for_role(role_id)
+        _invalidate_stale_cache_entries(previous_versions)
         await self.audit_log_service.create_log(
             AuditLogCreate(
                 user_id=actor.user_id if actor else None,
@@ -177,7 +199,8 @@ class RolePermissionService:
         )
 
         # See the matching comment in assign_permission above.
-        await self.user_repository.bump_permission_version_for_role(role_id)
+        previous_versions = await self.user_repository.bump_permission_version_for_role(role_id)
+        _invalidate_stale_cache_entries(previous_versions)
         await self.audit_log_service.create_log(
             AuditLogCreate(
                 user_id=actor.user_id if actor else None,
@@ -271,7 +294,8 @@ class RolePermissionService:
             )
 
         # See the matching comment in assign_permission above.
-        await self.user_repository.bump_permission_version_for_role(role_id)
+        previous_versions = await self.user_repository.bump_permission_version_for_role(role_id)
+        _invalidate_stale_cache_entries(previous_versions)
         # Logged as up to two rows (added / removed) rather than one
         # combined "replace" row — matches the task's requirement that
         # "Permissions Added" and "Permissions Removed" are distinct,

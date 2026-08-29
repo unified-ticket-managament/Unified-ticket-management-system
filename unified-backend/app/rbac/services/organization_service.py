@@ -164,6 +164,7 @@ class OrganizationService:
     async def _build_subtree(
         self,
         user: User,
+        include_inactive: bool = False,
     ) -> OrganizationNode:
 
         role_name = user.role.name
@@ -179,15 +180,17 @@ class OrganizationService:
                 children_users = await self.user_repository.get_by_manager_and_role(
                     user.user_id,
                     team_lead_role.role_id,
+                    include_inactive=include_inactive,
                 )
 
         elif role_name == "Team Lead":
             children_users = await self.user_repository.get_by_teamlead(
                 user.user_id,
+                include_inactive=include_inactive,
             )
 
         children = [
-            await self._build_subtree(child)
+            await self._build_subtree(child, include_inactive=include_inactive)
             for child in children_users
         ]
 
@@ -200,6 +203,7 @@ class OrganizationService:
     async def get_subordinate_user_ids(
         self,
         user: User,
+        include_inactive: bool = False,
     ) -> set[UUID]:
         """
         Flattens this user's own reporting-line subtree (see
@@ -214,9 +218,15 @@ class OrganizationService:
         would change who an Account Manager can grant/revoke
         permissions for, which is out of scope for the chart fix this
         method's sibling above was built for.
+
+        `include_inactive` defaults to False so the permission-override
+        scoping callers above are unaffected; only
+        get_reporting_scope_user_ids (Users-page visibility) passes
+        True, so a deactivated report doesn't drop out of its own
+        manager's Users-page view.
         """
 
-        root = await self._build_subtree(user)
+        root = await self._build_subtree(user, include_inactive=include_inactive)
         subordinate_ids: set[UUID] = set()
 
         def collect(node: OrganizationNode) -> None:
@@ -293,7 +303,9 @@ class OrganizationService:
             return None
 
         if role_name in ("Account Manager", "Team Lead"):
-            scope = set(await self.get_subordinate_user_ids(current_user))
+            scope = set(
+                await self.get_subordinate_user_ids(current_user, include_inactive=True)
+            )
         else:
             scope = {current_user.user_id}
 
@@ -303,7 +315,9 @@ class OrganizationService:
         while queue:
             node_id = queue.pop()
 
-            direct_reports = await self.user_repository.get_direct_reports(node_id)
+            direct_reports = await self.user_repository.get_direct_reports(
+                node_id, include_inactive=True
+            )
             for report in direct_reports:
                 if report.user_id not in visited:
                     visited.add(report.user_id)
@@ -318,7 +332,7 @@ class OrganizationService:
                 )
                 if rm_category_ids:
                     category_member_ids = await self.user_repository.list_active_ids_by_categories(
-                        rm_category_ids
+                        rm_category_ids, include_inactive=True
                     )
                     for member_id in category_member_ids:
                         if member_id not in visited:

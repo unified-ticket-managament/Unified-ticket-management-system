@@ -102,14 +102,15 @@ def ensure_can_manage_role_permissions(actor: User, target_role: Role) -> None:
 # nothing previously stopped a crafted POST /users request from
 # assigning any role at all. Keep both in sync if this ever changes.
 #
-# No entry (Team Lead/Staff/Client) = every target role denied — matches
-# those roles never holding `user:create` by default anyway (this is
-# defense in depth, not the only gate). `None` = unrestricted (any of
-# the six roles).
+# No entry (Staff/Client) = every target role denied — matches those
+# roles never holding `user:create` by default anyway (this is defense
+# in depth, not the only gate). `None` = unrestricted (any of the six
+# roles).
 USER_CREATION_ROLE_MATRIX: dict[str, set[str] | None] = {
     "Super Admin": None,
     "Site Lead": None,
     "Account Manager": {"Team Lead", "Staff", "Client"},
+    "Team Lead": {"Staff", "Client"},
 }
 
 

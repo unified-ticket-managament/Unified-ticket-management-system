@@ -5,6 +5,7 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from shared_models.models import User
 
+from app.core.rbac_cache import get_rbac_cache
 from app.rbac.models.permission_override import UserPermissionOverride
 from app.rbac.repositories import (
     PermissionOverrideRepository,
@@ -223,7 +224,16 @@ class PermissionOverrideService:
         # `user_repository.get_by_id` above, so this flushes/commits in
         # the same transaction as the override itself with no extra
         # round trip.
+        old_version = target.permission_version
         target.permission_version += 1
+        # Also evict any already-warm rbac_cache entry for the old
+        # version right now, rather than leaving it to expire on its
+        # own TTL — otherwise a session that made any recent request
+        # keeps trusting its stale, pre-grant JWT permissions until
+        # that entry ages out. See RBACCache.invalidate's own
+        # docstring; the target's next request then correctly misses
+        # the cache and re-verifies against the DB.
+        get_rbac_cache().invalidate(str(target.user_id), old_version)
 
         await self.audit_log_service.create_log(
             AuditLogCreate(
@@ -338,7 +348,9 @@ class PermissionOverrideService:
         )
 
         # See the matching comment in grant() above.
+        old_version = target.permission_version
         target.permission_version += 1
+        get_rbac_cache().invalidate(str(target.user_id), old_version)
 
         await self.audit_log_service.create_log(
             AuditLogCreate(

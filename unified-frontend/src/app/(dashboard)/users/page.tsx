@@ -63,7 +63,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { formatDate, getApiErrorMessage } from "@/lib/utils";
-import { canDeleteRecords, canImpersonate, dedupeRolesByName, ROLE_NAMES } from "@/lib/role-access";
+import { canDeleteUsers, canImpersonate, dedupeRolesByName, ROLE_NAMES } from "@/lib/role-access";
 import { categoryService, roleService, userService } from "@/services";
 import { PermissionGuard } from "@/components/auth/PermissionGuard";
 import { useAuthStore } from "@/store/auth-store";
@@ -83,7 +83,7 @@ export default function UsersPage() {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
   const hasPermission = useAuthStore((s) => s.hasPermission);
-  const canDelete = canDeleteRecords(currentUser?.role);
+  const canDelete = canDeleteUsers(currentUser?.role);
   // Visible to every role that reaches this page; enabled/disabled
   // purely by the caller's effective role:view permission — the same
   // permission the backend already requires on GET /roles and GET
@@ -233,8 +233,12 @@ export default function UsersPage() {
       });
       setStatusChangeUser(null);
     },
-    onError: () => {
-      toast({ variant: "destructive", title: "Failed to update user status" });
+    onError: (error) => {
+      toast({
+        variant: "destructive",
+        title: "Failed to update user status",
+        description: getApiErrorMessage(error, "Please try again."),
+      });
     },
   });
 

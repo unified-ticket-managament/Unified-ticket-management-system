@@ -186,6 +186,17 @@ export function canDeleteRecords(role: string | undefined): boolean {
   return role === ROLE_NAMES.SUPER_ADMIN;
 }
 
+// Users page Delete action: Site Lead is deliberately denied this
+// destructive action even though it holds user:delete by role default
+// (same rationale as canDeleteRecords above), but every other role's
+// visibility must be driven purely by whether they actually hold
+// user:delete — including via a Super-Admin-granted role-permission
+// override — which canDeleteRecords's Super-Admin-only check
+// incorrectly blocked for every role except Super Admin itself.
+export function canDeleteUsers(role: string | undefined): boolean {
+  return role !== ROLE_NAMES.SITE_LEAD;
+}
+
 // RBAC Enforcement Audit: role:update/role:delete used to be gated by
 // a hardcoded canManageRoles() === Super Admin check here, wrapping
 // the otherwise-correct PermissionGuard("role:update")/("role:delete")
@@ -237,12 +248,13 @@ const CREATABLE_ROLES_BY_ROLE: Record<string, string[] | undefined> = {
   [ROLE_NAMES.SUPER_ADMIN]: undefined,
   [ROLE_NAMES.SITE_LEAD]: undefined,
   [ROLE_NAMES.ACCOUNT_MANAGER]: [ROLE_NAMES.TEAM_LEAD, ROLE_NAMES.STAFF, ROLE_NAMES.CLIENT],
+  [ROLE_NAMES.TEAM_LEAD]: [ROLE_NAMES.STAFF, ROLE_NAMES.CLIENT],
 };
 
 /**
  * Returns the role names the given role is allowed to assign on the Create
- * User form, or `null` when unrestricted. Roles with no entry here (Team
- * Lead, Staff, Client) cannot create users at all — gated separately by the
+ * User form, or `null` when unrestricted. Roles with no entry here (Staff,
+ * Client) cannot create users at all — gated separately by the
  * `user:create` permission.
  */
 export function getCreatableRoleNames(role: string | undefined): string[] | null {

@@ -1321,3 +1321,5 @@ class UserService:
                 entity_id=str(user.user_id),
             )
         )
+
+        return user
