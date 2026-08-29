@@ -4802,7 +4802,9 @@ class InteractionService:
         """
 
         root = await self._resolve_pending_thread_root(interaction_id)
-        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        await self._ensure_can_act_on_pending_interaction(
+            root, current_user, permission_backed="communication:reply_external"
+        )
 
         if idempotency_key:
             existing = await self.interaction_repository.get_by_idempotency_key(
