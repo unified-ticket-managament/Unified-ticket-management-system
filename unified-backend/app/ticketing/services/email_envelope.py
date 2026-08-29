@@ -5,8 +5,40 @@ from uuid import uuid4
 
 from shared_models.models import User
 
+from app.ticketing.enums import InteractionDirection
 from app.ticketing.schemas.payloads import EmailPayload, OutboundEnvelope
 from app.ticketing.utils.html_sanitizer import sanitize_outbound_html
+
+
+def resolve_reply_addresses(
+    inbound_payload: EmailPayload, direction: InteractionDirection
+) -> tuple[str | None, str | None]:
+    """
+    Returns (from_email, default_to_email) for a reply built on top of
+    a thread root's own EmailPayload — which field means what depends
+    on whether that root arrived INBOUND or was authored OUTBOUND
+    (Compose; see interaction_service.py's compose_email).
+
+    For an INBOUND root, EmailPayload.to_email is the address the
+    message arrived AT (this platform's own mailbox — the correct
+    reply From) and .from_email is the original external sender (the
+    correct default reply To) — the only case this module used to
+    assume.
+
+    For an OUTBOUND root, compose_email stores the exact opposite:
+    .from_email is already this platform's own sending mailbox, and
+    .to_email is already the external recipient — so for that
+    direction the two are used as-is, not swapped. Without this
+    branch, replying to a Compose-authored Sent Items email inverted
+    both ends: the reply was dispatched "from" the client's own
+    address (which this platform's Graph app has no authority to send
+    as) "to" this platform's own mailbox — a real, previously-shipped
+    bug, not a hypothetical one.
+    """
+
+    if direction == InteractionDirection.OUTBOUND:
+        return inbound_payload.from_email, inbound_payload.to_email
+    return inbound_payload.to_email, inbound_payload.from_email
 
 
 def _reply_subject(original_subject: str) -> str:
@@ -117,6 +149,7 @@ def build_reply_envelope(
     reply_to_provider_message_id: str | None = None,
     reply_all: bool = False,
     body_html: str | None = None,
+    default_to_email: str | None = None,
 ) -> OutboundEnvelope | None:
     """
     Builds the outbound envelope for a reply: From is always the
@@ -172,6 +205,15 @@ def build_reply_envelope(
     choke point, via html_sanitizer.sanitize_outbound_html) before
     ever reaching the envelope. None (the default) reproduces this
     function's exact pre-existing behavior — a plain-text-only send.
+
+    `default_to_email`, when given, is the caller-resolved default
+    recipient (see resolve_reply_addresses — correct for either an
+    INBOUND or an OUTBOUND thread root), used only when
+    `to_email_override` resolves to nothing. Omitting it reproduces
+    this function's original behavior of always falling back to
+    `inbound_payload.from_email` — the correct default only for an
+    INBOUND root, which every caller happened to be until Compose
+    roots could also be replied to.
     """
 
     if isinstance(to_email_override, str):
@@ -179,9 +221,14 @@ def build_reply_envelope(
     else:
         override_recipients = list(to_email_override or [])
 
-    recipients = override_recipients or (
-        [inbound_payload.from_email] if inbound_payload.from_email else []
-    )
+    if default_to_email:
+        fallback_recipients = [default_to_email]
+    elif inbound_payload.from_email:
+        fallback_recipients = [inbound_payload.from_email]
+    else:
+        fallback_recipients = []
+
+    recipients = override_recipients or fallback_recipients
     if not recipients:
         return None
 

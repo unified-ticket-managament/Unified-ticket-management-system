@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, EmailStr, Field
 
 
 class EmailPayload(BaseModel):
@@ -53,7 +53,15 @@ class EmailPayload(BaseModel):
         min_length=1,
     )
 
-    html_body: str | None = None
+    # compose_email used to write this under the key "body_html"
+    # (mismatched against this field's real name) before that write
+    # site was corrected — accepting both keys means every
+    # already-stored Compose-authored row still deserializes with its
+    # real HTML intact, not just newly-sent ones.
+    html_body: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("html_body", "body_html"),
+    )
 
     in_reply_to: str | None = None
 

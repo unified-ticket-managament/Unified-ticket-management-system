@@ -578,32 +578,31 @@ async def test_send_email_dispatches_to_reply_endpoint_when_provider_message_id_
 
     assert captured["url"].endswith("/messages/AAMkAG-native-id/replyAll")
     assert captured["json"]["comment"] == envelope.body
-    assert result.provider_message_id == envelope.message_id
+    # replyAll returns 202 with no body — Graph hands back no real id
+    # here, and envelope.message_id (this platform's own RFC
+    # Message-ID) must never be substituted for one: a later reply
+    # would pass it straight to Graph's reply/replyAll action, which
+    # rejects a non-Graph id as malformed.
+    assert result.provider_message_id is None
     assert result.status == "SENT"
 
 
-async def test_send_email_dispatches_to_send_mail_when_no_reply_target(monkeypatch):
+async def test_send_email_dispatches_to_create_draft_then_send_when_no_reply_target(monkeypatch):
+    """
+    A brand-new Compose (no reply_to_provider_message_id) must NOT use
+    sendMail — sendMail's 202-with-no-body response can never yield a
+    real Graph id, which is exactly the bug that made a later
+    Sent-Items reply fall back to unthreaded sendMail forever (see
+    graph_client.py's send_email docstring). It must instead create a
+    real draft (POST .../messages) and send that draft (POST
+    .../messages/{id}/send), returning the draft's own real, resolvable
+    id as provider_message_id.
+    """
+
     import app.ticketing.services.graph_client as graph_client_module
 
-    captured: dict = {}
-
-    class _FakeResponse:
-        status_code = 202
-        text = ""
-
-    class _FakeAsyncClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *exc_info):
-            return False
-
-        async def post(self, url, headers=None, json=None):
-            captured["url"] = url
-            captured["json"] = json
-            return _FakeResponse()
-
-    monkeypatch.setattr(graph_client_module.httpx, "AsyncClient", lambda timeout=30.0: _FakeAsyncClient())
+    fake_client = _RecordingGraphHttpClient()
+    monkeypatch.setattr(graph_client_module.httpx, "AsyncClient", lambda timeout=30.0, **_: fake_client)
 
     client = graph_client_module.GraphMailProviderClient(
         auth_client=None,
@@ -616,9 +615,26 @@ async def test_send_email_dispatches_to_send_mail_when_no_reply_target(monkeypat
 
     result = await client.send_email(envelope)
 
-    assert captured["url"].endswith("/sendMail")
-    assert captured["json"]["message"]["subject"] == envelope.subject
-    assert result.provider_message_id == envelope.message_id
+    create_calls = [c for c in fake_client.calls if c["url"].endswith("/messages")]
+    assert len(create_calls) == 1
+    assert create_calls[0]["json"]["subject"] == envelope.subject
+
+    send_calls = [c for c in fake_client.calls if c["url"].endswith("/send")]
+    assert len(send_calls) == 1
+
+    sendmail_calls = [c for c in fake_client.calls if c["url"].endswith("/sendMail")]
+    assert sendmail_calls == []
+
+    resolve_calls = [c for c in fake_client.calls if "/mailFolders/sentitems/messages" in c["url"]]
+    assert len(resolve_calls) == 1
+
+    # The resolved, real post-send Sent Items id — never the draft's
+    # own id (which doesn't survive send on every mailbox this has
+    # been confirmed against, see _send_via_draft's own comment), never
+    # None, never this platform's own locally-generated RFC Message-ID.
+    assert result.provider_message_id == fake_client.resolved_sent_id
+    assert result.provider_message_id != fake_client.draft_id
+    assert result.status == "SENT"
 
 
 async def _fake_headers() -> dict:
@@ -641,15 +657,23 @@ class _RecordingGraphHttpClient:
     A single fake httpx.AsyncClient stand-in that serves every call
     _send_via_draft's methods make (create draft/reply, PATCH
     recipients, POST an attachment, POST createUploadSession, PUT
-    upload chunks, POST send) — routed purely by URL suffix/method, so
-    one instance covers the whole multi-request flow the real upload-
-    session/draft path requires (unlike the single-POST fast path the
-    existing tests above only need).
+    upload chunks, POST send, and the GET that resolves the real
+    post-send Sent Items id via conversationId) — routed purely by URL
+    suffix/method, so one instance covers the whole multi-request flow
+    the real upload-session/draft path requires (unlike the single-POST
+    fast path the existing tests above only need).
+
+    draft_id and resolved_sent_id are deliberately different strings —
+    see _send_via_draft's own comment for why the draft's own id must
+    never be trusted as the message's real post-send id; a test that
+    let them collide could pass for the wrong reason.
     """
 
     def __init__(self):
         self.calls: list[dict] = []
         self.draft_id = "draft-123"
+        self.conversation_id = "conv-abc"
+        self.resolved_sent_id = "sent-item-456"
         self.upload_url = "https://upload.example.com/session-abc"
 
     async def __aenter__(self):
@@ -668,11 +692,20 @@ class _RecordingGraphHttpClient:
         if url.endswith("/attachments"):
             return _JsonResponse(201, {"id": "small-attachment-1"})
         if "/createReply" in url or "/createReplyAll" in url:
-            return _JsonResponse(201, {"id": self.draft_id})
+            return _JsonResponse(201, {"id": self.draft_id, "conversationId": self.conversation_id})
         if url.endswith("/messages"):
-            return _JsonResponse(201, {"id": self.draft_id})
+            return _JsonResponse(201, {"id": self.draft_id, "conversationId": self.conversation_id})
 
         raise AssertionError(f"unexpected POST {url}")
+
+    async def get(self, url, headers=None):
+        self.calls.append({"method": "GET", "url": url, "headers": headers})
+
+        if "/mailFolders/sentitems/messages" in url and "conversationId" in url:
+            assert self.conversation_id in url
+            return _JsonResponse(200, {"value": [{"id": self.resolved_sent_id}]})
+
+        raise AssertionError(f"unexpected GET {url}")
 
     async def patch(self, url, headers=None, json=None):
         self.calls.append({"method": "PATCH", "url": url, "headers": headers, "json": json})
@@ -738,7 +771,7 @@ async def test_send_email_uses_upload_session_for_large_attachment_on_new_messag
 
     result = await client.send_email(envelope)
 
-    assert result.provider_message_id == "draft-123"
+    assert result.provider_message_id == fake_client.resolved_sent_id
     assert result.status == "SENT"
 
     put_calls = [c for c in fake_client.calls if c["method"] == "PUT"]
@@ -797,7 +830,7 @@ async def test_send_email_uses_upload_session_for_large_attachment_on_reply(monk
 
     result = await client.send_email(envelope)
 
-    assert result.provider_message_id == "draft-123"
+    assert result.provider_message_id == fake_client.resolved_sent_id
 
     create_reply_calls = [c for c in fake_client.calls if "/createReply" in c["url"]]
     assert len(create_reply_calls) == 1
@@ -817,12 +850,59 @@ async def test_send_email_uses_upload_session_for_large_attachment_on_reply(monk
     assert sum(len(c["content"]) for c in put_calls) == len(large_bytes)
 
 
-async def test_send_email_still_uses_sendmail_when_every_attachment_is_small(monkeypatch):
+async def test_send_email_uses_draft_path_for_small_attachment_when_no_reply_target(monkeypatch):
     """
-    Regression guard: an envelope with only small (already-inline,
-    content_base64 set) attachments must keep taking the original
-    single-POST sendMail path — the draft/upload-session machinery
-    should never be invoked when nothing actually needs it.
+    A brand-new Compose with only a small (already-inline,
+    content_base64 set) attachment still has no reply_to_provider_
+    message_id, so it takes the same create-draft-then-send path as
+    the no-attachment case above (not the old single-POST sendMail
+    path) — the attachment is added to the real draft via
+    _add_small_attachment rather than inlined into a sendMail JSON
+    body.
+    """
+
+    import app.ticketing.services.graph_client as graph_client_module
+
+    fake_client = _RecordingGraphHttpClient()
+    monkeypatch.setattr(graph_client_module.httpx, "AsyncClient", lambda timeout=30.0, **_: fake_client)
+
+    client = graph_client_module.GraphMailProviderClient(
+        auth_client=None,
+        mailbox_address="mailbox@example.com",
+        api_base_url="https://graph.microsoft.com/v1.0",
+    )
+    monkeypatch.setattr(client, "_authorized_headers", lambda: _fake_headers())
+
+    envelope = _envelope(
+        attachments=[
+            EnvelopeAttachment(
+                filename="small.pdf",
+                content_type="application/pdf",
+                content_base64="aGVsbG8=",
+            )
+        ],
+    )
+
+    result = await client.send_email(envelope)
+
+    assert [c for c in fake_client.calls if c["url"].endswith("/sendMail")] == []
+    attachment_calls = [c for c in fake_client.calls if c["url"].endswith("/attachments")]
+    assert len(attachment_calls) == 1
+    send_calls = [c for c in fake_client.calls if c["url"].endswith("/send")]
+    assert len(send_calls) == 1
+    assert result.provider_message_id == fake_client.resolved_sent_id
+
+
+async def test_send_email_still_uses_reply_endpoint_for_small_attachment_with_known_reply_target(
+    monkeypatch,
+):
+    """
+    The one remaining fast path: a reply with an already-known real
+    reply_to_provider_message_id and only small attachments must keep
+    using Graph's direct reply/replyAll action (_send_reply, inline
+    JSON attachments) rather than the create-draft-then-send path —
+    that path is reserved for when there's no known target to reply
+    against, or a large attachment forces it.
     """
 
     import app.ticketing.services.graph_client as graph_client_module
@@ -855,6 +935,7 @@ async def test_send_email_still_uses_sendmail_when_every_attachment_is_small(mon
     monkeypatch.setattr(client, "_authorized_headers", lambda: _fake_headers())
 
     envelope = _envelope(
+        reply_to_provider_message_id="AAMkAG-native-id",
         attachments=[
             EnvelopeAttachment(
                 filename="small.pdf",
@@ -866,8 +947,141 @@ async def test_send_email_still_uses_sendmail_when_every_attachment_is_small(mon
 
     result = await client.send_email(envelope)
 
-    assert captured["url"].endswith("/sendMail")
-    assert result.provider_message_id == envelope.message_id
+    assert captured["url"].endswith("/messages/AAMkAG-native-id/reply")
+    # Graph's direct reply action also returns 202 with no body — no
+    # real id for this reply's own send either (see _send_reply's own
+    # comment for why that's fine: this codebase always replies
+    # against the thread ROOT's id, never a reply's own).
+    assert result.provider_message_id is None
+
+
+# ---------------------------------------------------------------
+# _resolve_sent_message_id — the fix for a real, empirically-confirmed
+# bug: Graph's draft id does NOT survive send on every mailbox
+# configuration (a shared mailbox sent via app-only permissions was
+# observed handing the message a genuinely different id once it lands
+# in Sent Items — GET on the pre-send draft id 404s afterward). This
+# resolves the real post-send id via conversationId (confirmed stable
+# across that same move) instead, with a short bounded retry for
+# "not indexed yet" and a graceful None fallback on any failure.
+# ---------------------------------------------------------------
+
+
+async def test_resolve_sent_message_id_returns_none_when_conversation_id_is_none():
+    import app.ticketing.services.graph_client as graph_client_module
+
+    client = graph_client_module.GraphMailProviderClient(
+        auth_client=None,
+        mailbox_address="mailbox@example.com",
+        api_base_url="https://graph.microsoft.com/v1.0",
+    )
+
+    result = await client._resolve_sent_message_id(None)
+
+    assert result is None
+
+
+async def test_resolve_sent_message_id_retries_then_finds_match(monkeypatch):
+    """
+    The first attempt finding nothing (Sent Items hasn't indexed the
+    message yet) must not be treated as a final answer — it retries
+    (with a short backoff, monkeypatched away here for test speed)
+    until a match appears.
+    """
+
+    import app.ticketing.services.graph_client as graph_client_module
+
+    monkeypatch.setattr(graph_client_module.asyncio, "sleep", _instant_sleep)
+
+    call_count = 0
+
+    class _FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def get(self, url, headers=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                return _JsonResponse(200, {"value": []})
+            return _JsonResponse(200, {"value": [{"id": "sent-item-789"}]})
+
+    monkeypatch.setattr(graph_client_module.httpx, "AsyncClient", lambda timeout=30.0: _FakeAsyncClient())
+
+    client = graph_client_module.GraphMailProviderClient(
+        auth_client=None,
+        mailbox_address="mailbox@example.com",
+        api_base_url="https://graph.microsoft.com/v1.0",
+    )
+    monkeypatch.setattr(client, "_authorized_headers", lambda: _fake_headers())
+
+    result = await client._resolve_sent_message_id("conv-xyz")
+
+    assert result == "sent-item-789"
+    assert call_count == 2
+
+
+async def test_resolve_sent_message_id_returns_none_after_all_retries_exhausted(monkeypatch):
+    import app.ticketing.services.graph_client as graph_client_module
+
+    monkeypatch.setattr(graph_client_module.asyncio, "sleep", _instant_sleep)
+
+    class _FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def get(self, url, headers=None):
+            return _JsonResponse(200, {"value": []})
+
+    monkeypatch.setattr(graph_client_module.httpx, "AsyncClient", lambda timeout=30.0: _FakeAsyncClient())
+
+    client = graph_client_module.GraphMailProviderClient(
+        auth_client=None,
+        mailbox_address="mailbox@example.com",
+        api_base_url="https://graph.microsoft.com/v1.0",
+    )
+    monkeypatch.setattr(client, "_authorized_headers", lambda: _fake_headers())
+
+    result = await client._resolve_sent_message_id("conv-xyz")
+
+    assert result is None
+
+
+async def test_resolve_sent_message_id_returns_none_on_error_status(monkeypatch):
+    import app.ticketing.services.graph_client as graph_client_module
+
+    class _FakeAsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        async def get(self, url, headers=None):
+            return _JsonResponse(403, {"error": {"code": "Forbidden"}})
+
+    monkeypatch.setattr(graph_client_module.httpx, "AsyncClient", lambda timeout=30.0: _FakeAsyncClient())
+
+    client = graph_client_module.GraphMailProviderClient(
+        auth_client=None,
+        mailbox_address="mailbox@example.com",
+        api_base_url="https://graph.microsoft.com/v1.0",
+    )
+    monkeypatch.setattr(client, "_authorized_headers", lambda: _fake_headers())
+
+    result = await client._resolve_sent_message_id("conv-xyz")
+
+    assert result is None
+
+
+async def _instant_sleep(*_args, **_kwargs) -> None:
+    return None
 
 
 async def test_fetch_message_attachments_builds_url_and_parses_response(monkeypatch):
@@ -1261,6 +1475,65 @@ def test_build_upload_files_from_graph_attachments_case_and_bracket_insensitive_
 
     assert len(files) == 1
     assert files[0].is_inline is True
+
+
+def test_build_upload_files_from_graph_attachments_graph_content_id_brackets_are_preserved_raw():
+    """
+    Graph itself can report a bracketed contentId (some relays echo the
+    raw MIME Content-ID header, brackets included, straight into this
+    field) — matching against the body's own bracket-free cid: value
+    must still succeed via _normalize_content_id, but the stored
+    Attachment.content_id must keep Graph's original raw value exactly
+    as reported, brackets and all. Frontend-side resolution of this
+    exact mismatch shape is handled by richText.ts's own
+    normalizeContentId, not here.
+    """
+
+    html = '<img src="cid:test-image@example.com">'
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="test-image.png",
+                contentType="image/png",
+                isInline=False,
+                contentId="<test-image@example.com>",
+            )
+        ],
+        html,
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is True
+    assert files[0].content_id == "<test-image@example.com>"
+
+
+def test_build_upload_files_from_graph_attachments_combined_content_id_mismatch_bracket_case_percent():
+    """
+    Stress _normalize_content_id across all three dimensions at once
+    (bracketed + mixed-case + percent-encoded), beyond the existing
+    single-dimension tests above (case_and_bracket_insensitive_match,
+    percent_encoded_cid_reference_matches) — a real sender can combine
+    all three in one message.
+    """
+
+    html = '<img src="CID:%3CLogo%40ReachMyDr.Example%3E">'
+
+    files = build_upload_files_from_graph_attachments(
+        [
+            _graph_attachment(
+                name="logo.png",
+                contentType="image/png",
+                isInline=False,
+                contentId="logo@reachmydr.example",
+            )
+        ],
+        html,
+    )
+
+    assert len(files) == 1
+    assert files[0].is_inline is True
+    assert files[0].content_id == "logo@reachmydr.example"
 
 
 def test_build_upload_files_from_graph_attachments_generic_content_type_inline_image_by_extension():

@@ -601,6 +601,7 @@ async def ensure_agent_can_view_pending_interaction(
     view_only: bool = False,
     permission_backed: str | None = None,
     is_forward_recipient: bool = False,
+    folder_shared_bypass: bool = False,
 ) -> None:
     """
     Gates a still-pending (pre-ticket) Mail item the same way
@@ -631,8 +632,9 @@ async def ensure_agent_can_view_pending_interaction(
 
     `view_only=True` (passed only by OpenEmailService.get_email_details)
     is a separate, communication-permission-driven authorization branch
-    — see resolve_communication_visibility_tier's own docstring. A
-    caller holding neither communication:view_all nor
+    — see resolve_communication_visibility_tier's own docstring (the
+    same "widen seeing, never acting" split `folder_shared_bypass`
+    below also follows). A caller holding neither communication:view_all nor
     communication:view_assigned is denied outright; a communication:
     view_all holder (any role, since no business rule outside Account
     Manager's own client-ownership ceiling limits this) sees any
@@ -701,6 +703,24 @@ async def ensure_agent_can_view_pending_interaction(
     mechanism, not a permission" — there is no RBAC permission for it
     to defer to), and so are Tags/Folder-assignment, which have no
     permission check of their own either.
+
+    `folder_shared_bypass=True` (computed by the caller from
+    MailFolderService.resolve_folder_access(...).via_sharing — the
+    same signal InboxService.get_inbox's own `bypass_ownership_scope`
+    already keys off for the list view) is a third, independent
+    `view_only` widening: a viewer whose communication permission tier
+    is not "none" (checked first, same as above) additionally passes
+    if they can see this item purely because a Rule filed it into a
+    folder genuinely shared with them (the rule's shared_user_ids/
+    shared_distribution_list_ids) — even if their tier is only
+    "assigned", or they're an Account Manager who doesn't own this
+    item's client. Only honored together with `view_only` — same
+    "widen seeing, never acting" rule as the checks above. Without
+    this, a shared Team Lead could see the row in the folder's own
+    listing (GET /inbox?folder_id=...) but get a 403 opening it here —
+    a real gap once folder-filing removes an item from the folder-
+    sharing recipient's own scoped Inbox (see
+    InteractionRepository.list_inbox's folder_id handling).
     """
 
     if view_only:
@@ -719,6 +739,9 @@ async def ensure_agent_can_view_pending_interaction(
             return
 
         if tier == "all" and role_name != ACCOUNT_MANAGER_ROLE_NAME:
+            return
+
+        if folder_shared_bypass:
             return
 
         # tier == "assigned" (Team Lead/Staff — excluded from pending

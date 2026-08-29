@@ -291,7 +291,15 @@ async def test_dispatch_if_still_pending_sends_when_not_canceled(db_session):
         await db_session.refresh(interaction)
         reloaded = interaction
         assert reloaded.payload["dispatch_status"] == "SENT"
-        assert reloaded.payload.get("provider_message_id")
+        # provider_message_id is deliberately NOT asserted truthy here:
+        # a plain sendMail/reply send (this envelope has no
+        # reply_to_provider_message_id, so it's sendMail) correctly
+        # returns None — Graph gives no real id back synchronously,
+        # and this platform must never substitute its own
+        # envelope.message_id as a stand-in (see
+        # MailProviderSendResult's own docstring). The key it does
+        # need to carry either way:
+        assert "provider_message_id" in reloaded.payload
     finally:
         await _delete_interaction(db_session, interaction.interaction_id)
 

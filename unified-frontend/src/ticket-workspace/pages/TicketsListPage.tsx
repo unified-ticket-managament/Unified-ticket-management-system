@@ -21,7 +21,7 @@ import { useDebouncedValue } from "@tw/hooks/useDebouncedValue";
 import { useAcknowledgeAndAssign } from "@tw/hooks/useAcknowledgeAndAssign";
 import { AcknowledgeAssignModal } from "@tw/components/sla/AcknowledgeAssignModal";
 import { useAuthContext } from "@tw/context/AuthContext";
-import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import { useWorkflowContext, type PoolTab } from "@tw/context/WorkflowContext";
 import { useToast } from "@tw/context/ToastContext";
 import { shortId, formatDateTime, formatTicketNumber } from "@tw/lib/format";
 import { isValidDateRange } from "@tw/lib/validation";
@@ -59,7 +59,6 @@ const ESCALATION_LEVEL_LABEL: Record<string, string> = {
 };
 
 type SortKey = "created_at" | "updated_at" | "title";
-type PoolTab = "pool" | "mine" | "all" | "escalated";
 
 const selectClass =
   "rounded-md2 border border-border bg-surface px-3 py-2 text-xs font-medium text-slate-700 shadow-xs transition-colors focus:border-accent focus:outline-none focus:ring-4 focus:ring-accent/10";
@@ -67,7 +66,7 @@ const selectClass =
 export function TicketsListPage() {
   const navigate = useNavigate();
   const { currentUser } = useAuthContext();
-  const { categories, clients } = useWorkflowContext();
+  const { categories, clients, poolTab, setPoolTab } = useWorkflowContext();
   const { pushToast } = useToast();
 
   // Server-paginated/filtered/sorted rows for the current page —
@@ -79,7 +78,6 @@ export function TicketsListPage() {
   const [tickets, setTickets] = useState<TicketResponse[]>([]);
   const [serverTotal, setServerTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
-  const [poolTab, setPoolTab] = useState<PoolTab>("pool");
   // The three tab badge counts, fetched independently via one grouped
   // query (GET /tickets/view-counts) instead of needing all three
   // tabs' full row sets just to show a number on each.

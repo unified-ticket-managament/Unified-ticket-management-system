@@ -112,6 +112,7 @@ from app.ticketing.services.email_envelope import (
     build_agent_signature_html,
     build_compose_envelope,
     build_reply_envelope,
+    resolve_reply_addresses,
 )
 from app.ticketing.utils.html_sanitizer import sanitize_outbound_html
 from app.ticketing.utils.recipient_validation import ensure_recipients_are_valid
@@ -1782,18 +1783,27 @@ class InteractionService:
             if self.client_repository is not None and ticket.client_company_id is not None:
                 client = await self.client_repository.get_by_id(ticket.client_company_id)
 
-            # A reply always goes From the address the original message
-            # arrived AT (the shared support mailbox), whether or not
-            # a Client resolved for this ticket — never Client.inbox_email,
-            # which now stores the client's own real address (the one
-            # they send FROM, used to identify them on inbound), not an
-            # address this platform can send from. This also covers the
-            # ticket-with-no-resolvable-Client case (e.g. one created
-            # from a Graph-mailbox Site Lead fallback message — see
+            # A reply always goes From the shared support mailbox and
+            # defaults To the thread's other real participant — never
+            # Client.inbox_email, which now stores the client's own
+            # real address (the one they send FROM, used to identify
+            # them on inbound), not an address this platform can send
+            # from. resolve_reply_addresses reads the right EmailPayload
+            # field for each side based on latest_email's own direction
+            # (get_latest_inbound_email_for_ticket only ever returns an
+            # INBOUND interaction today, so this is always the shared-
+            # mailbox-is-to_email case here — direction is still passed
+            # through explicitly rather than assumed, so this stays
+            # correct if that repository method's own filter ever
+            # widens). This also covers the ticket-with-no-resolvable-
+            # Client case (e.g. one created from a Graph-mailbox Site
+            # Lead fallback message — see
             # email_service.is_configured_graph_mailbox()) for free,
             # since inbound_payload.to_email is populated either way.
             am_email = await self._resolve_account_manager_email(client) if client is not None else None
-            reply_from_email = inbound_payload.to_email
+            reply_from_email, default_to_email = resolve_reply_addresses(
+                inbound_payload, latest_email.direction
+            )
 
             # Signed body — what actually gets sent and stored — so a
             # client sees which agent actually wrote the reply, same
@@ -1829,6 +1839,7 @@ class InteractionService:
                     reply_to_provider_message_id=inbound_payload.provider_message_id,
                     reply_all=request.reply_all,
                     body_html=signed_body_html,
+                    default_to_email=default_to_email,
                 )
 
         payload: dict[str, Any] = {"message": signed_message if envelope is not None else request.message}
@@ -2041,17 +2052,31 @@ class InteractionService:
         if self.client_repository is not None and root.client_id is not None:
             client = await self.client_repository.get_by_id(root.client_id)
 
-        # A reply always goes From the address the original message
-        # arrived AT (the shared support mailbox), whether or not this
-        # thread has a resolved Client — never Client.inbox_email, which
-        # now stores the client's own real address (the one they send
-        # FROM, used to identify them on inbound), not an address this
-        # platform can send from. This also covers a client-less thread
-        # (the Graph-mailbox Site Lead fallback — see
+        # A reply always goes From the shared support mailbox and
+        # defaults To the thread's other real participant — never
+        # Client.inbox_email, which now stores the client's own real
+        # address (the one they send FROM, used to identify them on
+        # inbound), not an address this platform can send from.
+        # resolve_reply_addresses reads the right EmailPayload field
+        # for each side based on root's own direction: an INBOUND root
+        # (a real email that arrived) has to_email=shared mailbox/
+        # from_email=external sender, but an OUTBOUND root (a Compose-
+        # authored thread, e.g. replying from Sent Items — see
+        # compose_email) stores the opposite pairing, since Compose has
+        # no "arrival address," only a "who I sent it to." Treating an
+        # OUTBOUND root's to_email as the shared mailbox (the old,
+        # direction-blind assumption here) sent the reply From the
+        # client's own address and To this platform's own mailbox — a
+        # real, previously-shipped bug, not a hypothetical one. This
+        # also still covers a client-less thread (the Graph-mailbox
+        # Site Lead fallback — see
         # email_service.is_configured_graph_mailbox()) for free, since
-        # inbound_payload.to_email is populated either way.
+        # one of the two EmailPayload fields is always populated
+        # either way.
         am_email = await self._resolve_account_manager_email(client) if client is not None else None
-        reply_from_email = inbound_payload.to_email
+        reply_from_email, default_to_email = resolve_reply_addresses(
+            inbound_payload, root.direction
+        )
 
         # Signed body — what actually gets sent and stored — same
         # principle compose_email already established for a brand-new
@@ -2087,6 +2112,7 @@ class InteractionService:
                 reply_to_provider_message_id=inbound_payload.provider_message_id,
                 reply_all=request.reply_all,
                 body_html=signed_body_html,
+                default_to_email=default_to_email,
             )
 
         payload: dict[str, Any] = {"message": signed_message if envelope is not None else request.message}
@@ -2474,7 +2500,7 @@ class InteractionService:
             "distribution_list_ids": [str(i) for i in request.distribution_list_ids],
         }
         if envelope.body_html:
-            interaction_payload["body_html"] = envelope.body_html
+            interaction_payload["html_body"] = envelope.body_html
 
         try:
             interaction = await self.interaction_repository.create(

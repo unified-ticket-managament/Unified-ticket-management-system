@@ -33,6 +33,14 @@ import type {
 // not here.
 // ==========================================================
 
+// TicketsListPage's own sub-tab selector. Lives here (rather than as
+// local useState on that page) so it survives the /tickets ->
+// /tickets/:id -> Back round trip — that round trip remounts
+// TicketsListPage (a real route change), which would otherwise reset
+// the tab back to its default ("pool") regardless of which tab the
+// user actually came from. Same reasoning as interactionDrawer below.
+export type PoolTab = "pool" | "mine" | "all" | "escalated";
+
 interface WorkflowContextValue {
   // Real active Staff users from the backend (the same pool the
   // auto-assignment routing picks from) — used to populate agent
@@ -84,6 +92,9 @@ interface WorkflowContextValue {
   timeline: InteractionResponse[];
   setTimeline: (items: InteractionResponse[]) => void;
 
+  poolTab: PoolTab;
+  setPoolTab: (tab: PoolTab) => void;
+
   // The Interactions list's row-details drawer state, lifted up here
   // (rather than InteractionsPage's own local useState) so it survives
   // the Expand -> FullInteractionPage -> Minimize round trip. That
@@ -130,6 +141,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     null
   );
   const [timeline, setTimeline] = useState<InteractionResponse[]>([]);
+  const [poolTab, setPoolTab] = useState<PoolTab>("pool");
   const [interactionDrawer, setInteractionDrawer] = useState<
     WorkflowContextValue["interactionDrawer"]
   >({ open: false, row: null, email: null, thread: null, scrollY: 0 });
@@ -219,6 +231,8 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
       setActiveTicket,
       timeline,
       setTimeline,
+      poolTab,
+      setPoolTab,
       interactionDrawer,
       setInteractionDrawer,
     }),
@@ -236,6 +250,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
       selectedEmail,
       activeTicket,
       timeline,
+      poolTab,
       interactionDrawer,
     ]
   );

@@ -160,6 +160,14 @@ interface MessageListProps {
   categoryFilter: string;
   onCategoryFilterChange: (value: string) => void;
   availableCategories: CategoryResponse[];
+  // Category options for the merged "All Clients" dropdown specifically
+  // — optionally wider than availableCategories (e.g. Team Lead/Staff
+  // get the full org-wide category list here, same convention Compose's
+  // own "From" picker already uses, while availableCategories above
+  // stays scoped to whatever the standalone "Any category" ticket-type
+  // filter needs). Falls back to availableCategories when omitted, so
+  // no other caller needs updating.
+  clientFilterCategories?: CategoryResponse[];
   clients: ClientResponse[];
   onOpen: (interactionId: string) => void;
   // Double-clicking a row opens the same message in a full-screen
@@ -199,6 +207,7 @@ export function MessageList({
   categoryFilter,
   onCategoryFilterChange,
   availableCategories,
+  clientFilterCategories,
   clients,
   onOpen,
   onOpenFullScreen,
@@ -489,8 +498,8 @@ export function MessageList({
   ].filter(Boolean).length;
 
   const { activeClients, categoryOptions: clientFilterCategoryOptions } = useMemo(
-    () => mergedClientFilterOptions(clients, availableCategories),
-    [clients, availableCategories]
+    () => mergedClientFilterOptions(clients, clientFilterCategories ?? availableCategories),
+    [clients, availableCategories, clientFilterCategories]
   );
 
   return (

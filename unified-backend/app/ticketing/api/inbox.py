@@ -1264,6 +1264,9 @@ async def open_email(
         ticket_repository=ticket_repository,
         read_receipt_repository=read_receipt_repository,
         sla_service=build_sla_service(db),
+        mail_folder_repository=MailFolderRepository(db),
+        rule_repository=RuleRepository(db),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.get_email_details(

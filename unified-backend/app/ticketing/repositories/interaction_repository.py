@@ -462,9 +462,16 @@ class InteractionRepository:
         - `client_id` set: further narrows to one client (the
           per-client filter on the inbox UI).
         - `folder_id` set: further narrows to one custom folder —
-          orthogonal to `view` (a folder can hold items in any
+          orthogonal to `status` (a folder can hold items in any
           status), so this composes with any of the views below
-          rather than being its own view.
+          rather than being its own view. NOT orthogonal to
+          view=="pending" specifically: a filed item (folder_id set,
+          whether via a Rule's move_to_folder action or a manual
+          PATCH /inbox/{id}/folder) is excluded from the "pending"
+          Inbox view — see that branch below — since a user who has
+          filed something away has, by definition, already triaged it
+          out of the default Inbox. Still reachable via folder_id
+          (any view) or view=="all".
         - `ticket_types` set: Team Lead scoping — only threads whose
           ticket is filed under one of these work-specialization
           categories (a Team Lead may belong to more than one — see
@@ -613,6 +620,15 @@ class InteractionRepository:
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.PENDING,
                 Interaction.direction == InteractionDirection.INBOUND,
+                # A filed item (folder_id set, whether by a Rule's
+                # move_to_folder action or a manual drag via PATCH
+                # /inbox/{id}/folder) has been deliberately triaged out
+                # of the pending queue — it stays fully reachable via
+                # view="all"&folder_id=X (subject to the normal folder
+                # sharing/visibility rules), just no longer via the
+                # default Inbox tab. Outlook-style "move to folder
+                # removes it from Inbox" semantics.
+                Interaction.folder_id.is_(None),
             )
         elif view == "replied":
             query = query.where(
@@ -830,6 +846,7 @@ class InteractionRepository:
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.PENDING,
                 Interaction.direction == InteractionDirection.INBOUND,
+                Interaction.folder_id.is_(None),
             ),
             func.count().filter(
                 Interaction.ticket_id.is_(None),

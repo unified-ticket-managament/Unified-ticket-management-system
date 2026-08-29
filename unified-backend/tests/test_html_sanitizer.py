@@ -185,6 +185,85 @@ def test_table_styling_does_not_touch_non_table_tags():
     assert result == html
 
 
+def test_a_composer_resized_table_width_survives_and_is_used_in_the_style():
+    """
+    A whole-table resize in the composer produces a plain width="N"
+    HTML attribute on <table> (see RichTextEditor.tsx's ResizableTable
+    extension) — this must survive nh3.clean and _style_email_tables
+    must build the injected style from it instead of hardcoding 100%,
+    or the resize would be silently thrown away before ever reaching
+    Outlook or storage.
+    """
+
+    html = '<table width="320"><tr><td>a</td><td>b</td></tr></table>'
+
+    result = sanitize_outbound_html(html)
+
+    assert 'width="320"' in result
+    assert "width:320px" in result
+    assert "width:100%" not in result
+
+
+def test_a_table_with_no_explicit_width_still_defaults_to_100_percent():
+    html = "<table><tr><td>a</td></tr></table>"
+
+    result = sanitize_outbound_html(html)
+
+    assert 'width="320"' not in result
+    assert "width:100%" in result
+
+
+def test_colgroup_and_col_are_stripped_from_outbound_tables():
+    """
+    Column resizing is real (see the composer's ColumnResize plugin),
+    but is deliberately implemented as a plain width="N" attribute on
+    each <td>/<th> rather than <colgroup>/<col> — Outlook's Word
+    rendering engine doesn't reliably honor colgroup/col widths.
+    Confirms those tags stay off the allow-list even if a future
+    composer change ever emitted them.
+    """
+
+    html = '<table><colgroup><col style="width:50px"></colgroup><tr><td>a</td></tr></table>'
+
+    result = sanitize_outbound_html(html)
+
+    assert "<colgroup" not in result
+    assert "<col" not in result
+
+
+def test_a_composer_resized_column_width_survives_and_is_used_in_the_style():
+    """
+    Per-column resize in the composer produces a plain width="N" HTML
+    attribute on the affected <td>/<th> cells (see RichTextEditor.tsx's
+    ColumnResize extension) — mirrors the whole-table-width test above,
+    just at the cell level.
+    """
+
+    html = '<table><tr><td width="220">a</td><td>b</td></tr></table>'
+
+    result = sanitize_outbound_html(html)
+
+    assert 'width="220"' in result
+    assert "width:220px" in result
+
+
+def test_a_cell_with_no_explicit_width_keeps_the_base_cell_style():
+    html = "<table><tr><td>a</td></tr></table>"
+
+    result = sanitize_outbound_html(html)
+
+    assert '<td style="border:1px solid #888888;padding:6px 8px;text-align:left;">a</td>' in result
+
+
+def test_a_resized_image_width_and_height_survive():
+    html = '<img src="cid:abc123" width="200" height="100" alt="screenshot">'
+
+    result = sanitize_outbound_html(html)
+
+    assert 'width="200"' in result
+    assert 'height="100"' in result
+
+
 def test_table_styling_and_cid_image_coexist():
     html = (
         "<table><tr><td>Screenshot</td></tr></table>"

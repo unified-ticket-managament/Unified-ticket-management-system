@@ -28,7 +28,19 @@ logger = logging.getLogger(__name__)
 
 
 class MailProviderSendResult(BaseModel):
-    provider_message_id: str
+    # Microsoft Graph's own native id for the message actually sent —
+    # the same contract as Interaction.provider_message_id/
+    # EmailPayload.provider_message_id (see those fields' own
+    # docstrings): a real, Graph-resolvable id, safe to hand back to
+    # Graph later (e.g. as reply_to_provider_message_id) — or None
+    # when Graph genuinely never handed one back (sendMail and the
+    # reply/replyAll actions both return 202 Accepted with no body,
+    # see graph_client.py). Must never be filled in with this
+    # platform's own locally-generated OutboundEnvelope.message_id as
+    # a stand-in — that string isn't a Graph id at all, and Graph
+    # rejects it outright ("ErrorInvalidIdMalformed") if a later reply
+    # tries to use it as one.
+    provider_message_id: str | None
     status: str
 
 

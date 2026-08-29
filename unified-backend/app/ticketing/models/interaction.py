@@ -159,8 +159,13 @@ class Interaction(Base):
     )
 
     # Which custom folder (Billing/Claims/General/...) this item has
-    # been filed into — orthogonal to `status`; assigning a folder
-    # never changes pending/replied/ticketed/archived state.
+    # been filed into — orthogonal to `status` itself (assigning a
+    # folder never mutates pending/replied/ticketed/archived state),
+    # but NOT orthogonal to the "pending" Inbox view: InteractionRepository
+    # .list_inbox excludes any row with folder_id set from view=="pending"
+    # (Outlook-style "moved to a folder" semantics), whether filed by a
+    # Rule's move_to_folder action or a manual PATCH /inbox/{id}/folder.
+    # Still reachable via folder_id or view=="all".
     folder_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("mail_folders.folder_id"),

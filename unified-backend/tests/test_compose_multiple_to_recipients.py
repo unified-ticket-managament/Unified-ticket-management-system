@@ -212,6 +212,7 @@ def test_email_payload_and_open_email_response_carry_the_full_to_list():
         ticket_id=None,
         client_id=None,
         client_name="Unknown",
+        direction="OUTBOUND",
         to_email=payload.to_email,
         to_emails=payload.to_emails,
         from_email="support@example.com",

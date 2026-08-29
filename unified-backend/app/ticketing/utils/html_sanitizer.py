@@ -20,10 +20,22 @@ import re
 import nh3
 from bs4 import BeautifulSoup, Tag
 
+# nh3 unwraps a disallowed tag rather than dropping its content — a
+# heading or blockquote missing from this set doesn't disappear, it
+# collapses into the surrounding flow with no block boundary at all
+# (e.g. "<h2>Action needed</h2><p>...</p>" becomes one run of text with
+# no separation), which is indistinguishable from real body text losing
+# its formatting. h1-h6/blockquote are common in real inbound sender
+# HTML (an external sender's own formatting, not something this app's
+# composer produces) and blockquote is also what buildForwardHtml
+# (frontend richText.ts) and the composer's own Blockquote toolbar
+# button already wrap outbound quoted/forwarded content in — both were
+# silently losing that wrapper before this fix.
 _ALLOWED_TAGS = {
     "p", "br", "div",
     "b", "strong", "i", "em", "u",
     "ul", "ol", "li",
+    "h1", "h2", "h3", "h4", "h5", "h6", "blockquote",
     "table", "thead", "tbody", "tr", "td", "th",
     "a", "img",
 }
@@ -31,8 +43,9 @@ _ALLOWED_TAGS = {
 _ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
     "a": {"href"},
     "img": {"src", "alt", "width", "height"},
-    "td": {"colspan", "rowspan"},
-    "th": {"colspan", "rowspan"},
+    "table": {"width"},
+    "td": {"colspan", "rowspan", "width"},
+    "th": {"colspan", "rowspan", "width"},
 }
 
 # "cid" must be included here or nh3 strips the whole src="cid:..."
@@ -132,18 +145,43 @@ def _strip_non_cid_images(html: str) -> str:
 # style attribute — nh3.clean above never allows one through in the
 # first place (see _ALLOWED_ATTRIBUTES), so there is never a pasted
 # style attribute here to preserve or conflict with.
-_TABLE_STYLE = "border-collapse:collapse;width:100%;"
+_TABLE_STYLE_BASE = "border-collapse:collapse;"
+# Used unmodified by _style_qualifying_inbound_tables below (inbound
+# tables have no resize concept — always the fixed 100% default).
+_TABLE_STYLE = f"{_TABLE_STYLE_BASE}width:100%;"
 _CELL_STYLE = "border:1px solid #888888;padding:6px 8px;text-align:left;"
 
 
 def _style_email_tables(html: str) -> str:
-    html = re.sub(r"<table\b", f'<table style="{_TABLE_STYLE}"', html, flags=re.IGNORECASE)
-    html = re.sub(
-        r"<(td|th)\b",
-        lambda match: f'<{match.group(1)} style="{_CELL_STYLE}"',
-        html,
-        flags=re.IGNORECASE,
-    )
+    def _table_replacement(match: "re.Match[str]") -> str:
+        tag = match.group(0)
+        # A composer-driven table resize survives nh3.clean as a plain
+        # width="N" HTML attribute (see _ALLOWED_ATTRIBUTES) — honor it
+        # here instead of forcing every table to 100%, which would
+        # silently undo the resize. No width attribute (every
+        # non-resized/legacy table) keeps the original 100% default.
+        width_match = re.search(r'width\s*=\s*"(\d+)"', tag, re.IGNORECASE)
+        width_css = f"{width_match.group(1)}px" if width_match else "100%"
+        style = f"{_TABLE_STYLE_BASE}width:{width_css};"
+        return re.sub(r"^<table\b", f'<table style="{style}"', tag, flags=re.IGNORECASE)
+
+    html = re.sub(r"<table\b[^>]*>", _table_replacement, html, flags=re.IGNORECASE)
+
+    def _cell_replacement(match: "re.Match[str]") -> str:
+        tag = match.group(0)
+        tag_name = match.group(1)
+        # A composer-driven column resize survives nh3.clean as a plain
+        # width="N" HTML attribute on the cell itself (see
+        # _ALLOWED_ATTRIBUTES) — fold it into the injected style too,
+        # same as the table-width handling above, for the cell-width
+        # equivalent of "don't silently undo the resize." No width
+        # attribute (every non-resized/legacy cell) keeps the base style
+        # unchanged, same as before this cell ever had a width concept.
+        width_match = re.search(r'width\s*=\s*"(\d+)"', tag, re.IGNORECASE)
+        style = f"{_CELL_STYLE}width:{width_match.group(1)}px;" if width_match else _CELL_STYLE
+        return re.sub(rf"^<{tag_name}\b", f'<{tag_name} style="{style}"', tag, flags=re.IGNORECASE)
+
+    html = re.sub(r"<(td|th)\b[^>]*>", _cell_replacement, html, flags=re.IGNORECASE)
     return html
 
 

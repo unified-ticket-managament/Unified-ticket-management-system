@@ -112,7 +112,7 @@ async def test_send_via_draft_annotates_orphaned_draft_id_after_creation(monkeyp
     client = _draft_client(monkeypatch)
 
     async def _fake_create_new_draft(envelope):
-        return "draft-abc-123"
+        return "draft-abc-123", "conv-abc-123"
 
     async def _fake_add_large_attachment(draft_id, attachment):
         raise GraphAPIError(500, "upload session failed", operation="createUploadSession")
