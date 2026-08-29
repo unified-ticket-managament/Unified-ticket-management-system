@@ -26,7 +26,6 @@ export type NavItemKey =
   | "My Tickets"
   | "Users"
   | "Roles"
-  | "Audit Logs"
   | "Reports"
   | "Inbox"
   | "Interactions"
@@ -44,7 +43,6 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   "My Tickets": "nav.myTickets",
   Users: "nav.users",
   Roles: "nav.roles",
-  "Audit Logs": "nav.auditLogs",
   Reports: "nav.reports",
   Inbox: "nav.inbox",
   Interactions: "nav.interactions",
@@ -87,11 +85,16 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
 // Viewer keeps the original, unmodified RBAC dashboard/nav — the
 // client-facing role that was never an agent.
 //
-// "Audit Logs" (the RBAC-level log, distinct from "Ticket Audit Log")
-// was removed from every role's sidebar — the page, its route, and its
-// API are untouched and still reachable directly (e.g. the Super Admin
-// dashboard's "Latest Audit Logs" card still links to it), this only
-// removes the sidebar entry point.
+// The RBAC-native "Audit Logs" page (/audit-logs, distinct from
+// "Ticket Audit Log" — the RBAC-level audit_logs table vs. this app's
+// own ticket_audit_logs table, see root CLAUDE.md's audit-log
+// separation section) never had, and still doesn't have, a sidebar
+// entry of its own — the page, its route, and its API are untouched
+// and still reachable directly (e.g. the Super Admin dashboard's
+// "Latest Audit Logs" card still links to it, and "Ticket Audit Log"'s
+// own page now hosts a "View Centralized Audit Log" button that
+// switches into this same data in place, gated on audit:view — see
+// AuditLogPage.tsx).
 // "Roles" was removed from every role's sidebar (moved to a button on the
 // Users page instead — see the `canViewRoles` check in
 // app/(dashboard)/users/page.tsx, which gates the button's enabled state
@@ -123,8 +126,6 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Interactions",
     "Tickets",
     "Ticket Audit Log",
-    "SLA Timing Matrix",
-    "Reporting Managers",
   ],
   [ROLE_NAMES.SITE_LEAD]: [
     "Dashboard",
@@ -134,7 +135,6 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Interactions",
     "Tickets",
     "Ticket Audit Log",
-    "Reporting Managers",
   ],
   [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
   [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
@@ -144,12 +144,35 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
 
 const DEFAULT_NAV_ITEMS: NavItemKey[] = ["Dashboard", "Profile", "Settings"];
 
+// Nav items whose real gate is a permission, not a fixed per-role
+// list — kept in sync with each item's own page-level gate ("SLA
+// Timing Matrix" -> sla:manage_policies, "Reporting Managers" ->
+// org:manage_reporting_managers). Previously these two were a
+// hardcoded two-role array, missing Site Lead for the SLA page
+// despite it holding sla:manage_policies. When a hasPermission
+// checker is passed to canSeeNavItem, an item listed here is
+// authoritative — visible to any role holding the mapped permission,
+// regardless of NAV_ITEMS_BY_ROLE — matching the page it points to
+// instead of duplicating a second, driftable role list.
+const NAV_ITEM_PERMISSION: Partial<Record<NavItemKey, string>> = {
+  "SLA Timing Matrix": "sla:manage_policies",
+  "Reporting Managers": "org:manage_reporting_managers",
+};
+
 export function getVisibleNavItems(role: string | undefined): NavItemKey[] {
   if (!role) return [];
   return NAV_ITEMS_BY_ROLE[role] ?? DEFAULT_NAV_ITEMS;
 }
 
-export function canSeeNavItem(role: string | undefined, item: NavItemKey): boolean {
+export function canSeeNavItem(
+  role: string | undefined,
+  item: NavItemKey,
+  hasPermission?: (permission: string) => boolean
+): boolean {
+  const permission = NAV_ITEM_PERMISSION[item];
+  if (permission && hasPermission) {
+    return hasPermission(permission);
+  }
   return getVisibleNavItems(role).includes(item);
 }
 

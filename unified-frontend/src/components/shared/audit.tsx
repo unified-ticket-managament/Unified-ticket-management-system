@@ -25,3 +25,26 @@ export function ActionIcon({ action }: { action: string }) {
   if (value.includes("logout")) return <LogOut className="h-4 w-4" />;
   return <Activity className="h-4 w-4" />;
 }
+
+// Same classification as actionBadgeVariant above, expressed as the
+// ticket-workspace's own Badge "tone" union instead of the shadcn
+// Badge "variant" union — used by normalizeAuditEvent.ts's centralized
+// adapter so a Centralized (RBAC-native) audit event's badge renders
+// through the exact same tone-based <Badge> component a ticket event's
+// badge already does. Deliberately a separate function rather than
+// changing actionBadgeVariant's return type, since that one still
+// backs the shadcn-Badge-based rendering on viewer-dashboard.tsx.
+export function centralizedAuditTone(
+  action: string
+): "default" | "success" | "warning" | "danger" | "info" | "accent" {
+  const value = action.toLowerCase();
+  if (value.includes("failed") || value.includes("reject") || value.includes("deactivate")) {
+    return "danger";
+  }
+  if (value.includes("delete") || value.includes("removed")) return "danger";
+  if (value.includes("create") || value.includes("activate") || value.includes("added")) {
+    return "success";
+  }
+  if (value.includes("update") || value.includes("changed")) return "info";
+  return "default";
+}

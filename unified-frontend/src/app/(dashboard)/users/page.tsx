@@ -70,7 +70,7 @@ import { useAuthStore } from "@/store/auth-store";
 import { useImpersonationStore } from "@/store/impersonation-store";
 import { Category, Role, User } from "@/types";
 
-type UserRow = User & { roleName: string; categoryNames: string[] };
+type UserRow = User & { roleName: string; categoryNames: { id: string; name: string }[] };
 
 // Not a real role_id — a synthetic value for the Role filter's
 // "Reporting Manager" option (see the filter's own comment below).
@@ -162,7 +162,7 @@ export default function UsersPage() {
       return {
         ...user,
         roleName: roleMap.get(user.role_id) ?? "Unassigned",
-        categoryNames: categoryIds.map((id) => categoryMap.get(id) ?? "Unknown"),
+        categoryNames: categoryIds.map((id) => ({ id, name: categoryMap.get(id) ?? "Unknown" })),
       };
     });
   }, [usersQuery.data, roleMap, categoryMap]);
@@ -272,7 +272,7 @@ export default function UsersPage() {
         user.name,
         user.email,
         user.roleName,
-        user.categoryNames.join("; ") || "—",
+        user.categoryNames.map((c) => c.name).join("; ") || "—",
         user.is_active ? "Active" : "Inactive",
         user.created_at,
       ]
@@ -354,9 +354,9 @@ export default function UsersPage() {
         cell: ({ row }) =>
           row.original.categoryNames.length > 0 ? (
             <div className="flex flex-wrap gap-1">
-              {row.original.categoryNames.map((name) => (
-                <Badge key={name} variant="secondary">
-                  {name}
+              {row.original.categoryNames.map((category) => (
+                <Badge key={category.id} variant="secondary">
+                  {category.name}
                 </Badge>
               ))}
             </div>

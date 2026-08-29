@@ -216,6 +216,13 @@ export default function RolesPage() {
   // comment for why: Mail Compose/filter/Rules picker/Create Dummy
   // Mail all depend on it staying unrestricted).
   const canViewClientDetails = hasPermission("client:view");
+  // Mirrors the backend's GET /roles/{id}/permissions gate (permission:view)
+  // — permissionsQuery previously fetched unconditionally and only branched
+  // on isLoading, so a 403 (e.g. Staff, who holds role:view but not
+  // permission:view) rendered identically to a genuinely empty role,
+  // "No permissions granted". See the roles/[id] detail page's own
+  // matching fix for the same bug.
+  const canViewPermissions = hasPermission("permission:view");
 
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
@@ -372,7 +379,7 @@ export default function RolesPage() {
   const permissionsQuery = useQuery({
     queryKey: ["role-permissions", selectedRole?.role_id],
     queryFn: () => permissionService.getRolePermissions(selectedRole!.role_id),
-    enabled: !!selectedRole,
+    enabled: !!selectedRole && canViewPermissions,
   });
   const rolePermissions: Permission[] = permissionsQuery.data ?? [];
   const permissionGroups = useMemo(
@@ -644,7 +651,12 @@ export default function RolesPage() {
                   </Button>
                 </CardHeader>
                 <CardContent className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
-                  {permissionsQuery.isLoading ? (
+                  {!canViewPermissions ? (
+                    <EmptyState
+                      title="Access restricted"
+                      description="You do not have permission to view this role's permissions."
+                    />
+                  ) : permissionsQuery.isLoading ? (
                     <WorkflowLoader loading size={40} />
                   ) : permissionGroups.length === 0 ? (
                     <EmptyState

@@ -49,12 +49,16 @@ class OrganizationService:
     `get_subordinate_user_ids` (used to scope permission-override grant
     authority — an unrelated, purely-RBAC concept) deliberately keeps
     using the narrower, private `_build_subtree` below, which reads
-    `manager_id`/`teamlead_id` and is role-shaped on purpose (Account
-    Manager's own reports are resolved only via the Team-Lead-role
-    tier, matching how override-grant authority has always been
-    scoped) — this is intentionally NOT the same traversal or the same
-    column `get_chart_for_user` uses, and must not be changed to match
-    it.
+    `manager_id`/`teamlead_id` and is role-shaped on purpose — this is
+    intentionally NOT the same traversal or the same column
+    `get_chart_for_user` uses, and must not be changed to match it.
+    An Account Manager's own reports are the UNION of two independent,
+    still purely role/manager_id-shaped edges: Team Leads whose
+    `manager_id` is the AM (each expanded to their own Staff via
+    `teamlead_id`), and Staff whose `manager_id` points straight at
+    the AM with no Team Lead in between — both are valid, real
+    reporting shapes (see root CLAUDE.md's "Organization Structure"
+    section), so both must be visible to override-grant scoping.
     """
 
     def __init__(
@@ -174,13 +178,25 @@ class OrganizationService:
             children_users = await self._all_by_role("Account Manager")
 
         elif role_name == "Account Manager":
+            # Union of two independent, valid reporting shapes — see
+            # this module's own docstring. Team Leads reporting to the
+            # AM (each recursed below to pick up their own Staff via
+            # teamlead_id), AND Staff reporting straight to the AM with
+            # no Team Lead in between. Neither branch assumes the
+            # other exists; a real org can have both at once.
             team_lead_role = await self.role_repository.get_by_name("Team Lead")
+            staff_role = await self.role_repository.get_by_name("Staff")
 
             if team_lead_role is not None:
-                children_users = await self.user_repository.get_by_manager_and_role(
+                children_users += await self.user_repository.get_by_manager_and_role(
                     user.user_id,
                     team_lead_role.role_id,
                     include_inactive=include_inactive,
+                )
+            if staff_role is not None:
+                children_users += await self.user_repository.get_by_manager_and_role(
+                    user.user_id,
+                    staff_role.role_id,
                 )
 
         elif role_name == "Team Lead":
@@ -224,6 +240,13 @@ class OrganizationService:
         get_reporting_scope_user_ids (Users-page visibility) passes
         True, so a deactivated report doesn't drop out of its own
         manager's Users-page view.
+        only: both Team-Lead-mediated reports and Staff reporting
+        directly to the AM (see _build_subtree's Account Manager
+        branch). Must stay role-shaped exactly as it always has;
+        widening it to match the Organization Chart's own literal
+        `reporting_manager_id` traversal would change who an Account
+        Manager can grant/revoke permissions for via a completely
+        different, independently-editable column — out of scope here.
         """
 
         root = await self._build_subtree(user, include_inactive=include_inactive)

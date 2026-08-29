@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -8,6 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import User
 
 from app.notifications.service import NotificationService
+# Company-wide SLA policy edits are a system administrative config
+# change, not ticket-related activity — logged into RBAC's own
+# audit_logs table (Centralized Audit Log) rather than
+# ticket_audit_logs, mirroring RuleService/MailFolderService's
+# identical cross-module import (see those files' own comments). See
+# root CLAUDE.md's audit-log separation section.
+from app.rbac.repositories.audit_log_repository import AuditLogRepository as RbacAuditLogRepository
+from app.rbac.schemas.audit_log import AuditLogCreate as RbacAuditLogCreate
+from app.rbac.services.audit_log_service import AuditLogService as RbacAuditLogService
 from app.ticketing.enums import (
     AuditEntityType,
     AuditEventType,
@@ -735,6 +745,36 @@ class SLAService:
                 ),
             )
 
+        # Snapshotted before the mutation below — sla_policy_repository
+        # .update() mutates this same `policy` object in place, so its
+        # fields must be read now to form a real old-value diff.
+        # Company-wide config, no ticket involved at all — logged into
+        # RBAC's own audit_logs table (Centralized Audit Log), not
+        # ticket_audit_logs, for the same reason as RuleService/
+        # MailFolderService above: a non-ticket-scoped row would be
+        # unreachable through any existing ticket-audit read path. See
+        # root CLAUDE.md's audit-log separation section.
+        _SLA_POLICY_FIELDS = (
+            "first_response_target_minutes",
+            "resolution_target_minutes",
+            "escalation_ack_target_minutes",
+            "handling_sla_percentage",
+            "handling_stage_percentages",
+            "warning_1_percentage",
+            "warning_2_percentage",
+            "is_active",
+        )
+        old_values = {
+            field: getattr(policy, field)
+            for field in _SLA_POLICY_FIELDS
+            if getattr(request, field) is not None
+        }
+        new_values = {
+            field: getattr(request, field)
+            for field in _SLA_POLICY_FIELDS
+            if getattr(request, field) is not None
+        }
+
         updated = await self.sla_policy_repository.update(
             policy,
             first_response_target_minutes=request.first_response_target_minutes,
@@ -746,6 +786,21 @@ class SLAService:
             warning_2_percentage=request.warning_2_percentage,
             is_active=request.is_active,
         )
+
+        if old_values:
+            rbac_audit_log_service = RbacAuditLogService(
+                audit_log_repository=RbacAuditLogRepository(self.sla_policy_repository.db)
+            )
+            await rbac_audit_log_service.create_log(
+                RbacAuditLogCreate(
+                    user_id=current_user.user_id,
+                    action="sla_policy.update",
+                    entity_type="sla_policy",
+                    entity_id=str(policy_id),
+                    old_value=json.dumps(old_values, default=str),
+                    new_value=json.dumps(new_values, default=str),
+                )
+            )
 
         return SLAPolicyResponse.model_validate(updated)
 

@@ -38,11 +38,13 @@ from app.rbac.api.v1.permissions import (
     list_permissions,
     update_permission,
 )
+from app.rbac.repositories.audit_log_repository import AuditLogRepository
 from app.rbac.repositories.permission_repository import PermissionRepository
 from app.rbac.repositories.role_permission_repository import RolePermissionRepository
 from app.rbac.repositories.role_repository import RoleRepository
 from app.rbac.repositories.user_repository import UserRepository
 from app.rbac.schemas.permission import PermissionCreate, PermissionUpdate
+from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.permission_service import PermissionService
 
 
@@ -61,6 +63,9 @@ def _build_permission_service(session) -> PermissionService:
         permission_repository=PermissionRepository(session),
         role_permission_repository=RolePermissionRepository(session),
         user_repository=UserRepository(session),
+        audit_log_service=AuditLogService(
+            audit_log_repository=AuditLogRepository(session),
+        ),
     )
 
 

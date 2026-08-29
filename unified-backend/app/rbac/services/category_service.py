@@ -1,15 +1,18 @@
+import json
 from uuid import UUID
 
 from fastapi import HTTPException, status
 
 from shared_models.models import Category, User
 
-from app.rbac.repositories import CategoryRepository, UserRepository
+from app.rbac.repositories import CategoryRepository, ReportingManagerRepository, UserRepository
+from app.rbac.schemas.audit_log import AuditLogCreate
 from app.rbac.schemas.category import (
     CategoryCreate,
     CategoryMemberResponse,
     CategoryUpdate,
 )
+from app.rbac.services.audit_log_service import AuditLogService
 from app.ticketing.repositories.client_repository import ClientRepository
 
 
@@ -25,10 +28,18 @@ class CategoryService:
         self,
         category_repository: CategoryRepository,
         user_repository: UserRepository,
+        reporting_manager_repository: ReportingManagerRepository,
+        audit_log_service: AuditLogService,
         client_repository: ClientRepository | None = None,
     ):
         self.category_repository = category_repository
         self.user_repository = user_repository
+        # Used by delete_category's pre-delete guard — a category with
+        # an active Account Manager Reporting Manager mapping must not
+        # be silently cascade-deleted (see reporting_manager_teams'
+        # ON DELETE CASCADE FK).
+        self.reporting_manager_repository = reporting_manager_repository
+        self.audit_log_service = audit_log_service
         # Optional — only needed for the inbox_email cross-table
         # uniqueness check below, mirrors this codebase's existing
         # optional-dependency convention (e.g. EmailService's own
@@ -135,6 +146,18 @@ class CategoryService:
             assigned_by=actor.user_id if actor else None,
         )
 
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="category.create",
+                entity_type="category",
+                entity_id=str(category.category_id),
+                new_value=json.dumps(
+                    {"category_name": name, "inbox_email": inbox_email}
+                ),
+            )
+        )
+
         category.assigned_user_count = len(user_ids)
         return category
 
@@ -157,9 +180,13 @@ class CategoryService:
                 detail="Category not found.",
             )
 
-        category.assigned_user_count = await self.category_repository.get_users_count(
+        member_count = await self.category_repository.get_users_count(
             category.category_id
         )
+        am_ids = await self.reporting_manager_repository.list_account_manager_ids_by_category(
+            category.category_id
+        )
+        category.assigned_user_count = member_count + len(set(am_ids))
 
         return category
 
@@ -173,11 +200,19 @@ class CategoryService:
             page_size,
         )
 
-        counts = await self.category_repository.get_counts_by_category_ids(
-            [category.category_id for category in categories]
+        category_ids = [category.category_id for category in categories]
+        counts = await self.category_repository.get_counts_by_category_ids(category_ids)
+        # Reporting-Manager-mapped Account Managers aren't in
+        # user_categories, so they'd otherwise be invisible in the
+        # "Assigned Users" column despite being genuinely assigned to
+        # the category.
+        am_counts = await self.reporting_manager_repository.get_counts_by_category_ids(
+            category_ids
         )
         for category in categories:
-            category.assigned_user_count = counts.get(category.category_id, 0)
+            category.assigned_user_count = counts.get(
+                category.category_id, 0
+            ) + am_counts.get(category.category_id, 0)
 
         return categories, total
 
@@ -189,6 +224,7 @@ class CategoryService:
         self,
         category_id: UUID,
         category_data: CategoryUpdate,
+        actor: User | None = None,
     ) -> Category:
 
         category = await self.get_category(category_id)
@@ -196,6 +232,11 @@ class CategoryService:
         update_data = category_data.model_dump(
             exclude_unset=True
         )
+
+        # Snapshot only the fields actually being changed, before
+        # they're overwritten below — mirrors UserService.update_user's
+        # "diff of just the changed fields" audit convention.
+        old_values = {field: getattr(category, field) for field in update_data}
 
         if "category_name" in update_data:
             name = (update_data["category_name"] or "").strip()
@@ -232,6 +273,19 @@ class CategoryService:
         assigned_user_count = category.assigned_user_count
         updated = await self.category_repository.update(category)
         updated.assigned_user_count = assigned_user_count
+
+        new_values = {field: update_data[field] for field in old_values}
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="category.update",
+                entity_type="category",
+                entity_id=str(category_id),
+                old_value=json.dumps(old_values, default=str),
+                new_value=json.dumps(new_values, default=str),
+            )
+        )
+
         return updated
 
     # --------------------------------------------------
@@ -260,6 +314,7 @@ class CategoryService:
         self,
         category_id: UUID,
         user_ids: list[UUID],
+        actor: User | None = None,
     ) -> list[CategoryMemberResponse]:
         """
         Full-replace this category's membership set — diffs the
@@ -294,6 +349,22 @@ class CategoryService:
                 category_id, to_remove
             )
 
+        if to_add or to_remove:
+            await self.audit_log_service.create_log(
+                AuditLogCreate(
+                    user_id=actor.user_id if actor else None,
+                    action="category.members_set",
+                    entity_type="category",
+                    entity_id=str(category_id),
+                    new_value=json.dumps(
+                        {
+                            "added": [str(i) for i in to_add],
+                            "removed": [str(i) for i in to_remove],
+                        }
+                    ),
+                )
+            )
+
         return await self.get_members(category_id)
 
     # --------------------------------------------------
@@ -303,9 +374,32 @@ class CategoryService:
     async def delete_category(
         self,
         category_id: UUID,
+        actor: User | None = None,
     ):
 
         category = await self.get_category(category_id)
+
+        # reporting_manager_teams.category_id is ON DELETE CASCADE —
+        # without this check, deleting a category would silently wipe
+        # out any Account Manager's active Reporting Manager mapping
+        # to it with no warning and no audit trail. Checked before the
+        # generic member-count guard below so this more specific
+        # message wins even though assigned_user_count (get_category()
+        # above) now folds the mapped Account Manager(s) into the same
+        # total.
+        reporting_manager_ids = (
+            await self.reporting_manager_repository.list_account_manager_ids_by_category(
+                category_id
+            )
+        )
+        if reporting_manager_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Category cannot be deleted because it has an active "
+                    "Reporting Manager assignment."
+                ),
+            )
 
         # get_category() above already computed this.
         user_count = category.assigned_user_count
@@ -315,5 +409,15 @@ class CategoryService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Category cannot be deleted because it is assigned to users.",
             )
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="category.delete",
+                entity_type="category",
+                entity_id=str(category_id),
+                old_value=json.dumps({"category_name": category.category_name}),
+            )
+        )
 
         await self.category_repository.delete(category)

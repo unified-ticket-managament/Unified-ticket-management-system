@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
 from app.database.session import get_db
+from app.rbac.repositories.audit_log_repository import AuditLogRepository
 from app.rbac.repositories.permission_repository import PermissionRepository
 from app.rbac.repositories.role_permission_repository import RolePermissionRepository
 from app.rbac.repositories.user_repository import UserRepository
@@ -15,6 +16,7 @@ from app.rbac.schemas.permission import (
     PermissionUpdate,
 )
 from app.rbac.services.access_control import ensure_has_permission
+from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.permission_service import PermissionService
 
 router = APIRouter(
@@ -38,11 +40,15 @@ def get_permission_service(
     permission_repository = PermissionRepository(db)
     role_permission_repository = RolePermissionRepository(db)
     user_repository = UserRepository(db)
+    audit_log_service = AuditLogService(
+        audit_log_repository=AuditLogRepository(db),
+    )
 
     return PermissionService(
         permission_repository=permission_repository,
         role_permission_repository=role_permission_repository,
         user_repository=user_repository,
+        audit_log_service=audit_log_service,
     )
 
 
@@ -70,6 +76,7 @@ async def create_permission(
 
     return await service.create_permission(
         permission_data,
+        actor=current_user,
     )
 
 
@@ -160,6 +167,7 @@ async def update_permission(
     return await service.update_permission(
         permission_id,
         permission_data,
+        actor=current_user,
     )
 
 
@@ -186,4 +194,5 @@ async def delete_permission(
 
     await service.delete_permission(
         permission_id,
+        actor=current_user,
     )

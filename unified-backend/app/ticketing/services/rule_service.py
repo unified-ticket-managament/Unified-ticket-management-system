@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Iterable
 from uuid import UUID
@@ -29,6 +30,22 @@ from app.ticketing.services.rule_folder_sync import (
     folder_names_from_actions,
 )
 
+# Rule create/update/enable/disable/delete/reorder are system
+# administrative config changes, not "ticket-related audit activity" —
+# they're deliberately logged into RBAC's own audit_logs table (via
+# its AuditLogService), not this domain's ticket_audit_logs, so they
+# actually surface in the Centralized Audit Log rather than being
+# silently unreachable there (ticket_audit_logs rows require a real
+# ticket_id to be retrievable through any existing read path — see
+# root CLAUDE.md's audit-log separation section). This is a
+# deliberate, one-off cross-module import — app.ticketing importing
+# from app.rbac — mirrored already in the opposite direction by
+# app.rbac.services.permission_request_service, since both domains are
+# one process now.
+from app.rbac.repositories.audit_log_repository import AuditLogRepository as RbacAuditLogRepository
+from app.rbac.schemas.audit_log import AuditLogCreate as RbacAuditLogCreate
+from app.rbac.services.audit_log_service import AuditLogService as RbacAuditLogService
+
 RULE_MANAGE_PERMISSION = "rule:manage"
 
 logger = logging.getLogger(__name__)
@@ -56,16 +73,16 @@ def _ensure_can_manage(
 
 class RuleService:
     """
-    CRUD + ordering for Mail/OTP Rules. No audit logging (mirrors
-    MailFolderService's own reasoning — creating/editing an automation
-    rule is an org-config action, not a client-communication event);
-    execution-time behavior (what a matching rule actually does,
-    e.g. actually filing a message into a folder or sending a
-    forward) is RuleEngineService's job, not this one's — the one
-    exception is eagerly creating a create_folder/move_to_folder
-    action's target MailFolder row (see ensure_action_folders) so the
-    folder exists, correctly scoped, the instant the rule is saved
-    rather than waiting for the first matching email.
+    CRUD + ordering for Mail/OTP Rules. Create/update/enable/disable/
+    delete/reorder are audit-logged (into RBAC's audit_logs table —
+    see the import comment above for why); execution-time behavior
+    (what a matching rule actually does, e.g. actually filing a
+    message into a folder or sending a forward) is RuleEngineService's
+    job, not this one's — the one exception is eagerly creating a
+    create_folder/move_to_folder action's target MailFolder row (see
+    ensure_action_folders) so the folder exists, correctly scoped, the
+    instant the rule is saved rather than waiting for the first
+    matching email.
     """
 
     def __init__(
@@ -79,6 +96,29 @@ class RuleService:
         self.mail_folder_repository = mail_folder_repository
         self.distribution_list_repository = distribution_list_repository
         self.interaction_repository = interaction_repository
+
+    async def _log_rule_action(
+        self,
+        *,
+        current_user: User,
+        action: str,
+        entity_id: UUID,
+        old_value: dict | None = None,
+        new_value: dict | None = None,
+    ) -> None:
+        audit_log_service = RbacAuditLogService(
+            audit_log_repository=RbacAuditLogRepository(self.rule_repository.db)
+        )
+        await audit_log_service.create_log(
+            RbacAuditLogCreate(
+                user_id=current_user.user_id,
+                action=action,
+                entity_type="rule",
+                entity_id=str(entity_id),
+                old_value=json.dumps(old_value) if old_value is not None else None,
+                new_value=json.dumps(new_value) if new_value is not None else None,
+            )
+        )
 
     async def _user_distribution_list_ids(self, current_user: User) -> set[UUID]:
         return await self.distribution_list_repository.list_active_list_ids_for_user(
@@ -203,6 +243,17 @@ class RuleService:
             mail_folder_repository=self.mail_folder_repository,
         )
 
+        await self._log_rule_action(
+            current_user=current_user,
+            action="rule.create",
+            entity_id=created.rule_id,
+            new_value={
+                "name": created.name,
+                "category": created.category,
+                "is_enabled": created.is_enabled,
+            },
+        )
+
         return RuleResponse.model_validate(created)
 
     async def update(self, rule_id: UUID, request: RuleUpdate, current_user: User) -> RuleResponse:
@@ -213,6 +264,12 @@ class RuleService:
         await self._validate_shared_distribution_lists(
             request.shared_distribution_list_ids
         )
+
+        old_values = {
+            "name": rule.name,
+            "is_enabled": rule.is_enabled,
+            "stop_processing": rule.stop_processing,
+        }
 
         rule.name = request.name
         rule.is_enabled = request.is_enabled
@@ -238,6 +295,18 @@ class RuleService:
             mail_folder_repository=self.mail_folder_repository,
         )
 
+        await self._log_rule_action(
+            current_user=current_user,
+            action="rule.update",
+            entity_id=saved.rule_id,
+            old_value=old_values,
+            new_value={
+                "name": saved.name,
+                "is_enabled": saved.is_enabled,
+                "stop_processing": saved.stop_processing,
+            },
+        )
+
         return RuleResponse.model_validate(saved)
 
     async def set_enabled(self, rule_id: UUID, is_enabled: bool, current_user: User) -> RuleResponse:
@@ -245,8 +314,18 @@ class RuleService:
         rule = await self._get_or_404(rule_id)
         user_dl_ids = await self._user_distribution_list_ids(current_user)
         _ensure_can_manage(rule, current_user, user_dl_ids)
+        old_is_enabled = rule.is_enabled
         rule.is_enabled = is_enabled
         saved = await self.rule_repository.save(rule)
+
+        await self._log_rule_action(
+            current_user=current_user,
+            action="rule.enabled" if is_enabled else "rule.disabled",
+            entity_id=saved.rule_id,
+            old_value={"is_enabled": old_is_enabled},
+            new_value={"is_enabled": is_enabled},
+        )
+
         return RuleResponse.model_validate(saved)
 
     async def delete(self, rule_id: UUID, current_user: User) -> None:
@@ -257,6 +336,7 @@ class RuleService:
 
         logger.info("RULE_DELETE_STARTED rule_id=%s rule_name=%r", rule.rule_id, rule.name)
 
+        old_values = {"name": rule.name, "category": rule.category}
         folder_names = folder_names_from_actions(rule.actions)
 
         # Computed against every *other* rule before this one is
@@ -285,6 +365,13 @@ class RuleService:
                 )
 
         await self.rule_repository.delete(rule)
+
+        await self._log_rule_action(
+            current_user=current_user,
+            action="rule.delete",
+            entity_id=rule_id,
+            old_value=old_values,
+        )
 
         # Same request/transaction as the rule delete above — if
         # anything below raises, the whole thing (rule delete
@@ -393,6 +480,13 @@ class RuleService:
 
         await self.rule_repository.save(rule)
         await self.rule_repository.save(neighbor)
+
+        await self._log_rule_action(
+            current_user=current_user,
+            action="rule.reordered",
+            entity_id=rule.rule_id,
+            new_value={"direction": request.direction, "rule_id": str(rule_id)},
+        )
 
         refreshed = await self._visible_rules_for_reorder(
             rule.category, current_user, user_dl_ids

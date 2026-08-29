@@ -228,7 +228,32 @@ class DistributionListService:
     async def delete(self, distribution_list_id: UUID, current_user: User) -> None:
         ensure_has_permission(current_user, DISTRIBUTION_LIST_MANAGE_PERMISSION)
         dl = await self._get_or_404(distribution_list_id)
+
+        old_values = {"name": dl.name, "description": dl.description, "is_active": dl.is_active}
         await self.repository.delete(dl)
+
+        # Same known limitation as every other DISTRIBUTION_LIST_*
+        # event in this file: ticket_id is always NULL for this entity
+        # type (no ticket involved), and AuditLogRepository.
+        # list_visible_page/list_by_ticket/list_by_ticket_ids all
+        # require a real ticket_id — so this row, like its siblings
+        # above, is not retrievable through either existing Audit Log
+        # view today. Kept in ticket_audit_logs (not RBAC's audit_logs)
+        # for consistency with the rest of this entity type's
+        # already-shipped data; fixing retrievability for the whole
+        # entity type is a separate, out-of-scope follow-up. See root
+        # CLAUDE.md's audit-log separation section.
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(current_user)
+        await AuditLogService.log_event(
+            self.repository.db,
+            entity_type=AuditEntityType.DISTRIBUTION_LIST,
+            entity_id=distribution_list_id,
+            event_type=AuditEventType.DISTRIBUTION_LIST_DELETED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values=old_values,
+        )
 
     async def _get_or_404(self, distribution_list_id: UUID) -> DistributionList:
         dl = await self.repository.get_by_id(distribution_list_id)

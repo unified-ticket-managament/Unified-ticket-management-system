@@ -78,14 +78,40 @@ export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerP
       .map((id) => categories.find((c) => c.category_id === id)?.category_name)
       .filter((name): name is string => !!name);
   }, [categories, user]);
-  const managerName = useMemo(
-    () => allUsers.find((u) => u.user_id === user?.manager_id)?.name ?? "—",
-    [allUsers, user]
-  );
-  const teamLeadName = useMemo(
-    () => allUsers.find((u) => u.user_id === user?.teamlead_id)?.name ?? "—",
-    [allUsers, user]
-  );
+  // GET /users/{id} (unlike the bulk GET /users the drawer already fetches
+  // above) has no reporting-hierarchy scoping — only `user:view` is
+  // required — so it resolves the manager/team-lead name correctly even
+  // when the viewer's own scoped `allUsers` list doesn't include that
+  // person (e.g. a Staff viewer's own `usersQuery` only ever contains
+  // themselves, per UserService.list_users' visibility rules, which
+  // previously made every Staff member's own manager/team lead render as
+  // "—" despite both being genuinely assigned in the database).
+  const managerDetailQuery = useQuery({
+    queryKey: ["user-detail", user?.manager_id],
+    queryFn: () => userService.get(user!.manager_id!),
+    enabled: open && !!user?.manager_id,
+  });
+  const teamLeadDetailQuery = useQuery({
+    queryKey: ["user-detail", user?.teamlead_id],
+    queryFn: () => userService.get(user!.teamlead_id!),
+    enabled: open && !!user?.teamlead_id,
+  });
+  const managerName = useMemo(() => {
+    if (!user?.manager_id) return "—";
+    return (
+      allUsers.find((u) => u.user_id === user.manager_id)?.name ??
+      managerDetailQuery.data?.name ??
+      "—"
+    );
+  }, [allUsers, user, managerDetailQuery.data]);
+  const teamLeadName = useMemo(() => {
+    if (!user?.teamlead_id) return "—";
+    return (
+      allUsers.find((u) => u.user_id === user.teamlead_id)?.name ??
+      teamLeadDetailQuery.data?.name ??
+      "—"
+    );
+  }, [allUsers, user, teamLeadDetailQuery.data]);
 
   // Reporting Structure visibility depends on the SELECTED user's role, not
   // the viewer's role: a Manager reports to no one, a Team Lead only

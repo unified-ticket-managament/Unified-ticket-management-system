@@ -549,6 +549,8 @@ class UserService:
         user_id: UUID,
         category_ids: list[UUID],
         actor: User | None = None,
+        *,
+        log: bool = True,
     ) -> User:
         """
         Full-replace a user's category-membership set (the
@@ -565,6 +567,18 @@ class UserService:
         exactly that case, since it only compares the scalar field.
         Same pattern as activate_user/deactivate_user's own
         unconditional bumps.
+
+        `log` defaults to True (this method is the only place a
+        category-membership change is ever actually persisted, so it's
+        the right place to audit-log it too) — pass `log=False` only
+        from a caller whose own audit row already captures the same
+        change, to avoid writing two rows for one HTTP request. As of
+        this writing, that's just update_user's legacy singular
+        `category_id` branch, whose own `user.update` row already
+        includes `category_id` in its old/new value diff (see that
+        call site's own comment). create_user's own call keeps
+        `log=True` — `user.create`'s row only captures name/email/
+        role_id, never the initial category assignment.
         """
 
         user = await self.user_repository.get_by_id(user_id)
@@ -582,6 +596,8 @@ class UserService:
                     detail="One or more categories were not found.",
                 )
 
+        old_category_ids = [c.category_id for c in user.categories]
+
         await self.user_repository.replace_categories(
             user_id,
             category_ids,
@@ -596,6 +612,19 @@ class UserService:
         # than re-reading `.categories` after update()'s own refresh(),
         # which may or may not still have it loaded.
         user.category_ids = category_ids
+
+        if log:
+            await self.audit_log_service.create_log(
+                AuditLogCreate(
+                    user_id=actor.user_id if actor else None,
+                    action="user.categories_set",
+                    entity_type="user",
+                    entity_id=str(user_id),
+                    old_value=json.dumps({"category_ids": [str(c) for c in old_category_ids]}),
+                    new_value=json.dumps({"category_ids": [str(c) for c in category_ids]}),
+                )
+            )
+
         return user
 
     async def _validate_manager_and_teamlead(
@@ -1082,10 +1111,16 @@ class UserService:
             user = await self.set_user_categories(user.user_id, category_ids_update, actor)
         elif "category_id" in update_data:
             legacy_category_id = update_data["category_id"]
+            # log=False: category_id is still in update_data at this
+            # point (only the plural category_ids is popped above), so
+            # the user.update row logged just below already captures
+            # this exact change in its old/new value diff — logging
+            # again here would duplicate it.
             user = await self.set_user_categories(
                 user.user_id,
                 [legacy_category_id] if legacy_category_id is not None else [],
                 actor,
+                log=False,
             )
         else:
             user.category_ids = existing_category_ids_snapshot

@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -117,6 +117,33 @@ class ReportingManagerRepository(BaseRepository):
             )
         )
         return list(result.scalars().all())
+
+    async def get_counts_by_category_ids(
+        self, category_ids: list[UUID]
+    ) -> dict[UUID, int]:
+        """
+        Batch count of distinct Account Managers Reporting-Manager-
+        mapped to each category — the reporting_manager_teams
+        counterpart to CategoryRepository.get_counts_by_category_ids
+        (user_categories). Folded into CategoryService's
+        assigned_user_count so the Category Management UI's "Assigned
+        Users" column reflects the Account Manager too, not just Team
+        Leads/Staff. A category with no mapping simply has no key
+        here; callers should default missing entries to 0.
+        """
+
+        if not category_ids:
+            return {}
+
+        result = await self.db.execute(
+            select(
+                ReportingManagerTeam.category_id,
+                func.count(func.distinct(ReportingManagerTeam.account_manager_id)),
+            )
+            .where(ReportingManagerTeam.category_id.in_(category_ids))
+            .group_by(ReportingManagerTeam.category_id)
+        )
+        return dict(result.all())
 
     async def list_account_manager_ids_among(
         self, user_ids: list[UUID]

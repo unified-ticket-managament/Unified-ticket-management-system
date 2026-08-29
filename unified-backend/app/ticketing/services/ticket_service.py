@@ -979,11 +979,19 @@ class TicketService:
         clients, Team Lead to their own category/team, Staff to just
         their own assigned tickets, Site Lead/Super Admin unrestricted
         (unchanged from before) — and `ticket:view_global_audit_log`
-        is never checked at all for that default view. Passing
-        `centralized=True` requests the unrestricted, company-wide log
-        instead; that's the one and only thing this permission gates.
-        Site Lead/Super Admin get the unrestricted view regardless of
-        `centralized`, matching their existing default.
+        is never checked at all for that default view.
+
+        Passing `centralized=True` requests the permission-gated view
+        instead — but `ticket:view_global_audit_log` does **not** grant
+        company-wide visibility to anyone below Site Lead/Super Admin.
+        For Account Manager/Team Lead/Staff, it only ever unlocks the
+        tickets that specific person is personally assigned to
+        (`Ticket.agent_id == current_user.user_id` — the same scope
+        Staff's own default view already uses), never every ticket in
+        the company. Site Lead/Super Admin get the unrestricted view
+        regardless of `centralized` (their own overseer bypass,
+        unaffected by this permission either way), matching their
+        existing default.
         """
 
         if self.audit_log_repository is None:
@@ -992,7 +1000,19 @@ class TicketService:
         is_global_role = current_user.role.name in GLOBAL_INBOX_ROLE_NAMES
         if centralized and not is_global_role:
             ensure_has_permission(current_user, "ticket:view_global_audit_log")
-        unrestricted = is_global_role or centralized
+        # Only Site Lead/Super Admin's own unconditional overseer bypass
+        # is truly unrestricted (unchanged). `ticket:view_global_audit_log`
+        # itself never grants company-wide visibility to anyone below
+        # that — see `centralized_scoped_to_own_tickets` below for what
+        # it actually unlocks.
+        unrestricted = is_global_role
+        # Requesting `centralized=True` without already being a global
+        # role means the caller is exercising `ticket:view_global_audit_log`
+        # (just checked above) — this only ever unlocks the tickets that
+        # specific person is personally working (`Ticket.agent_id ==
+        # current_user.user_id`), the same scope Staff's own default view
+        # already uses, never the whole company's tickets.
+        centralized_scoped_to_own_tickets = centralized and not is_global_role
 
         if limit is not None:
             if unrestricted:
@@ -1000,6 +1020,11 @@ class TicketService:
                 ticket_types = None
                 agent_ids = None
                 assigned_to = None
+            elif centralized_scoped_to_own_tickets:
+                account_manager_id = None
+                ticket_types = None
+                agent_ids = None
+                assigned_to = current_user.user_id
             else:
                 account_manager_id = (
                     current_user.user_id
@@ -1074,6 +1099,10 @@ class TicketService:
             owned_client_ids = None
             ticket_types = None
             agent_ids = None
+        elif centralized_scoped_to_own_tickets:
+            owned_client_ids = None
+            ticket_types = None
+            agent_ids = [current_user.user_id]
         else:
             owned_client_ids = await self._resolve_owned_client_ids(current_user)
             agent_ids = await self._resolve_audit_log_agent_ids(current_user)

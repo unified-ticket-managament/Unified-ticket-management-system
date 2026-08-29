@@ -123,6 +123,12 @@ export function UserPermissionOverrides({
 
         {overridesQuery.isLoading ? (
           <Skeleton className="mt-3 h-16 w-full rounded-lg" />
+        ) : overridesQuery.isError ? (
+          <p className="mt-3 text-xs text-destructive">
+            {(overridesQuery.error as AxiosError)?.response?.status === 403
+              ? "You don't have permission to view this user's personal grants."
+              : "Failed to load personal grants. Please try again."}
+          </p>
         ) : overrides.length === 0 ? (
           <p className="mt-3 text-xs text-muted-foreground">
             No personal grants yet.

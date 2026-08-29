@@ -1,6 +1,9 @@
+import json
 from uuid import UUID
 
 from fastapi import HTTPException, status
+
+from shared_models.models import User
 
 from app.rbac.models.permission import Permission
 from app.rbac.repositories import (
@@ -8,7 +11,9 @@ from app.rbac.repositories import (
     RolePermissionRepository,
     UserRepository,
 )
+from app.rbac.schemas.audit_log import AuditLogCreate
 from app.rbac.schemas.permission import PermissionCreate, PermissionUpdate
+from app.rbac.services.audit_log_service import AuditLogService
 
 
 class PermissionService:
@@ -21,10 +26,12 @@ class PermissionService:
         permission_repository: PermissionRepository,
         role_permission_repository: RolePermissionRepository,
         user_repository: UserRepository,
+        audit_log_service: AuditLogService,
     ):
         self.permission_repository = permission_repository
         self.role_permission_repository = role_permission_repository
         self.user_repository = user_repository
+        self.audit_log_service = audit_log_service
 
     # --------------------------------------------------
     # Create Permission
@@ -33,6 +40,7 @@ class PermissionService:
     async def create_permission(
         self,
         permission_data: PermissionCreate,
+        actor: User | None = None,
     ) -> Permission:
 
         exists = await self.permission_repository.exists(
@@ -50,7 +58,24 @@ class PermissionService:
             description=permission_data.description,
         )
 
-        return await self.permission_repository.create(permission)
+        permission = await self.permission_repository.create(permission)
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="permission.create",
+                entity_type="permission",
+                entity_id=str(permission.permission_id),
+                new_value=json.dumps(
+                    {
+                        "permission_name": permission.permission_name,
+                        "description": permission.description,
+                    }
+                ),
+            )
+        )
+
+        return permission
 
     # --------------------------------------------------
     # Get Permission
@@ -109,6 +134,7 @@ class PermissionService:
         self,
         permission_id: UUID,
         permission_data: PermissionUpdate,
+        actor: User | None = None,
     ) -> Permission:
 
         permission = await self.get_permission(permission_id)
@@ -132,10 +158,26 @@ class PermissionService:
                     detail="Permission already exists.",
                 )
 
+        old_values = {field: getattr(permission, field) for field in update_data}
+
         for field, value in update_data.items():
             setattr(permission, field, value)
 
-        return await self.permission_repository.update(permission)
+        permission = await self.permission_repository.update(permission)
+
+        if update_data:
+            await self.audit_log_service.create_log(
+                AuditLogCreate(
+                    user_id=actor.user_id if actor else None,
+                    action="permission.update",
+                    entity_type="permission",
+                    entity_id=str(permission.permission_id),
+                    old_value=json.dumps(old_values),
+                    new_value=json.dumps(update_data),
+                )
+            )
+
+        return permission
 
     # --------------------------------------------------
     # Delete Permission
@@ -144,9 +186,14 @@ class PermissionService:
     async def delete_permission(
         self,
         permission_id: UUID,
+        actor: User | None = None,
     ) -> None:
 
         permission = await self.get_permission(permission_id)
+        old_values = {
+            "permission_name": permission.permission_name,
+            "description": permission.description,
+        }
 
         # Every role currently holding this permission must be resolved
         # *before* the delete below — the join this depends on returns
@@ -170,4 +217,14 @@ class PermissionService:
             await self.user_repository.bump_permission_version_for_role(
                 role_id
             )
+
+        await self.audit_log_service.create_log(
+            AuditLogCreate(
+                user_id=actor.user_id if actor else None,
+                action="permission.delete",
+                entity_type="permission",
+                entity_id=str(permission_id),
+                old_value=json.dumps(old_values),
+            )
+        )
 

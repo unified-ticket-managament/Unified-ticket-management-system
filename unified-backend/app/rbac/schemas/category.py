@@ -57,10 +57,12 @@ class CategoryResponse(ORMBase):
     category_id: UUID
     category_name: str
     inbox_email: str | None = None
-    # Live count of users holding this category via user_categories —
-    # populated by CategoryService (batch query, not per-row), 0 when
-    # not computed by a given caller. Purely for display (the Category
-    # Management UI's "Assigned Users" column).
+    # Live count of users holding this category via user_categories,
+    # plus any Account Manager(s) Reporting-Manager-mapped to it via
+    # reporting_manager_teams — populated by CategoryService (batch
+    # query, not per-row), 0 when not computed by a given caller.
+    # Purely for display (the Category Management UI's "Assigned
+    # Users" column).
     assigned_user_count: int = 0
 
 

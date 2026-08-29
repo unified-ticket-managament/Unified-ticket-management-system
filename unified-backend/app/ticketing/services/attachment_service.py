@@ -862,8 +862,42 @@ class AttachmentService:
         # Site Lead/Account Manager (own clients, checked above), a
         # personal override for everyone else.
         ensure_has_permission(current_user, "ticket:archive_attachment")
+
+        # Re-fetch for ticket_id — _resolve_and_authorize already
+        # validated access via this same interaction; this is just
+        # re-reading the already-known-good ticket_id for the audit
+        # row below (mirroring upload_attachment's own "ticket_id" key
+        # in new_values, which is what AuditLogRepository._derive_
+        # ticket_id reads for a non-TICKET entity, even on a delete).
+        interaction = await self.interaction_repository.get_by_id(
+            attachment.interaction_id
+        )
+        ticket_id = interaction.ticket_id if interaction else None
+
+        old_values = {
+            "filename": attachment.filename,
+            "mime_type": attachment.mime_type,
+            "size_bytes": attachment.size_bytes,
+            "interaction_id": attachment.interaction_id,
+        }
+
         # An external-link attachment has no object in our own storage
         # to delete — only the DB row itself.
         if not attachment.is_external_link:
             await self.storage_service.delete(object_key=attachment.storage_key)
         await self.attachment_repository.delete(attachment)
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+        await AuditLogService.log_event(
+            self.attachment_repository.db,
+            entity_type=AuditEntityType.ATTACHMENT,
+            entity_id=attachment_id,
+            event_type=AuditEventType.ATTACHMENT_DELETED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values=old_values,
+            new_values={"ticket_id": ticket_id} if ticket_id else None,
+        )
