@@ -18,6 +18,7 @@ import type { RuleActionItem, RuleActionType, RuleCategory } from "@tw/api/rules
 
 import { ACTION_TYPES_BY_CATEGORY } from "./ruleCatalog";
 import { EmployeeMultiSelect } from "./EmployeeMultiSelect";
+import { FolderPicker } from "./FolderPicker";
 import { DistributionListMultiSelect } from "@tw/components/common/DistributionListMultiSelect";
 
 interface ActionRowProps {
@@ -32,7 +33,11 @@ export function ActionRow({ category, action, onChange, onRemove }: ActionRowPro
   const [existingFolders, setExistingFolders] = useState<MailFolder[]>([]);
 
   useEffect(() => {
-    if (action.type === "create_folder" || action.type === "move_to_folder") {
+    // Only create_folder still needs this — its free-text field uses
+    // existing folder names as autocomplete suggestions only.
+    // move_to_folder now renders FolderPicker below, which fetches
+    // and owns its own folder list.
+    if (action.type === "create_folder") {
       listMailFolders().then(setExistingFolders).catch(() => setExistingFolders([]));
     }
   }, [action.type]);
@@ -75,6 +80,11 @@ export function ActionRow({ category, action, onChange, onRemove }: ActionRowPro
               onChange={(ids) => onChange({ ...action, distribution_list_ids: ids })}
             />
           </>
+        ) : action.type === "move_to_folder" ? (
+          <FolderPicker
+            value={action.folder_name ?? ""}
+            onChange={(name) => onChange({ ...action, folder_name: name })}
+          />
         ) : (
           <>
             <Input

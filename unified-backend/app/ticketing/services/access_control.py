@@ -455,6 +455,7 @@ async def ensure_agent_can_view_pending_interaction(
     client_repository,
     *,
     view_only: bool = False,
+    folder_shared_bypass: bool = False,
 ) -> None:
     """
     Gates a still-pending (pre-ticket) Mail item the same way
@@ -501,12 +502,30 @@ async def ensure_agent_can_view_pending_interaction(
     archive/snooze/tags/folder/drafts/forward/reply) — holding
     communication:view_all lets a role open and read a pending item
     it was sent, not act on someone else's.
+
+    `folder_shared_bypass=True` (computed by the caller from
+    MailFolderService.resolve_folder_access(...).via_sharing — the
+    same signal InboxService.get_inbox's own `bypass_ownership_scope`
+    already keys off for the list view) additionally admits a viewer
+    who can see this item purely because a Rule filed it into a
+    folder genuinely shared with them (the rule's shared_user_ids/
+    shared_distribution_list_ids), without requiring
+    communication:view_all. Only honored together with `view_only` —
+    same "widen seeing, never acting" rule as the permission check
+    above. Without this, a shared Team Lead could see the row in the
+    folder's own listing (GET /inbox?folder_id=...) but get a 403
+    opening it here — a real gap once folder-filing removes an item
+    from the folder-sharing recipient's own scoped Inbox (see
+    InteractionRepository.list_inbox's folder_id handling).
     """
 
     if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
         return
 
-    if view_only and has_permission(current_user, "communication:view_all"):
+    if view_only and (
+        has_permission(current_user, "communication:view_all")
+        or folder_shared_bypass
+    ):
         return
 
     if interaction.client_id is None and getattr(interaction, "category_id", None) is not None:

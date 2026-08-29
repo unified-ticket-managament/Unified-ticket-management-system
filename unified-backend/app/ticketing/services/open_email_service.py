@@ -10,9 +10,14 @@ from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.ticketing.repositories.distribution_list_repository import (
+    DistributionListRepository,
+)
+from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.message_read_receipt_repository import (
     MessageReadReceiptRepository,
 )
+from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.interaction import InteractionResponse
@@ -24,6 +29,7 @@ from app.ticketing.services.access_control import (
     ensure_agent_can_view_ticket,
 )
 from app.ticketing.services.attachment_service import attachments_to_metadata
+from app.ticketing.services.mail_folder_service import MailFolderService
 from app.ticketing.services.sla_service import SLAService
 from app.ticketing.storage.base import StorageService
 
@@ -79,6 +85,9 @@ class OpenEmailService:
         ticket_repository: TicketRepository | None = None,
         read_receipt_repository: MessageReadReceiptRepository | None = None,
         sla_service: SLAService | None = None,
+        mail_folder_repository: MailFolderRepository | None = None,
+        rule_repository: RuleRepository | None = None,
+        distribution_list_repository: DistributionListRepository | None = None,
     ):
         self.interaction_repository = interaction_repository
         self.attachment_repository = attachment_repository
@@ -88,6 +97,15 @@ class OpenEmailService:
         self.ticket_repository = ticket_repository
         self.read_receipt_repository = read_receipt_repository
         self.sla_service = sla_service
+        # All three optional and only used to resolve the
+        # folder-sharing bypass below — a caller that doesn't wire
+        # them up simply never grants that bypass (falls through to
+        # the pre-existing ownership/communication:view_all checks),
+        # same "missing dependency degrades to no access" pattern as
+        # client_repository elsewhere in this class.
+        self.mail_folder_repository = mail_folder_repository
+        self.rule_repository = rule_repository
+        self.distribution_list_repository = distribution_list_repository
 
     async def get_email_details(
         self,
@@ -139,8 +157,40 @@ class OpenEmailService:
             if current_user is not None and ticket is not None:
                 ensure_agent_can_view_ticket(ticket, current_user)
         elif current_user is not None:
+            folder_shared_bypass = False
+            if (
+                interaction.folder_id is not None
+                and self.mail_folder_repository is not None
+                and self.rule_repository is not None
+                and self.distribution_list_repository is not None
+            ):
+                # A folder-filed pending item is excluded from the
+                # owner's own scoped Inbox (list_inbox's folder_id IS
+                # NULL condition), so a viewer who only has access via
+                # the folder being shared with them (not their own
+                # ownership scope) must still be able to open it here
+                # — the same via_sharing signal InboxService.get_inbox
+                # already uses for the list view.
+                folder = await self.mail_folder_repository.get_by_id(
+                    interaction.folder_id
+                )
+                if folder is not None:
+                    access = await MailFolderService(
+                        self.mail_folder_repository
+                    ).resolve_folder_access(
+                        folder,
+                        current_user,
+                        self.rule_repository,
+                        self.distribution_list_repository,
+                    )
+                    folder_shared_bypass = access.via_sharing
+
             await ensure_agent_can_view_pending_interaction(
-                interaction, current_user, self.client_repository, view_only=True
+                interaction,
+                current_user,
+                self.client_repository,
+                view_only=True,
+                folder_shared_bypass=folder_shared_bypass,
             )
 
         # Records that this user has now opened this thread — the
