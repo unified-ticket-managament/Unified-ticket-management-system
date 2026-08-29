@@ -20,6 +20,8 @@ from app.ticketing.schemas.open_email import OpenEmailResponse
 from app.ticketing.schemas.payloads import EmailPayload
 from app.ticketing.schemas.sla import FirstResponseSLAState
 from app.ticketing.services.access_control import (
+    ACCOUNT_MANAGER_ROLE_NAME,
+    ensure_account_manager_owns_ticket_client,
     ensure_agent_can_view_pending_interaction,
     ensure_agent_can_view_ticket,
 )
@@ -143,6 +145,21 @@ class OpenEmailService:
                 # was filed in) can still open it after it becomes a
                 # ticket, even outside their own category.
                 ensure_agent_can_view_ticket(ticket, current_user, view_only=True)
+                # ensure_agent_can_view_ticket deliberately never
+                # enforces Account Manager's client-ownership ceiling
+                # itself (it has no DB access) — this endpoint was the
+                # one read path in the codebase that forgot to pair it
+                # with the ownership check every other reader/writer of
+                # ticket content does (e.g. InteractionService.get_thread,
+                # ensure_agent_can_view_ticket_including_escalated).
+                # Without this, any Account Manager could open any
+                # other Account Manager's client's ticket communications
+                # via this endpoint, regardless of which of the two
+                # communication permissions they held.
+                if current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME:
+                    await ensure_account_manager_owns_ticket_client(
+                        ticket, current_user, self.client_repository
+                    )
         elif current_user is not None:
             await ensure_agent_can_view_pending_interaction(
                 interaction, current_user, self.client_repository, view_only=True

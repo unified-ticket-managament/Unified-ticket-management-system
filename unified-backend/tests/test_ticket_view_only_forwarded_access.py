@@ -1,9 +1,9 @@
 # test_ticket_view_only_forwarded_access.py
 #
-# Pure-logic coverage for ensure_agent_can_view_ticket's new
-# view_only escape hatch (app/ticketing/services/access_control.py) —
-# no DB. Mirrors test_category_mailbox_access_control.py's style for
-# the sibling pending-interaction function.
+# Pure-logic coverage for ensure_agent_can_view_ticket's view_only
+# branch (app/ticketing/services/access_control.py) — no DB. Mirrors
+# test_category_mailbox_access_control.py's style for the sibling
+# pending-interaction function.
 #
 # A category-scoped Team Lead/Staff member who was forwarded a mail
 # item (or shared the folder it was filed in) could open it right up
@@ -14,6 +14,19 @@
 # them open the identical item before it's ticketed. view_only=True
 # closes that gap for the one call site that only ever opens (never
 # mutates) a ticket; every other caller never passes it.
+#
+# Since then, view_only's authorization was rewritten to be driven by
+# resolve_communication_visibility_tier (communication:view_all /
+# communication:view_assigned) rather than a bare role/category check
+# — see the communication-view RBAC fix. This file's
+# test_view_only_never_needed_for_own_category used to assert that a
+# Staff member holding NEITHER communication permission could still
+# open their own category's ticket via view_only=True — that was
+# itself the confirmed bug the fix closes (neither permission must
+# mean denied, full stop, even for your own category), so that test
+# was updated to assert the new, correct 403, with a companion test
+# proving access still works once communication:view_assigned is
+# actually held.
 
 from uuid import uuid4
 
@@ -87,11 +100,51 @@ async def test_view_only_defaults_off_every_other_call_site_unaffected():
     assert exc_info.value.status_code == 403
 
 
-async def test_view_only_never_needed_for_own_category():
+async def test_view_only_never_needed_for_own_category_on_action_call_sites():
+    """
+    view_only=False (every action call site) is unaffected by the
+    communication-permission gate — the pre-existing own-category rule
+    still needs no communication permission at all, since reply/
+    transfer/escalate/etc. authorize via ticket:*/editown_ticket
+    instead.
+    """
+
     ticket = _FakeTicket("AR")
     current_user = _FakeUser("Staff", categories=["AR"], permissions=[])
 
-    # Must not raise regardless of view_only — this is just the
-    # pre-existing own-category rule, unaffected by the new param.
+    # Must not raise.
     ensure_agent_can_view_ticket(ticket, current_user)
+
+
+async def test_view_only_own_category_denied_without_any_communication_permission():
+    """
+    Confirmed bug, now fixed: opening a communication (view_only=True)
+    used to need no communication:view_* permission at all as long as
+    the ticket matched the viewer's own category. A user holding
+    NEITHER communication:view_all nor communication:view_assigned
+    must be denied here too, even for their own category/own ticket.
+    """
+
+    ticket = _FakeTicket("AR")
+    current_user = _FakeUser("Staff", categories=["AR"], permissions=[])
+
+    with pytest.raises(HTTPException) as exc_info:
+        ensure_agent_can_view_ticket(ticket, current_user, view_only=True)
+    assert exc_info.value.status_code == 403
+
+
+async def test_view_only_own_category_allowed_with_view_assigned():
+    """
+    The common, correct case: holding communication:view_assigned is
+    sufficient to open a communication for your own category's ticket
+    — the fix above doesn't overtighten this, only the "neither
+    permission" case is newly denied.
+    """
+
+    ticket = _FakeTicket("AR")
+    current_user = _FakeUser(
+        "Staff", categories=["AR"], permissions=["communication:view_assigned"]
+    )
+
+    # Must not raise.
     ensure_agent_can_view_ticket(ticket, current_user, view_only=True)

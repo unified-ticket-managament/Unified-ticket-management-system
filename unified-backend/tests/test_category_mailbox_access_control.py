@@ -169,27 +169,62 @@ async def test_client_mailbox_pending_item_unaffected_by_category_branch(monkeyp
 # re-checks afterward (communication:reply_external for Reply/Forward/
 # the draft actions, communication:archive for Archive) is sufficient
 # on its own to act on a pending item, ownership aside entirely — e.g.
-# a Team Lead who was forwarded a mail item, or named in a rule's
-# shared_user_ids for the folder it's filed in, and holds
-# communication:reply_external, can reply to it even though they own
-# neither the client nor the category.
+# a Team Lead named in a rule's shared_user_ids for the folder a mail
+# item is filed in, holding communication:archive, can archive it even
+# though they own neither the client nor the category.
+#
+# communication:reply_external is narrower: permission alone is no
+# longer enough there (see test_reply_external_forwarded_recipient_
+# access.py and access_control.ensure_agent_can_view_pending_
+# interaction's own docstring) — it also requires `is_forward_
+# recipient=True`, confirming this specific pending item was actually
+# forwarded to this user (InteractionService._is_forwarded_to_user),
+# so the permission can never become a blanket "reply to any pending
+# item" grant.
 # --------------------------------------------------------------------
 
-async def test_permission_backed_admits_holder_of_the_named_permission(monkeypatch):
+async def test_permission_backed_admits_confirmed_forward_recipient(monkeypatch):
     interaction = _FakeInteraction(client_id=uuid4(), category_id=None)
     current_user = _FakeUser(
         uuid4(), "Team Lead", permissions=["communication:reply_external"]
     )
 
     # Must not raise, even though this Team Lead owns neither the
-    # client nor the category — holding the named permission is what
-    # admits them here, full stop.
+    # client nor the category — holding the named permission AND being
+    # a confirmed forward recipient of this specific item is what
+    # admits them here.
     await ensure_agent_can_view_pending_interaction(
         interaction,
         current_user,
         _FakeClientRepository(),
         permission_backed="communication:reply_external",
+        is_forward_recipient=True,
     )
+
+
+async def test_permission_backed_reply_external_alone_no_longer_sufficient(monkeypatch):
+    """
+    Tightened rule: unlike communication:archive, holding
+    communication:reply_external alone (with no confirmed forward-
+    recipient relationship to this specific item) must NOT admit a
+    non-owner — this is the over-broad "reply to any pending item"
+    grant this rule closes. See test_reply_external_forwarded_
+    recipient_access.py for the full matrix.
+    """
+
+    interaction = _FakeInteraction(client_id=uuid4(), category_id=None)
+    current_user = _FakeUser(
+        uuid4(), "Team Lead", permissions=["communication:reply_external"]
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await ensure_agent_can_view_pending_interaction(
+            interaction,
+            current_user,
+            _FakeClientRepository(),
+            permission_backed="communication:reply_external",
+        )
+    assert exc_info.value.status_code == 403
 
 
 async def test_permission_backed_still_rejects_caller_without_the_named_permission(monkeypatch):
