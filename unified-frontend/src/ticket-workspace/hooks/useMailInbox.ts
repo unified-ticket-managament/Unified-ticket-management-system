@@ -167,13 +167,6 @@ function draftItemToInboxItem(item: DraftItem): InboxItem {
 // of GET /inbox/{id}, which has no row to return for it.
 const OTP_FORWARD_ID_PREFIX = "otp-forward:";
 
-// Same reasoning as OTP_FORWARD_ID_PREFIX — a Mail Rule's own
-// "Forward To" action (RuleEngineService._forward_to_employees, the
-// literal same function OTP_FORWARDED comes from) has no real
-// Interaction backing it either, just a NotificationType.
-// MAIL_RULE_FORWARDED row.
-const MAIL_RULE_FORWARD_ID_PREFIX = "mail-rule-forward:";
-
 // Adapts an OTP-forward Notification (already private to exactly the
 // employee(s) an OTP Rule's "Forward To" action targeted — see
 // NotificationType.OTP_FORWARDED) into an InboxItem, so it renders
@@ -217,9 +210,20 @@ function otpNotificationToInboxItem(notification: NotificationItem): InboxItem {
 // the actual bug: this notification type existed and fired correctly
 // server-side the whole time, this frontend simply never fetched or
 // rendered it anywhere.
+//
+// Unlike OTP_FORWARDED, a Mail Rule forward DOES have a real
+// Interaction behind it (the backend always sets
+// related_entity_id=interaction.interaction_id — see
+// RuleEngineService._forward_to_employees), so this reuses the real
+// id instead of a synthetic one, mirroring
+// mailForwardedNotificationToInboxItem below. A synthetic id here
+// used to defeat inboxAll's Map-based dedup: the same email visible
+// to this recipient both as a forward notification and as a normal
+// interaction row rendered as two separate entries because their ids
+// never matched.
 function mailRuleForwardNotificationToInboxItem(notification: NotificationItem): InboxItem {
   return {
-    interaction_id: `${MAIL_RULE_FORWARD_ID_PREFIX}${notification.notification_id}`,
+    interaction_id: notification.related_entity_id ?? notification.notification_id,
     client_id: null,
     client_name: "Mail Rule Forward",
     from_email: null,
@@ -1155,25 +1159,11 @@ export function useMailInbox() {
         (n) => n.notification_id === notificationId
       );
       if (notification) {
-        setSelectedSystemNotification(notification);
-        setOpenedIds((prev) => {
-          const next = new Set(prev);
-          next.add(interactionId);
-          return next;
-        });
-      }
-      return;
-    }
-
-    // Same reasoning as the OTP_FORWARD_ID_PREFIX branch above — a
-    // Mail Rule forward's synthetic row has no real Interaction
-    // behind it either.
-    if (interactionId.startsWith(MAIL_RULE_FORWARD_ID_PREFIX)) {
-      const notificationId = interactionId.slice(MAIL_RULE_FORWARD_ID_PREFIX.length);
-      const notification = mailRuleForwardNotifications.find(
-        (n) => n.notification_id === notificationId
-      );
-      if (notification) {
+        // Clear any previously-open TYPE 2 (normal) message — otherwise
+        // it keeps winning the selectedEmail-first priority in
+        // InboxPage.tsx's detail-pane ternary and this TYPE 1
+        // selection never actually renders.
+        setSelectedEmail(null);
         setSelectedSystemNotification(notification);
         setOpenedIds((prev) => {
           const next = new Set(prev);
@@ -1204,6 +1194,29 @@ export function useMailInbox() {
       // already-open thread), reflect the response's real state
       // instead of forcing it read.
       patchRowIsRead(interactionId, result.is_read);
+      return;
+    }
+
+    // The normal GET /inbox/{id} fetch found nothing — this can
+    // legitimately happen for a Mail Rule forward row whose real
+    // Interaction doesn't resolve for this viewer (e.g. it's outside
+    // their visibility scope even though the forward notification
+    // itself is theirs). Fall back to the notification detail view
+    // (the same one OTP_FORWARDED above always uses) rather than
+    // leaving the click a silent no-op.
+    const fallbackNotification = mailRuleForwardNotifications.find(
+      (n) => (n.related_entity_id ?? n.notification_id) === interactionId
+    );
+    if (fallbackNotification) {
+      // Same reason as the OTP-forward branch above: clear a stale
+      // TYPE 2 selection so this TYPE 1 fallback actually renders.
+      setSelectedEmail(null);
+      setSelectedSystemNotification(fallbackNotification);
+      setOpenedIds((prev) => {
+        const next = new Set(prev);
+        next.add(interactionId);
+        return next;
+      });
     }
   }
 
@@ -1562,8 +1575,12 @@ export function useMailInbox() {
   }, [activeViewRaw, rowsByTab, tabTotals, loadMoreBaseTab]);
 
   const selectSystemNotification = useCallback((notification: NotificationItem) => {
+    // Clear any previously-open TYPE 2 (normal) message — otherwise it
+    // keeps winning the selectedEmail-first priority in InboxPage.tsx's
+    // detail-pane ternary and this TYPE 1 selection never renders.
+    setSelectedEmail(null);
     setSelectedSystemNotification(notification);
-  }, []);
+  }, [setSelectedEmail]);
 
   const clearSelectedSystemNotification = useCallback(() => {
     setSelectedSystemNotification(null);

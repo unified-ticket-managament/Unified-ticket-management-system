@@ -24,6 +24,17 @@ from app.ticketing.services.rule_folder_sync import ensure_folder
 
 logger = logging.getLogger(__name__)
 
+# Both notification types RuleEngineService._forward_to_employees ever
+# creates — a recipient who already has one of these for a given
+# interaction has definitely already been forwarded that email once,
+# regardless of which rule/action/pipeline run produced it. Used by
+# the idempotency guard in _forward_to_employees, not by
+# NotificationService itself.
+_FORWARD_NOTIFICATION_TYPES = [
+    NotificationType.MAIL_RULE_FORWARDED,
+    NotificationType.OTP_FORWARDED,
+]
+
 
 class RuleEngineService:
     """
@@ -53,6 +64,7 @@ class RuleEngineService:
         user_repository: UserRepository,
         notification_service: NotificationService,
         distribution_list_repository: DistributionListRepository | None = None,
+        notification_repository: NotificationRepository | None = None,
     ):
         self.rule_repository = rule_repository
         self.mail_folder_repository = mail_folder_repository
@@ -60,6 +72,12 @@ class RuleEngineService:
         self.user_repository = user_repository
         self.notification_service = notification_service
         self.distribution_list_repository = distribution_list_repository
+        # Durable dedup guard for _forward_to_employees — optional
+        # (defaults to None) purely so pre-existing unit tests that
+        # construct this service with hand-rolled fakes (no DB at all)
+        # keep working unchanged; every real call site
+        # (build_rule_engine_service) always supplies one.
+        self.notification_repository = notification_repository
 
     async def evaluate_and_execute_for_email(
         self,
@@ -81,6 +99,14 @@ class RuleEngineService:
 
         rules = await self.rule_repository.list_enabled_ordered()
         otp_recognized = False
+
+        # Accumulated across every matched rule's every FORWARD_TO
+        # action for this one email — see _forward_to_employees'
+        # own docstring. Two independent rules (stop_processing
+        # defaults to False, so both can legitimately match and act
+        # on the same email) that both resolve to the same employee
+        # must still only forward to them once.
+        forwarded_user_ids: set[UUID] = set()
 
         for rule in rules:
             try:
@@ -127,7 +153,12 @@ class RuleEngineService:
                     # the savepoint keeps the failure genuinely
                     # contained to this one action.
                     async with self.interaction_repository.db.begin_nested():
-                        await self._execute_action(action, interaction=interaction, rule=rule)
+                        await self._execute_action(
+                            action,
+                            interaction=interaction,
+                            rule=rule,
+                            forwarded_user_ids=forwarded_user_ids,
+                        )
                 except Exception:
                     # One action failing (e.g. a stale employee id)
                     # never blocks the rest of this rule's actions, or
@@ -151,7 +182,12 @@ class RuleEngineService:
         return otp_recognized
 
     async def _execute_action(
-        self, action: RuleActionItem, *, interaction: Interaction, rule: Rule
+        self,
+        action: RuleActionItem,
+        *,
+        interaction: Interaction,
+        rule: Rule,
+        forwarded_user_ids: set[UUID] | None = None,
     ) -> None:
         # Folder creation is normally already done eagerly by
         # RuleService.create/update the moment the rule was saved —
@@ -193,6 +229,7 @@ class RuleEngineService:
                 list(employee_ids),
                 interaction=interaction,
                 rule_category=rule.category,
+                forwarded_user_ids=forwarded_user_ids,
             )
 
     async def _forward_to_employees(
@@ -201,6 +238,7 @@ class RuleEngineService:
         *,
         interaction: Interaction,
         rule_category: str,
+        forwarded_user_ids: set[UUID] | None = None,
     ) -> None:
         """
         Shared by OTP Rules and Mail Rules alike (`rule_category`
@@ -228,6 +266,54 @@ class RuleEngineService:
                 rule_category,
                 interaction.interaction_id,
             )
+            return
+
+        # Idempotency guard — the actual fix for a recipient seeing the
+        # same forwarded email twice. Two layers, both keyed on "has
+        # this recipient already been forwarded THIS interaction":
+        #
+        # 1. In-call (forwarded_user_ids, shared across every matched
+        #    rule's every FORWARD_TO action for one
+        #    evaluate_and_execute_for_email invocation) — cheap,
+        #    catches two rules/actions targeting the same employee in
+        #    one pipeline run with no DB round trip.
+        # 2. Durable (notification_repository, when supplied) —
+        #    catches the same recipient being forwarded again by a
+        #    *separate* evaluate_and_execute_for_email call for the
+        #    same interaction (e.g. a retried/redelivered pipeline
+        #    run after a failed commit — see the root CLAUDE.md's
+        #    mail-routing-duplication notes). Skipped gracefully when
+        #    no repository was supplied (unit tests using hand-rolled
+        #    fakes) rather than requiring every caller to wire one in.
+        already_handled = forwarded_user_ids if forwarded_user_ids is not None else set()
+        to_forward: dict[UUID, str] = {}
+        for user_id, recipient_email in emails_by_id.items():
+            if user_id in already_handled:
+                logger.info(
+                    "RULE_FORWARD_SKIPPED_DUPLICATE reason=in_call category=%s "
+                    "user_id=%s interaction_id=%s",
+                    rule_category,
+                    user_id,
+                    interaction.interaction_id,
+                )
+                continue
+            if self.notification_repository is not None:
+                already_forwarded = await self.notification_repository.exists_for_related_entity(
+                    user_id, interaction.interaction_id, _FORWARD_NOTIFICATION_TYPES
+                )
+                if already_forwarded:
+                    logger.info(
+                        "RULE_FORWARD_SKIPPED_DUPLICATE reason=already_notified category=%s "
+                        "user_id=%s interaction_id=%s",
+                        rule_category,
+                        user_id,
+                        interaction.interaction_id,
+                    )
+                    already_handled.add(user_id)
+                    continue
+            to_forward[user_id] = recipient_email
+
+        if not to_forward:
             return
 
         payload = interaction.payload or {}
@@ -262,7 +348,7 @@ class RuleEngineService:
         # notification falsely implying it worked.
         succeeded_user_ids: set[UUID] = set()
 
-        for user_id, recipient_email in emails_by_id.items():
+        for user_id, recipient_email in to_forward.items():
             envelope = OutboundEnvelope(
                 from_email=mailbox_address,
                 to_email=recipient_email,
@@ -288,6 +374,9 @@ class RuleEngineService:
                     recipient_email,
                     forward_subject,
                 )
+
+        if forwarded_user_ids is not None:
+            forwarded_user_ids |= succeeded_user_ids
 
         if not succeeded_user_ids:
             return
@@ -337,11 +426,13 @@ def build_rule_engine_service(db: AsyncSession) -> RuleEngineService:
     repositories/services inline at each.
     """
 
+    notification_repository = NotificationRepository(db)
     return RuleEngineService(
         rule_repository=RuleRepository(db),
         mail_folder_repository=MailFolderRepository(db),
         interaction_repository=InteractionRepository(db),
         user_repository=UserRepository(db),
-        notification_service=NotificationService(NotificationRepository(db)),
+        notification_service=NotificationService(notification_repository),
         distribution_list_repository=DistributionListRepository(db),
+        notification_repository=notification_repository,
     )

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.notifications.models import Notification
@@ -10,6 +10,32 @@ from app.notifications.models import Notification
 class NotificationRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    async def exists_for_related_entity(
+        self,
+        user_id: UUID,
+        related_entity_id: UUID,
+        notification_types: list[str],
+    ) -> bool:
+        """
+        Durable idempotency guard for RuleEngineService's forward-to-
+        employee action: answers "has this recipient already received
+        one of these notification types for this source interaction,
+        ever" — regardless of which rule/action/pipeline run created
+        it. Deliberately not scoped to dismissed_at/is_read (unlike
+        list_for_user/count_for_user above) — a dismissed or read
+        notification still proves the forward already happened once.
+        """
+
+        query = select(
+            exists().where(
+                Notification.user_id == user_id,
+                Notification.related_entity_id == related_entity_id,
+                Notification.notification_type.in_(notification_types),
+            )
+        )
+        result = await self.db.execute(query)
+        return bool(result.scalar())
 
     async def create_many(self, rows: list[dict]) -> list[Notification]:
         if not rows:

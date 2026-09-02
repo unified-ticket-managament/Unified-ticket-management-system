@@ -192,7 +192,7 @@ export function MultiRecipientCombobox({
         className="flex w-full flex-col items-start px-3.5 py-1.5 text-left text-sm text-slate-900 transition-colors hover:bg-surfaceHover"
       >
         <span className="font-medium">{option.label}</span>
-        {option.sublabel && <span className="text-[11px] text-muted">{option.sublabel}</span>}
+        {option.sublabel && <span className="text-[11px] text-slate-500">{option.sublabel}</span>}
       </button>
     );
   }
@@ -205,7 +205,7 @@ export function MultiRecipientCombobox({
         {value.map((chip) => (
           <span
             key={chip.email}
-            className="inline-flex items-center gap-1 rounded-full border border-accent/15 bg-accent/10 px-2 py-0.5 text-[11px] font-semibold text-accent"
+            className="inline-flex items-center gap-1 rounded-full border border-accent/15 bg-accent/10 px-2 py-0.5 text-[11px] font-semibold text-foreground"
           >
             {chipLabel(chip)}
             {!disabled && (
@@ -243,7 +243,7 @@ export function MultiRecipientCombobox({
           ) : groups ? (
             groups.map(({ groupName, items }) => (
               <div key={groupName}>
-                <p className="px-3.5 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-muted">
+                <p className="px-3.5 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   {groupName}
                 </p>
                 {items.map(renderOptionRow)}

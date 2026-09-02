@@ -24,9 +24,28 @@ class _FakeUserRepository:
         return {uid: self._emails_by_id[uid] for uid in user_ids if uid in self._emails_by_id}
 
 
-class _FakeNotificationService:
+class _FakeNotificationRepository:
+    """
+    Tracks (user_id, related_entity_id, notification_type) tuples that
+    a _FakeNotificationService.notify() call above has actually
+    recorded — mirrors the real NotificationRepository.
+    exists_for_related_entity query closely enough to test
+    _forward_to_employees' durable dedup guard without a real DB.
+    """
+
     def __init__(self):
+        self.existing: set[tuple] = set()
+
+    async def exists_for_related_entity(self, user_id, related_entity_id, notification_types):
+        return any(
+            (user_id, related_entity_id, nt) in self.existing for nt in notification_types
+        )
+
+
+class _FakeNotificationService:
+    def __init__(self, repository: "_FakeNotificationRepository | None" = None):
         self.calls = []
+        self._repository = repository
 
     async def notify(self, user_ids, notification_type, title, message, **kwargs):
         self.calls.append(
@@ -38,6 +57,10 @@ class _FakeNotificationService:
                 **kwargs,
             }
         )
+        if self._repository is not None:
+            related_entity_id = kwargs.get("related_entity_id")
+            for uid in user_ids:
+                self._repository.existing.add((uid, related_entity_id, notification_type))
 
 
 class _FakeInteraction:
@@ -65,13 +88,20 @@ class _AlwaysFailingMailProvider:
         raise RuntimeError("simulated send failure")
 
 
-def _make_service(user_repository, notification_service, mail_provider, monkeypatch):
+def _make_service(
+    user_repository,
+    notification_service,
+    mail_provider,
+    monkeypatch,
+    notification_repository=None,
+):
     service = RuleEngineService(
         rule_repository=None,
         mail_folder_repository=None,
         interaction_repository=None,
         user_repository=user_repository,
         notification_service=notification_service,
+        notification_repository=notification_repository,
     )
     monkeypatch.setattr(
         "app.ticketing.services.rule_engine_service.get_mail_provider_client",
@@ -178,3 +208,128 @@ class TestForwardToEmployeesPartialFailure:
         )
 
         assert notification_service.calls == []
+
+
+class TestForwardToEmployeesDeduplication:
+    """
+    Coverage for the mail-routing-duplication fix: a destination
+    employee must only ever be forwarded a given source interaction
+    once, regardless of how many rules/actions/pipeline runs resolve
+    to them.
+    """
+
+    async def test_two_actions_in_one_call_share_the_in_call_dedup_set(self, monkeypatch):
+        # Simulates one rule with two FORWARD_TO actions (e.g. the same
+        # employee named directly in one action and reachable via a
+        # distribution list in another) — both calls share the same
+        # `forwarded_user_ids` set the way evaluate_and_execute_for_email
+        # threads it through every matched action for one email.
+        employee_id = uuid4()
+        emails_by_id = {employee_id: "employee@probeps.com"}
+        mail_provider = _SelectiveFailureMailProvider(failing_email="nobody@probeps.com")
+        notification_service = _FakeNotificationService()
+        service = _make_service(
+            _FakeUserRepository(emails_by_id), notification_service, mail_provider, monkeypatch
+        )
+        interaction = _FakeInteraction(
+            uuid4(),
+            {"subject": "Test subject", "body": "Test body", "from_email": "client@example.com"},
+        )
+        forwarded_user_ids: set = set()
+
+        await service._forward_to_employees(
+            [employee_id],
+            interaction=interaction,
+            rule_category=RuleCategory.MAIL_RULE,
+            forwarded_user_ids=forwarded_user_ids,
+        )
+        await service._forward_to_employees(
+            [employee_id],
+            interaction=interaction,
+            rule_category=RuleCategory.MAIL_RULE,
+            forwarded_user_ids=forwarded_user_ids,
+        )
+
+        assert len(mail_provider.sent_to) == 1
+        assert len(notification_service.calls) == 1
+
+    async def test_two_separate_calls_are_deduped_by_the_durable_notification_check(
+        self, monkeypatch
+    ):
+        # Simulates two independent evaluate_and_execute_for_email
+        # invocations for the SAME interaction (e.g. two separately
+        # enabled rules each matching and forwarding, or a retried/
+        # redelivered pipeline run) — each gets its own fresh in-call
+        # `forwarded_user_ids` set, so only the durable
+        # notification_repository check can catch this case.
+        employee_id = uuid4()
+        emails_by_id = {employee_id: "employee@probeps.com"}
+        mail_provider = _SelectiveFailureMailProvider(failing_email="nobody@probeps.com")
+        notification_repository = _FakeNotificationRepository()
+        notification_service = _FakeNotificationService(notification_repository)
+        service = _make_service(
+            _FakeUserRepository(emails_by_id),
+            notification_service,
+            mail_provider,
+            monkeypatch,
+            notification_repository=notification_repository,
+        )
+        interaction = _FakeInteraction(
+            uuid4(),
+            {"subject": "Test subject", "body": "Test body", "from_email": "client@example.com"},
+        )
+
+        await service._forward_to_employees(
+            [employee_id],
+            interaction=interaction,
+            rule_category=RuleCategory.MAIL_RULE,
+            forwarded_user_ids=set(),
+        )
+        await service._forward_to_employees(
+            [employee_id],
+            interaction=interaction,
+            rule_category=RuleCategory.MAIL_RULE,
+            forwarded_user_ids=set(),
+        )
+
+        assert len(mail_provider.sent_to) == 1
+        assert len(notification_service.calls) == 1
+
+    async def test_different_interactions_are_not_deduped_against_each_other(self, monkeypatch):
+        # A stable-id-based guard must never suppress a genuinely
+        # different source email to the same employee just because an
+        # earlier, unrelated interaction was already forwarded to them.
+        employee_id = uuid4()
+        emails_by_id = {employee_id: "employee@probeps.com"}
+        mail_provider = _SelectiveFailureMailProvider(failing_email="nobody@probeps.com")
+        notification_repository = _FakeNotificationRepository()
+        notification_service = _FakeNotificationService(notification_repository)
+        service = _make_service(
+            _FakeUserRepository(emails_by_id),
+            notification_service,
+            mail_provider,
+            monkeypatch,
+            notification_repository=notification_repository,
+        )
+        first_interaction = _FakeInteraction(
+            uuid4(), {"subject": "First", "body": "Body one", "from_email": "client@example.com"}
+        )
+        second_interaction = _FakeInteraction(
+            uuid4(), {"subject": "Second", "body": "Body two", "from_email": "client@example.com"}
+        )
+
+        await service._forward_to_employees(
+            [employee_id],
+            interaction=first_interaction,
+            rule_category=RuleCategory.MAIL_RULE,
+            forwarded_user_ids=set(),
+        )
+        await service._forward_to_employees(
+            [employee_id],
+            interaction=second_interaction,
+            rule_category=RuleCategory.MAIL_RULE,
+            forwarded_user_ids=set(),
+        )
+
+        assert len(mail_provider.sent_to) == 2
+        assert len(notification_service.calls) == 2

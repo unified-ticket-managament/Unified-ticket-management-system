@@ -62,6 +62,11 @@ export function InboxPage() {
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeInitialValues, setComposeInitialValues] = useState<ComposeInitialValues | undefined>(undefined);
   const [rulesOpen, setRulesOpen] = useState(false);
+  // Double-click → floating reading window (Outlook-style, centered
+  // over the Inbox rather than replacing it) — declared here (rather
+  // than right next to handleOpenFullScreen further down) so
+  // openCompose's useCallback below can reference it.
+  const [isFullScreenOpen, setIsFullScreenOpen] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const canManageRules = (currentUser?.permissions ?? []).includes("rule:manage");
 
@@ -88,6 +93,11 @@ export function InboxPage() {
   const selectedEmailRef = useRef(selectedEmail);
   selectedEmailRef.current = selectedEmail;
   const previousEmailRef = useRef<typeof selectedEmail>(null);
+  // Compose now opens as its own modal (see the Dialog at the bottom of
+  // this component) — if it's opened from inside the email-detail modal
+  // (Forward's toolbar action) that modal must close first, or the two
+  // would stack. Remembered here so handleComposeBack can reopen it.
+  const wasFullScreenRef = useRef(false);
 
   // useCallback below (rather than plain function declarations) is
   // required for MailSidebar's React.memo to actually skip re-renders
@@ -96,12 +106,14 @@ export function InboxPage() {
   const openCompose = useCallback(
     (initial?: ComposeInitialValues) => {
       previousEmailRef.current = selectedEmailRef.current;
+      wasFullScreenRef.current = isFullScreenOpen;
+      setIsFullScreenOpen(false);
       setSelectedEmail(null);
       setComposeInitialValues(initial);
       setComposeOpen(true);
       setRulesOpen(false);
     },
-    [setSelectedEmail]
+    [setSelectedEmail, isFullScreenOpen]
   );
 
   const handleComposeClick = useCallback(() => openCompose(), [openCompose]);
@@ -114,10 +126,13 @@ export function InboxPage() {
   // Forward-only "← Back": returns to the exact message being
   // forwarded (mailbox/selection/scroll all already preserved, since
   // this is a state swap, never a route change) instead of Discard's
-  // "abandon and go to the inbox" behavior.
+  // "abandon and go to the inbox" behavior. Also reopens the
+  // email-detail modal if Forward was invoked from inside it (see
+  // openCompose's wasFullScreenRef).
   function handleComposeBack() {
     closeCompose();
     setSelectedEmail(previousEmailRef.current);
+    if (wasFullScreenRef.current) setIsFullScreenOpen(true);
   }
 
   const handleSelectView = useCallback(
@@ -148,7 +163,11 @@ export function InboxPage() {
     setRulesOpen(true);
   }, [setSelectedEmail, mail.selectFolder]);
 
-  async function handleOpen(interactionId: string) {
+  // Returns true when the id was handled as a Compose draft (opened
+  // via openCompose, see below) rather than a real thread — callers
+  // that also drive the email-detail modal (handleOpenFullScreen) need
+  // this to avoid opening that modal over/behind the Compose modal.
+  async function handleOpen(interactionId: string): Promise<boolean> {
     // A Compose draft (is_compose_draft, see draftItemToInboxItem) has
     // no thread to open at all — reopen it as a Compose form,
     // pre-filled from the saved draft, instead of the generic
@@ -169,12 +188,13 @@ export function InboxPage() {
         message: draft.message,
         draftInteractionId: draft.interaction_id,
       });
-      return;
+      return true;
     }
 
     setComposeOpen(false);
     setRulesOpen(false);
     await mail.openThread(interactionId);
+    return false;
   }
 
   // Double-click → floating reading window (Outlook-style, centered
@@ -182,11 +202,12 @@ export function InboxPage() {
   // the same "open thread" data-loading path backs both the
   // right-side panel and the floating window) and only opens the
   // overlay once that resolves, so the dialog never shows
-  // stale/empty content.
-  const [isFullScreenOpen, setIsFullScreenOpen] = useState(false);
+  // stale/empty content — and never at all when the id turned out to
+  // be a Compose draft, which opens the separate Compose modal
+  // instead (see handleOpen).
   async function handleOpenFullScreen(interactionId: string) {
-    await handleOpen(interactionId);
-    setIsFullScreenOpen(true);
+    const openedAsCompose = await handleOpen(interactionId);
+    if (!openedAsCompose) setIsFullScreenOpen(true);
   }
 
   // Refreshing an already-open message's details isn't "opening it
@@ -396,21 +417,7 @@ export function InboxPage() {
   // list was already active — genuinely better Outlook-style behavior
   // than the single-pane layout could offer, since the list never has
   // to be replaced just to show that one notification.
-  const desktopDetailPanel = composeOpen ? (
-    <ComposeView
-      variant="panel"
-      clients={mail.clients}
-      categories={allCategories}
-      clientsLoading={mail.clientsLoading}
-      clientsError={mail.clientsError}
-      initialValues={composeInitialValues}
-      isSending={mail.isComposing || mail.isForwarding}
-      onSend={handleComposeSend}
-      onForwardSend={handleForwardSend}
-      onDiscard={closeCompose}
-      onBack={handleComposeBack}
-    />
-  ) : selectedEmail ? (
+  const desktopDetailPanel = selectedEmail ? (
     <MessageDetailsView
       variant="panel"
       email={selectedEmail}
@@ -506,19 +513,6 @@ export function InboxPage() {
           <div className="min-h-[560px] min-w-0 flex-1">
             {rulesOpen ? (
               <RulesPanel onFoldersMayHaveChanged={mail.refreshFolders} />
-            ) : composeOpen ? (
-              <ComposeView
-                clients={mail.clients}
-                categories={allCategories}
-                clientsLoading={mail.clientsLoading}
-                clientsError={mail.clientsError}
-                initialValues={composeInitialValues}
-                isSending={mail.isComposing || mail.isForwarding}
-                onSend={handleComposeSend}
-                onForwardSend={handleForwardSend}
-                onDiscard={closeCompose}
-                onBack={handleComposeBack}
-              />
             ) : selectedEmail ? (
               // Checked ahead of the System-folder branch below: opening a
               // specific message (e.g. via the interaction_id query param a
@@ -632,6 +626,39 @@ export function InboxPage() {
       <DialogContent className="flex h-[85vh] max-h-[85vh] w-full max-w-5xl flex-col gap-0 overflow-hidden p-0">
         <div className="h-full w-full min-h-0 flex-1 overflow-y-auto">
           {fullScreenDetail}
+        </div>
+      </DialogContent>
+    </Dialog>
+    {/* Compose — same modal presentation as the email-detail Dialog
+        above (identical size/centering/corners/overlay classes), so
+        Compose reads as one consistent "opens in a big reading/writing
+        window" pattern instead of two different UIs. The Dialog's own
+        top-right X calls onOpenChange(false) -> closeCompose(), a soft
+        close that preserves the auto-saved draft (same as any other
+        "navigate away while composing" path, e.g. switching folders) —
+        deliberately distinct from ComposeView's own in-content Discard
+        button, which still deletes the draft before closing. */}
+    <Dialog
+      open={composeOpen}
+      onOpenChange={(open) => {
+        if (!open) closeCompose();
+      }}
+    >
+      <DialogContent className="flex h-[85vh] max-h-[85vh] w-full max-w-5xl flex-col gap-0 overflow-hidden p-0">
+        <div className="h-full w-full min-h-0 flex-1 overflow-y-auto">
+          <ComposeView
+            variant="panel"
+            clients={mail.clients}
+            categories={allCategories}
+            clientsLoading={mail.clientsLoading}
+            clientsError={mail.clientsError}
+            initialValues={composeInitialValues}
+            isSending={mail.isComposing || mail.isForwarding}
+            onSend={handleComposeSend}
+            onForwardSend={handleForwardSend}
+            onDiscard={closeCompose}
+            onBack={handleComposeBack}
+          />
         </div>
       </DialogContent>
     </Dialog>

@@ -140,7 +140,7 @@ async def test_action_db_failure_does_not_poison_the_session_for_later_statement
 
     service = _build_service(db_session)
 
-    async def _boom_with_a_real_db_error(action, *, interaction, rule):
+    async def _boom_with_a_real_db_error(action, *, interaction, rule, **_kwargs):
         dup = Interaction(
             interaction_id=uuid.uuid4(),
             interaction_type="EMAIL",

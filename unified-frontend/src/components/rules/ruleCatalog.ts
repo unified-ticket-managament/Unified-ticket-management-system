@@ -12,7 +12,7 @@ export interface ConditionFieldDef {
   // "in") never show an operator picker — Outlook-style, the verb is
   // baked into the field name itself.
   fixedOperator?: RuleConditionOperator;
-  kind: "text" | "client-single" | "client-multi" | "boolean";
+  kind: "text" | "client-multi" | "boolean";
 }
 
 export const CONDITION_FIELDS: Record<string, ConditionFieldDef> = {
@@ -30,7 +30,6 @@ export const CONDITION_FIELDS: Record<string, ConditionFieldDef> = {
     fixedOperator: "contains",
     kind: "text",
   },
-  client: { value: "client", label: "Client", fixedOperator: "in", kind: "client-single" },
   client_multi: {
     value: "client",
     label: "Client",
@@ -75,7 +74,11 @@ export const CONDITION_FIELDS_BY_CATEGORY: Record<RuleCategory, ConditionFieldDe
     CONDITION_FIELDS.sender_domain,
     CONDITION_FIELDS.subject_contains,
     CONDITION_FIELDS.body_contains,
-    CONDITION_FIELDS.client,
+    // client_multi (not the single-select `client`) — a Mail Rule's
+    // Client condition can hold every selected client in one entry,
+    // matching otp_rule below, instead of forcing one OR'd condition
+    // row per client.
+    CONDITION_FIELDS.client_multi,
     CONDITION_FIELDS.has_attachment,
     CONDITION_FIELDS.recipient_cc,
     CONDITION_FIELDS.attachment_name_contains,

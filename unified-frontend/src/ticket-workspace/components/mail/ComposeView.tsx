@@ -746,7 +746,13 @@ export function ComposeView({
         variant !== "panel" && "rounded-xl border border-border bg-card shadow-card"
       )}
     >
-      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-border bg-card px-5 py-4">
+      {/* No z-index here (unlike a plain "sticky header" default) — a
+          stacking z-index on this row would paint/intercept-clicks
+          above the Dialog's own absolutely-positioned close X (see
+          dialog.tsx), which has no z-index of its own. Same reasoning
+          MessageDetailsView's fullscreen top bar already relies on
+          (also z-index-free) for the identical modal close button. */}
+      <div className="sticky top-0 flex items-center justify-between border-b border-border bg-card px-5 py-4 pr-14">
         <div className="flex flex-col gap-1.5">
           {isForward && onBack && (
             <button
