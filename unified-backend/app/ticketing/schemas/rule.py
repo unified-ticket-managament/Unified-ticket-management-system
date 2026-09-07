@@ -108,11 +108,6 @@ def _validate_category_scope(category: str, conditions: RuleConditionGroup, exce
         if action.type not in allowed_actions:
             raise ValueError(f"Action '{action.type}' is not valid for {category}.")
 
-    if category == RuleCategory.OTP_RULE:
-        forward_actions = [a for a in actions if a.type == RuleActionType.FORWARD_TO]
-        if len(forward_actions) != 1:
-            raise ValueError("OTP Rules require exactly one 'forward_to' action.")
-
 
 class RuleCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)

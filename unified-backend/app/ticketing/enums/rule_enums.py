@@ -114,5 +114,5 @@ class RuleActionType:
 
     BY_CATEGORY = {
         RuleCategory.MAIL_RULE: (CREATE_FOLDER, MOVE_TO_FOLDER, FORWARD_TO),
-        RuleCategory.OTP_RULE: (FORWARD_TO,),
+        RuleCategory.OTP_RULE: (CREATE_FOLDER, MOVE_TO_FOLDER, FORWARD_TO),
     }
