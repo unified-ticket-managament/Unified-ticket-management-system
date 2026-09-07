@@ -861,7 +861,11 @@ class AttachmentService:
         # ticket:delete_attachment permission — Full for Super Admin/
         # Site Lead/Account Manager (own clients, checked above), a
         # personal override for everyone else.
+<<<<<<< Updated upstream
         ensure_has_permission(current_user, "ticket:delete_attachment")
+=======
+        ensure_has_permission(current_user, "ticket:archive_attachment")
+>>>>>>> Stashed changes
 
         # Re-fetch for ticket_id — _resolve_and_authorize already
         # validated access via this same interaction; this is just

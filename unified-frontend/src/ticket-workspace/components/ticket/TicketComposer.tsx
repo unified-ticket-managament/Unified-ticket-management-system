@@ -34,6 +34,7 @@ import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { isValidEmailAddress } from "@tw/lib/validation";
 import { showUndoSendToast } from "@tw/lib/undoSend";
 import {
+  buildInitialBodyHtml,
   escapeHtml,
   filterLiveInlineImageIds,
   htmlToPlainText,
@@ -104,6 +105,17 @@ export function TicketComposer({
   // the content actually contains real formatting/a table/an inline
   // image (isRichContent) — see handleSend below.
   const [messageHtml, setMessageHtml] = useState("");
+  // The exact signature-only prefill injected below (Reply mode, no
+  // saved draft — see the draft-fetch effect), if any, for whichever
+  // (ticket, mode) pair is currently active. Every isRichTextEmpty(
+  // messageHtml) check in this component is routed through
+  // isMessageEmpty instead, so an untouched signature-only box still
+  // counts as empty — otherwise Send would enable itself, and auto-
+  // save would persist a phantom draft, the moment a signature alone
+  // is prefilled.
+  const signaturePrefillRef = useRef<string | null>(null);
+  const isMessageEmpty = (html: string) =>
+    html === signaturePrefillRef.current || isRichTextEmpty(html);
   const [hasPendingImageUploads, setHasPendingImageUploads] = useState(false);
   // Every interaction_id a pasted-screenshot upload returned during
   // this compose session — unlike a regular file attachment, a
@@ -296,6 +308,7 @@ export function TicketComposer({
   useEffect(() => {
     if (!activeTicket) return;
     skipNextAutoSaveRef.current = true;
+    signaturePrefillRef.current = null;
     let cancelled = false;
 
     if (activeMode === "reply") {
@@ -318,7 +331,21 @@ export function TicketComposer({
           }
         })
         .catch(() => {
-          if (!cancelled) replyDraftIdRef.current = null;
+          if (cancelled) return;
+          replyDraftIdRef.current = null;
+          // No saved reply draft on this ticket — prefill the user's
+          // saved signature, but only into a genuinely empty box.
+          // messageHtml is shared across Reply/Note (see this effect's
+          // own doc comment above), so this must never clobber Note
+          // content the user already typed before switching tabs.
+          // Never fires for Internal Note (see the `else` branch below,
+          // which has no signature concept at all).
+          setMessageHtml((prev) => {
+            if (!isRichTextEmpty(prev) || !currentUser?.signature_html) return prev;
+            const prefill = buildInitialBodyHtml({ signatureHtml: currentUser.signature_html });
+            signaturePrefillRef.current = prefill;
+            return prefill;
+          });
         });
     } else {
       noteDraftIdRef.current = null;
@@ -400,8 +427,8 @@ export function TicketComposer({
         ? toChips.length === 0 &&
           !replyCc.trim() &&
           !replyBcc.trim() &&
-          isRichTextEmpty(messageHtml)
-        : !noteSubject.trim() && noteToIds.length === 0 && isRichTextEmpty(messageHtml);
+          isMessageEmpty(messageHtml)
+        : !noteSubject.trim() && noteToIds.length === 0 && isMessageEmpty(messageHtml);
     if (isUntouched) return;
 
     const timer = setTimeout(() => {
@@ -465,7 +492,7 @@ export function TicketComposer({
   const hasComposePermission = isReply ? canReply : canAddNote;
 
   async function handleSend() {
-    if (!activeTicket || isRichTextEmpty(messageHtml) || !hasComposePermission) return;
+    if (!activeTicket || isMessageEmpty(messageHtml) || !hasComposePermission) return;
     if (!isReply && !noteSubject.trim()) return;
     // Every "To" chip is already validated (or matched against a
     // known contact) at add-time by MultiRecipientCombobox, so there's
@@ -800,7 +827,7 @@ export function TicketComposer({
               isLoading={isLoading}
               disabled={
                 !hasComposePermission ||
-                isRichTextEmpty(messageHtml) ||
+                isMessageEmpty(messageHtml) ||
                 (!isReply && !noteSubject.trim()) ||
                 (isReply && (invalidReplyCcEntries.length > 0 || invalidReplyBccEntries.length > 0)) ||
                 hasPendingImageUploads

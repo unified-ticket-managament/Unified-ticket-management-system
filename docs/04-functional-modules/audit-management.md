@@ -78,7 +78,7 @@ Centralized Audit API (GET /api/v1/audit-logs)
 - `AuditEventDetailsDrawer.tsx` is the one details side-panel both views open a row into — it replaced two former, independently-drifting drawers (the ticket workspace's old `AuditLogDetailsDrawer` and the centralized view's old `CentralizedAuditLogDetailsDrawer`), per that component's own doc comment.
 - Both row/list/drawer components deliberately use only design tokens that resolve identically inside `.tm-scope` (the ticket workspace's remapped tokens) and on the plain shell page, so the same markup renders pixel-for-pixel the same in both mounting contexts.
 
-**This satisfies the "one source of truth for individual audit-event presentation" requirement — it is not a pending item.** A future backlog item exists only for the still-separate *toolbar/filter chrome* around each view (search box, entity/event/date filters, pagination), which is intentionally still per-domain since the two domains' filterable fields genuinely differ (see `docs/AUDIT_LOG_BACKLOG.md`).
+**This satisfies the "one source of truth for individual audit-event presentation" requirement — it is not a pending item.** A future backlog item exists only for the still-separate *toolbar/filter chrome* around each view (search box, entity/event/date filters, pagination), which is intentionally still per-domain since the two domains' filterable fields genuinely differ (see `docs/PROJECT_BACKLOG.md`).
 
 ## Business Rules
 - Two systems, never conflated: RBAC's `audit_logs` vs. Ticketing's `ticket_audit_logs` (same class name, `AuditLog`, different tables, different domains) — this remains true; only the *presentation* layer is now shared, never the data.
@@ -113,7 +113,7 @@ None.
 - The frontend unification (`AuditEventRow`/`AuditEventList`/`AuditEventDetailsDrawer`/`normalizeAuditEvent`) has not been confirmed via a live browser session in this documentation pass — verified by direct source-code reading only (both call sites' actual import/render code was read in full). Treat "renders identically in a running browser" as plausible-but-not-visually-confirmed until a manual/Playwright pass checks it.
 
 ## Known Limitations
-- **`ticket_audit_logs` rows with no `ticket_id` are written but not retrievable through any current Audit Log view** — see `docs/AUDIT_LOG_BACKLOG.md` (BL-001) for the full explanation; this is a real, currently-unresolved gap, not fixed by the navigation/permission/UI work described above.
+- **`ticket_audit_logs` rows with no `ticket_id` are written but not retrievable through any current Audit Log view** — see `docs/PROJECT_BACKLOG.md` (BL-001) for the full explanation; this is a real, currently-unresolved gap, not fixed by the navigation/permission/UI work described above.
 - RBAC's own `POST /audit-logs` create endpoint still checks a hardcoded role-name string rather than a permission — by design (see Business Rules above), not an oversight, and distinct from the list/get/export routes, which are now permission-gated.
 - Two Alembic migrations in different chains once shared an identical revision id — harmless given separate `version_table`s, but a real gotcha if scripting against revision ids directly.
 - Mail draft save/delete and Reports/Settings page actions remain unlogged (no backend endpoint exists for the latter to hook an audit call into).
@@ -122,7 +122,7 @@ None.
 [03-business-workflows/audit/audit-workflow.md](../../03-business-workflows/audit/audit-workflow.md).
 
 ## Remaining work
-See [`docs/AUDIT_LOG_BACKLOG.md`](../AUDIT_LOG_BACKLOG.md) for the current, actively-tracked list of what's still outstanding — this document describes only what's already built and verified.
+See [`docs/PROJECT_BACKLOG.md`](../PROJECT_BACKLOG.md) for the current, actively-tracked list of what's still outstanding across the whole project — this document describes only what's already built and verified for Audit Logs specifically.
 
 ## Change History
 **2026-08-29**
@@ -130,4 +130,4 @@ See [`docs/AUDIT_LOG_BACKLOG.md`](../AUDIT_LOG_BACKLOG.md) for the current, acti
 - Documented the confirmed separation of `ticket:view_global_audit_log` (ticket-domain scope widening) and `audit:view` (RBAC centralized view access) — independent permissions, never interchangeable, backed by `test_audit_view_vs_global_audit_log_separation.py`.
 - Documented the current, already-implemented shared audit-event presentation layer (`UnifiedAuditEvent`, `AuditEventRow`/`AuditEventList`/`AuditEventDetailsDrawer`, `normalizeAuditEvent.ts`'s two adapters) — confirmed in source, not a pending item.
 - Corrected the prior "hardcoded Super Admin role-name check" Known Limitation to reflect that `list`/`get`/`export` are now `audit:view`/`audit:export`-gated; only `create` (a no-legitimate-caller admin escape hatch) still uses the hardcoded check, by design, and `DELETE` was removed outright.
-- Recorded the remaining retrievability gap (non-ticket-scoped `ticket_audit_logs` rows, e.g. `CLIENT_CREATED`/`DISTRIBUTION_LIST_*`) separately in the new `docs/AUDIT_LOG_BACKLOG.md`, rather than leaving it as an unstructured note here.
+- Recorded the remaining retrievability gap (non-ticket-scoped `ticket_audit_logs` rows, e.g. `CLIENT_CREATED`/`DISTRIBUTION_LIST_*`) separately in `docs/PROJECT_BACKLOG.md` (formerly a standalone `AUDIT_LOG_BACKLOG.md`, now folded into the project-wide backlog), rather than leaving it as an unstructured note here.

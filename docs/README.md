@@ -14,6 +14,7 @@ This is the production documentation set for UTMS: a combined RBAC (authenticati
 | **Operations / on-call** | [09-deployment](09-deployment/README.md) → [10-operations](10-operations/README.md) → [14-troubleshooting](14-troubleshooting/README.md) |
 | **Working on a specific business workflow** (SLA, escalation, ticket lifecycle, mail) | [03-business-workflows](03-business-workflows/README.md) |
 | **Evaluating scope / what's built vs. planned** | [01-project-overview/major-capabilities.md](01-project-overview/major-capabilities.md), [16-known-limitations](16-known-limitations/README.md), [17-roadmap](17-roadmap/README.md) |
+| **Taking over this project / need the full open-items list in one place** | [PROJECT_BACKLOG.md](PROJECT_BACKLOG.md) — a single, plain-language backlog covering every module (also exported as `.docx`/`.pdf` for handoff) |
 
 ## Documentation map
 

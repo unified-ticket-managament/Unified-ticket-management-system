@@ -108,8 +108,6 @@ from app.ticketing.services.audit_to_interaction import (
 )
 from app.ticketing.services.assignment_service import STAFF_ROLE_NAME
 from app.ticketing.services.email_envelope import (
-    build_agent_signature,
-    build_agent_signature_html,
     build_compose_envelope,
     build_reply_envelope,
     resolve_reply_addresses,
@@ -1805,17 +1803,6 @@ class InteractionService:
                 inbound_payload, latest_email.direction
             )
 
-            # Signed body — what actually gets sent and stored — so a
-            # client sees which agent actually wrote the reply, same
-            # principle compose_email already established for a
-            # brand-new message.
-            signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
-            signed_body_html = (
-                f"{request.body_html}{build_agent_signature_html(current_user)}"
-                if request.body_html
-                else None
-            )
-
             if not inbound_payload.provider_message_id:
                 logger.warning(
                     "Reply to interaction %s has no reply_to_provider_message_id — "
@@ -1830,7 +1817,7 @@ class InteractionService:
                     from_email=reply_from_email,
                     inbound_payload=inbound_payload,
                     inbound_message_id=latest_email.message_id,
-                    body=signed_message,
+                    body=request.message,
                     agent_name=current_user.name,
                     account_manager_email=am_email,
                     cc=effective_cc,
@@ -1838,11 +1825,11 @@ class InteractionService:
                     to_email_override=override_to_emails,
                     reply_to_provider_message_id=inbound_payload.provider_message_id,
                     reply_all=request.reply_all,
-                    body_html=signed_body_html,
+                    body_html=request.body_html,
                     default_to_email=default_to_email,
                 )
 
-        payload: dict[str, Any] = {"message": signed_message if envelope is not None else request.message}
+        payload: dict[str, Any] = {"message": request.message}
         if envelope is not None:
             payload["envelope"] = envelope.model_dump()
             payload["dispatch_status"] = "PENDING_SEND"
@@ -2078,16 +2065,6 @@ class InteractionService:
             inbound_payload, root.direction
         )
 
-        # Signed body — what actually gets sent and stored — same
-        # principle compose_email already established for a brand-new
-        # message, now shared across every reply path too.
-        signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
-        signed_body_html = (
-            f"{request.body_html}{build_agent_signature_html(current_user)}"
-            if request.body_html
-            else None
-        )
-
         if not inbound_payload.provider_message_id:
             logger.warning(
                 "Reply to interaction %s has no reply_to_provider_message_id — "
@@ -2103,7 +2080,7 @@ class InteractionService:
                 from_email=reply_from_email,
                 inbound_payload=inbound_payload,
                 inbound_message_id=root.message_id,
-                body=signed_message,
+                body=request.message,
                 agent_name=current_user.name,
                 account_manager_email=am_email,
                 cc=effective_cc,
@@ -2111,11 +2088,11 @@ class InteractionService:
                 to_email_override=override_to_emails,
                 reply_to_provider_message_id=inbound_payload.provider_message_id,
                 reply_all=request.reply_all,
-                body_html=signed_body_html,
+                body_html=request.body_html,
                 default_to_email=default_to_email,
             )
 
-        payload: dict[str, Any] = {"message": signed_message if envelope is not None else request.message}
+        payload: dict[str, Any] = {"message": request.message}
         if envelope is not None:
             payload["envelope"] = envelope.model_dump()
             payload["dispatch_status"] = "PENDING_SEND"
@@ -2451,29 +2428,16 @@ class InteractionService:
             am_email = None
             mailbox_address = category.inbox_email
 
-        # Signed body — what actually gets sent and stored — so a
-        # client reading a brand-new Compose message (never a Reply,
-        # which threads under a conversation the client already knows
-        # is "the team") can tell which agent wrote it. Ticket history
-        # then reflects exactly what was sent, same principle as
-        # attachments (see _attach_outbound_files).
-        signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
-        signed_body_html = (
-            f"{request.body_html}{build_agent_signature_html(current_user)}"
-            if request.body_html
-            else None
-        )
-
         envelope = build_compose_envelope(
             from_email=mailbox_address,
             to_email=primary_to_email,
             subject=request.subject,
-            body=signed_message,
+            body=request.message,
             cc=request.cc,
             bcc=request.bcc,
             agent_name=current_user.name,
             account_manager_email=am_email,
-            body_html=signed_body_html,
+            body_html=request.body_html,
         )
         if len(effective_to) > 1:
             envelope = envelope.model_copy(update={"to_emails": effective_to})
@@ -2487,7 +2451,7 @@ class InteractionService:
             from_email=mailbox_address,
             from_name=current_user.name,
             subject=request.subject,
-            body=signed_message,
+            body=request.message,
             cc=request.cc,
             bcc=request.bcc,
         )
@@ -2847,22 +2811,15 @@ class InteractionService:
             else category.inbox_email
         )
 
-        signed_message = f"{request.message}\n\n{build_agent_signature(current_user)}"
-        signed_body_html = (
-            f"{request.body_html}{build_agent_signature_html(current_user)}"
-            if request.body_html
-            else None
-        )
-
         envelope = build_compose_envelope(
             from_email=mailbox_address,
             to_email=recipients[0].email,
             subject=request.subject,
-            body=signed_message,
+            body=request.message,
             cc=request.cc,
             bcc=request.bcc,
             agent_name=current_user.name,
-            body_html=signed_body_html,
+            body_html=request.body_html,
         )
         if len(recipients) > 1:
             envelope = envelope.model_copy(
@@ -2870,7 +2827,7 @@ class InteractionService:
             )
 
         payload: dict = {
-            "message": signed_message,
+            "message": request.message,
             "envelope": envelope.model_dump(),
             "dispatch_status": "PENDING_SEND",
             "forwarded_interaction_id": str(original.interaction_id),
@@ -2963,7 +2920,7 @@ class InteractionService:
                 internal_recipient_ids,
                 NotificationType.MAIL_FORWARDED,
                 title=request.subject,
-                message=signed_message,
+                message=request.message,
                 link=f"/inbox?interaction_id={interaction.interaction_id}",
                 related_entity_type="interaction",
                 related_entity_id=interaction.interaction_id,

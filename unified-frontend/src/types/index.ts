@@ -47,6 +47,17 @@ export interface AuthUser {
   time_format?: string | null;
   time_zone?: string | null;
   default_dashboard?: string | null;
+  // Per-user email signature (sanitized HTML), inserted client-side
+  // into Compose/Reply/Forward — see shared_models.models.User.
+  // signature_html's own docstring.
+  signature_html?: string | null;
+  // Mail Inbox panel widths (px), Outlook-style 3-panel layout — see
+  // MailWorkspaceLayout.tsx and shared_models.models.User.
+  // mail_inbox_folder_width/mail_inbox_list_width's own docstring.
+  // null/absent means "never dragged yet" — falls back to the
+  // ratio-based default.
+  mail_inbox_folder_width?: number | null;
+  mail_inbox_list_width?: number | null;
 }
 
 // GET /auth/me/permissions — the authenticated user's own complete
@@ -301,6 +312,10 @@ export interface ProfileForm {
   time_format?: string | null;
   time_zone?: string | null;
   default_dashboard?: string | null;
+  signature_html?: string | null;
+  // See AuthUser's own doc comment on these two fields.
+  mail_inbox_folder_width?: number | null;
+  mail_inbox_list_width?: number | null;
 }
 
 export interface OrganizationNode {

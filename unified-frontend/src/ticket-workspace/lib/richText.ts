@@ -451,14 +451,31 @@ export function buildForwardHtml(params: {
   // rendering, which already prefers body_html over body the same
   // way. Falls back to escaping `body` as plain text when absent.
   bodyHtml?: string;
+  // The composing user's own saved signature (already sanitized
+  // server-side — see shared_models.models.User.signature_html's own
+  // docstring), inserted just below the leading cursor paragraph and
+  // above the "Forwarded message" banner/quoted content — never
+  // inside the quote itself.
+  signatureHtml?: string;
 }): string {
-  const { fromLabel, dateLabel, subject, body, bodyHtml } = params;
+  const { fromLabel, dateLabel, subject, body, bodyHtml, signatureHtml } = params;
   const quotedContent = bodyHtml
     ? bodyHtml
     : escapeHtml(body).replace(/\n/g, "<br/>");
   return (
-    `<p></p><p>---------- Forwarded message ----------</p>` +
+    `<p></p>${signatureHtml ?? ""}<p>---------- Forwarded message ----------</p>` +
     `<p>From: ${escapeHtml(fromLabel)}<br/>Date: ${escapeHtml(dateLabel)}<br/>Subject: ${escapeHtml(subject)}</p>` +
     `<blockquote>${quotedContent}</blockquote>`
   );
+}
+
+// New Compose / Reply / Reply All's initial editor content — an empty
+// leading paragraph (cursor position for the user's own new text)
+// followed by their saved signature, if they have one. Forward has
+// its own variant of this same idea baked into buildForwardHtml above
+// (the signature has to land before the forwarded-message banner, not
+// at the very end), so this helper is for the two simpler cases only.
+export function buildInitialBodyHtml(params: { signatureHtml?: string }): string {
+  const { signatureHtml } = params;
+  return signatureHtml ? `<p></p>${signatureHtml}` : "";
 }

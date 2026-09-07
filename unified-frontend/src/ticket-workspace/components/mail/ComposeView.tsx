@@ -30,6 +30,7 @@ import { DistributionListMultiSelect } from "@tw/components/common/DistributionL
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import {
+  buildInitialBodyHtml,
   escapeHtml,
   filterLiveInlineImageIds,
   htmlToPlainText,
@@ -314,8 +315,22 @@ export function ComposeView({
     if (initialValues?.message) {
       return `<p>${escapeHtml(initialValues.message).replace(/\n/g, "<br/>")}</p>`;
     }
+    // A genuinely new, empty Compose session (never a reopened draft
+    // — see draftInteractionIdRef below — and never Forward, whose
+    // own quoted content already came through initialValues.bodyHtml
+    // above via buildForwardHtml) gets the user's saved signature
+    // prefilled. See shared_models.models.User.signature_html's own
+    // docstring.
+    if (!initialValues?.draftInteractionId && currentUser?.signature_html) {
+      return buildInitialBodyHtml({ signatureHtml: currentUser.signature_html });
+    }
     return "";
   });
+  // The exact prefill computed above, captured once — lets the `isEmpty`
+  // check below treat an untouched signature-only body the same as a
+  // truly empty one, so a signature alone can never be sent as a
+  // complete email by itself.
+  const initialBodyHtmlRef = useRef(bodyHtml);
   const [files, setFiles] = useState<File[]>([]);
   const [hasPendingImageUploads, setHasPendingImageUploads] = useState(false);
   // The server-side Compose draft backing this session, once one
@@ -460,7 +475,7 @@ export function ComposeView({
       !cc.trim() &&
       !bcc.trim() &&
       !subject.trim() &&
-      isRichTextEmpty(bodyHtml)
+      (bodyHtml === initialBodyHtmlRef.current || isRichTextEmpty(bodyHtml))
     ) {
       return;
     }
@@ -503,7 +518,11 @@ export function ComposeView({
   }, [isForward, clientId]);
 
   const canCompose = activeClients.length > 0 || categoryOptions.length > 0;
-  const isEmpty = isRichTextEmpty(bodyHtml);
+  // An untouched, signature-only prefill must never count as "has
+  // content" — otherwise Send would be enabled on a composer the user
+  // never actually typed anything into (see initialBodyHtmlRef above).
+  const isEmpty =
+    bodyHtml === initialBodyHtmlRef.current || isRichTextEmpty(bodyHtml);
   // Every comma-separated entry in "To" — a dropdown-picked contact
   // and a manually-typed external address are both just entries in
   // this same list, so neither kind is treated as more "valid" than

@@ -18,7 +18,13 @@ import {
   previewHrefFor,
   validateFiles,
 } from "@tw/lib/attachmentMeta";
-import { escapeHtml, htmlToPlainText, isRichContent, resolveInlineImageSources } from "@tw/lib/richText";
+import {
+  buildInitialBodyHtml,
+  escapeHtml,
+  htmlToPlainText,
+  isRichContent,
+  resolveInlineImageSources,
+} from "@tw/lib/richText";
 import { isValidEmailAddress } from "@tw/lib/validation";
 import type { AttachmentMeta, ClientContact } from "@tw/types";
 
@@ -41,6 +47,24 @@ interface ReplyComposerProps {
   initialCc?: string[];
   initialBcc?: string[];
   initialMessage?: string;
+  // The resumed draft's real HTML body, when the backend has one
+  // (see OpenEmailResponse.draft_body_html / TicketReplyDraftResponse.
+  // body_html) — preferred verbatim over re-flattening initialMessage,
+  // so formatting (and any signature HTML the draft already had)
+  // survives a reopen instead of collapsing to plain text.
+  initialBodyHtml?: string | null;
+  // True only when this session is resuming a real, previously-saved
+  // draft (a ticketed ticketReplyDraft, or a pre-ticket hasDraft) —
+  // distinct from initialMessage being merely empty, which a genuinely
+  // new session also starts as. Gates whether the user's saved
+  // signature gets prefilled: never on a resumed draft (its own saved
+  // state, including a deliberate signature removal, must not be
+  // silently overwritten), only on a brand-new composer.
+  hasExistingDraft?: boolean;
+  // The composing user's own saved signature (already sanitized
+  // server-side) — see shared_models.models.User.signature_html's own
+  // docstring.
+  signatureHtml?: string | null;
   isSending: boolean;
   onCancel: () => void;
   // Ticketed-thread send — files are local (`File[]`) and only
@@ -101,6 +125,9 @@ export function ReplyComposer({
   initialCc = [],
   initialBcc = [],
   initialMessage = "",
+  initialBodyHtml,
+  hasExistingDraft = false,
+  signatureHtml,
   isSending,
   onCancel,
   onSend,
@@ -113,9 +140,21 @@ export function ReplyComposer({
   onRemoveDraftAttachment,
   onUploadInlineImage,
 }: ReplyComposerProps) {
-  const [bodyHtml, setBodyHtml] = useState(() =>
-    initialMessage ? `<p>${escapeHtml(initialMessage).replace(/\n/g, "<br/>")}</p>` : ""
-  );
+  const [bodyHtml, setBodyHtml] = useState(() => {
+    if (hasExistingDraft) {
+      if (initialBodyHtml) return initialBodyHtml;
+      return initialMessage ? `<p>${escapeHtml(initialMessage).replace(/\n/g, "<br/>")}</p>` : "";
+    }
+    // A genuinely new (never a resumed draft) Reply/Reply All session
+    // gets the user's saved signature prefilled — see
+    // shared_models.models.User.signature_html's own docstring.
+    return signatureHtml ? buildInitialBodyHtml({ signatureHtml }) : "";
+  });
+  // The exact prefill computed above, captured once — see
+  // ComposeView.tsx's identical use of this pattern for why: an
+  // untouched signature-only body must count as empty, both for the
+  // Send-disabled check and for the auto-save "nothing typed yet" guard.
+  const initialBodyHtmlRef = useRef(bodyHtml);
   const [hasPendingImageUploads, setHasPendingImageUploads] = useState(false);
   const [selectedTo, setSelectedTo] = useState<RecipientChip[]>(toEmail ? [{ email: toEmail }] : []);
   const [cc, setCc] = useState(initialCc.join(", "));
@@ -134,7 +173,8 @@ export function ReplyComposer({
   const skipNextAutoSave = useRef(true);
   const savedIndicatorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isEmpty = isRichTextEmpty(bodyHtml);
+  const isEmpty =
+    bodyHtml === initialBodyHtmlRef.current || isRichTextEmpty(bodyHtml);
   const displaySubject = /^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`;
 
   // A non-empty Cc/Bcc entry must still be a real address — this had

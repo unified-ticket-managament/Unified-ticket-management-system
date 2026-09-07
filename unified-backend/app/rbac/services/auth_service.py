@@ -1,10 +1,13 @@
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from fastapi import HTTPException, status
 
 from shared_models.models import User
+
+from app.ticketing.utils.html_sanitizer import sanitize_outbound_html
 
 from app.auth.jwt import (
     create_access_token,
@@ -52,6 +55,9 @@ _PROFILE_FIELD_NAMES = {
     "time_format",
     "time_zone",
     "default_dashboard",
+    "signature_html",
+    "mail_inbox_folder_width",
+    "mail_inbox_list_width",
 }
 
 
@@ -405,6 +411,9 @@ class AuthService:
             time_format=user.time_format,
             time_zone=user.time_zone,
             default_dashboard=user.default_dashboard,
+            signature_html=user.signature_html,
+            mail_inbox_folder_width=user.mail_inbox_folder_width,
+            mail_inbox_list_width=user.mail_inbox_list_width,
         )
     
     # --------------------------------------------------
@@ -553,6 +562,21 @@ class AuthService:
             )
 
         update_data = profile_data.model_dump(exclude_unset=True)
+
+        if update_data.get("signature_html"):
+            # Images aren't supported in a signature yet — a signature
+            # has no attachment behind it, so sanitize_outbound_html's
+            # existing cid-only <img> rule (see html_sanitizer.py)
+            # would otherwise silently strip a remote-hosted image at
+            # send time rather than telling the user at save time.
+            if re.search(r"<img\b", update_data["signature_html"], re.IGNORECASE):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Images in a signature aren't supported yet.",
+                )
+            update_data["signature_html"] = sanitize_outbound_html(
+                update_data["signature_html"]
+            )
 
         for field in _PROFILE_FIELD_NAMES & update_data.keys():
             setattr(user, field, update_data[field])

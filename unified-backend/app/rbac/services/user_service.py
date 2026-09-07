@@ -16,6 +16,7 @@ from app.ticketing.models.client import Client
 from app.ticketing.repositories.client_repository import ClientRepository
 from app.ticketing.schemas.client import ClientCreate
 from app.ticketing.services.client_service import ClientService
+from app.ticketing.services.email_envelope import build_agent_signature_html
 
 # Roles required to belong to a work-specialization category — see
 # shared_models.models.Category. Not imported from a shared constant
@@ -205,6 +206,13 @@ class UserService:
             alternate_email=user_data.alternate_email,
             employee_number=user_data.employee_number,
         )
+        # Default signature seed — self-editable afterward from
+        # Settings (see shared_models.models.User.signature_html's own
+        # docstring). `user.role` is set transiently here purely so
+        # build_agent_signature_html can read a title; role_id above
+        # already carries the real, persisted relationship.
+        user.role = role
+        user.signature_html = build_agent_signature_html(user)
 
         user = await self.user_repository.create(user)
 

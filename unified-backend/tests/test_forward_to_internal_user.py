@@ -42,8 +42,10 @@ class _FakeUser:
         # (the manager sending the forward) needs it; a recipient
         # candidate never has ensure_has_permission called against it.
         self.permissions = permissions if permissions is not None else ["communication:reply_external"]
-        # build_agent_signature reads these — all nullable on the
-        # real model, default unset here.
+        # Present on the real model; unused by forward_to_internal_user
+        # itself (signatures are no longer server-appended — see
+        # shared_models.models.User.signature_html) but kept here for
+        # shape-parity with a real User.
         self.designation = None
         self.department = None
         self.phone_number = None
@@ -365,10 +367,12 @@ async def test_forward_happy_path_uses_client_mailbox_and_notifies_recipient():
     assert created.payload["envelope"]["from_email"] == "familyfirst@probeps.com"
     assert created.payload["envelope"]["to_email"] == recipient.email
     assert created.payload["envelope"].get("to_emails") is None
-    assert "Please handle this one." in created.payload["message"]
-    # Signature is present (build_agent_signature always includes the
-    # sender's own name).
-    assert current_user.name in created.payload["message"]
+    # The stored message is exactly what the frontend composer sent —
+    # no server-side signature append anymore (a per-user signature is
+    # now inserted client-side, into the composer's own editable body,
+    # before this request is ever made; see
+    # shared_models.models.User.signature_html's own docstring).
+    assert created.payload["message"] == "Please handle this one."
 
     assert len(notification_service.calls) == 1
     recipient_ids, notification_type, kwargs = notification_service.calls[0]

@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Date, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -199,6 +199,33 @@ class User(TimestampMixin, Base):
     default_dashboard: Mapped[str | None] = mapped_column(
         String(50), nullable=True, server_default="Dashboard"
     )
+
+    # Per-user, user-editable email signature (Outlook-style), inserted
+    # client-side into the composer at Compose/Reply/Forward open —
+    # never appended server-side (see
+    # app/ticketing/services/email_envelope.py's build_agent_signature*,
+    # kept only as this column's backfill/seed renderer). Sanitized
+    # through the same sanitize_outbound_html pipeline as any other
+    # agent-authored body_html before being persisted — see
+    # AuthService.update_profile. Nullable: a user with none simply
+    # composes with an empty signature block, same as before this
+    # feature existed.
+    signature_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Per-user Mail Inbox panel widths (px), Outlook-style 3-panel
+    # layout: Folders | Message List | Message Details — see
+    # MailWorkspaceLayout.tsx's FOLDER_MIN_WIDTH/LIST_MIN_WIDTH/
+    # DETAIL_MIN_WIDTH constants and its 1:1:3 default-ratio seeding.
+    # Nullable: a user who has never dragged a divider has no
+    # preference yet, and the frontend already falls back to the
+    # ratio-based default in that case — no backfill/default value
+    # needed here. Desktop-only (the mobile/tablet Mail layout has no
+    # resizable dividers at all), and deliberately two flat columns
+    # rather than a JSON blob, matching every other preference field
+    # on this model.
+    mail_inbox_folder_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    mail_inbox_list_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # -------------------------
     # Relationships

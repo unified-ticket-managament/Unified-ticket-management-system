@@ -217,6 +217,9 @@ export interface CurrentUser {
   permissions: string[];
   scoped_permissions?: Record<string, string[]>;
   employee_number?: string | null;
+  // Per-user email signature (sanitized HTML) — see
+  // shared_models.models.User.signature_html's own docstring.
+  signature_html?: string | null;
 }
 
 // ==========================================================
@@ -361,6 +364,9 @@ export interface OpenEmailResponse {
   // since opening this endpoint is itself what records the receipt.
   is_read: boolean;
   draft_message: string | null;
+  // The draft's real HTML body, when it has one — see
+  // ReplyComposer.tsx's initialBodyHtml prop.
+  draft_body_html?: string | null;
   draft_cc: string[];
   draft_bcc: string[];
   draft_attachments: AttachmentMeta[];

@@ -127,6 +127,11 @@ class OpenEmailResponse(BaseModel):
     # ticketed (drafts are pre-ticket only).
     draft_message: str | None = None
 
+    # The draft's real HTML body, when it has one — lets the reply
+    # composer restore rich formatting (and any signature HTML the
+    # draft had) instead of flattening back to plain text on reopen.
+    draft_body_html: str | None = None
+
     draft_cc: list[str] = Field(default_factory=list)
 
     draft_bcc: list[str] = Field(default_factory=list)

@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { useSettingsStore } from "@/store/settings-store";
+import { authService } from "@/services";
+import { useAuthStore } from "@/store/auth-store";
 
 // Outlook-style three-panel Mail workspace shell: Mail Folders | Message
 // List | Message Details, touching directly with a single draggable
@@ -50,38 +51,69 @@ export function MailWorkspaceLayout({
   const [activeDrag, setActiveDrag] = useState<DragTarget | null>(null);
   const dragRef = useRef<DragState | null>(null);
 
-  // Only the list|detail divider persists — the folder|list divider
-  // deliberately stays non-persisted, independent of both this and the
-  // main app sidebar's own persisted width.
-  const persistedListWidth = useSettingsStore((s) => s.mailMessageListWidth);
-  const setPersistedListWidth = useSettingsStore((s) => s.setMailMessageListWidth);
-  // Mirrors the live "list" drag value so endDrag (a stable callback,
-  // can't safely close over fresh listWidth state) can read the final
-  // value on pointerup.
+  // Both dividers persist per-user, server-side (users.
+  // mail_inbox_folder_width/mail_inbox_list_width via the same
+  // PATCH /auth/me every other Profile-page field already uses) —
+  // not device-local localStorage, so the layout follows the account
+  // across browsers/devices/logout-login and never bleeds between
+  // users sharing a browser. AuthGuard already blocks the whole
+  // authenticated app from rendering until /auth/me resolves, so this
+  // is populated by the time this component ever mounts.
+  const persistedFolderWidth = useAuthStore((s) => s.user?.mail_inbox_folder_width ?? null);
+  const persistedListWidth = useAuthStore((s) => s.user?.mail_inbox_list_width ?? null);
+  // Mirrors the live drag value for each divider so endDrag (a stable
+  // callback, can't safely close over fresh folderWidth/listWidth
+  // state) can read the final value on pointerup.
+  const folderWidthRef = useRef<number | null>(null);
   const listWidthRef = useRef<number | null>(null);
+
+  // Fire-and-forget: persists one changed divider's width to the
+  // user's own account and optimistically mirrors it into the auth
+  // store so a same-session remount doesn't need to wait for a
+  // refetch. A failed background save is low-stakes (a UI preference,
+  // not user data) and deliberately doesn't surface an error — the
+  // in-memory width for this session stays correct either way.
+  const persistLayout = useCallback(
+    (updates: { mail_inbox_folder_width?: number; mail_inbox_list_width?: number }) => {
+      const currentUser = useAuthStore.getState().user;
+      if (!currentUser) return;
+      useAuthStore.getState().setUser({ ...currentUser, ...updates });
+      authService.updateProfile(updates).catch(() => {});
+    },
+    []
+  );
 
   // Seed default pixel widths, in the required 1:1:3 ratio, from the
   // workspace's own measured width the first time it's known — this
   // scales sensibly across monitor sizes instead of a hardcoded guess.
-  // The list width additionally restores a persisted value (if the
-  // user ever dragged it before), clamped against the current
-  // measurement — kept in this one effect, rather than a second effect
-  // keyed off persistedListWidth, so a restored width renders on the
-  // very first paint instead of flashing the ratio default first.
+  // Both widths additionally restore their persisted value (if the
+  // user ever dragged that divider before), clamped against the
+  // current measurement — kept in this one effect, rather than a
+  // second effect keyed off the persisted values, so a restored width
+  // renders on the very first paint instead of flashing the ratio
+  // default first.
   useEffect(() => {
     if (folderWidth !== null || listWidth !== null) return;
     const total = containerRef.current?.getBoundingClientRect().width;
     if (!total) return;
     const unit = total / RATIO_TOTAL;
-    const seededFolderWidth = Math.max(FOLDER_MIN_WIDTH, Math.round(unit));
+
+    const seededFolderWidth =
+      persistedFolderWidth != null
+        ? Math.min(
+            Math.max(persistedFolderWidth, FOLDER_MIN_WIDTH),
+            Math.max(FOLDER_MIN_WIDTH, total - LIST_MIN_WIDTH - DETAIL_MIN_WIDTH)
+          )
+        : Math.max(FOLDER_MIN_WIDTH, Math.round(unit));
     setFolderWidth(seededFolderWidth);
+
     if (persistedListWidth != null) {
       const maxList = Math.max(LIST_MIN_WIDTH, total - seededFolderWidth - DETAIL_MIN_WIDTH);
       setListWidth(Math.min(Math.max(persistedListWidth, LIST_MIN_WIDTH), maxList));
     } else {
       setListWidth(Math.max(LIST_MIN_WIDTH, Math.round(unit)));
     }
-  }, [folderWidth, listWidth, persistedListWidth]);
+  }, [folderWidth, listWidth, persistedFolderWidth, persistedListWidth]);
 
   // `cleanupRef` holds the exact remove-listener closure a given
   // beginDrag() call installed, so endDrag can tear it down without
@@ -99,6 +131,7 @@ export function MailWorkspaceLayout({
     if (drag.target === "folder") {
       const maxFolder = Math.max(FOLDER_MIN_WIDTH, drag.containerWidth - drag.startListWidth - DETAIL_MIN_WIDTH);
       const next = Math.min(Math.max(drag.startFolderWidth + deltaX, FOLDER_MIN_WIDTH), maxFolder);
+      folderWidthRef.current = next;
       setFolderWidth(next);
     } else {
       const maxList = Math.max(LIST_MIN_WIDTH, drag.containerWidth - drag.startFolderWidth - DETAIL_MIN_WIDTH);
@@ -109,16 +142,19 @@ export function MailWorkspaceLayout({
   }, []);
 
   const endDrag = useCallback(() => {
-    const wasListDrag = dragRef.current?.target === "list";
+    const dragTarget = dragRef.current?.target;
     dragRef.current = null;
     setActiveDrag(null);
     cleanupRef.current();
     cleanupRef.current = () => {};
-    if (wasListDrag && listWidthRef.current != null) {
-      setPersistedListWidth(listWidthRef.current);
+    if (dragTarget === "list" && listWidthRef.current != null) {
+      persistLayout({ mail_inbox_list_width: listWidthRef.current });
+    } else if (dragTarget === "folder" && folderWidthRef.current != null) {
+      persistLayout({ mail_inbox_folder_width: folderWidthRef.current });
     }
     listWidthRef.current = null;
-  }, [setPersistedListWidth]);
+    folderWidthRef.current = null;
+  }, [persistLayout]);
 
   const beginDrag = useCallback(
     (target: DragTarget) => (event: React.PointerEvent) => {

@@ -198,6 +198,11 @@ class OrganizationService:
                     user.user_id,
                     staff_role.role_id,
                 )
+            if staff_role is not None:
+                children_users += await self.user_repository.get_by_manager_and_role(
+                    user.user_id,
+                    staff_role.role_id,
+                )
 
         elif role_name == "Team Lead":
             children_users = await self.user_repository.get_by_teamlead(
@@ -229,6 +234,7 @@ class OrganizationService:
         manager_id/teamlead_id traversal already built for permission-
         override scoping — used to scope an Account Manager's
         permission-override grant authority to "their own reports"
+<<<<<<< Updated upstream
         only. Must stay role-shaped exactly as it always has; widening
         it to match the Organization Chart's own literal traversal
         would change who an Account Manager can grant/revoke
@@ -240,6 +246,8 @@ class OrganizationService:
         get_reporting_scope_user_ids (Users-page visibility) passes
         True, so a deactivated report doesn't drop out of its own
         manager's Users-page view.
+=======
+>>>>>>> Stashed changes
         only: both Team-Lead-mediated reports and Staff reporting
         directly to the AM (see _build_subtree's Account Manager
         branch). Must stay role-shaped exactly as it always has;

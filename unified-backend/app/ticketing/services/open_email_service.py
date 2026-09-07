@@ -323,6 +323,7 @@ class OpenEmailService:
             folder_id=interaction.folder_id,
             is_read=is_read,
             draft_message=draft["message"],
+            draft_body_html=draft["body_html"],
             draft_cc=draft["cc"],
             draft_bcc=draft["bcc"],
             draft_attachments=draft["attachments"],
@@ -397,7 +398,7 @@ class OpenEmailService:
         a null-check branch for "no draft" vs. "has a draft".
         """
 
-        empty = {"message": None, "cc": [], "bcc": [], "attachments": []}
+        empty = {"message": None, "body_html": None, "cc": [], "bcc": [], "attachments": []}
 
         if current_user is None or interaction.ticket_id is not None:
             return empty
@@ -410,6 +411,7 @@ class OpenEmailService:
 
         return {
             "message": draft.payload.get("message"),
+            "body_html": draft.payload.get("body_html"),
             "cc": draft.payload.get("cc") or [],
             "bcc": draft.payload.get("bcc") or [],
             "attachments": await self._fetch_attachments(draft.interaction_id),
