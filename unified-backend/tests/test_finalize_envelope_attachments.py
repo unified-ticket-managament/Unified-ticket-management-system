@@ -14,6 +14,7 @@
 # test_attachment_envelope_loading.py's in-memory Attachment rows.
 
 from app.ticketing.schemas.payloads import EnvelopeAttachment, OutboundEnvelope
+from app.ticketing.services.company_signature_logo import COMPANY_LOGO_CONTENT_ID
 from app.ticketing.services.interaction_service import InteractionService
 
 
@@ -185,3 +186,89 @@ def test_mixed_live_inline_and_orphaned_inline_and_normal_attachment():
     assert by_id["att-stale"].is_inline is False
     assert by_id["att-stale"].content_id is None
     assert by_id["att-normal"].is_inline is False
+
+
+# ---------------------------------------------------------------
+# The system-managed company signature logo (see
+# company_signature_logo.py) — unlike every other case above, this is
+# the one attachment _finalize_envelope_attachments actively *adds*
+# rather than merely validates, since there is deliberately no
+# Attachment DB row/interaction ownership behind it.
+# ---------------------------------------------------------------
+
+
+def test_company_logo_is_attached_when_its_cid_is_present_in_body_html():
+    envelope = _envelope(
+        [], body_html=f'<div>Regards,<br>Jane</div><img src="cid:{COMPANY_LOGO_CONTENT_ID}">'
+    )
+    interaction = _FakeInteraction()
+
+    result = InteractionService._finalize_envelope_attachments(interaction, envelope)
+
+    assert len(result.attachments) == 1
+    logo = result.attachments[0]
+    assert logo.content_id == COMPANY_LOGO_CONTENT_ID
+    assert logo.is_inline is True
+    assert logo.content_base64  # real bytes, not empty
+    # The correction was applied, so the persisted payload must reflect it.
+    assert interaction.payload["envelope"] == result.model_dump()
+
+
+def test_company_logo_is_not_attached_when_body_html_has_no_signature():
+    """No signature (e.g. a user removed their whole signature block,
+    or add_internal_note, which never calls this method at all) means
+    no logo cid marker in body_html, so nothing is added — an exact
+    no-op, byte-identical to every send path before this feature."""
+    envelope = _envelope([], body_html="<p>Just a plain reply, no signature.</p>")
+    interaction = _FakeInteraction()
+
+    result = InteractionService._finalize_envelope_attachments(interaction, envelope)
+
+    assert result.attachments == []
+    assert result is envelope
+
+
+def test_company_logo_is_not_duplicated_if_already_present():
+    """Idempotent: calling this method twice (or an envelope that
+    already carries the logo attachment for some reason) never adds a
+    second copy."""
+    existing_logo = EnvelopeAttachment(
+        filename="probe-practice-solutions-logo.jpg",
+        content_type="image/jpeg",
+        content_base64="ZmFrZQ==",
+        content_id=COMPANY_LOGO_CONTENT_ID,
+        is_inline=True,
+        attachment_id="system:company-logo",
+    )
+    envelope = _envelope(
+        [existing_logo],
+        body_html=f'<img src="cid:{COMPANY_LOGO_CONTENT_ID}">',
+    )
+    interaction = _FakeInteraction()
+
+    result = InteractionService._finalize_envelope_attachments(interaction, envelope)
+
+    assert result.attachments == [existing_logo]
+    assert result is envelope  # no-op: already correct
+
+
+def test_company_logo_coexists_with_a_genuine_pasted_inline_image():
+    pasted = EnvelopeAttachment(
+        filename="screenshot.png", content_type="image/png", content_base64="ZmFrZQ==",
+        content_id="pasted-id", is_inline=True, attachment_id="att-pasted",
+    )
+    envelope = _envelope(
+        [pasted],
+        body_html=(
+            '<p>See below.</p><img src="cid:pasted-id">'
+            f'<div>Regards,<br>Jane</div><img src="cid:{COMPANY_LOGO_CONTENT_ID}">'
+        ),
+    )
+    interaction = _FakeInteraction()
+
+    result = InteractionService._finalize_envelope_attachments(interaction, envelope)
+
+    assert len(result.attachments) == 2
+    by_content_id = {a.content_id: a for a in result.attachments}
+    assert by_content_id["pasted-id"].is_inline is True
+    assert by_content_id[COMPANY_LOGO_CONTENT_ID].is_inline is True

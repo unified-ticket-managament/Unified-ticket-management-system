@@ -135,6 +135,15 @@ export function resolveInlineImageSources(html: string): string {
     }
   });
 
+  // The system-managed company logo (see buildSignatureBlockHtml
+  // above) is inserted with a plain static-asset `src` for on-screen
+  // display/drafts — unlike a pasted image, it always has a fixed,
+  // known content id, so it's never removed here even if somehow
+  // untracked; it just becomes the same `cid:` reference every time.
+  container.querySelectorAll(`img[src="${COMPANY_LOGO_DISPLAY_SRC}"]`).forEach((img) => {
+    img.setAttribute("src", `cid:${COMPANY_LOGO_CONTENT_ID}`);
+  });
+
   return container.innerHTML;
 }
 
@@ -182,7 +191,16 @@ export function resolveCidImagesForDisplay(
   container.querySelectorAll("img").forEach((img) => {
     const src = img.getAttribute("src") ?? "";
     if (!/^cid:/i.test(src)) return;
-    const attachment = byContentId.get(normalizeContentId(src.replace(/^cid:/i, "")));
+    const contentId = normalizeContentId(src.replace(/^cid:/i, ""));
+    // The company logo has no backing Attachment row (see
+    // buildSignatureBlockHtml/resolveInlineImageSources above) — it's
+    // resolved straight back to the static asset instead of via the
+    // message's own attachment list.
+    if (contentId === COMPANY_LOGO_CONTENT_ID) {
+      img.setAttribute("src", COMPANY_LOGO_DISPLAY_SRC);
+      return;
+    }
+    const attachment = byContentId.get(contentId);
     if (attachment) {
       img.setAttribute("src", attachment.preview_url || attachment.download_url || "");
       return;
@@ -439,6 +457,36 @@ export function renderThreadedMessageHtml(
   return html;
 }
 
+// The Probe Practice Solutions logo is a system-managed asset, not
+// part of any user's own editable signature_html — see
+// interaction_service.py's _finalize_envelope_attachments (backend)
+// for the other half of this pair. COMPANY_LOGO_CONTENT_ID must stay
+// byte-identical to that file's own copy of the same constant; it's
+// the `cid:` value Graph resolves this image against on the recipient
+// side. COMPANY_LOGO_DISPLAY_SRC is a plain static asset served from
+// this app's own /public folder — used only for on-screen display
+// (composing, drafts, and reading a sent message back); it is never
+// what actually gets sent (see resolveInlineImageSources below, which
+// rewrites it to `cid:${COMPANY_LOGO_CONTENT_ID}` right before Send).
+export const COMPANY_LOGO_CONTENT_ID = "company-signature-logo-v1";
+const COMPANY_LOGO_DISPLAY_SRC = "/probe-practice-solutions-logo.jpg";
+
+// Combines a user's own signature text with the system-managed company
+// logo — the one place the two are stitched together into outgoing
+// HTML. Deliberately not stored this way in User.signature_html itself
+// (that field stays logo-free, still rejects any <img> a user tries to
+// save) — the logo is appended here, at composer-render time, so its
+// asset/lifecycle stays entirely independent of any per-user row. No
+// signature means no logo either (mirrors "wherever the normal
+// signature is applicable").
+function buildSignatureBlockHtml(signatureHtml?: string | null): string {
+  if (!signatureHtml) return "";
+  return (
+    `${signatureHtml}` +
+    `<div><img src="${COMPANY_LOGO_DISPLAY_SRC}" alt="Probe Practice Solutions" width="150"/></div>`
+  );
+}
+
 export function buildForwardHtml(params: {
   fromLabel: string;
   dateLabel: string;
@@ -463,7 +511,7 @@ export function buildForwardHtml(params: {
     ? bodyHtml
     : escapeHtml(body).replace(/\n/g, "<br/>");
   return (
-    `<p></p>${signatureHtml ?? ""}<p>---------- Forwarded message ----------</p>` +
+    `<p></p>${buildSignatureBlockHtml(signatureHtml)}<p>---------- Forwarded message ----------</p>` +
     `<p>From: ${escapeHtml(fromLabel)}<br/>Date: ${escapeHtml(dateLabel)}<br/>Subject: ${escapeHtml(subject)}</p>` +
     `<blockquote>${quotedContent}</blockquote>`
   );
@@ -477,5 +525,6 @@ export function buildForwardHtml(params: {
 // at the very end), so this helper is for the two simpler cases only.
 export function buildInitialBodyHtml(params: { signatureHtml?: string }): string {
   const { signatureHtml } = params;
-  return signatureHtml ? `<p></p>${signatureHtml}` : "";
+  const block = buildSignatureBlockHtml(signatureHtml);
+  return block ? `<p></p>${block}` : "";
 }

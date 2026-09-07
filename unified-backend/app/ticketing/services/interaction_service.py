@@ -171,6 +171,10 @@ from app.ticketing.schemas.forward import (
     ResolvedForwardRecipient,
 )
 from app.ticketing.schemas.payloads import EmailPayload, EnvelopeAttachment, OutboundEnvelope
+from app.ticketing.services.company_signature_logo import (
+    COMPANY_LOGO_CONTENT_ID,
+    build_company_logo_attachment,
+)
 from app.ticketing.services.attachment_service import (
     AttachmentLoadError,
     AttachmentService,
@@ -1306,6 +1310,19 @@ class InteractionService:
         HTML (see buildForwardHtml/resolveInlineImageSources on the
         frontend), so they always have a live match here.
 
+        3. The system-managed company signature logo (see
+           company_signature_logo.py): the frontend's own signature-
+           insertion helpers write `cid:{COMPANY_LOGO_CONTENT_ID}`
+           straight into body_html whenever a signature is present —
+           there is no per-interaction Attachment row backing it (it's
+           a bundled static asset, not user data), so unlike every
+           other inline image, it's added here rather than merely
+           validated. Skipped entirely when body_html has no such
+           reference (e.g. add_internal_note never calls this method
+           at all; a user who deleted their whole signature block took
+           the logo with it) or when it's already present (idempotent
+           if ever called twice on the same envelope).
+
         No-op (returns `envelope` unchanged, no `interaction.payload`
         write) when nothing needed correcting — the common case.
         """
@@ -1333,6 +1350,12 @@ class InteractionService:
                 changed = True
 
             finalized.append(attachment)
+
+        if f"cid:{COMPANY_LOGO_CONTENT_ID}" in body_html and not any(
+            a.content_id == COMPANY_LOGO_CONTENT_ID for a in finalized
+        ):
+            finalized.append(build_company_logo_attachment())
+            changed = True
 
         if not changed:
             return envelope
