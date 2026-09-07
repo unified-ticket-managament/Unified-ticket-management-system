@@ -35,6 +35,20 @@ DESIGNATION_REQUIRED_ROLE_NAMES = {
 }
 REPORTING_MANAGER_OPTIONAL_ROLE_NAMES = {"Site Lead"}
 
+
+def _is_blank(value) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _clears_required_field(old_value, new_value) -> bool:
+    """True only when a previously-populated required field is being
+    emptied out by this update. Deliberately false when the field was
+    already blank on the existing record — an edit that doesn't touch
+    it (or that re-sends it unchanged, as the frontend's Edit User
+    payload always does for every internal-role save) must not be
+    blocked by data that predates this field's introduction."""
+    return _is_blank(new_value) and not _is_blank(old_value)
+
 # The client-facing role (renamed from "Viewer" — see root CLAUDE.md's
 # Client-role section). Unlike every other role, a "Client" user is
 # never stored in `users` at all — see the "Client storage" block of
@@ -1055,19 +1069,19 @@ class UserService:
                     "reporting_manager_id", user.reporting_manager_id
                 )
 
-                if not effective_designation or not str(effective_designation).strip():
+                if _clears_required_field(user.designation, effective_designation):
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Designation is required.",
                     )
-                if not effective_alternate_email or not str(effective_alternate_email).strip():
+                if _clears_required_field(user.alternate_email, effective_alternate_email):
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="Personal Email is required.",
                     )
                 if (
                     final_role_name not in REPORTING_MANAGER_OPTIONAL_ROLE_NAMES
-                    and effective_reporting_manager_id is None
+                    and _clears_required_field(user.reporting_manager_id, effective_reporting_manager_id)
                 ):
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,

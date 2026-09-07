@@ -115,11 +115,11 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
           if (!data.manager_id) {
             ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["manager_id"], message: "Select a manager" });
           }
-          if (!data.teamlead_id) {
+          if (mode === "create" && !data.teamlead_id) {
             ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["teamlead_id"], message: "Select a team lead" });
           }
         } else if (currentUserRole === ROLE_NAMES.ACCOUNT_MANAGER) {
-          if (!data.teamlead_id) {
+          if (mode === "create" && !data.teamlead_id) {
             ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["teamlead_id"], message: "Select a team lead" });
           }
         }
@@ -179,13 +179,13 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
         // internal role except Site Lead — mirrors
         // user_service.py's own DESIGNATION_REQUIRED_ROLE_NAMES/
         // REPORTING_MANAGER_OPTIONAL_ROLE_NAMES exactly.
-        if (!data.designation || !data.designation.trim()) {
+        if (mode === "create" && (!data.designation || !data.designation.trim())) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["designation"], message: "Designation is required" });
         }
-        if (!data.employee_number || !data.employee_number.trim()) {
+        if (mode === "create" && (!data.employee_number || !data.employee_number.trim())) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["employee_number"], message: "Employee ID is required" });
         }
-        if (!data.alternate_email || !data.alternate_email.trim()) {
+        if (mode === "create" && (!data.alternate_email || !data.alternate_email.trim())) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ["alternate_email"],
@@ -193,6 +193,7 @@ function buildSchema(mode: "create" | "edit", currentUserRole: string | undefine
           });
         }
         if (
+          mode === "create" &&
           !REPORTING_MANAGER_OPTIONAL_ROLE_NAMES.includes(selectedRoleName) &&
           !data.reporting_manager_id
         ) {
