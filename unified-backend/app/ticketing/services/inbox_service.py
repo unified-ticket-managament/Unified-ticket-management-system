@@ -603,6 +603,7 @@ class InboxService:
         current_user: User,
         client_id: UUID | None = None,
         shared_folder_ids: set[UUID] | None = None,
+        category_filter: str | None = None,
     ) -> dict[UUID, int]:
         """
         One grouped-COUNT query for every custom folder's badge count,
@@ -611,6 +612,12 @@ class InboxService:
         `.total`, which used to mean N full list-and-serialize round
         trips (each re-running the thread-summary/claimer-name/ticket
         lookups) purely to display a number.
+
+        `category_filter` — the category-mailbox counterpart to
+        `client_id` (see count_by_folder's own docstring): the "All
+        Clients" dropdown's options aren't only real `Client` rows, so
+        a category-mailbox selection must narrow this exactly the same
+        way a real client_id does.
 
         `shared_folder_ids` — every folder_id the caller has already
         confirmed (via MailFolderService.resolve_folder_access's
@@ -637,6 +644,7 @@ class InboxService:
             extra_ticket_ids=extra_ticket_ids,
             account_manager_category_ids=category_ids,
             shared_folder_ids=shared_folder_ids,
+            category_filter=category_filter,
         )
 
     async def get_view_counts(

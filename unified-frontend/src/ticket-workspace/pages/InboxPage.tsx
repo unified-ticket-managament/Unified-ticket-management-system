@@ -334,7 +334,7 @@ export function InboxPage() {
         onCompose={handleComposeClick}
         counts={mail.viewCounts}
         hideMyClaims={currentUser?.role === "Staff"}
-        folders={mail.folders}
+        folders={mail.visibleFolders}
         folderCounts={mail.folderCounts}
         activeFolderId={mail.activeFolderId}
         onSelectFolder={handleSelectFolder}

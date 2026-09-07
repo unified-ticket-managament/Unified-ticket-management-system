@@ -245,6 +245,7 @@ async def get_inbox(
 )
 async def get_folder_counts(
     client_id: UUID | None = Query(default=None),
+    category: str | None = Query(default=None),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
@@ -253,6 +254,13 @@ async def get_folder_counts(
     role scoping as GET /inbox — backs the Mail sidebar's per-folder
     badges without calling GET /inbox once per folder just to read
     `.total`.
+
+    `category` — the same category-mailbox narrowing GET /inbox
+    already accepts (see that route's own docstring). Some of the
+    "All Clients" dropdown's selectable values resolve to a category
+    mailbox rather than a real client_id (see
+    `mergedClientFilterOptions` on the frontend), so this must narrow
+    the folder list/counts the exact same way client_id does.
 
     Folders the viewer has genuine sharing access to (a rule filing
     into them names the viewer in shared_user_ids — see
@@ -284,7 +292,10 @@ async def get_folder_counts(
     service = InboxService(repository)
 
     return await service.get_folder_counts(
-        current_user, client_id=client_id, shared_folder_ids=shared_folder_ids
+        current_user,
+        client_id=client_id,
+        shared_folder_ids=shared_folder_ids,
+        category_filter=category,
     )
 
 

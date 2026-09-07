@@ -63,10 +63,11 @@ export async function getInbox(
 // calling getInbox("all", {folderId}) once per folder just to read
 // `.total`.
 export async function getFolderCounts(
-  clientId?: string
+  clientId?: string,
+  category?: string
 ): Promise<Record<string, number>> {
   const { data } = await apiClient.get<Record<string, number>>("/inbox/folder-counts", {
-    params: { client_id: clientId },
+    params: { client_id: clientId, category },
   });
   return data;
 }

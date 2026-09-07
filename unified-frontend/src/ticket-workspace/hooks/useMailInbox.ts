@@ -568,6 +568,26 @@ export function useMailInbox() {
   // below rather than the pending/replied/etc. MailViewKey machinery.
   const [folders, setFolders] = useState<MailFolder[]>([]);
   const [folderCounts, setFolderCounts] = useState<Record<string, number>>({});
+  // The sidebar's own client-scoped view of `folders` — a real client
+  // OR category-mailbox selection (clientIdFilter / categoryFilterFromClients
+  // set — the "All Clients" dropdown's options aren't only real Client
+  // rows, see resolveClientFilterValue/mergedClientFilterOptions) hides
+  // any folder with zero messages for that selection, using the exact
+  // same per-selection counts the badge number already comes from
+  // (folderCounts, sourced from getFolderCounts(clientId, category) ->
+  // InteractionRepository.count_by_folder, which only emits a
+  // folder_id key when at least one of its interactions actually
+  // matches) — never a folder-name check. "All Clients" (neither set)
+  // keeps every folder exactly as before, including ones with zero
+  // messages at all. `folders` itself (unfiltered) is left untouched
+  // for every other consumer (MessageDetailsView's per-email
+  // folder-assign dropdown, the folder-open label lookup) — assigning
+  // mail to a folder shouldn't be constrained by whatever selection
+  // happens to be active in the list view right now.
+  const visibleFolders = useMemo(() => {
+    if (!clientIdFilter && !categoryFilterFromClients) return folders;
+    return folders.filter((folder) => (folderCounts[folder.folder_id] ?? 0) > 0);
+  }, [folders, folderCounts, clientIdFilter, categoryFilterFromClients]);
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [folderRows, setFolderRows] = useState<InboxItem[]>([]);
   const [folderRowsTotal, setFolderRowsTotal] = useState(0);
@@ -791,6 +811,21 @@ export function useMailInbox() {
     }
   }, [fetchFolderRows]);
 
+  // Mirrors refreshFolders' own "the active folder disappeared, clear
+  // the selection" handling elsewhere in this file — here the folder
+  // wasn't deleted, it just has zero messages for the newly-selected
+  // client (see visibleFolders above) and dropped out of the sidebar,
+  // so the reading pane shouldn't keep showing that client's stale
+  // former folder contents. selectFolder(null) already clears
+  // folderRows/folderRowsTotal, satisfying "don't leave the user
+  // looking at stale messages from the previous client."
+  useEffect(() => {
+    if (!activeFolderId) return;
+    if (!visibleFolders.some((folder) => folder.folder_id === activeFolderId)) {
+      selectFolder(null);
+    }
+  }, [visibleFolders, activeFolderId, selectFolder]);
+
   const fetchSent = useCallback(async () => {
     const result = await getSent();
     setSentItems(result.items.map(sentItemToInboxItem));
@@ -969,7 +1004,7 @@ export function useMailInbox() {
           Promise.all([
             shouldLoadChrome ? listMailFolders() : Promise.resolve(null),
             getViewCounts(clientId),
-            getFolderCounts(clientId),
+            getFolderCounts(clientId, categoryFilterFromClients),
           ]),
           Promise.all(Array.from(keysToRefresh).map((key) => fetchKey(key))),
         ]);
@@ -994,6 +1029,7 @@ export function useMailInbox() {
     pushToast,
     clientFilter,
     clientIdFilter,
+    categoryFilterFromClients,
     activeViewRaw,
     fetchKey,
     priorityFilter,
@@ -1635,6 +1671,7 @@ export function useMailInbox() {
     markUnread,
     selectedEmail,
     folders,
+    visibleFolders,
     folderCounts,
     activeFolderId,
     selectFolder,

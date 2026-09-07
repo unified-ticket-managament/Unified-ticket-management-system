@@ -686,6 +686,7 @@ class InteractionRepository:
         extra_ticket_ids: list[UUID] | None = None,
         account_manager_category_ids: list[UUID] | None = None,
         shared_folder_ids: set[UUID] | None = None,
+        category_filter: str | None = None,
     ) -> dict[UUID, int]:
         """
         One grouped COUNT per custom folder, under the exact same
@@ -693,6 +694,18 @@ class InteractionRepository:
         the Mail sidebar's per-folder badges without the N full
         list-and-serialize round trips (one per folder) that used to
         require.
+
+        `category_filter` — the same category-mailbox narrowing
+        `list_inbox` already applies (see that method's own
+        docstring): a category name matched against either
+        `Ticket.ticket_type` (once ticketed) or `Category.category_name`
+        (a still-pending category-mailbox interaction). Exists because
+        the "All Clients" dropdown's selectable values aren't only real
+        `Client` rows — an inactive client whose `inbox_email` a
+        `Category` also shares (see `mergedClientFilterOptions`) shows
+        up as a category-mailbox option instead, and that selection
+        must narrow the sidebar's folder list/counts exactly the same
+        way a real `client_id` does.
 
         `shared_folder_ids`, when given, are folder_ids the viewer has
         genuine sharing access to (see InboxService.get_folder_counts'
@@ -718,12 +731,13 @@ class InteractionRepository:
             extra_ticket_ids=extra_ticket_ids,
             account_manager_category_ids=account_manager_category_ids,
             exclude_folder_ids=shared_folder_ids,
+            category_filter=category_filter,
         )
         if not shared_folder_ids:
             return scoped_counts
 
         unrestricted_counts = await self._count_by_folder_unrestricted(
-            folder_ids=shared_folder_ids, client_id=client_id
+            folder_ids=shared_folder_ids, client_id=client_id, category_filter=category_filter
         )
         scoped_counts.update(unrestricted_counts)
         return scoped_counts
@@ -737,6 +751,7 @@ class InteractionRepository:
         extra_ticket_ids: list[UUID] | None = None,
         account_manager_category_ids: list[UUID] | None = None,
         exclude_folder_ids: set[UUID] | None = None,
+        category_filter: str | None = None,
     ) -> dict[UUID, int]:
         query = select(Interaction.folder_id, func.count(Interaction.interaction_id))
 
@@ -755,8 +770,11 @@ class InteractionRepository:
         if client_id is not None:
             query = query.where(Interaction.client_id == client_id)
 
-        if ticket_types is not None or assigned_agent_id is not None:
-            query = query.join(Ticket, Ticket.ticket_id == Interaction.ticket_id)
+        needs_ticket_join = (
+            ticket_types is not None or assigned_agent_id is not None or category_filter is not None
+        )
+        if needs_ticket_join:
+            query = query.outerjoin(Ticket, Ticket.ticket_id == Interaction.ticket_id)
 
         if ticket_types is not None:
             query = query.where(Ticket.ticket_type.in_(ticket_types))
@@ -771,6 +789,15 @@ class InteractionRepository:
                 )
             else:
                 query = query.where(Ticket.agent_id == assigned_agent_id)
+
+        if category_filter is not None:
+            query = query.outerjoin(Category, Category.category_id == Interaction.category_id)
+            query = query.where(
+                or_(
+                    Ticket.ticket_type == category_filter,
+                    Category.category_name == category_filter,
+                )
+            )
 
         query = query.where(
             Interaction.is_visible.is_(True),
@@ -792,15 +819,18 @@ class InteractionRepository:
         self,
         folder_ids: set[UUID],
         client_id: UUID | None = None,
+        category_filter: str | None = None,
     ) -> dict[UUID, int]:
         """
         Counts every visible EMAIL-root interaction in `folder_ids`
-        with no ownership scoping at all (no Client/Ticket join,
-        hence no risk of dropping a pre-ticket row) — only for folders
-        already confirmed shared with the viewer. `client_id`, when
-        given, is kept as an explicit narrowing filter (the same
-        "further narrows to one client" role it plays everywhere
-        else), never treated as ownership scoping.
+        with no ownership scoping at all — only for folders already
+        confirmed shared with the viewer. `client_id`/`category_filter`,
+        when given, are kept as explicit narrowing filters (the same
+        role they play everywhere else), never treated as ownership
+        scoping. The `Ticket`/`Category` outerjoins only fire when
+        `category_filter` is actually given, so the common (no
+        category filter) case stays exactly as unjoined/cheap as
+        before.
         """
 
         query = select(Interaction.folder_id, func.count(Interaction.interaction_id)).where(
@@ -812,6 +842,16 @@ class InteractionRepository:
 
         if client_id is not None:
             query = query.where(Interaction.client_id == client_id)
+
+        if category_filter is not None:
+            query = query.outerjoin(Ticket, Ticket.ticket_id == Interaction.ticket_id)
+            query = query.outerjoin(Category, Category.category_id == Interaction.category_id)
+            query = query.where(
+                or_(
+                    Ticket.ticket_type == category_filter,
+                    Category.category_name == category_filter,
+                )
+            )
 
         query = query.group_by(Interaction.folder_id)
 
