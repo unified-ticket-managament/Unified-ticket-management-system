@@ -7,9 +7,14 @@ from app.ticketing.enums import (
     InteractionStatus,
     TicketStatus,
 )
+from app.ticketing.repositories.distribution_list_repository import (
+    DistributionListRepository,
+)
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
+from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.repositories.ticket_repository import (
     TicketRepository,
 )
@@ -29,11 +34,13 @@ from app.ticketing.schemas.ticket_from_interaction import (
 )
 from app.ticketing.services.access_control import (
     ensure_account_manager_owns_ticket_client,
+    ensure_agent_can_view_pending_interaction,
     ensure_has_permission,
     resolve_status_after_assignment,
 )
 from app.ticketing.services.assignment_service import AssignmentService
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.delegated_access import resolve_delegated_thread_access
 from app.ticketing.services.sla_service import SLAService
 from app.notifications.service import NotificationService, NotificationType
 
@@ -57,6 +64,9 @@ class InboxTicketService:
         client_repository=None,
         interaction_service=None,
         notification_service: NotificationService | None = None,
+        mail_folder_repository: MailFolderRepository | None = None,
+        rule_repository: RuleRepository | None = None,
+        distribution_list_repository: DistributionListRepository | None = None,
     ):
         self.ticket_repository = ticket_repository
         self.interaction_repository = interaction_repository
@@ -69,6 +79,14 @@ class InboxTicketService:
         # create_ticket_from_interaction.
         self.interaction_service = interaction_service
         self.notification_service = notification_service
+        # Optional — only needed to resolve delegated (forward/folder-
+        # share) thread access for the source interaction below; degrades
+        # safely to "no delegated bypass" (ownership/global-role only)
+        # when omitted, same convention as every other optional
+        # repository in this codebase.
+        self.mail_folder_repository = mail_folder_repository
+        self.rule_repository = rule_repository
+        self.distribution_list_repository = distribution_list_repository
 
     # ---------------------------------------------------------
     # Shared Validation
@@ -118,6 +136,61 @@ class InboxTicketService:
 
         return interaction
 
+    async def _ensure_can_act_on_pending_interaction(
+        self,
+        interaction,
+        current_user: User,
+        *,
+        permission_backed: str,
+    ) -> None:
+        """
+        Mirrors InteractionService._ensure_can_act_on_pending_
+        interaction exactly (same shared access_control check, same
+        lazy-retry via resolve_delegated_thread_access) — this
+        workflow previously had NO resource/thread-access check on the
+        source interaction at all, only the bare RBAC permission
+        below, letting any holder ticket-ize any interaction
+        system-wide regardless of ownership/delegation. Always passes
+        `requires_delegated_access=True`: Create Ticket/Attach are
+        significant, effectively irreversible actions, unlike
+        Archive/Move they never had a documented "permission alone is
+        deliberately sufficient" rationale — this closes a genuine gap,
+        not a deliberately broad design.
+        """
+
+        try:
+            await ensure_agent_can_view_pending_interaction(
+                interaction,
+                current_user,
+                self.client_repository,
+                permission_backed=permission_backed,
+                requires_delegated_access=True,
+            )
+            return
+        except HTTPException:
+            is_forward_recipient, folder_shared_bypass = (
+                await resolve_delegated_thread_access(
+                    interaction,
+                    current_user,
+                    interaction_repository=self.interaction_repository,
+                    mail_folder_repository=self.mail_folder_repository,
+                    rule_repository=self.rule_repository,
+                    distribution_list_repository=self.distribution_list_repository,
+                )
+            )
+            if not is_forward_recipient and not folder_shared_bypass:
+                raise
+
+            await ensure_agent_can_view_pending_interaction(
+                interaction,
+                current_user,
+                self.client_repository,
+                permission_backed=permission_backed,
+                requires_delegated_access=True,
+                is_forward_recipient=is_forward_recipient,
+                folder_shared_bypass=folder_shared_bypass,
+            )
+
     # ---------------------------------------------------------
     # Workflow 1
     # Create Ticket
@@ -142,6 +215,29 @@ class InboxTicketService:
         interaction = await self._get_pending_interaction(
             request.interaction_id
         )
+
+        # Resource/thread-access gate — this endpoint previously had
+        # none at all beyond the permission check above, letting any
+        # ticket:create holder ticket-ize any interaction system-wide.
+        # Admits the owner, a global-inbox role, or a legitimate
+        # delegated relationship (Manual/Rule Forward recipient, or a
+        # genuinely shared folder) to this interaction's thread.
+        await self._ensure_can_act_on_pending_interaction(
+            interaction, current_user, permission_backed="ticket:create"
+        )
+
+        # Resolve to the true thread root before associating anything
+        # with the new ticket — `interaction` may itself be a non-root
+        # member of its thread (e.g. a manual-forward or Rule-forward
+        # row), and assign_thread_to_ticket/complete_first_response_
+        # clock must operate on the root: assign_thread_to_ticket walks
+        # only *descendants* of whatever id it's given, so calling it
+        # with a non-root id would silently strand the true root (and
+        # any of its other replies) off the ticket.
+        root = await self.interaction_repository.find_thread_root(
+            interaction.interaction_id
+        )
+        root_interaction_id = root.interaction_id if root is not None else interaction.interaction_id
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -234,7 +330,7 @@ class InboxTicketService:
         # Moves the interaction AND every reply already filed under
         # it (if this was already a thread) onto the new ticket.
         await self.interaction_repository.assign_thread_to_ticket(
-            root_interaction_id=interaction.interaction_id,
+            root_interaction_id=root_interaction_id,
             ticket_id=ticket.ticket_id,
         )
 
@@ -258,8 +354,13 @@ class InboxTicketService:
         )
 
         if self.sla_service is not None:
+            # root_interaction_id, not interaction.interaction_id —
+            # FirstResponseSLA is always keyed by the thread root (see
+            # SLAService.complete_first_response_clock's own docstring);
+            # passing a non-root id here would silently no-op and leave
+            # the clock dangling.
             await self.sla_service.complete_first_response_clock(
-                interaction_id=interaction.interaction_id,
+                interaction_id=root_interaction_id,
                 completion_reason="TICKET_CREATED",
                 resulting_ticket_id=ticket.ticket_id,
             )
@@ -294,6 +395,24 @@ class InboxTicketService:
         interaction = await self._get_pending_interaction(
             request.interaction_id
         )
+
+        # Resource/thread-access gate on the SOURCE interaction — see
+        # the identical comment in create_ticket_from_interaction. The
+        # target ticket's own ownership (ensure_account_manager_owns_
+        # ticket_client below) is a separate, pre-existing, unrelated
+        # check on the destination side.
+        await self._ensure_can_act_on_pending_interaction(
+            interaction, current_user, permission_backed="communication:attach_to_ticket"
+        )
+
+        # Resolve to the true thread root first — see the identical
+        # comment in create_ticket_from_interaction for why
+        # assign_thread_to_ticket/complete_first_response_clock must
+        # operate on the root, not whatever id was actually requested.
+        root = await self.interaction_repository.find_thread_root(
+            interaction.interaction_id
+        )
+        root_interaction_id = root.interaction_id if root is not None else interaction.interaction_id
 
         # Validate ticket
         ticket = await self.ticket_repository.get_by_id(
@@ -366,7 +485,7 @@ class InboxTicketService:
         # Attach the interaction AND every reply already filed
         # under it (if this was already a thread) to the ticket.
         await self.interaction_repository.assign_thread_to_ticket(
-            root_interaction_id=interaction.interaction_id,
+            root_interaction_id=root_interaction_id,
             ticket_id=ticket.ticket_id,
         )
 
@@ -433,8 +552,10 @@ class InboxTicketService:
                     )
 
         if self.sla_service is not None:
+            # root_interaction_id, not interaction.interaction_id — see
+            # the identical comment in create_ticket_from_interaction.
             await self.sla_service.complete_first_response_clock(
-                interaction_id=interaction.interaction_id,
+                interaction_id=root_interaction_id,
                 completion_reason="ATTACHED_TO_TICKET",
                 resulting_ticket_id=ticket.ticket_id,
             )

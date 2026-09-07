@@ -523,8 +523,16 @@ def _build_inbox_ticket_service(session) -> InboxTicketService:
 async def test_create_ticket_with_preassigned_agent_starts_in_progress(db_session):
     team_lead = await _get_team_lead(db_session)
     team_lead.permissions = ["ticket:create"]
+    # account_manager_id=team_lead.user_id (not .manager_id): Create
+    # Ticket now requires genuine resource access to the source
+    # interaction (ownership, by plain id-match against
+    # Client.account_manager_id regardless of role, or a delegated
+    # forward/folder-share relationship) before RBAC is even
+    # consulted — this test is about status-on-creation semantics, not
+    # access control, so it establishes ownership the simplest way
+    # rather than exercising delegation.
     client = await _make_inbox_client(
-        db_session, account_manager_id=team_lead.manager_id or team_lead.user_id
+        db_session, account_manager_id=team_lead.user_id
     )
     interaction = await _make_pending_interaction(db_session, client_id=client.client_id)
 
@@ -568,8 +576,10 @@ async def test_create_ticket_with_preassigned_agent_starts_in_progress(db_sessio
 async def test_create_ticket_without_agent_stays_open(db_session):
     team_lead = await _get_team_lead(db_session)
     team_lead.permissions = ["ticket:create"]
+    # See the identical comment in test_create_ticket_with_preassigned_
+    # agent_starts_in_progress above.
     client = await _make_inbox_client(
-        db_session, account_manager_id=team_lead.manager_id or team_lead.user_id
+        db_session, account_manager_id=team_lead.user_id
     )
     interaction = await _make_pending_interaction(db_session, client_id=client.client_id)
 

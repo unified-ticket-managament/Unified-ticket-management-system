@@ -31,7 +31,7 @@ from app.ticketing.services.access_control import (
     ensure_agent_can_view_ticket,
 )
 from app.ticketing.services.attachment_service import attachments_to_metadata
-from app.ticketing.services.mail_folder_service import MailFolderService
+from app.ticketing.services.delegated_access import resolve_delegated_thread_access
 from app.ticketing.services.sla_service import SLAService
 from app.ticketing.storage.base import StorageService
 
@@ -179,33 +179,25 @@ class OpenEmailService:
                         ticket, current_user, self.client_repository
                     )
         elif current_user is not None:
-            folder_shared_bypass = False
-            if (
-                interaction.folder_id is not None
-                and self.mail_folder_repository is not None
-                and self.rule_repository is not None
-                and self.distribution_list_repository is not None
-            ):
-                # A folder-filed pending item is excluded from the
-                # owner's own scoped Inbox (list_inbox's folder_id IS
-                # NULL condition), so a viewer who only has access via
-                # the folder being shared with them (not their own
-                # ownership scope) must still be able to open it here
-                # — the same via_sharing signal InboxService.get_inbox
-                # already uses for the list view.
-                folder = await self.mail_folder_repository.get_by_id(
-                    interaction.folder_id
+            # A folder-filed pending item is excluded from the owner's
+            # own scoped Inbox (list_inbox's folder_id IS NULL
+            # condition), so a viewer who only has access via the
+            # folder being shared with them (not their own ownership
+            # scope) must still be able to open it here — same
+            # single-source-of-truth resolution InteractionService's
+            # own action-side check now also calls (see
+            # delegated_access.resolve_delegated_thread_access's own
+            # docstring for why this is thread-scoped, not row-scoped).
+            is_forward_recipient, folder_shared_bypass = (
+                await resolve_delegated_thread_access(
+                    interaction,
+                    current_user,
+                    interaction_repository=self.interaction_repository,
+                    mail_folder_repository=self.mail_folder_repository,
+                    rule_repository=self.rule_repository,
+                    distribution_list_repository=self.distribution_list_repository,
                 )
-                if folder is not None:
-                    access = await MailFolderService(
-                        self.mail_folder_repository
-                    ).resolve_folder_access(
-                        folder,
-                        current_user,
-                        self.rule_repository,
-                        self.distribution_list_repository,
-                    )
-                    folder_shared_bypass = access.via_sharing
+            )
 
             await ensure_agent_can_view_pending_interaction(
                 interaction,
@@ -213,6 +205,7 @@ class OpenEmailService:
                 self.client_repository,
                 view_only=True,
                 folder_shared_bypass=folder_shared_bypass,
+                is_forward_recipient=is_forward_recipient,
             )
 
         # Records that this user has now opened this thread — the

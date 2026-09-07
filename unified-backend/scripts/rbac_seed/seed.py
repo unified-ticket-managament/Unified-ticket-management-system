@@ -61,6 +61,17 @@ DEFAULT_PERMISSIONS = [
     ("communication:attach_to_ticket", "Attach a communication to an existing ticket"),
     ("communication:archive", "Close out a communication without a ticket"),
     ("communication:view_timeline", "See a communication's full history"),
+    # File a still-pending communication into a custom mail folder.
+    # Deliberately its own permission rather than reusing communication:
+    # archive — Archive is a terminal, PENDING-only transition; Move is
+    # non-terminal and available regardless of status (see
+    # InteractionService.set_interaction_folder's own docstring), so
+    # sharing a permission with Archive would be a real semantic
+    # mismatch. Also deliberately not a folder:* permission — this gates
+    # moving a *communication*, not administering folders themselves
+    # (see rule:manage_all for that, which folder access already
+    # derives from).
+    ("communication:move_to_folder", "File a communication into a custom mail folder"),
     # Ticket Management capabilities (ticketing-service) — RBAC's own
     # permission records for the ticket workspace. These aren't
     # enforced by the Ticketing backend (it authorizes purely by role
@@ -132,6 +143,20 @@ DEFAULT_PERMISSIONS = [
     # permission already goes through; no rule-specific role check
     # exists anywhere in the Rules code itself.
     ("rule:view_all", "View every Mail Rule and OTP Rule, and every mail folder, regardless of ownership or explicit sharing"),
+    # Manage-strength counterpart to rule:view_all: lets its holder
+    # edit/enable-disable/reorder/delete ANY Mail/OTP Rule (and, since
+    # folder access is entirely derived from rule access, administer
+    # any mail folder too) regardless of ownership or explicit sharing
+    # — see rule_access.can_manage_rule, which deliberately checks this
+    # permission the same way can_view_rule already checks rule:
+    # view_all. A reusable capability, not a Site-Lead-specific one:
+    # not granted to any role explicitly below — Super Admin/Site Lead
+    # pick it up via the same "all"/"every permission except two"
+    # wildcard computation every other permission already goes through,
+    # and any future role/user can be granted it later via the existing
+    # role-permission or personal-override mechanisms with zero code
+    # change.
+    ("rule:manage_all", "Manage every Mail/OTP Rule and mail folder, regardless of ownership or explicit sharing"),
 ]
 
 # `ticket:bulk_reassign` and `ticket:configure_routing` (previously part
@@ -184,6 +209,7 @@ DEFAULT_ROLES = {
         "communication:reply_external", "communication:reply_internal",
         "communication:attach_to_ticket",
         "communication:archive",
+        "communication:move_to_folder",
         "communication:view_timeline",
         # Ticket — everything except deep system configuration and the
         # global (cross-ticket) audit log, which the RBAC matrix doc

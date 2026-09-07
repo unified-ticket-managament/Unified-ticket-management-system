@@ -156,13 +156,16 @@ class MailFolderService:
         grant" — the latter is what InboxService uses to decide
         whether to widen message-level visibility for this one
         folder_id (see that service's own bypass_ownership_scope
-        param). rule:view_all grants folder visibility unconditionally
-        but is never itself a "sharing" grant in the narrower sense
-        this method's `via_sharing` distinguishes.
+        param), and what the delegated-access pipeline (see
+        delegated_access.resolve_delegated_thread_access) uses to
+        decide whether a non-owner can act on this folder's contents.
+        rule:view_all grants folder visibility unconditionally, but
+        must never *erase* a genuinely-true `via_sharing` for a viewer
+        who is also directly named in a rule's share list — a holder
+        of that broad permission can still be a real, specific
+        delegate too, and callers that key off `via_sharing`
+        specifically (not `visible`) need to see that.
         """
-
-        if has_permission(current_user, RULE_VIEW_ALL_PERMISSION):
-            return FolderAccess(visible=True, via_sharing=False)
 
         all_rules = await rule_repository.list_all()
         name_to_rules = _folder_name_to_rules(all_rules)
@@ -173,6 +176,10 @@ class MailFolderService:
         via_sharing = has_folder_share_access(
             folder.name, current_user, name_to_rules, user_dl_ids
         )
+
+        if has_permission(current_user, RULE_VIEW_ALL_PERMISSION):
+            return FolderAccess(visible=True, via_sharing=via_sharing)
+
         visible = via_sharing or _is_folder_visible(
             folder, current_user, name_to_rules, user_dl_ids
         )

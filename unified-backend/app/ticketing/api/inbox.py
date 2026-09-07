@@ -651,6 +651,8 @@ async def forward_to_internal_user(
         storage_service=storage_service,
         notification_service=notification_service,
         distribution_list_repository=DistributionListRepository(db),
+        mail_folder_repository=MailFolderRepository(db),
+        rule_repository=RuleRepository(db),
     )
 
     return await interaction_service.forward_to_internal_user(
@@ -781,6 +783,9 @@ async def archive_interaction(
         sla_service=build_sla_service(
             db, notification_service=NotificationService(NotificationRepository(db))
         ),
+        mail_folder_repository=MailFolderRepository(db),
+        rule_repository=RuleRepository(db),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.archive_interaction(
@@ -854,6 +859,8 @@ async def update_interaction_folder(
         user_repository=user_repository,
         client_repository=client_repository,
         mail_folder_repository=mail_folder_repository,
+        rule_repository=RuleRepository(db),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.set_interaction_folder(
@@ -1072,6 +1079,9 @@ async def save_draft(
         client_repository=client_repository,
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
+        mail_folder_repository=MailFolderRepository(db),
+        rule_repository=RuleRepository(db),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.save_draft(
@@ -1112,6 +1122,9 @@ async def upload_draft_attachment(
         client_repository=client_repository,
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
+        mail_folder_repository=MailFolderRepository(db),
+        rule_repository=RuleRepository(db),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.upload_draft_attachment(
@@ -1153,6 +1166,9 @@ async def upload_draft_inline_image(
         client_repository=client_repository,
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
+        mail_folder_repository=MailFolderRepository(db),
+        rule_repository=RuleRepository(db),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.upload_draft_inline_image(
@@ -1189,6 +1205,8 @@ async def send_draft(
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
         distribution_list_repository=DistributionListRepository(db),
+        mail_folder_repository=MailFolderRepository(db),
+        rule_repository=RuleRepository(db),
     )
 
     return await service.send_draft(
@@ -1226,6 +1244,9 @@ async def discard_draft(
         client_repository=client_repository,
         attachment_repository=attachment_repository,
         storage_service=get_storage_service(),
+        mail_folder_repository=MailFolderRepository(db),
+        rule_repository=RuleRepository(db),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.discard_draft(
@@ -1322,6 +1343,8 @@ async def reply_to_interaction(
             db, notification_service=NotificationService(NotificationRepository(db))
         ),
         distribution_list_repository=DistributionListRepository(db),
+        mail_folder_repository=MailFolderRepository(db),
+        rule_repository=RuleRepository(db),
     )
 
     return await service.add_interaction_reply(

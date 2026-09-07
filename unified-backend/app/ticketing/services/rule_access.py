@@ -23,6 +23,15 @@ from app.ticketing.services.rule_folder_sync import folder_names_from_actions
 # checks this permission.
 RULE_VIEW_ALL_PERMISSION = "rule:view_all"
 
+# Manage-strength counterpart to RULE_VIEW_ALL_PERMISSION: a holder can
+# edit/enable-disable/reorder/delete every rule (and, since folder
+# access is derived from rule access, administer every folder) exactly
+# as if they were its creator, regardless of ownership/sharing. A
+# reusable capability keyed purely on this permission string, not any
+# role name — see can_manage_rule below and scripts/rbac_seed/seed.py's
+# own comment for how Site Lead (and any future role/user) reaches it.
+RULE_MANAGE_ALL_PERMISSION = "rule:manage_all"
+
 
 def _shared_via_distribution_list(
     rule: Rule, user_distribution_list_ids: Iterable[UUID]
@@ -63,6 +72,7 @@ def can_manage_rule(
         rule.created_by == current_user.user_id
         or str(current_user.user_id) in (rule.shared_user_ids or [])
         or _shared_via_distribution_list(rule, user_distribution_list_ids)
+        or has_permission(current_user, RULE_MANAGE_ALL_PERMISSION)
     )
 
 

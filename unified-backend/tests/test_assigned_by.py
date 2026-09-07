@@ -237,8 +237,15 @@ def _build_inbox_ticket_service(session) -> InboxTicketService:
 async def test_create_ticket_with_preassigned_agent_sets_assigned_by_to_creator(db_session):
     team_lead, _staff = await _find_team_lead_with_staff(db_session, 1)
     team_lead.permissions = ["ticket:create"]
+    # account_manager_id=team_lead.user_id (not .manager_id): Create
+    # Ticket now requires genuine resource access (ownership, by plain
+    # id-match against Client.account_manager_id, or a delegated
+    # forward/folder-share relationship) before RBAC — see
+    # test_ticket_status_on_assignment.py's identical comment. This
+    # test is about assigned_by semantics, not access control, so it
+    # establishes ownership the simplest way.
     client = await _make_inbox_client(
-        db_session, account_manager_id=team_lead.manager_id or team_lead.user_id
+        db_session, account_manager_id=team_lead.user_id
     )
     interaction = await _make_pending_interaction(db_session, client_id=client.client_id)
 
@@ -262,8 +269,10 @@ async def test_create_ticket_with_preassigned_agent_sets_assigned_by_to_creator(
 async def test_create_ticket_without_agent_leaves_assigned_by_none(db_session):
     team_lead, _staff = await _find_team_lead_with_staff(db_session, 1)
     team_lead.permissions = ["ticket:create"]
+    # See the identical comment in
+    # test_create_ticket_with_preassigned_agent_sets_assigned_by_to_creator.
     client = await _make_inbox_client(
-        db_session, account_manager_id=team_lead.manager_id or team_lead.user_id
+        db_session, account_manager_id=team_lead.user_id
     )
     interaction = await _make_pending_interaction(db_session, client_id=client.client_id)
 

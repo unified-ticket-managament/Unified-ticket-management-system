@@ -112,7 +112,9 @@ alembic -c alembic_ticketing/alembic.ini upgrade head
 
 netstat -ano | findstr :8000
  
-taskkill /PID 23040 /F
+
+
+
 
 
 uvicorn app.main:app --reload --port 8000

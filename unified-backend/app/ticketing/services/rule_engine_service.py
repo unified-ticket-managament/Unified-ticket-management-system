@@ -6,6 +6,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.notifications.repository import NotificationRepository
 from app.notifications.service import NotificationService, NotificationType
+from app.ticketing.enums import (
+    AuditEntityType,
+    AuditEventType,
+    InteractionDirection,
+    InteractionStatus,
+)
 from app.ticketing.enums.rule_enums import RuleActionType, RuleCategory
 from app.ticketing.models.interaction import Interaction
 from app.ticketing.models.rule import Rule
@@ -16,8 +22,11 @@ from app.ticketing.repositories.interaction_repository import InteractionReposit
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.repositories.user_repository import UserRepository
+from app.ticketing.schemas.forward import ResolvedForwardRecipient
+from app.ticketing.schemas.interaction import InteractionCreate
 from app.ticketing.schemas.payloads import OutboundEnvelope
 from app.ticketing.schemas.rule import RuleActionItem, RuleConditionGroup
+from app.ticketing.services.audit_log_service import AuditLogService
 from app.ticketing.services.mail_provider import get_mail_provider_client
 from app.ticketing.services.rule_conditions import RuleEmailContext, rule_matches
 from app.ticketing.services.rule_folder_sync import ensure_folder
@@ -229,6 +238,7 @@ class RuleEngineService:
                 list(employee_ids),
                 interaction=interaction,
                 rule_category=rule.category,
+                rule_id=rule.rule_id,
                 forwarded_user_ids=forwarded_user_ids,
             )
 
@@ -238,6 +248,7 @@ class RuleEngineService:
         *,
         interaction: Interaction,
         rule_category: str,
+        rule_id: UUID | None = None,
         forwarded_user_ids: set[UUID] | None = None,
     ) -> None:
         """
@@ -380,6 +391,82 @@ class RuleEngineService:
 
         if not succeeded_user_ids:
             return
+
+        # Records this forward as a real, thread-integrated Interaction
+        # B — the same shape InteractionService.forward_to_internal_
+        # user's manual-forward path already uses (interaction_type=
+        # FORWARD, parent_interaction_id, payload.recipients) — so the
+        # existing _is_forwarded_to_user access check (which only ever
+        # inspects interaction_type/payload.recipients, never how the
+        # row was created) picks up a Rule-forward recipient
+        # automatically, with zero changes to that function. One row
+        # per rule-forward action, not one per recipient — mirrors
+        # manual-forward's own "one Interaction, many recipients"
+        # convention. Only recipients whose real send above actually
+        # succeeded are included: a failed send must never grant reply
+        # access to someone who never received the email.
+        names_by_id = await self.user_repository.get_names_by_ids(list(succeeded_user_ids))
+        resolved_recipients = [
+            ResolvedForwardRecipient(
+                user_id=user_id,
+                name=names_by_id.get(user_id),
+                email=emails_by_id[user_id],
+            )
+            for user_id in succeeded_user_ids
+        ]
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(None)
+        forward_interaction = await self.interaction_repository.create(
+            InteractionCreate(
+                ticket_id=interaction.ticket_id,
+                interaction_type="FORWARD",
+                direction=InteractionDirection.OUTBOUND,
+                # Already dispatched by the real send(s) above — never
+                # PENDING_SEND, so this row never enters the delayed-
+                # send/Undo-Send machinery that path implies.
+                status=InteractionStatus.ASSIGNED,
+                payload={
+                    "message": forward_body,
+                    "recipients": [
+                        r.model_dump(mode="json") for r in resolved_recipients
+                    ],
+                    "forwarded_interaction_id": str(interaction.interaction_id),
+                    "rule_id": str(rule_id) if rule_id is not None else None,
+                    "dispatch_status": "SENT",
+                },
+                is_visible=True,
+                # A synthetic id for the row itself — distinct from each
+                # recipient's own per-send message_id above, since no
+                # single real send is more authoritative than another
+                # for a one-row/many-recipients batch.
+                message_id=f"<rule-forward-batch-{uuid4().hex}@{message_domain}>",
+                client_id=interaction.client_id,
+                category_id=interaction.category_id,
+                parent_interaction_id=interaction.interaction_id,
+                subject=forward_subject,
+                dispatch_status="SENT",
+            )
+        )
+
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=forward_interaction.interaction_id,
+            # Reuses REPLY_ADDED rather than adding a new AuditEventType
+            # member — same reasoning InteractionService.
+            # forward_to_internal_user's own audit call already
+            # documents (that enum is a native Postgres ENUM; a forward
+            # is, audit-wise, the same kind of event as any other
+            # outbound send).
+            event_type=AuditEventType.REPLY_ADDED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            new_values={
+                "forwarded_interaction_id": interaction.interaction_id,
+                "rule_id": rule_id,
+                "recipient_user_ids": list(succeeded_user_ids),
+            },
+        )
 
         # The full forwarded text (same content the real email above
         # carries, headers included) — not a truncated snippet.

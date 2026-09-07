@@ -600,6 +600,7 @@ async def ensure_agent_can_view_pending_interaction(
     *,
     view_only: bool = False,
     permission_backed: str | None = None,
+    requires_delegated_access: bool = False,
     is_forward_recipient: bool = False,
     folder_shared_bypass: bool = False,
 ) -> None:
@@ -648,47 +649,73 @@ async def ensure_agent_can_view_pending_interaction(
 
     `permission_backed="<permission name>"` (passed only by the action
     call sites that already run that exact same `ensure_has_permission`
-    check immediately afterward — Reply/Forward/the four draft actions
-    pass "communication:reply_external", Archive passes
-    "communication:archive") admits anyone holding that permission,
-    ownership aside entirely — EXCEPT for "communication:reply_external"
-    specifically, which additionally requires `is_forward_recipient`
-    (see below). Before this exception was scoped down, holding
-    communication:reply_external was sufficient on its own to reply to
-    ANY pending mail item, forwarded or not — the permission itself was
-    treated as the authority, matching how a plain role-granted
-    communication:view_all already lets someone past ownership to
-    *view* anything. That was deliberately too broad: a
-    communication:reply_external holder with no relationship at all to
-    a given pending item (never its owning client/category, never
-    forwarded it) could still reply to it, which is a real "reply to
-    any ticket" leak this permission must never grant (see the RBAC
-    permission-compliance audit's own framing of least-privilege
-    scoping). `communication:archive` is untouched — Archive was never
-    part of the forwarded-recipient scenario this narrowing exists for.
+    check immediately afterward) admits anyone holding that permission,
+    ownership aside entirely — UNLESS the caller also passes
+    `requires_delegated_access=True`, in which case the permission
+    alone is not sufficient: the caller must additionally be the
+    interaction's owner (the ownership fallback below) or have a
+    legitimate delegated relationship to its *thread*
+    (`is_forward_recipient` or `folder_shared_bypass` — see both
+    below). This is a generic, caller-declared flag, not a hardcoded
+    permission-name comparison — any action wired through this
+    function can opt into requiring delegated access without this
+    function needing to know which permission string it is. Before
+    this flag existed, "communication:reply_external" alone was
+    sufficient to reply to ANY pending mail item, forwarded or not —
+    the permission itself was treated as the authority, matching how a
+    plain role-granted communication:view_all already lets someone
+    past ownership to *view* anything. That was deliberately too
+    broad: a communication:reply_external holder with no relationship
+    at all to a given pending item (never its owning client/category,
+    never delegated it) could still reply to it, which is a real
+    "reply to any ticket" leak this permission must never grant on its
+    own (see the RBAC permission-compliance audit's own framing of
+    least-privilege scoping) — the same reasoning now also applies to
+    Archive/Move-to-Folder/Create-Ticket/Attach-to-Ticket, which used
+    to admit on permission alone with no resource check whatsoever;
+    all of them now pass `requires_delegated_access=True` too. Claim
+    and Tags never pass this flag (or even `permission_backed`) at
+    all — see below.
 
     `is_forward_recipient=True` (computed by the caller — this function
-    has no DB access — via InteractionService._is_forwarded_to_user,
-    which walks the item's own thread for a Forward action naming this
-    user; see that method's own docstring) is what lets a
-    communication:reply_external holder past ownership for Reply/
-    Forward/the four draft actions specifically: a manager forwarding a
-    still-pending mail item to an internal user (InteractionService.
-    forward_to_internal_user, delivered via a MAIL_FORWARDED
-    Notification rather than the normal scoped inbox query), or sharing
-    a rule-filed folder with one (Rule.shared_user_ids —
-    MailFolderService/InboxService's own folder-sharing bypass — folder
-    sharing doesn't set is_forward_recipient, but such a recipient
-    already reaches the ordinary ownership checks below through
-    `bypass_ownership_scope` at the InboxService list-query level, a
-    separate mechanism), left that recipient able to see the item but
-    never reply to it. This keeps the widening scoped to the actual
-    people a specific communication was shared with — a
-    communication:reply_external holder who was NOT named as a Forward
-    recipient of THIS item (e.g. it was forwarded to a different
-    colleague instead) still falls through to the ownership checks
-    below and is denied unless they also happen to own the client/
-    category mailbox.
+    has no DB access — via InteractionService._is_forwarded_to_user
+    (itself now a thin wrapper around app.ticketing.services.
+    forward_access.is_forwarded_to_user, the shared single source of
+    truth OpenEmailService also calls directly), which walks the
+    item's own thread for a Forward action naming this user; see that
+    function's own docstring) is what lets a communication:
+    reply_external holder past ownership for Reply/Forward/the four
+    draft actions specifically (the `else` — action — branch below): a
+    manager forwarding a still-pending mail item to an internal user
+    (InteractionService.forward_to_internal_user, delivered via a
+    MAIL_FORWARDED Notification rather than the normal scoped inbox
+    query), or a Rule doing the same (RuleEngineService.
+    _forward_to_employees, since this pull creating the identically-
+    shaped FORWARD-type Interaction row manual-forward already did —
+    this check has no idea which of the two produced the row it finds,
+    by design). This keeps the widening scoped to the actual people a
+    specific communication was shared with — a communication:
+    reply_external holder who was NOT named as a Forward recipient of
+    THIS item (e.g. it was forwarded to a different colleague instead)
+    still falls through to the ownership checks below and is denied
+    unless they also happen to own the client/category mailbox.
+
+    `is_forward_recipient=True` under `view_only=True` (new: previously
+    this flag only ever affected the action branch below) is the same
+    signal, independently re-checked by the caller for the actual
+    requested interaction rather than only whatever the reply/forward
+    call happened to resolve to — it closes the gap where a forward
+    recipient could already reply to a thread (via the action branch)
+    but couldn't open it in the first place without also holding
+    communication:view_all or a folder-share. Bare `is_forward_
+    recipient` (no permission required) is sufficient here, same as
+    `folder_shared_bypass` immediately below it — viewing something you
+    were specifically forwarded needs no separate RBAC permission,
+    exactly like folder-sharing's own view-only carve-out. Still gated
+    behind `tier != "none"` first (same as folder_shared_bypass) rather
+    than bypassing that check entirely — a deliberate consistency
+    choice with the existing folder-sharing precedent, not a new,
+    broader carve-out.
 
     Since `permission_backed` is only ever passed by an action that
     already independently re-checks the exact same permission right
@@ -744,6 +771,9 @@ async def ensure_agent_can_view_pending_interaction(
         if folder_shared_bypass:
             return
 
+        if is_forward_recipient:
+            return
+
         # tier == "assigned" (Team Lead/Staff — excluded from pending
         # items by default, matching the pre-existing convention), or
         # role == Account Manager under either tier — fall through to
@@ -752,11 +782,13 @@ async def ensure_agent_can_view_pending_interaction(
         if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
             return
 
-        if permission_backed == "communication:reply_external":
-            if is_forward_recipient and has_permission(current_user, permission_backed):
+        if permission_backed and has_permission(current_user, permission_backed):
+            if not requires_delegated_access or is_forward_recipient or folder_shared_bypass:
                 return
-        elif permission_backed and has_permission(current_user, permission_backed):
-            return
+            # Permission held, but this action requires a genuine
+            # delegated relationship to the thread and none was found
+            # — fall through to the ownership check below rather than
+            # admitting on the permission alone.
 
     if interaction.client_id is None and getattr(interaction, "category_id", None) is not None:
         if client_repository is not None:

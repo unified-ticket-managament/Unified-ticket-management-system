@@ -43,6 +43,8 @@ from app.ticketing.repositories.distribution_list_repository import (
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
+from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
+from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.repositories.escalation_handling_sla_repository import (
     EscalationHandlingSlaRepository,
 )
@@ -179,6 +181,9 @@ async def create_ticket_from_interaction(
         sla_service=build_sla_service(db, notification_service=notification_service),
         client_repository=client_repository,
         notification_service=notification_service,
+        mail_folder_repository=MailFolderRepository(db),
+        rule_repository=RuleRepository(db),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.create_ticket_from_interaction(request, current_user=current_user)
@@ -229,6 +234,9 @@ async def attach_interaction_to_ticket(
         sla_service=build_sla_service(db, notification_service=notification_service),
         client_repository=client_repository,
         interaction_service=interaction_service,
+        mail_folder_repository=MailFolderRepository(db),
+        rule_repository=RuleRepository(db),
+        distribution_list_repository=DistributionListRepository(db),
     )
 
     return await service.attach_to_existing_ticket(

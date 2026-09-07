@@ -99,6 +99,28 @@ async def _make_root_interaction(session, *, client_id, status: InteractionStatu
     return interaction
 
 
+async def _make_forward_child(session, *, parent_interaction_id, client_id) -> Interaction:
+    """A manual/Rule-forward-shaped child row — same shape either path
+    now produces (interaction_type=FORWARD, parent_interaction_id set,
+    ticket_id=None pre-ticket)."""
+
+    interaction = Interaction(
+        interaction_id=uuid.uuid4(),
+        interaction_type="FORWARD",
+        direction=InteractionDirection.OUTBOUND,
+        status=InteractionStatus.ASSIGNED,
+        payload={"message": "forwarded", "recipients": []},
+        parent_interaction_id=parent_interaction_id,
+        ticket_id=None,
+        client_id=client_id,
+        is_visible=True,
+        subject="FW: Test subject",
+    )
+    session.add(interaction)
+    await session.flush()
+    return interaction
+
+
 def _build_service(session) -> InboxTicketService:
     return InboxTicketService(
         ticket_repository=TicketRepository(session),
@@ -218,3 +240,43 @@ async def test_create_ticket_still_rejects_already_ticketed_interaction(db_sessi
             current_user=team_lead,
         )
     assert exc_info.value.status_code == 400
+
+
+async def test_create_ticket_from_forwarded_child_tickets_the_true_root_too(db_session):
+    """
+    Phase 4 fix, proven against a real DB: creating a ticket starting
+    from a non-root interaction (a manual/Rule-forward child B) must
+    still ticket the true thread root A — previously assign_thread_to_
+    ticket was called with B's own id as `root_interaction_id`, which
+    only walks B's own (nonexistent) descendants and silently leaves
+    the real root untouched.
+    """
+
+    team_lead = await _get_team_lead(db_session)
+    team_lead.permissions = ["ticket:create"]
+    client = await _make_client(db_session, account_manager_id=team_lead.manager_id or team_lead.user_id)
+    root = await _make_root_interaction(
+        db_session, client_id=client.client_id, status=InteractionStatus.ASSIGNED
+    )
+    child = await _make_forward_child(
+        db_session, parent_interaction_id=root.interaction_id, client_id=client.client_id
+    )
+
+    service = _build_service(db_session)
+    response = await service.create_ticket_from_interaction(
+        TicketFromInteractionCreate(
+            interaction_id=child.interaction_id,
+            title="Ticket from forwarded child",
+            ticket_type=TEAM_LEAD_CATEGORY,
+            current_priority=TicketPriority.MEDIUM,
+            agent_id=None,
+        ),
+        current_user=team_lead,
+    )
+
+    assert response.ticket_id is not None
+
+    reloaded_root = await InteractionRepository(db_session).get_by_id(root.interaction_id)
+    reloaded_child = await InteractionRepository(db_session).get_by_id(child.interaction_id)
+    assert reloaded_root.ticket_id == response.ticket_id
+    assert reloaded_child.ticket_id == response.ticket_id

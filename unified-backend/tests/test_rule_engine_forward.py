@@ -17,11 +17,15 @@ from app.ticketing.services.rule_engine_service import RuleEngineService
 
 
 class _FakeUserRepository:
-    def __init__(self, emails_by_id):
+    def __init__(self, emails_by_id, names_by_id=None):
         self._emails_by_id = emails_by_id
+        self._names_by_id = names_by_id or {}
 
     async def get_active_emails_by_ids(self, user_ids):
         return {uid: self._emails_by_id[uid] for uid in user_ids if uid in self._emails_by_id}
+
+    async def get_names_by_ids(self, user_ids):
+        return {uid: self._names_by_id[uid] for uid in user_ids if uid in self._names_by_id}
 
 
 class _FakeNotificationRepository:
@@ -64,9 +68,45 @@ class _FakeNotificationService:
 
 
 class _FakeInteraction:
-    def __init__(self, interaction_id, payload):
+    def __init__(self, interaction_id, payload, ticket_id=None, client_id=None, category_id=None):
         self.interaction_id = interaction_id
         self.payload = payload
+        self.ticket_id = ticket_id
+        self.client_id = client_id
+        self.category_id = category_id
+
+
+class _FakeCreatedInteraction:
+    """What InteractionRepository.create(...) hands back — only the
+    one field _forward_to_employees actually reads afterward
+    (entity_id=forward_interaction.interaction_id) needs to be real."""
+
+    def __init__(self, interaction_id):
+        self.interaction_id = interaction_id
+
+
+class _FakeInteractionRepository:
+    """
+    Records every InteractionCreate passed to .create(...) so tests can
+    assert on the shape of the Interaction B a Rule-forward now
+    produces, without a real DB. `.db` is a bare placeholder object —
+    AuditLogService.log_event is monkeypatched out in _make_service
+    below, so nothing here ever actually touches it.
+    """
+
+    class _FakeDb:
+        pass
+
+    def __init__(self):
+        self.created: list = []
+        self.returned: list = []
+        self.db = self._FakeDb()
+
+    async def create(self, data):
+        self.created.append(data)
+        result = _FakeCreatedInteraction(uuid4())
+        self.returned.append(result)
+        return result
 
 
 class _SelectiveFailureMailProvider:
@@ -88,17 +128,30 @@ class _AlwaysFailingMailProvider:
         raise RuntimeError("simulated send failure")
 
 
+async def _noop_log_event(*args, **kwargs):
+    """
+    Audit logging is exercised separately (TestForwardToEmployeesCreatesInteractionB
+    below asserts on it directly by NOT patching it out) — every other
+    test in this file is about notification fan-out/dedup, unrelated to
+    the audit row, so this keeps them decoupled from AuditLogRepository/
+    a real DB session.
+    """
+    return None
+
+
 def _make_service(
     user_repository,
     notification_service,
     mail_provider,
     monkeypatch,
     notification_repository=None,
+    interaction_repository=None,
+    patch_audit_log=True,
 ):
     service = RuleEngineService(
         rule_repository=None,
         mail_folder_repository=None,
-        interaction_repository=None,
+        interaction_repository=interaction_repository or _FakeInteractionRepository(),
         user_repository=user_repository,
         notification_service=notification_service,
         notification_repository=notification_repository,
@@ -107,6 +160,11 @@ def _make_service(
         "app.ticketing.services.rule_engine_service.get_mail_provider_client",
         lambda settings: mail_provider,
     )
+    if patch_audit_log:
+        monkeypatch.setattr(
+            "app.ticketing.services.rule_engine_service.AuditLogService.log_event",
+            _noop_log_event,
+        )
     return service
 
 
@@ -333,3 +391,178 @@ class TestForwardToEmployeesDeduplication:
 
         assert len(mail_provider.sent_to) == 2
         assert len(notification_service.calls) == 2
+
+
+class TestForwardToEmployeesCreatesInteractionB:
+    """
+    Coverage for the Decision 1/Decision 2 change: a Rule-forward now
+    creates a real Interaction B, shaped identically to a manual
+    forward, so the existing forward-recipient access mechanism picks
+    it up automatically.
+    """
+
+    async def test_one_interaction_created_per_action_not_per_recipient(self, monkeypatch):
+        first_id, second_id = uuid4(), uuid4()
+        emails_by_id = {first_id: "first@probeps.com", second_id: "second@probeps.com"}
+        mail_provider = _SelectiveFailureMailProvider(failing_email="nobody@probeps.com")
+        interaction_repository = _FakeInteractionRepository()
+        service = _make_service(
+            _FakeUserRepository(emails_by_id),
+            _FakeNotificationService(),
+            mail_provider,
+            monkeypatch,
+            interaction_repository=interaction_repository,
+        )
+        original = _FakeInteraction(
+            uuid4(),
+            {"subject": "Test subject", "body": "Test body", "from_email": "client@example.com"},
+        )
+
+        await service._forward_to_employees(
+            [first_id, second_id],
+            interaction=original,
+            rule_category=RuleCategory.MAIL_RULE,
+        )
+
+        assert len(interaction_repository.created) == 1
+
+    async def test_b_is_shaped_like_a_forward_linked_to_the_original(self, monkeypatch):
+        recipient_id = uuid4()
+        emails_by_id = {recipient_id: "recipient@probeps.com"}
+        interaction_repository = _FakeInteractionRepository()
+        service = _make_service(
+            _FakeUserRepository(emails_by_id, names_by_id={recipient_id: "Recipient Name"}),
+            _FakeNotificationService(),
+            _SelectiveFailureMailProvider(failing_email="nobody@probeps.com"),
+            monkeypatch,
+            interaction_repository=interaction_repository,
+        )
+        original = _FakeInteraction(
+            uuid4(),
+            {"subject": "Test subject", "body": "Test body", "from_email": "client@example.com"},
+            ticket_id=uuid4(),
+            client_id=uuid4(),
+            category_id=None,
+        )
+
+        await service._forward_to_employees(
+            [recipient_id],
+            interaction=original,
+            rule_category=RuleCategory.MAIL_RULE,
+        )
+
+        assert len(interaction_repository.created) == 1
+        created = interaction_repository.created[0]
+        assert created.interaction_type == "FORWARD"
+        assert created.parent_interaction_id == original.interaction_id
+        assert created.ticket_id == original.ticket_id
+        assert created.client_id == original.client_id
+        assert created.category_id == original.category_id
+        from app.ticketing.enums import InteractionStatus
+
+        assert created.status == InteractionStatus.ASSIGNED
+        recipients = created.payload["recipients"]
+        assert len(recipients) == 1
+        assert recipients[0]["user_id"] == str(recipient_id)
+        assert recipients[0]["email"] == "recipient@probeps.com"
+        assert recipients[0]["name"] == "Recipient Name"
+
+    async def test_only_succeeded_recipients_are_recorded_on_b(self, monkeypatch):
+        # The exact Decision-1 caveat: a recipient whose real send
+        # failed must never end up in payload.recipients, or they'd
+        # gain forward-recipient reply access to mail they never
+        # actually received.
+        succeeding_id, failing_id = uuid4(), uuid4()
+        emails_by_id = {
+            succeeding_id: "succeeds@probeps.com",
+            failing_id: "fails@probeps.com",
+        }
+        interaction_repository = _FakeInteractionRepository()
+        service = _make_service(
+            _FakeUserRepository(emails_by_id),
+            _FakeNotificationService(),
+            _SelectiveFailureMailProvider(failing_email="fails@probeps.com"),
+            monkeypatch,
+            interaction_repository=interaction_repository,
+        )
+        original = _FakeInteraction(
+            uuid4(),
+            {"subject": "Test subject", "body": "Test body", "from_email": "client@example.com"},
+        )
+
+        await service._forward_to_employees(
+            [succeeding_id, failing_id],
+            interaction=original,
+            rule_category=RuleCategory.MAIL_RULE,
+        )
+
+        recipients = interaction_repository.created[0].payload["recipients"]
+        recorded_ids = {r["user_id"] for r in recipients}
+        assert recorded_ids == {str(succeeding_id)}
+        assert str(failing_id) not in recorded_ids
+
+    async def test_all_sends_fail_no_interaction_created(self, monkeypatch):
+        recipient_id = uuid4()
+        emails_by_id = {recipient_id: "fails@probeps.com"}
+        interaction_repository = _FakeInteractionRepository()
+        service = _make_service(
+            _FakeUserRepository(emails_by_id),
+            _FakeNotificationService(),
+            _AlwaysFailingMailProvider(),
+            monkeypatch,
+            interaction_repository=interaction_repository,
+        )
+        original = _FakeInteraction(
+            uuid4(),
+            {"subject": "Test subject", "body": "Test body", "from_email": "client@example.com"},
+        )
+
+        await service._forward_to_employees(
+            [recipient_id],
+            interaction=original,
+            rule_category=RuleCategory.MAIL_RULE,
+        )
+
+        assert interaction_repository.created == []
+
+    async def test_audit_log_written_for_the_new_interaction(self, monkeypatch):
+        recipient_id = uuid4()
+        emails_by_id = {recipient_id: "recipient@probeps.com"}
+        interaction_repository = _FakeInteractionRepository()
+        audit_calls = []
+
+        async def _recording_log_event(*args, **kwargs):
+            audit_calls.append(kwargs)
+            return None
+
+        service = _make_service(
+            _FakeUserRepository(emails_by_id),
+            _FakeNotificationService(),
+            _SelectiveFailureMailProvider(failing_email="nobody@probeps.com"),
+            monkeypatch,
+            interaction_repository=interaction_repository,
+            patch_audit_log=False,
+        )
+        monkeypatch.setattr(
+            "app.ticketing.services.rule_engine_service.AuditLogService.log_event",
+            _recording_log_event,
+        )
+        original = _FakeInteraction(
+            uuid4(),
+            {"subject": "Test subject", "body": "Test body", "from_email": "client@example.com"},
+        )
+
+        await service._forward_to_employees(
+            [recipient_id],
+            interaction=original,
+            rule_category=RuleCategory.MAIL_RULE,
+        )
+
+        assert len(audit_calls) == 1
+        from app.ticketing.enums import AuditEntityType, AuditEventType
+
+        assert audit_calls[0]["entity_type"] == AuditEntityType.INTERACTION
+        assert audit_calls[0]["event_type"] == AuditEventType.REPLY_ADDED
+        # entity_id is the newly-created B's own id, not the original's.
+        assert audit_calls[0]["entity_id"] == interaction_repository.returned[0].interaction_id
+        assert audit_calls[0]["entity_id"] != original.interaction_id
