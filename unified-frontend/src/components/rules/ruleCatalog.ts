@@ -105,7 +105,7 @@ export const ACTION_TYPES: Record<RuleActionType, ActionTypeDef> = {
 
 export const ACTION_TYPES_BY_CATEGORY: Record<RuleCategory, ActionTypeDef[]> = {
   mail_rule: [ACTION_TYPES.create_folder, ACTION_TYPES.move_to_folder, ACTION_TYPES.forward_to],
-  otp_rule: [ACTION_TYPES.forward_to],
+  otp_rule: [ACTION_TYPES.create_folder, ACTION_TYPES.move_to_folder, ACTION_TYPES.forward_to],
 };
 
 export const CATEGORY_LABELS: Record<RuleCategory, string> = {
