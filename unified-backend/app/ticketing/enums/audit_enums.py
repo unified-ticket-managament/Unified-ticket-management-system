@@ -42,6 +42,9 @@ class AuditEventType(str, Enum):
     TICKET_REOPENED = "TICKET_REOPENED"
     INTERACTION_HIDDEN = "INTERACTION_HIDDEN"
     ATTACHMENT_UPLOADED = "ATTACHMENT_UPLOADED"
+    # Symmetric with ATTACHMENT_UPLOADED — AttachmentService.
+    # delete_attachment previously deleted with no audit trail at all.
+    ATTACHMENT_DELETED = "ATTACHMENT_DELETED"
     NOTE_ADDED = "NOTE_ADDED"
     REPLY_ADDED = "REPLY_ADDED"
     EMAIL_RECEIVED = "EMAIL_RECEIVED"
@@ -83,6 +86,13 @@ class AuditEventType(str, Enum):
     DISTRIBUTION_LIST_MEMBER_ADDED = "DISTRIBUTION_LIST_MEMBER_ADDED"
     DISTRIBUTION_LIST_MEMBER_REMOVED = "DISTRIBUTION_LIST_MEMBER_REMOVED"
     DISTRIBUTION_LIST_DEACTIVATED = "DISTRIBUTION_LIST_DEACTIVATED"
+    # DistributionListService.delete previously hard-deleted with no
+    # audit trail at all — like its siblings above, this event's rows
+    # have no ticket_id and are therefore not retrievable through any
+    # existing Audit Log view (see root CLAUDE.md's audit-log
+    # separation section); recorded anyway for a complete, immutable
+    # history, matching this entity type's existing convention.
+    DISTRIBUTION_LIST_DELETED = "DISTRIBUTION_LIST_DELETED"
 
 
 class ActorRole(str, Enum):

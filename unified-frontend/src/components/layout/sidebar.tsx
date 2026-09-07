@@ -92,6 +92,14 @@ const menuItems: {
     icon: Ticket,
   },
   {
+    // The single "Audit Logs" sidebar entry — the ticket-workspace's
+    // own page, which now also hosts a "View Centralized Audit Log"
+    // toggle (visible only with audit:view) that switches this same
+    // page into the RBAC-native /audit-logs data instead of
+    // navigating there. The RBAC-native page no longer has a sidebar
+    // entry of its own — its route/API are untouched and still
+    // reachable directly (e.g. the Super Admin dashboard's "Latest
+    // Audit Logs" card) — see AuditLogPage.tsx and role-access.ts.
     title: "Ticket Audit Log",
     href: "/dashboard/audit-logs",
     icon: History,
@@ -143,6 +151,7 @@ export function SidebarContent({ collapsed = false, onNavigate }: SidebarContent
   const { t } = useTranslation();
   const logout = useAuthStore((state) => state.logout);
   const role = useAuthStore((state) => state.user?.role);
+  const hasPermission = useAuthStore((state) => state.hasPermission);
 
   const handleLogout = () => {
     authService.logout();
@@ -160,7 +169,7 @@ export function SidebarContent({ collapsed = false, onNavigate }: SidebarContent
       ? pathname === href
       : pathname === href || pathname.startsWith(`${href}/`);
 
-  const visibleItems = menuItems.filter((item) => canSeeNavItem(role, item.title));
+  const visibleItems = menuItems.filter((item) => canSeeNavItem(role, item.title, hasPermission));
 
   return (
     <TooltipProvider delayDuration={200}>

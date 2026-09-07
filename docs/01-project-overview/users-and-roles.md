@@ -26,7 +26,7 @@ A **Reporting Manager** is not a seventh role. It's an additional, assignable HR
 | Manage users/roles/permissions | Full | Full (minus 2 permissions) | Own subordinates only | — | — | View only |
 | View/act on tickets | All | All | Own clients' tickets | Own category | Own assigned + pool | — |
 | Close/reopen a ticket unconditionally | Yes | Yes | Only with `ticket:close_ticket` | Only with permission | Only with permission | — |
-| Manually escalate | Yes | Yes | Yes (`ticket:escalate`) | Yes | — | — |
+| Manually escalate | Yes | Yes | Yes | Yes | — | — |
 | Edit SLA policy targets | Yes | Yes | — | — | — | — |
 | Assign Reporting Managers | Yes | Yes | — | — | — | — |
 

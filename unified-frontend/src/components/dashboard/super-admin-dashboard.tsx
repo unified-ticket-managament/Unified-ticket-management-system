@@ -16,6 +16,7 @@ import { ModernBarListCard } from "@/components/dashboard/ModernBarListCard";
 import { ModernStatCard } from "@/components/dashboard/ModernStatCard";
 import { SlaOverviewSection } from "@/components/dashboard/SlaOverviewSection";
 import { WorkflowLoader } from "@/components/common/WorkflowLoader";
+import { AccessDenied } from "@/components/shared/stats";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -65,6 +66,7 @@ interface SuperAdminDashboardProps {
 // just render this directly now.
 export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
   const currentUser = useAuthStore((state) => state.user);
+  const hasPermission = useAuthStore((state) => state.hasPermission);
 
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [tickets, setTickets] = useState<TicketResponse[]>([]);
@@ -134,6 +136,21 @@ export function SuperAdminDashboard({ description }: SuperAdminDashboardProps) {
     .filter((t) => t.agent_id && t.agent_name)
     .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
     .slice(0, 5);
+
+  // Real RBAC gate, not a role-name check — applies uniformly regardless
+  // of which role's wrapper (account-manager/team-lead/staff/site-lead-
+  // dashboard.tsx) renders this shared component. Mirrors the backend's
+  // own unconditional ensure_has_permission(current_user,
+  // "ticket:view_dashboard_kpis") in TicketService.get_dashboard_stats
+  // (ticket_service.py) and the identical gate the embedded ticket
+  // workspace's own Dashboard.tsx already has — this RBAC-native
+  // dashboard had none, so a denied user still saw every KPI tile
+  // silently rendered at 0 (the fetch 403s, the catch block falls back
+  // to stats: null, and every ModernStatCard reads ?? 0) instead of a
+  // clear access-denied state.
+  if (currentUser && !hasPermission("ticket:view_dashboard_kpis")) {
+    return <AccessDenied message="You do not have access to the Dashboard." />;
+  }
 
   return (
     <div className="space-y-8">

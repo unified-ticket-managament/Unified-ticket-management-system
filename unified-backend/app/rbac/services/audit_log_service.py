@@ -1,3 +1,4 @@
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -90,14 +91,26 @@ class AuditLogService:
         )
 
     # --------------------------------------------------
-    # Delete Log
+    # Export Logs
     # --------------------------------------------------
 
-    async def delete_log(
+    async def export_logs(
         self,
-        audit_log_id: UUID,
-    ):
+        search: str | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+    ) -> list[AuditLog]:
+        """
+        Reuses the same unscoped audit-log query every other read path on
+        this service already uses (this table has no per-user/client
+        scoping — see AuditLogRepository's own note) — export is
+        deliberately not a separate authorization/visibility model, just
+        a different (unbounded, CSV-shaped) rendering of the identical
+        data an audit:view holder can already see via list_logs/get_log.
+        """
 
-        log = await self.get_log(audit_log_id)
-
-        await self.audit_log_repository.delete(log)
+        return await self.audit_log_repository.list_for_export(
+            search=search,
+            date_from=date_from,
+            date_to=date_to,
+        )

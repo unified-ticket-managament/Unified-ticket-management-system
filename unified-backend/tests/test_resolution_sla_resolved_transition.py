@@ -189,7 +189,7 @@ async def test_closing_a_ticket_after_resolved_does_not_change_sla_metrics(db_se
     team_lead.permissions = [
         "ticket:update_status",
         "ticket:close_ticket",
-        "ticket:archive_attachment",
+        "ticket:delete_attachment",
     ]
     service = _build_interaction_service(db_session)
 

@@ -129,8 +129,8 @@ async def escalate_ticket(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Manually raises or advances an internal escalation (ticket:escalate)
-    — an ownership/acknowledgment chain, following the ticket's own
+    Manually raises or advances an internal escalation — an
+    ownership/acknowledgment chain, following the ticket's own
     assignment history rather than role hierarchy, entirely separate
     from and never restarting this ticket's own Resolution SLA clock.
     If no escalation is active yet, starts one at the chain's first

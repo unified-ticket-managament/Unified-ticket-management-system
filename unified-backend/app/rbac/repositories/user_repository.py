@@ -159,7 +159,9 @@ class UserRepository(BaseRepository):
         await self.db.refresh(user)
         return user
 
-    async def bump_permission_version_for_role(self, role_id: UUID) -> None:
+    async def bump_permission_version_for_role(
+        self, role_id: UUID
+    ) -> list[tuple[UUID, int]]:
         """
         A role's own permission set changing (grant/revoke/replace,
         see RolePermissionService) affects every user who holds that
@@ -167,13 +169,28 @@ class UserRepository(BaseRepository):
         loop, so this stays cheap regardless of how many users share
         the role. See User.permission_version's own docstring and
         app/core/rbac_cache.py for what this actually invalidates.
+
+        Returns each affected user's (user_id, permission_version)
+        pair as it was *before* the bump, so the caller can evict the
+        now-stale entry from rbac_cache immediately (see
+        RBACCache.invalidate's own docstring) instead of leaving an
+        already-warm cache hit to serve the old permission set for the
+        rest of its TTL window.
         """
+
+        previous = await self.db.execute(
+            select(User.user_id, User.permission_version)
+            .where(User.role_id == role_id)
+        )
+        previous_versions = list(previous.all())
 
         await self.db.execute(
             update(User)
             .where(User.role_id == role_id)
             .values(permission_version=User.permission_version + 1)
         )
+
+        return previous_versions
 
     # --------------------------------------------------
     # Delete
@@ -378,7 +395,12 @@ class UserRepository(BaseRepository):
         self,
         manager_id: UUID,
         role_id: UUID,
+        include_inactive: bool = False,
     ) -> list[User]:
+
+        conditions = [User.manager_id == manager_id, User.role_id == role_id]
+        if not include_inactive:
+            conditions.append(User.is_active.is_(True))
 
         result = await self.db.execute(
             select(User)
@@ -387,11 +409,7 @@ class UserRepository(BaseRepository):
                 selectinload(User.category),
                 selectinload(User.categories),
             )
-            .where(
-                User.manager_id == manager_id,
-                User.role_id == role_id,
-                User.is_active.is_(True),
-            )
+            .where(*conditions)
             .order_by(User.name)
         )
 
@@ -400,7 +418,12 @@ class UserRepository(BaseRepository):
     async def get_by_teamlead(
         self,
         teamlead_id: UUID,
+        include_inactive: bool = False,
     ) -> list[User]:
+
+        conditions = [User.teamlead_id == teamlead_id]
+        if not include_inactive:
+            conditions.append(User.is_active.is_(True))
 
         result = await self.db.execute(
             select(User)
@@ -409,7 +432,7 @@ class UserRepository(BaseRepository):
                 selectinload(User.category),
                 selectinload(User.categories),
             )
-            .where(User.teamlead_id == teamlead_id, User.is_active.is_(True))
+            .where(*conditions)
             .order_by(User.name)
         )
 
@@ -418,6 +441,7 @@ class UserRepository(BaseRepository):
     async def get_direct_reports(
         self,
         user_id: UUID,
+        include_inactive: bool = False,
     ) -> list[User]:
         """
         Every active user whose `reporting_manager_id` points at
@@ -429,7 +453,19 @@ class UserRepository(BaseRepository):
         override-scoping traversal, which must stay on the old fields
         unchanged) — `reporting_manager_id` is a separate, unrestricted-
         by-role column introduced specifically for this chart.
+
+        `include_inactive=True` (used only by
+        OrganizationService.get_reporting_scope_user_ids's Users-page
+        visibility traversal) widens this to also return deactivated
+        reports, so a Manager/Team Lead who just deactivated one of
+        their own reports doesn't lose that row from their Users-page
+        view entirely — every other caller (the Organization Chart
+        itself) keeps the active-only default.
         """
+
+        conditions = [User.reporting_manager_id == user_id]
+        if not include_inactive:
+            conditions.append(User.is_active.is_(True))
 
         result = await self.db.execute(
             select(User)
@@ -438,10 +474,7 @@ class UserRepository(BaseRepository):
                 selectinload(User.category),
                 selectinload(User.categories),
             )
-            .where(
-                User.reporting_manager_id == user_id,
-                User.is_active.is_(True),
-            )
+            .where(*conditions)
             .order_by(User.name)
         )
 
@@ -464,6 +497,7 @@ class UserRepository(BaseRepository):
     async def list_active_ids_by_categories(
         self,
         category_ids: list[UUID],
+        include_inactive: bool = False,
     ) -> set[UUID]:
         """
         Every active user in ANY of the given categories, via the
@@ -474,18 +508,24 @@ class UserRepository(BaseRepository):
         OrganizationService.get_reporting_scope_user_ids to widen the
         Users page's visibility scope by Reporting Manager category
         assignment.
+
+        `include_inactive=True` (passed only by that same caller)
+        additionally includes deactivated users in the matched
+        categories, so a deactivated user doesn't drop out of the
+        Users-page view for the Reporting Manager who scoped them.
         """
 
         if not category_ids:
             return set()
 
+        conditions = [user_categories.c.category_id.in_(category_ids)]
+        if not include_inactive:
+            conditions.append(User.is_active.is_(True))
+
         result = await self.db.execute(
             select(User.user_id)
             .join(user_categories, user_categories.c.user_id == User.user_id)
-            .where(
-                user_categories.c.category_id.in_(category_ids),
-                User.is_active.is_(True),
-            )
+            .where(*conditions)
             .distinct()
         )
 

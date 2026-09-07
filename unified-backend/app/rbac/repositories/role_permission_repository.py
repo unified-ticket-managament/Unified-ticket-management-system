@@ -77,3 +77,24 @@ class RolePermissionRepository(BaseRepository):
         )
 
         await self.db.flush()
+
+    async def get_role_ids_by_permission(
+        self,
+        permission_id: UUID,
+    ) -> list[UUID]:
+        """
+        Every role currently holding this permission — used by
+        PermissionService.delete_permission to bump permission_version
+        for each affected role's users (see
+        UserRepository.bump_permission_version_for_role), the same
+        invalidation RolePermissionService already runs on
+        assign/remove/replace.
+        """
+
+        result = await self.db.execute(
+            select(RolePermission.role_id).where(
+                RolePermission.permission_id == permission_id
+            )
+        )
+
+        return list(result.scalars().all())

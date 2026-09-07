@@ -89,6 +89,7 @@ from app.ticketing.services.access_control import (
     ensure_agent_can_view_pending_interaction,
     ensure_agent_can_view_ticket,
     ensure_agent_can_view_ticket_including_escalated,
+    ensure_can_assign_unowned_ticket,
     ensure_can_close_ticket,
     ensure_can_compose_for_category,
     ensure_can_compose_for_client,
@@ -97,6 +98,7 @@ from app.ticketing.services.access_control import (
     ensure_has_permission,
     ensure_ticket_not_closed,
     ensure_ticket_not_frozen_by_escalation,
+    has_permission,
     resolve_status_after_assignment,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
@@ -1641,16 +1643,60 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_ticket_not_closed(ticket)
-        await ensure_agent_can_act_on_ticket(
-            ticket,
-            current_user,
+
+        escalation_repository = (
             self.escalation_service.ticket_escalation_repository
             if self.escalation_service is not None
-            else None,
-            self._escalation_handling_sla_repository_or_none(),
+            else None
         )
+        escalation_handling_sla_repository = (
+            self._escalation_handling_sla_repository_or_none()
+        )
+
+        # Lazily widened to a confirmed communication:reply_external
+        # forward recipient of THIS ticket's own thread only if the
+        # ordinary ownership check (assigned agent / supervisor /
+        # ticket:editother_ticket) fails first — see
+        # ensure_agent_can_act_on_ticket's own docstring for why this
+        # narrows communication:reply_external rather than turning it
+        # into a blanket "reply to any ticket" permission, and
+        # InteractionService._is_ticket_forward_recipient for how
+        # "forwarded to this specific user" is determined. Mirrors the
+        # identical lazy-retry shape
+        # _ensure_can_act_on_pending_interaction already uses for the
+        # pre-ticket version of this same exception, so the common
+        # case (the ticket's own assigned agent replying) never pays
+        # for the extra thread-scan query.
+        try:
+            await ensure_agent_can_act_on_ticket(
+                ticket,
+                current_user,
+                escalation_repository,
+                escalation_handling_sla_repository,
+            )
+            is_forward_recipient = False
+        except HTTPException:
+            is_forward_recipient = await self._is_ticket_forward_recipient(
+                ticket_id, current_user
+            )
+            if not is_forward_recipient:
+                raise
+
+            await ensure_agent_can_act_on_ticket(
+                ticket,
+                current_user,
+                escalation_repository,
+                escalation_handling_sla_repository,
+                permission_backed="communication:reply_external",
+                is_forward_recipient=is_forward_recipient,
+            )
+
         await ensure_account_manager_owns_ticket_client(
-            ticket, current_user, self.client_repository
+            ticket,
+            current_user,
+            self.client_repository,
+            bypass=is_forward_recipient
+            and has_permission(current_user, "communication:reply_external"),
         )
         ensure_has_permission(current_user, "ticket:reply")
         ensure_has_permission(current_user, "communication:reply_external")
@@ -1947,7 +1993,13 @@ class InteractionService:
         # communication" action — previously had no authorization check
         # of any kind (not even the pending-interaction visibility
         # scoping every other pending-interaction action already has).
-        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        # permission_backed: holding communication:reply_external is
+        # sufficient on its own to reply here, ownership aside — the
+        # ensure_has_permission call right below is the real gate this
+        # defers to.
+        await self._ensure_can_act_on_pending_interaction(
+            root, current_user, permission_backed="communication:reply_external"
+        )
         ensure_has_permission(current_user, "communication:reply_external")
 
         if request.idempotency_key:
@@ -2304,7 +2356,15 @@ class InteractionService:
                     detail="Client not found.",
                 )
 
-            ensure_can_compose_for_client(client, current_user)
+            # Compose (a brand-new thread, no prior inbound message)
+            # requires communication:create, not the broader
+            # communication:reply_external Reply/Reply All/Forward
+            # still use — see access_control.
+            # ensure_can_compose_for_client's own docstring (RBAC
+            # Enforcement Audit, Phase 18/BD-11).
+            ensure_can_compose_for_client(
+                client, current_user, required_permission="communication:create"
+            )
         else:
             # Sending as a CATEGORY's own shared mailbox instead of a
             # client's — mirrors the client branch above, but resolved
@@ -2336,6 +2396,7 @@ class InteractionService:
                 category,
                 current_user,
                 ReportingManagerRepository(self.user_repository.db),
+                required_permission="communication:create",
             )
 
         # Compose has no fixed thread, so a picked Distribution List
@@ -2633,7 +2694,12 @@ class InteractionService:
                 ticket, current_user, self.client_repository
             )
         else:
-            await self._ensure_can_act_on_pending_interaction(original, current_user)
+            # permission_backed: same reasoning as add_interaction_reply
+            # — the ensure_has_permission call right below is the real
+            # gate this defers to.
+            await self._ensure_can_act_on_pending_interaction(
+                original, current_user, permission_backed="communication:reply_external"
+            )
 
         ensure_has_permission(current_user, "communication:reply_external")
 
@@ -3488,7 +3554,10 @@ class InteractionService:
 
         ticket = await self._get_ticket_or_404(ticket_id)
         ensure_agent_can_view_ticket(ticket, current_user)
-        ensure_can_reassign_ticket(current_user)
+        if ticket.agent_id is None:
+            ensure_can_assign_unowned_ticket(current_user)
+        else:
+            ensure_can_reassign_ticket(current_user)
 
         category_user_ids: set[UUID] | None = None
         if category_name:
@@ -3574,7 +3643,14 @@ class InteractionService:
         await ensure_account_manager_owns_ticket_client(
             ticket, current_user, self.client_repository
         )
-        ensure_can_reassign_ticket(current_user)
+        # An unowned ticket is being ASSIGNED, not transferred — requires
+        # ticket:assign, with no SUPERVISOR_ROLE_NAMES bypass. Only once
+        # the ticket already has an owner does moving it to someone else
+        # become a TRANSFER, gated by ensure_can_reassign_ticket instead.
+        if ticket.agent_id is None:
+            ensure_can_assign_unowned_ticket(current_user)
+        else:
+            ensure_can_reassign_ticket(current_user)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -4049,16 +4125,136 @@ class InteractionService:
         self,
         interaction: Interaction,
         current_user: User,
+        *,
+        permission_backed: str | None = None,
     ) -> None:
         """
         Thin wrapper around the shared access_control check — kept as
         a method since every call site in this class already calls
         `self._ensure_can_act_on_pending_interaction(...)`.
+
+        `permission_backed="<permission name>"` is passed only by
+        callers that already run that exact same `ensure_has_permission`
+        check immediately after this returns (Reply/Forward/the four
+        draft actions pass "communication:reply_external", Archive
+        passes "communication:archive") — see
+        `ensure_agent_can_view_pending_interaction`'s own docstring for
+        why holding that permission is sufficient on its own, ownership
+        aside (for "communication:archive"), and why this stays opt-in
+        per call site rather than a blanket widening.
+
+        For "communication:reply_external" specifically, ownership-
+        aside access additionally requires `is_forward_recipient` (see
+        that same docstring) — computed here, lazily, only on a first-
+        attempt denial, so the common case (the item's owning AM/
+        Reporting-Manager replying to their own mail, or a debounced
+        draft autosave from that same owner) never pays for the extra
+        thread-scan query. A caller with genuinely no relationship to
+        this item at all (not the owner, never forwarded it) still
+        gets denied after the retry, same as before this existed.
         """
 
-        await ensure_agent_can_view_pending_interaction(
-            interaction, current_user, self.client_repository
+        try:
+            await ensure_agent_can_view_pending_interaction(
+                interaction,
+                current_user,
+                self.client_repository,
+                permission_backed=permission_backed,
+            )
+            return
+        except HTTPException:
+            if permission_backed != "communication:reply_external":
+                raise
+
+            is_forward_recipient = await self._is_forwarded_to_user(
+                interaction, current_user
+            )
+            if not is_forward_recipient:
+                raise
+
+            await ensure_agent_can_view_pending_interaction(
+                interaction,
+                current_user,
+                self.client_repository,
+                permission_backed=permission_backed,
+                is_forward_recipient=is_forward_recipient,
+            )
+
+    async def _is_forwarded_to_user(
+        self, interaction: Interaction, current_user: User
+    ) -> bool:
+        """
+        True if `current_user` was named as an internal recipient of a
+        Forward action anywhere on `interaction`'s own thread —
+        forward_to_internal_user's own `payload["recipients"]` is the
+        one concrete "this specific communication was explicitly
+        delivered to this person" record kept anywhere in this system,
+        as opposed to a broad role/category/ownership-based visibility
+        grant. This is what scopes communication:reply_external's
+        "ownership aside" exception (see
+        ensure_agent_can_view_pending_interaction /
+        ensure_agent_can_act_on_ticket) to the actual people a
+        communication was shared with — never every reply_external
+        holder company-wide, and never someone the mail happened to be
+        forwarded past (forwarded to a *different* user).
+
+        Checks the whole thread, not just `interaction` itself: a
+        Forward always creates its own new sibling Interaction row
+        rather than mutating the message forwarded (see
+        forward_to_internal_user's own docstring). Once a thread
+        becomes a ticket, every Interaction on it (the Forward row
+        included) shares that same `ticket_id` — see
+        `forward_to_internal_user`'s `ticket_id=original.ticket_id` —
+        so `list_by_ticket_id` finds it directly; pre-ticket, the
+        thread is instead walked via find_thread_root/list_thread, the
+        same pair OpenEmailService.get_email_details uses to
+        reconstruct a thread's full conversation.
+        """
+
+        if interaction.ticket_id is not None:
+            return await self._is_ticket_forward_recipient(
+                interaction.ticket_id, current_user
+            )
+
+        root = await self.interaction_repository.find_thread_root(
+            interaction.interaction_id
         )
+        root_id = (
+            root.interaction_id if root is not None else interaction.interaction_id
+        )
+        thread = await self.interaction_repository.list_thread(root_id)
+        if root is not None:
+            thread = [root, *thread]
+
+        return self._thread_has_forward_recipient(thread, current_user)
+
+    async def _is_ticket_forward_recipient(
+        self, ticket_id: UUID, current_user: User
+    ) -> bool:
+        """
+        Same rule as `_is_forwarded_to_user`, entered directly from a
+        ticket_id — used by add_reply, which authorizes against a
+        ticket rather than a specific pending Interaction. See
+        `forward_to_internal_user`'s `ticket_id=original.ticket_id`
+        for why every Forward row on this thread already carries this
+        same ticket_id once the thread is ticketed.
+        """
+
+        thread = await self.interaction_repository.list_by_ticket_id(ticket_id)
+        return self._thread_has_forward_recipient(thread, current_user)
+
+    @staticmethod
+    def _thread_has_forward_recipient(
+        thread: list[Interaction], current_user: User
+    ) -> bool:
+        user_id_str = str(current_user.user_id)
+        for candidate in thread:
+            if candidate.interaction_type != "FORWARD":
+                continue
+            recipients = (candidate.payload or {}).get("recipients") or []
+            if any(r.get("user_id") == user_id_str for r in recipients):
+                return True
+        return False
 
     async def claim_interaction(
         self,
@@ -4149,7 +4345,13 @@ class InteractionService:
                 detail="This item has already become a ticket.",
             )
 
-        await self._ensure_can_act_on_pending_interaction(interaction, current_user)
+        # permission_backed: holding communication:archive is
+        # sufficient on its own, ownership aside — the
+        # ensure_has_permission call right below is the real gate this
+        # defers to.
+        await self._ensure_can_act_on_pending_interaction(
+            interaction, current_user, permission_backed="communication:archive"
+        )
         ensure_has_permission(current_user, "communication:archive")
 
         archived = await self.interaction_repository.archive(interaction)
@@ -4430,7 +4632,17 @@ class InteractionService:
         """
 
         root = await self._resolve_pending_thread_root(interaction_id)
-        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        # permission_backed: drafting is part of the same Reply
+        # workflow add_interaction_reply itself already defers to
+        # communication:reply_external for — a holder can open the
+        # composer and actually use it, not just watch every debounced
+        # autosave 403 in the background while Send itself would have
+        # worked. ensure_has_permission below is the real gate, same
+        # permission Send already requires.
+        await self._ensure_can_act_on_pending_interaction(
+            root, current_user, permission_backed="communication:reply_external"
+        )
+        ensure_has_permission(current_user, "communication:reply_external")
 
         existing = await self.interaction_repository.get_draft(
             root.interaction_id, current_user.user_id
@@ -4498,7 +4710,12 @@ class InteractionService:
             )
 
         root = await self._resolve_pending_thread_root(interaction_id)
-        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        # permission_backed: same reasoning as save_draft — this is
+        # still part of the same Reply-composition workflow.
+        await self._ensure_can_act_on_pending_interaction(
+            root, current_user, permission_backed="communication:reply_external"
+        )
+        ensure_has_permission(current_user, "communication:reply_external")
 
         draft = await self._get_or_create_draft(root, current_user)
 
@@ -4536,7 +4753,12 @@ class InteractionService:
             )
 
         root = await self._resolve_pending_thread_root(interaction_id)
-        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        # permission_backed: same reasoning as save_draft — this is
+        # still part of the same Reply-composition workflow.
+        await self._ensure_can_act_on_pending_interaction(
+            root, current_user, permission_backed="communication:reply_external"
+        )
+        ensure_has_permission(current_user, "communication:reply_external")
 
         draft = await self._get_or_create_draft(root, current_user)
 
@@ -4617,7 +4839,9 @@ class InteractionService:
         """
 
         root = await self._resolve_pending_thread_root(interaction_id)
-        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        await self._ensure_can_act_on_pending_interaction(
+            root, current_user, permission_backed="communication:reply_external"
+        )
 
         if idempotency_key:
             existing = await self.interaction_repository.get_by_idempotency_key(
@@ -4736,7 +4960,12 @@ class InteractionService:
         """
 
         root = await self._resolve_pending_thread_root(interaction_id)
-        await self._ensure_can_act_on_pending_interaction(root, current_user)
+        # permission_backed: same reasoning as save_draft — this is
+        # still part of the same Reply-composition workflow.
+        await self._ensure_can_act_on_pending_interaction(
+            root, current_user, permission_backed="communication:reply_external"
+        )
+        ensure_has_permission(current_user, "communication:reply_external")
 
         draft = await self.interaction_repository.get_draft(
             root.interaction_id, current_user.user_id

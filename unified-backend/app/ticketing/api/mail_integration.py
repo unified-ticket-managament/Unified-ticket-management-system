@@ -157,7 +157,7 @@ async def send_outgoing_email(
     service = _build_outgoing_mail_service(db)
 
     try:
-        return await service.send_email(request)
+        return await service.send_email(request, current_user)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 

@@ -185,7 +185,9 @@ class TicketEscalation(Base):
         nullable=True,
     )
 
-    # MANUAL (an agent/supervisor used ticket:escalate) or
+    # MANUAL (an agent/supervisor triggered it, authorized via ticket
+    # visibility/ownership — not the ticket:escalate permission, which
+    # is defined but unenforced) or
     # AUTO_SLA_BREACH (the sweep created it the moment Resolution SLA
     # first crossed ESCALATED — 100% elapsed, the sole terminal tier;
     # there is no separate BREACHED tier — with nothing already

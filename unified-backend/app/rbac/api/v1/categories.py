@@ -5,7 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies.auth import get_current_active_user
 from app.database.session import get_db
-from app.rbac.repositories import CategoryRepository, UserRepository
+from app.rbac.repositories import CategoryRepository, ReportingManagerRepository, UserRepository
+from app.rbac.repositories.audit_log_repository import AuditLogRepository
 from app.rbac.schemas.category import (
     CategoryCreate,
     CategoryListResponse,
@@ -15,6 +16,7 @@ from app.rbac.schemas.category import (
     CategoryUpdate,
 )
 from app.rbac.services.access_control import ensure_has_permission
+from app.rbac.services.audit_log_service import AuditLogService
 from app.rbac.services.category_service import CategoryService
 from app.ticketing.repositories.client_repository import ClientRepository
 
@@ -39,10 +41,16 @@ def get_category_service(
     category_repository = CategoryRepository(db)
     user_repository = UserRepository(db)
     client_repository = ClientRepository(db)
+    reporting_manager_repository = ReportingManagerRepository(db)
+    audit_log_service = AuditLogService(
+        audit_log_repository=AuditLogRepository(db),
+    )
 
     return CategoryService(
         category_repository=category_repository,
         user_repository=user_repository,
+        reporting_manager_repository=reporting_manager_repository,
+        audit_log_service=audit_log_service,
         client_repository=client_repository,
     )
 
@@ -156,6 +164,7 @@ async def update_category(
     return await service.update_category(
         category_id,
         category_data,
+        actor=current_user,
     )
 
 
@@ -206,7 +215,9 @@ async def set_category_members(
 
     ensure_has_permission(current_user, "category:create")
 
-    members = await service.set_members(category_id, members_data.user_ids)
+    members = await service.set_members(
+        category_id, members_data.user_ids, actor=current_user
+    )
 
     return CategoryMembersResponse(members=members)
 
@@ -232,4 +243,4 @@ async def delete_category(
 
     ensure_has_permission(current_user, "category:create")
 
-    await service.delete_category(category_id)
+    await service.delete_category(category_id, actor=current_user)

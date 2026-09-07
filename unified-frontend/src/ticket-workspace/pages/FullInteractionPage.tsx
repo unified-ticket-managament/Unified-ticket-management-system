@@ -25,6 +25,7 @@ import {
   resolveCidImagesForDisplay,
 } from "@tw/lib/richText";
 import { shortId, formatDateTime } from "@tw/lib/format";
+import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import type { InteractionResponse, InteractionStatus, OpenEmailResponse, ThreadResponse } from "@tw/types";
 
@@ -253,6 +254,15 @@ export function FullInteractionPage() {
   const location = useLocation();
   const passedState = (location.state as LocationState | null) ?? null;
   const { setInteractionDrawer } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
+  // RBAC Enforcement Audit, Phase 30: mirrors InteractionsPage.tsx's own
+  // canViewTimeline gate — additive-only, no-op today since every
+  // reachable role holds this permission by default. A denied user
+  // falls through to the existing openInboxThread fallback below,
+  // exactly as if getInteractionThread itself had thrown.
+  const canViewTimeline = !!currentUser?.permissions.includes(
+    "communication:view_timeline"
+  );
 
   const [thread, setThread] = useState<ThreadResponse | null>(passedState?.thread ?? null);
   const [email, setEmail] = useState<OpenEmailResponse | null>(passedState?.email ?? null);
@@ -273,6 +283,9 @@ export function FullInteractionPage() {
     setIsLoading(true);
     setLoadError(null);
     try {
+      if (!canViewTimeline) {
+        throw new Error("Missing communication:view_timeline permission");
+      }
       const fetchedThread = await getInteractionThread(interactionId);
       if (requestId !== requestIdRef.current) return;
       setThread(fetchedThread);
@@ -308,7 +321,7 @@ export function FullInteractionPage() {
     } finally {
       if (requestId === requestIdRef.current) setIsLoading(false);
     }
-  }, [interactionId]);
+  }, [interactionId, canViewTimeline]);
 
   useEffect(() => {
     // A direct load/refresh of this URL with no router state is the

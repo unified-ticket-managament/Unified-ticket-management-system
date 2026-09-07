@@ -332,6 +332,9 @@ async def delete_user(
     """
     Delete a user.
     """
+
+    ensure_has_permission(current_user, "user:delete")
+
     await service.delete_user(user_id, actor=current_user)
 
 

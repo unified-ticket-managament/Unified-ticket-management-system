@@ -446,11 +446,20 @@ export function MessageDetailsView({
   // single mount (i.e. every time a message was opened) — it's now
   // shared, session-wide lookup data fetched once by WorkflowContext
   // instead (see that context's own comment).
-  const { setSelectedEmail, categories } = useWorkflowContext();
+  const {
+    setSelectedEmail,
+    allCategories,
+    allCategoriesLoading,
+    allCategoriesError,
+  } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const { pushToast } = useToast();
+  // ticket:create is the canonical permission for this button (RBAC
+  // Enforcement Audit, Phase 18/BD-6) — communication:convert_to_ticket
+  // was the same capability under a different name and has been
+  // superseded here, though its own catalog row is left in place.
   const canConvertToTicket = !!currentUser?.permissions.includes(
-    "communication:convert_to_ticket"
+    "ticket:create"
   );
   const canAttachToTicket = !!currentUser?.permissions.includes(
     "communication:attach_to_ticket"
@@ -459,6 +468,17 @@ export function MessageDetailsView({
   const canReplyExternal = !!currentUser?.permissions.includes(
     "communication:reply_external"
   );
+  // RBAC Enforcement Audit, Phase 30: mirrors the backend's own gate in
+  // AssignmentService.resolve_target (assignment_service.py:230), which
+  // is reached only when assigning a newly-created ticket to someone
+  // OTHER than the creator — self-assignment and leaving it unassigned
+  // both bypass that check entirely and stay ungated here too. Additive
+  // onto the existing hierarchy-scoped assignableAgents.groups list
+  // (AssignmentService.get_assignable_groups), never a replacement for
+  // it — kept deliberately separate from ticket:create and
+  // ticket:transfer, per the audit's Phase 29 finding that all three
+  // protect independent capabilities.
+  const canAssignTicket = !!currentUser?.permissions.includes("ticket:assign");
   const isFullscreen = variant === "fullscreen";
   const [replyMode, setReplyMode] = useState<"reply" | "replyAll" | null>(null);
   // See handleUploadInlineImage/handleSend below — only ever
@@ -1341,18 +1361,31 @@ export function MessageDetailsView({
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Category</label>
-              <Select value={ticketType} onValueChange={setTicketType}>
+              <Select value={ticketType} onValueChange={setTicketType} disabled={allCategoriesLoading}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select" />
+                  <SelectValue
+                    placeholder={
+                      allCategoriesLoading
+                        ? "Loading categories…"
+                        : allCategoriesError
+                          ? "Failed to load categories"
+                          : "Select"
+                    }
+                  />
                 </SelectTrigger>
                 <SelectContent>
-                  {categories.map((c) => (
+                  {allCategories.map((c) => (
                     <SelectItem key={c.category_id} value={c.category_name}>
                       {c.category_name}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {allCategoriesError && (
+                <p className="mt-1 text-xs text-destructive">
+                  Couldn't load categories. Please try again or contact an admin.
+                </p>
+              )}
             </div>
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">Priority</label>
@@ -1387,11 +1420,12 @@ export function MessageDetailsView({
                     {assignableAgents?.me && (
                       <SelectItem value="self">Myself ({formatAssigneeLabel(assignableAgents.me)})</SelectItem>
                     )}
-                    {assignableAgents?.groups.map((group) => (
-                      <SelectItem key={group.role} value={group.role}>
-                        {group.role}
-                      </SelectItem>
-                    ))}
+                    {canAssignTicket &&
+                      assignableAgents?.groups.map((group) => (
+                        <SelectItem key={group.role} value={group.role}>
+                          {group.role}
+                        </SelectItem>
+                      ))}
                   </SelectContent>
                 </Select>
 

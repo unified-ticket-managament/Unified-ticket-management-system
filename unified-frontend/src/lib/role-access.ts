@@ -26,7 +26,6 @@ export type NavItemKey =
   | "My Tickets"
   | "Users"
   | "Roles"
-  | "Audit Logs"
   | "Reports"
   | "Inbox"
   | "Interactions"
@@ -44,7 +43,6 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
   "My Tickets": "nav.myTickets",
   Users: "nav.users",
   Roles: "nav.roles",
-  "Audit Logs": "nav.auditLogs",
   Reports: "nav.reports",
   Inbox: "nav.inbox",
   Interactions: "nav.interactions",
@@ -69,8 +67,10 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
 // activity, linked for every agent role.
 //
 // Site Lead's sidebar is intentionally IDENTICAL to Super Admin's (per
-// an explicit product decision — see canDeleteRecords/canManageRoles
-// below for how the two roles then diverge on actions, not navigation).
+// an explicit product decision — see canDeleteRecords below for one
+// remaining place the two roles diverge on actions, not navigation;
+// role:update/role:delete no longer diverge here — see that function's
+// own comment for why).
 // Account Manager/Team Lead/Staff still don't manage users or roles.
 //
 // Super Admin and Site Lead land on RBAC's own SuperAdminDashboard for
@@ -85,11 +85,16 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
 // Viewer keeps the original, unmodified RBAC dashboard/nav — the
 // client-facing role that was never an agent.
 //
-// "Audit Logs" (the RBAC-level log, distinct from "Ticket Audit Log")
-// was removed from every role's sidebar — the page, its route, and its
-// API are untouched and still reachable directly (e.g. the Super Admin
-// dashboard's "Latest Audit Logs" card still links to it), this only
-// removes the sidebar entry point.
+// The RBAC-native "Audit Logs" page (/audit-logs, distinct from
+// "Ticket Audit Log" — the RBAC-level audit_logs table vs. this app's
+// own ticket_audit_logs table, see root CLAUDE.md's audit-log
+// separation section) never had, and still doesn't have, a sidebar
+// entry of its own — the page, its route, and its API are untouched
+// and still reachable directly (e.g. the Super Admin dashboard's
+// "Latest Audit Logs" card still links to it, and "Ticket Audit Log"'s
+// own page now hosts a "View Centralized Audit Log" button that
+// switches into this same data in place, gated on audit:view — see
+// AuditLogPage.tsx).
 // "Roles" was removed from every role's sidebar (moved to a button on the
 // Users page instead — see the `canViewRoles` check in
 // app/(dashboard)/users/page.tsx, which gates the button's enabled state
@@ -99,10 +104,10 @@ export const NAV_ITEM_TRANSLATION_KEY: Record<NavItemKey, TranslationKey> = {
 //
 // "Permission Requests" was removed from the sidebar for every role that
 // has Users-page access (Super Admin/Site Lead/Account Manager/Team
-// Lead/Staff — exactly USERS_PAGE_ALLOWED_ROLES in
-// app/(dashboard)/users/page.tsx) and replaced with a button on that page
-// instead (visible unconditionally there, since the page itself already
-// gates who can reach it). Viewer deliberately KEEPS this nav item — it
+// Lead/Staff — every non-Client role, per app/(dashboard)/users/page.tsx's
+// own user:view-plus-non-Client gate) and replaced with a button on that
+// page instead (visible unconditionally there, since the page itself
+// already gates who can reach it). Viewer deliberately KEEPS this nav item — it
 // has no Users-page access at all, so removing its only entry point would
 // strand it with no way to reach a page that's still meant to be usable
 // (the module/page/backend are otherwise completely untouched).
@@ -121,8 +126,6 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Interactions",
     "Tickets",
     "Ticket Audit Log",
-    "SLA Timing Matrix",
-    "Reporting Managers",
   ],
   [ROLE_NAMES.SITE_LEAD]: [
     "Dashboard",
@@ -132,7 +135,6 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
     "Interactions",
     "Tickets",
     "Ticket Audit Log",
-    "Reporting Managers",
   ],
   [ROLE_NAMES.ACCOUNT_MANAGER]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
   [ROLE_NAMES.TEAM_LEAD]: ["Dashboard", "Users", "Reports", "Inbox", "Interactions", "Tickets", "Ticket Audit Log"],
@@ -142,12 +144,35 @@ const NAV_ITEMS_BY_ROLE: Record<string, NavItemKey[]> = {
 
 const DEFAULT_NAV_ITEMS: NavItemKey[] = ["Dashboard", "Profile", "Settings"];
 
+// Nav items whose real gate is a permission, not a fixed per-role
+// list — kept in sync with each item's own page-level gate ("SLA
+// Timing Matrix" -> sla:manage_policies, "Reporting Managers" ->
+// org:manage_reporting_managers). Previously these two were a
+// hardcoded two-role array, missing Site Lead for the SLA page
+// despite it holding sla:manage_policies. When a hasPermission
+// checker is passed to canSeeNavItem, an item listed here is
+// authoritative — visible to any role holding the mapped permission,
+// regardless of NAV_ITEMS_BY_ROLE — matching the page it points to
+// instead of duplicating a second, driftable role list.
+const NAV_ITEM_PERMISSION: Partial<Record<NavItemKey, string>> = {
+  "SLA Timing Matrix": "sla:manage_policies",
+  "Reporting Managers": "org:manage_reporting_managers",
+};
+
 export function getVisibleNavItems(role: string | undefined): NavItemKey[] {
   if (!role) return [];
   return NAV_ITEMS_BY_ROLE[role] ?? DEFAULT_NAV_ITEMS;
 }
 
-export function canSeeNavItem(role: string | undefined, item: NavItemKey): boolean {
+export function canSeeNavItem(
+  role: string | undefined,
+  item: NavItemKey,
+  hasPermission?: (permission: string) => boolean
+): boolean {
+  const permission = NAV_ITEM_PERMISSION[item];
+  if (permission && hasPermission) {
+    return hasPermission(permission);
+  }
   return getVisibleNavItems(role).includes(item);
 }
 
@@ -184,12 +209,33 @@ export function canDeleteRecords(role: string | undefined): boolean {
   return role === ROLE_NAMES.SUPER_ADMIN;
 }
 
-// Role creation/editing/deletion ("modifying role structure") stays
-// Super Admin-only; Site Lead's Roles page is view-only (role info,
-// permissions, assigned users).
-export function canManageRoles(role: string | undefined): boolean {
-  return role === ROLE_NAMES.SUPER_ADMIN;
+// Users page Delete action: Site Lead is deliberately denied this
+// destructive action even though it holds user:delete by role default
+// (same rationale as canDeleteRecords above), but every other role's
+// visibility must be driven purely by whether they actually hold
+// user:delete — including via a Super-Admin-granted role-permission
+// override — which canDeleteRecords's Super-Admin-only check
+// incorrectly blocked for every role except Super Admin itself.
+export function canDeleteUsers(role: string | undefined): boolean {
+  return role !== ROLE_NAMES.SITE_LEAD;
 }
+
+// RBAC Enforcement Audit: role:update/role:delete used to be gated by
+// a hardcoded canManageRoles() === Super Admin check here, wrapping
+// the otherwise-correct PermissionGuard("role:update")/("role:delete")
+// on the Roles page's Edit/Delete dropdown and making them
+// unreachable — the same shape as the role:create bug already fixed
+// (see that button's own site), and confirmed incorrect for the same
+// reason: Site Lead holds both permissions by role default and could
+// already reach both routes via a direct API call, so the hardcoded
+// check was strictly narrower than backend authorization, not a
+// deliberate business rule (unlike canDeleteRecords above, which is
+// consistently documented as intentional everywhere it's used).
+// Removed outright — the Roles page now computes its own
+// permission-driven visibility check inline (hasPermission("role:update")
+// || hasPermission("role:delete")), consistent with canManagePermissions
+// just above it in that file, and lets PermissionGuard alone decide
+// each individual action exactly as it already did for role:create.
 
 // "Login as User" impersonation row action on the Users page. The
 // backend (POST /admin/impersonation/start) is the real enforcement —
@@ -225,12 +271,13 @@ const CREATABLE_ROLES_BY_ROLE: Record<string, string[] | undefined> = {
   [ROLE_NAMES.SUPER_ADMIN]: undefined,
   [ROLE_NAMES.SITE_LEAD]: undefined,
   [ROLE_NAMES.ACCOUNT_MANAGER]: [ROLE_NAMES.TEAM_LEAD, ROLE_NAMES.STAFF, ROLE_NAMES.CLIENT],
+  [ROLE_NAMES.TEAM_LEAD]: [ROLE_NAMES.STAFF, ROLE_NAMES.CLIENT],
 };
 
 /**
  * Returns the role names the given role is allowed to assign on the Create
- * User form, or `null` when unrestricted. Roles with no entry here (Team
- * Lead, Staff, Client) cannot create users at all — gated separately by the
+ * User form, or `null` when unrestricted. Roles with no entry here (Staff,
+ * Client) cannot create users at all — gated separately by the
  * `user:create` permission.
  */
 export function getCreatableRoleNames(role: string | undefined): string[] | null {

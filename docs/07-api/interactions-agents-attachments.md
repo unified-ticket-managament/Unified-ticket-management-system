@@ -29,6 +29,6 @@
 
 **Historical, fixed critical bug**: `AttachmentService.upload_attachment`'s authorization check used to be called without `await` — the coroutine was created and immediately discarded, silently never running. Any authenticated agent could upload to any ticket regardless of category/client ownership. Fixed during the 2026-07-14/15 RBAC compliance audit.
 
-**Delete permission**: `ticket:archive_attachment`, distinct from `ticket:upload_attachment` (both roles hold upload; archive is Override-only for Team Lead/Staff per the permission matrix).
+**Delete permission**: `ticket:delete_attachment` (renamed from `ticket:archive_attachment` — it has always gated a real hard delete, never an archive/soft-delete state), distinct from `ticket:upload_attachment` (both roles hold upload; delete is Override-only for Team Lead/Staff per the permission matrix).
 
 **Download** is a redirect to a time-limited presigned URL from the configured storage backend (Supabase or S3-compatible) — the backend never proxies the file bytes itself.

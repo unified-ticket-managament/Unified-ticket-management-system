@@ -4,10 +4,10 @@
 Hand a breaching ticket's ownership up a real accountability chain, without ever touching the Resolution SLA clock's own bookkeeping — a deliberate architectural separation enforced by the feature's own test suite.
 
 ## 2. Trigger
-Automatic: `EscalationService.auto_escalate_if_needed`, called from the SLA sweep on a Resolution SLA `BREACHED`/`ESCALATED` crossing. Manual: `POST /tickets/{id}/escalate` (requires `ticket:escalate`).
+Automatic: `EscalationService.auto_escalate_if_needed`, called from the SLA sweep on a Resolution SLA `BREACHED`/`ESCALATED` crossing. Manual: `POST /tickets/{id}/escalate` (gated by ticket visibility/ownership, not by a permission — `ticket:escalate` is defined in the catalog but not checked here).
 
 ## 3. Actors
-The system (auto-escalation); any agent with `ticket:escalate` (manual); Team Lead/Account Manager/Site Lead (as escalation owners/actors down the chain).
+The system (auto-escalation); any agent who can view the ticket (manual — see §7, not `ticket:escalate`); Team Lead/Account Manager/Site Lead (as escalation owners/actors down the chain).
 
 ## 4. Preconditions
 No already-`ACTIVE` escalation exists for the ticket (enforced by a partial unique index, `ix_ticket_escalations_one_active_per_ticket`).
@@ -36,6 +36,7 @@ flowchart TD
 6. If `ack_due_at` lapses with no acknowledgment, `evaluate_overdue` (run at the end of every sweep tick) advances the escalation to the next level — reusing `ESCALATION_ADVANCED`.
 
 ## 7. Business Rules
+- **Manual escalation is authorized by ticket visibility/ownership, not by a permission.** `ticket:escalate` exists in the permission catalog but is deliberately not checked by `EscalationService.manual_escalate` — triggering a fresh escalation only requires `ensure_agent_can_view_ticket`; advancing an already-active one additionally requires the caller to be in that escalation's own `owner_ids`. This is an intentional design choice, not an oversight (see the RBAC Enforcement Audit's BD-7 for the full history).
 - **CRITICAL is escalation-only and permanent** — never manually selectable, never reverts (not on acknowledge, not on closing the escalation, not on resolving/closing the ticket itself).
 - **The escalation workflow may never write to the Resolution SLA clock's own `started_at`/`due_at`/`status` columns directly** — it only ever calls the shared reshift function, and this invariant is specifically what the feature's own pytest suite exists to guard.
 - Unclaimed, escalated tickets are excluded from the Open Pool and are **not** auto-assigned — reachable only via the Escalated tab's Acknowledge & Assign flow. `agent_id` stays null by deliberate design.

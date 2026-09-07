@@ -17,7 +17,7 @@ Hand ticket ownership up a real accountability chain when SLA commitments are at
 - `app/ticketing/enums/escalation_enums.py`
 
 ## Inputs
-SLA breach crossings (auto), `ticket:escalate` requests (manual), acknowledge/assign actions.
+SLA breach crossings (auto), manual escalation requests (ownership/visibility-gated, not permission-gated — see Known Limitations), acknowledge/assign actions.
 
 ## Outputs
 `TicketEscalation` state, the Escalated tab's data, `is_escalation_owner`/`is_escalated` ticket fields.
@@ -46,6 +46,7 @@ SLA breach crossings (auto), `ticket:escalate` requests (manual), acknowledge/as
 None.
 
 ## Known Limitations
+- `ticket:escalate` is a defined permission-catalog row that is **not** checked by `EscalationService.manual_escalate` — manual escalation is authorized by ticket visibility/ownership instead (see [03-business-workflows/escalation/escalation-workflow.md](../03-business-workflows/escalation/escalation-workflow.md) §7). This is a deliberate design choice, not a gap.
 - A known, accepted test flake (`test_overdue_active_escalation_advances_without_touching_sla`) inflates its assertion against a shared, never-reset dev database.
 - `AttachmentService.upload_attachment` never passes the `EscalationHandlingSlaRepository` into the freeze check — falls back to a coarser, still-safe check.
 - No ongoing reconciliation mechanism exists between `Ticket.current_priority` and `ticket_escalations` — a bug that temporarily broke the CRITICAL bump would require a manual one-off backfill to catch up, as happened once already.

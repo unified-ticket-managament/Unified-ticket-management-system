@@ -94,8 +94,10 @@ class EscalationService:
     """
     Owns the internal escalation ownership/acknowledgment workflow
     (TicketEscalation) — an ownership hand-off chain that starts only
-    when a ticket is escalated (manually via ticket:escalate, or
-    automatically the first time its Resolution SLA crosses ESCALATED —
+    when a ticket is escalated (manually, gated by ticket visibility/
+    ownership rather than a permission — ticket:escalate is defined in
+    the catalog but deliberately unenforced — or automatically the
+    first time its Resolution SLA crosses ESCALATED —
     now the sole terminal tier, at 100% elapsed, with nothing already
     active — the SLA lifecycle no longer has a separate BREACHED tier
     at 100%: hitting 100% *is* ESCALATED, and the escalation is created
@@ -300,7 +302,8 @@ class EscalationService:
         # for the other three types.
 
     # ---------------------------------------------------------
-    # Create — manual (ticket:escalate) and automatic (SLA breach)
+    # Create — manual (ticket visibility/ownership, not ticket:escalate,
+    # which is defined but unenforced) and automatic (SLA breach)
     # ---------------------------------------------------------
 
     async def manual_escalate(

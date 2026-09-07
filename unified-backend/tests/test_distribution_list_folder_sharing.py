@@ -61,12 +61,25 @@ async def _get_super_admin(session) -> User:
     return admin
 
 
-async def _get_distinct_active_agents(session, count: int) -> list[User]:
+async def _get_distinct_active_agents(
+    session, count: int, roles: list[str] | None = None
+) -> list[User]:
     """
     `count` distinct active internal users eligible for Distribution
     List membership (any agent role, any category — membership
-    eligibility doesn't care which). Skips the test if the seeded
-    dev DB doesn't have enough.
+    eligibility doesn't care which, unless the caller narrows `roles`).
+    Skips the test if the seeded dev DB doesn't have enough.
+
+    `roles` defaults to every DL-eligible role including Site Lead. A
+    caller that needs a genuinely *bounded* viewer (e.g. someone who
+    must NOT see a communication outside their own scope) should pass
+    a narrower list excluding Site Lead/Super Admin — under the
+    communication-view RBAC fix, those two roles have no narrower
+    business-defined scope anywhere in the system, so holding either
+    communication:view_all or communication:view_assigned resolves to
+    genuinely global visibility for them, same as it always has for
+    view_all. A test asserting "this viewer sees nothing" should never
+    draw a Site Lead/Super Admin as that viewer.
     """
 
     result = await session.execute(
@@ -74,7 +87,7 @@ async def _get_distinct_active_agents(session, count: int) -> list[User]:
         .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(
-            Role.name.in_(["Team Lead", "Account Manager", "Staff", "Site Lead"]),
+            Role.name.in_(roles or ["Team Lead", "Account Manager", "Staff", "Site Lead"]),
             User.is_active.is_(True),
         )
     )
@@ -194,14 +207,25 @@ async def _resolve_access(session, folder, viewer) -> bool:
 async def test_distribution_list_member_gets_folder_and_inbox_access_non_member_denied(db_session):
     admin = await _get_super_admin(db_session)
     admin.permissions = ["rule:manage"]
-    member_a, member_b, outsider = await _get_distinct_active_agents(db_session, 3)
-    # Either communication:view_assigned (Team Lead/Staff) or
-    # communication:view_all (Account Manager/Site Lead/Super Admin) is
-    # required by InboxService.get_inbox's view="all" branch depending
-    # on role — granting both keeps this test agnostic to which role
-    # the helper happens to return.
-    member_a.permissions = ["communication:view_assigned", "communication:view_all"]
-    outsider.permissions = ["communication:view_assigned", "communication:view_all"]
+    # Excludes Site Lead/Super Admin deliberately: under the
+    # communication-view RBAC fix, those two roles have no narrower
+    # business-defined scope, so either communication permission
+    # resolves to genuine global visibility for them — `outsider` here
+    # must be a role with an actual bounded scope (Team Lead/Staff's
+    # own category, or Account Manager's own clients, none of which
+    # include this test's admin-owned client/no-category item) so a
+    # positive result can only come from the DL-sharing bypass itself.
+    member_a, member_b, outsider = await _get_distinct_active_agents(
+        db_session, 3, roles=["Team Lead", "Account Manager", "Staff"]
+    )
+    # communication:view_assigned alone is enough to reach
+    # InboxService.get_inbox regardless of which of these three roles
+    # the helper returns — granting communication:view_all here too
+    # would (correctly, post-fix) grant genuine global visibility and
+    # defeat this test's whole point (proving DL-sharing exclusivity,
+    # not permission-driven global visibility).
+    member_a.permissions = ["communication:view_assigned"]
+    outsider.permissions = ["communication:view_assigned"]
     client = await _make_client(db_session, account_manager_id=admin.user_id)
 
     dl = await _make_distribution_list(

@@ -31,10 +31,9 @@ from app.ticketing.schemas.payloads import EmailPayload
 from app.ticketing.schemas.sla import FirstResponseSLAState
 from app.ticketing.services.access_control import (
     ACCOUNT_MANAGER_ROLE_NAME,
-    GLOBAL_INBOX_ROLE_NAMES,
     STAFF_ROLE_NAME,
     TEAM_LEAD_ROLE_NAME,
-    ensure_has_permission,
+    resolve_communication_visibility_tier,
 )
 from app.ticketing.services.sla_service import SLAService
 
@@ -43,32 +42,43 @@ logger = logging.getLogger(__name__)
 
 class InboxService:
     """
-    Service responsible for the role-scoped Mail inbox workflow.
-
-    Role-based visibility (Part 2/3 of the Outlook-style threading
-    work — see CLAUDE.md and the propagation model it documents):
-    - Site Lead / Super Admin: every thread, every client, every
-      team — the global inbox. `client_id`/`scope`/`view` are the
-      only narrowing knobs available to them.
+    Service responsible for the Mail inbox workflow. Visibility is
+    driven by communication:view_all / communication:view_assigned
+    (resolve_communication_visibility_tier), never by role name alone
+    — see _resolve_scope's own docstring for the full tier logic. One
+    documented business-rule exception survives regardless of which
+    tier a user is in:
     - Account Manager: only threads belonging to clients they own
-      (`clients.account_manager_id`) — never every client's mail,
-      there is no "all" escape hatch for this role anymore.
-    - Team Lead: only threads whose ticket is filed under their own
-      category — never a still-pending, pre-ticket item (those only
-      belong to the owning client's Account Manager until a ticket
-      exists). A Team Lead with no category assigned sees nothing,
-      matching ensure_agent_can_view_ticket's own safe-failure
-      convention.
-    - Staff: only threads whose ticket is currently assigned to them,
-      plus any ticket they hold a ticket-scoped ticket:editother_ticket
-      override on (granted via the RBAC Permission Request workflow —
-      see access_control.has_permission_for_ticket) — same "ticketed
-      only" restriction as Team Lead, scoped by agent_id (or a scoped
-      override) instead of category.
+      (`clients.account_manager_id`), or categories they're Reporting
+      Manager for — never every client's mail, even holding
+      communication:view_all. There is no "all" escape hatch for this
+      role through either permission.
+
+    Every other role's scope is tier-driven:
+    - communication:view_all → every thread, every client, every team
+      — the global inbox. `client_id`/`scope`/`view` are the only
+      narrowing knobs available.
+    - communication:view_assigned (and no view_all) →
+      - Site Lead / Super Admin: same as "all" above — no narrower
+        business scope is defined for these two roles anywhere else in
+        the system.
+      - Team Lead / Staff: only threads whose ticket is filed under
+        their own work-specialization category (their shared "team"
+        pool) — never a still-pending, pre-ticket item (those only
+        belong to the owning client's Account Manager until a ticket
+        exists). A user with no category assigned sees nothing,
+        matching ensure_agent_can_view_ticket's own safe-failure
+        convention. Staff additionally keeps visibility into any
+        ticket they hold a ticket-scoped ticket:editother_ticket
+        override on (granted via the RBAC Permission Request
+        workflow — see access_control.has_permission_for_ticket),
+        for a cross-category grant this pool wouldn't otherwise cover.
+    - Neither permission → denied (403), regardless of category/
+      client/ticket ownership.
 
     Because a reply is stored once on the shared thread row (never
     duplicated per viewer), this same scoped query automatically
-    picks up new replies for every role authorized to see that
+    picks up new replies for every user authorized to see that
     thread — there's no separate "fan out to N inboxes" step.
     """
 
@@ -135,12 +145,43 @@ class InboxService:
         `assigned_to_me` layers an additional "assigned_agent_id = me"
         condition on top of whatever the role already resolved (never
         replacing it) — backs the Mail page's "My Claims" ticketed
-        section for roles other than Staff, whose own scope already
-        always means this. See `list_inbox`: `account_manager_id`/
-        `ticket_types`/`assigned_agent_id` are independent, ANDed
-        conditions, so this correctly narrows within the caller's
-        existing scope rather than widening it.
+        section. See `list_inbox`: `account_manager_id`/`ticket_types`/
+        `assigned_agent_id` are independent, ANDed conditions, so this
+        correctly narrows within the caller's existing scope rather
+        than widening it.
+
+        Visibility is driven by resolve_communication_visibility_tier
+        (communication:view_all / communication:view_assigned), never
+        by role name alone — this is also the sole enforcement point
+        for both permissions on every caller of this method
+        (get_inbox, get_folder_counts, get_view_counts all reuse it),
+        raising 403 for a caller holding neither. The one documented
+        business-rule exception, preserved regardless of tier: Account
+        Manager never gets a literal cross-client "all" escape hatch
+        through either permission — their scope is always "clients I
+        own ∪ categories I'm Reporting Manager for" (see seed.py's own
+        "full ownership of the client-facing inbox" framing). Every
+        other role gets a true, unfiltered "all" scope once they hold
+        communication:view_all (a real widening beyond role defaults
+        for e.g. a Staff/Team Lead member granted it via a personal
+        override — no business rule anywhere limits this the way
+        Account Manager's client-ownership rule does), and Team Lead/
+        Staff both resolve communication:view_assigned to their own
+        work-specialization category's shared pool ("their team") —
+        Staff's scope was widened from "only tickets assigned to me"
+        to match Team Lead's category-pool model by explicit product
+        decision, so the two roles share the same branch below.
         """
+
+        tier = resolve_communication_visibility_tier(current_user)
+        if tier == "none":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Missing required permission: communication:view_all "
+                    "or communication:view_assigned"
+                ),
+            )
 
         role_name = current_user.role.name
 
@@ -153,15 +194,12 @@ class InboxService:
         if bypass_ownership_scope:
             # A confirmed folder-sharing grant for this one request —
             # every variable stays at its unrestricted None default,
-            # same shape as GLOBAL_INBOX_ROLE_NAMES below. See this
+            # same shape as the global "all" tier below. See this
             # method's own docstring for why this is safe.
             pass
-        elif role_name in GLOBAL_INBOX_ROLE_NAMES:
-            # No filter at all when they've asked to see everything;
-            # otherwise `client_id` (if provided) is the only
-            # narrowing already applied below.
-            pass
         elif role_name == ACCOUNT_MANAGER_ROLE_NAME:
+            # Enforced regardless of tier — see this method's own
+            # docstring on the Account Manager ownership exception.
             account_manager_id = current_user.user_id
             # Lazily built from the same session interaction_repository
             # already holds, same reasoning as
@@ -179,6 +217,12 @@ class InboxService:
             category_ids = await reporting_manager_repository.list_category_ids_by_account_manager(
                 current_user.user_id
             )
+        elif tier == "all":
+            # communication:view_all -> no filter at all, for any role
+            # other than Account Manager (handled above); otherwise
+            # `client_id` (if provided) is the only narrowing already
+            # applied below.
+            pass
         elif role_name == TEAM_LEAD_ROLE_NAME:
             # A Team Lead may belong to more than one category — the
             # shared pool now spans all of them, not just one (see
@@ -191,15 +235,25 @@ class InboxService:
                 for c in (getattr(current_user, "categories", None) or [])
             ] or ["__no_category__"]
         elif role_name == STAFF_ROLE_NAME:
-            assigned_agent_id = current_user.user_id
+            # Same category-pool computation as Team Lead — Staff's
+            # communication:view_assigned scope was widened from "only
+            # tickets assigned to me personally" to match Team Lead's
+            # "their team" model (explicit product decision alongside
+            # this permission-driven rewrite). `assigned_to_me` (below)
+            # still lets the Mail UI narrow back down to "My Claims"
+            # within this pool.
+            ticket_types = [
+                c.category_name
+                for c in (getattr(current_user, "categories", None) or [])
+            ] or ["__no_category__"]
             # A ticket-scoped ticket:editother_ticket override is
             # exactly what lets this Staff member act on a ticket they
             # aren't assigned to (ensure_agent_can_act_on_ticket, via
-            # has_permission_for_ticket) — without this, the ticket's
-            # mail thread would never surface in their own inbox even
-            # after the override is granted, only reachable by
-            # navigating to the ticket directly. Sourced from the same
-            # JWT-derived `scoped_permissions` claim
+            # has_permission_for_ticket) — without this, a ticket
+            # outside their own category's pool would never surface in
+            # their own inbox even after the override is granted, only
+            # reachable by navigating to the ticket directly. Sourced
+            # from the same JWT-derived `scoped_permissions` claim
             # has_permission_for_ticket already reads (see that
             # function's own docstring) — a permission name -> list of
             # ticket id strings mapping, threaded onto `current_user`
@@ -210,11 +264,13 @@ class InboxService:
                 UUID(tid) for tid in scoped_permissions.get("ticket:editother_ticket", [])
             ]
         else:
-            # Shouldn't happen — get_current_agent already blocks
-            # Viewer, and every other AGENT_ROLE_NAMES member is
-            # handled above. Safe fallback: scope to "owns nothing",
-            # same as an Account Manager with no clients.
-            account_manager_id = current_user.user_id
+            # Site Lead / Super Admin / any other role with no
+            # narrower business-defined scope — tier is already
+            # confirmed non-"none" above (in practice this only fires
+            # for the two global roles, since they hold
+            # communication:view_all by role default and would
+            # normally hit the "all" branch above instead).
+            pass
 
         if assigned_to_me:
             assigned_agent_id = current_user.user_id
@@ -273,21 +329,11 @@ class InboxService:
         of pagination.
         """
 
-        # communication:view_all (Full for Super Admin/Site Lead/Account
-        # Manager — own clients) vs. communication:view_assigned (Full
-        # for everyone, but Team Lead/Staff are structurally limited to
-        # their own team's scope regardless — see _resolve_scope above).
-        # Both are Full by default for every role that reaches this
-        # branch today, so this doesn't change existing behavior; it
-        # gives the permission itself a real enforcement point.
-        if (
-            current_user.role.name in GLOBAL_INBOX_ROLE_NAMES
-            or current_user.role.name == ACCOUNT_MANAGER_ROLE_NAME
-        ):
-            ensure_has_permission(current_user, "communication:view_all")
-        else:
-            ensure_has_permission(current_user, "communication:view_assigned")
-
+        # The communication:view_all / communication:view_assigned gate
+        # itself now lives inside _resolve_scope (called just below) —
+        # a single enforcement point shared by get_inbox,
+        # get_folder_counts, and get_view_counts alike, rather than a
+        # separate role-keyed check duplicated in each.
         decoded_cursor: tuple | None = None
         if cursor is not None and limit is not None:
             try:

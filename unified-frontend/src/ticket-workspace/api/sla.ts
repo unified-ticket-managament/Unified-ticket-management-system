@@ -29,8 +29,9 @@ export async function resumeTicketSla(ticketId: string): Promise<TicketActionRes
   return data;
 }
 
-// POST /tickets/{ticket_id}/escalate — ticket:escalate-gated on the
-// backend; 400s if this ticket already has an active escalation.
+// POST /tickets/{ticket_id}/escalate — ownership/visibility-gated on
+// the backend, not permission-gated (ticket:escalate is defined but
+// unenforced); 400s if this ticket already has an active escalation.
 export async function escalateTicket(ticketId: string): Promise<TicketActionResponse> {
   const { data } = await apiClient.post<TicketActionResponse>(
     `/tickets/${ticketId}/escalate`

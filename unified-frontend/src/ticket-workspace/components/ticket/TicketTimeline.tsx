@@ -10,6 +10,7 @@ import { RETIRED_INTERACTION_TYPES, summarize } from "@tw/lib/interactionMeta";
 import { shortId } from "@tw/lib/format";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { getInteractionThread, hideInteraction } from "@tw/api/interaction";
+import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import type { InteractionResponse, ThreadResponse } from "@tw/types";
 
@@ -23,6 +24,22 @@ interface TicketTimelineProps {
 export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps) {
   const { ticketId } = useParams<{ ticketId: string }>();
   const { activeTicket, timeline } = useWorkflowContext();
+  const { currentUser } = useAuthContext();
+  // RBAC Enforcement Audit, Phase 30: mirrors InteractionsPage.tsx's own
+  // canViewTimeline gate on the same backend permission — additive-only,
+  // no-op today since every reachable role holds it by default.
+  const canViewTimeline = !!currentUser?.permissions.includes(
+    "communication:view_timeline"
+  );
+  // RBAC Enforcement Audit, Phase 38: mirrors the backend's own
+  // unconditional, bypass-free ensure_has_permission(current_user,
+  // "ticket:hide_interaction") check in InteractionService.hide_interaction
+  // — previously this tab had no gate at all, so Team Lead/Staff (who
+  // don't hold this permission by default) saw an always-present Hide
+  // button that would 403 on click.
+  const canHideInteraction = !!currentUser?.permissions.includes(
+    "ticket:hide_interaction"
+  );
 
   // Every interaction is already timestamped by the backend —
   // sort newest first rather than trusting call-site ordering.
@@ -86,6 +103,10 @@ export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps)
       return;
     }
 
+    if (!canViewTimeline) {
+      return;
+    }
+
     const thread = await runGetThread(item.interaction_id);
     if (requestId !== drawerRequestIdRef.current) return;
     if (thread) setDrawerThread(thread);
@@ -122,7 +143,7 @@ export function TicketTimeline({ onChanged, flat = false }: TicketTimelineProps)
     >
       <TicketConversationFeed
         events={events}
-        onHide={handleHide}
+        onHide={canHideInteraction ? handleHide : undefined}
         isHiding={isHiding}
         onItemClick={handleEventClick}
       />

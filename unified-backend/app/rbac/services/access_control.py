@@ -72,9 +72,22 @@ PERMISSION_OWNERSHIP_SCOPED_ROLE = "Account Manager"
 
 
 def get_manageable_permission_target_role_names(actor: User) -> set[str] | None:
-    """None means unrestricted (any role, including the actor's own)."""
+    """
+    None means unrestricted (any role, including the actor's own). A
+    role with no entry in the map is denied (empty set) — matches it
+    never holding `permission:update` by default. Uses an explicit
+    membership check rather than `.get(actor.role.name)` alone, since
+    a plain `.get()` can't distinguish "no entry" from the dict's own
+    explicit `None` value (Super Admin) — both would otherwise collapse
+    to the same `None` return and be read as unrestricted. Mirrors
+    USER_CREATION_ROLE_MATRIX's `.get(actor.role.name, set())`
+    convention just below, which already gets this right.
+    """
 
-    return MANAGEABLE_PERMISSION_TARGET_ROLES.get(actor.role.name)
+    if actor.role.name not in MANAGEABLE_PERMISSION_TARGET_ROLES:
+        return set()
+
+    return MANAGEABLE_PERMISSION_TARGET_ROLES[actor.role.name]
 
 
 def ensure_can_manage_role_permissions(actor: User, target_role: Role) -> None:
@@ -102,14 +115,15 @@ def ensure_can_manage_role_permissions(actor: User, target_role: Role) -> None:
 # nothing previously stopped a crafted POST /users request from
 # assigning any role at all. Keep both in sync if this ever changes.
 #
-# No entry (Team Lead/Staff/Client) = every target role denied — matches
-# those roles never holding `user:create` by default anyway (this is
-# defense in depth, not the only gate). `None` = unrestricted (any of
-# the six roles).
+# No entry (Staff/Client) = every target role denied — matches those
+# roles never holding `user:create` by default anyway (this is defense
+# in depth, not the only gate). `None` = unrestricted (any of the six
+# roles).
 USER_CREATION_ROLE_MATRIX: dict[str, set[str] | None] = {
     "Super Admin": None,
     "Site Lead": None,
     "Account Manager": {"Team Lead", "Staff", "Client"},
+    "Team Lead": {"Staff", "Client"},
 }
 
 

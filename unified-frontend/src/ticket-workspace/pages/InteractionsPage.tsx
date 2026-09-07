@@ -66,6 +66,14 @@ const selectClass =
 export function InteractionsPage() {
   const navigate = useNavigate();
   const { currentUser } = useAuthContext();
+  // RBAC Enforcement Audit, Phase 30: mirrors the backend's own gate on
+  // GET /interactions/{id}/thread (interaction_service.py, get_thread).
+  // Additive-only, defense-in-depth — every role that can reach this
+  // page already holds this permission by default (see the audit's
+  // Phase 29 findings), so this is a no-op today.
+  const canViewTimeline = !!currentUser?.permissions.includes(
+    "communication:view_timeline"
+  );
   const { agents, clients, categories, interactionDrawer, setInteractionDrawer } = useWorkflowContext();
   const [searchParams, setSearchParams] = useSearchParams();
   const ticketIdParam = searchParams.get("ticketId");
@@ -461,6 +469,10 @@ export function InteractionsPage() {
     // has everything it needs from the row itself (raw), same as any
     // other single-message, no-thread row.
     if (RETIRED_INTERACTION_TYPES.has(row.type)) {
+      return;
+    }
+
+    if (!canViewTimeline) {
       return;
     }
 

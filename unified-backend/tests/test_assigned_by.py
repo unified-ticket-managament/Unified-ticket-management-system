@@ -236,7 +236,7 @@ def _build_inbox_ticket_service(session) -> InboxTicketService:
 
 async def test_create_ticket_with_preassigned_agent_sets_assigned_by_to_creator(db_session):
     team_lead, _staff = await _find_team_lead_with_staff(db_session, 1)
-    team_lead.permissions = ["communication:convert_to_ticket"]
+    team_lead.permissions = ["ticket:create"]
     client = await _make_inbox_client(
         db_session, account_manager_id=team_lead.manager_id or team_lead.user_id
     )
@@ -261,7 +261,7 @@ async def test_create_ticket_with_preassigned_agent_sets_assigned_by_to_creator(
 
 async def test_create_ticket_without_agent_leaves_assigned_by_none(db_session):
     team_lead, _staff = await _find_team_lead_with_staff(db_session, 1)
-    team_lead.permissions = ["communication:convert_to_ticket"]
+    team_lead.permissions = ["ticket:create"]
     client = await _make_inbox_client(
         db_session, account_manager_id=team_lead.manager_id or team_lead.user_id
     )

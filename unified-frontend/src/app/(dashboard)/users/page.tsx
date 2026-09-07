@@ -63,27 +63,19 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useToast } from "@/hooks/use-toast";
 import { useTranslation } from "@/hooks/use-translation";
 import { formatDate, getApiErrorMessage } from "@/lib/utils";
-import { canDeleteRecords, canImpersonate, dedupeRolesByName, ROLE_NAMES } from "@/lib/role-access";
+import { canDeleteUsers, canImpersonate, dedupeRolesByName, ROLE_NAMES } from "@/lib/role-access";
 import { categoryService, roleService, userService } from "@/services";
 import { PermissionGuard } from "@/components/auth/PermissionGuard";
 import { useAuthStore } from "@/store/auth-store";
 import { useImpersonationStore } from "@/store/impersonation-store";
 import { Category, Role, User } from "@/types";
 
-type UserRow = User & { roleName: string; categoryNames: string[] };
+type UserRow = User & { roleName: string; categoryNames: { id: string; name: string }[] };
 
 // Not a real role_id — a synthetic value for the Role filter's
 // "Reporting Manager" option (see the filter's own comment below).
 // Never collides with a real role_id UUID.
 const REPORTING_MANAGER_FILTER_VALUE = "__reporting_manager__";
-
-const USERS_PAGE_ALLOWED_ROLES: string[] = [
-  ROLE_NAMES.SUPER_ADMIN,
-  ROLE_NAMES.SITE_LEAD,
-  ROLE_NAMES.ACCOUNT_MANAGER,
-  ROLE_NAMES.TEAM_LEAD,
-  ROLE_NAMES.STAFF,
-];
 
 export default function UsersPage() {
   const { toast } = useToast();
@@ -91,16 +83,15 @@ export default function UsersPage() {
   const queryClient = useQueryClient();
   const currentUser = useAuthStore((s) => s.user);
   const hasPermission = useAuthStore((s) => s.hasPermission);
-  const canDelete = canDeleteRecords(currentUser?.role);
-  // Visible to every role that reaches this page (see
-  // USERS_PAGE_ALLOWED_ROLES above); enabled/disabled purely by the
-  // caller's effective role:view permission — the same permission the
-  // backend already requires on GET /roles and GET /roles/{id}. This
-  // used to be a hardcoded three-role allowlist (Super Admin/Site
-  // Lead/Account Manager) that hid the button entirely for everyone
-  // else; it's now permission-driven so Team Lead/Staff can also reach
-  // Roles once granted role:view (via role default or a personal
-  // override), with no role-name special-casing.
+  const canDelete = canDeleteUsers(currentUser?.role);
+  // Visible to every role that reaches this page; enabled/disabled
+  // purely by the caller's effective role:view permission — the same
+  // permission the backend already requires on GET /roles and GET
+  // /roles/{id}. This used to be a hardcoded three-role allowlist
+  // (Super Admin/Site Lead/Account Manager) that hid the button
+  // entirely for everyone else; it's now permission-driven so Team
+  // Lead/Staff can also reach Roles once granted role:view (via role
+  // default or a personal override), with no role-name special-casing.
   const canViewRoles = hasPermission("role:view");
 
   const [search, setSearch] = useState("");
@@ -171,7 +162,7 @@ export default function UsersPage() {
       return {
         ...user,
         roleName: roleMap.get(user.role_id) ?? "Unassigned",
-        categoryNames: categoryIds.map((id) => categoryMap.get(id) ?? "Unknown"),
+        categoryNames: categoryIds.map((id) => ({ id, name: categoryMap.get(id) ?? "Unknown" })),
       };
     });
   }, [usersQuery.data, roleMap, categoryMap]);
@@ -242,8 +233,12 @@ export default function UsersPage() {
       });
       setStatusChangeUser(null);
     },
-    onError: () => {
-      toast({ variant: "destructive", title: "Failed to update user status" });
+    onError: (error) => {
+      toast({
+        variant: "destructive",
+        title: "Failed to update user status",
+        description: getApiErrorMessage(error, "Please try again."),
+      });
     },
   });
 
@@ -277,7 +272,7 @@ export default function UsersPage() {
         user.name,
         user.email,
         user.roleName,
-        user.categoryNames.join("; ") || "—",
+        user.categoryNames.map((c) => c.name).join("; ") || "—",
         user.is_active ? "Active" : "Inactive",
         user.created_at,
       ]
@@ -359,9 +354,9 @@ export default function UsersPage() {
         cell: ({ row }) =>
           row.original.categoryNames.length > 0 ? (
             <div className="flex flex-wrap gap-1">
-              {row.original.categoryNames.map((name) => (
-                <Badge key={name} variant="secondary">
-                  {name}
+              {row.original.categoryNames.map((category) => (
+                <Badge key={category.id} variant="secondary">
+                  {category.name}
                 </Badge>
               ))}
             </div>
@@ -426,6 +421,16 @@ export default function UsersPage() {
                     </TooltipTrigger>
                     <TooltipContent>Edit</TooltipContent>
                   </Tooltip>
+                </PermissionGuard>
+                {/* Activate/Deactivate is a distinct capability from Edit
+                    (user:disable, not user:update) — the backend's
+                    PATCH /users/{id}/activate and /deactivate routes
+                    have always required user:disable specifically. This
+                    was previously bundled under the same user:update
+                    guard as Edit, so a role granted user:update without
+                    user:disable saw a working-looking button that 403'd
+                    on click. See RBAC Enforcement Audit, Phase 3. */}
+                <PermissionGuard permission="user:disable">
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Button
@@ -492,7 +497,20 @@ export default function UsersPage() {
     initialState: { pagination: { pageSize: 10 } },
   });
 
-  if (currentUser && !USERS_PAGE_ALLOWED_ROLES.includes(currentUser.role)) {
+  // Permission-driven, not a hardcoded role allowlist — but Client is
+  // an explicit, deliberate exclusion regardless of user:view: Client
+  // holds user:view by default today only because the Profile page's
+  // own "fetch my own record" call (use-profile.ts) goes through the
+  // same GET /users/{id} route this permission gates, with no
+  // self-access exception on the backend (see users.py's get_user
+  // route) — revoking Client's grant to hide this page would also
+  // break every Client's own Profile page, an unrelated capability.
+  // So this stays a business-rule exclusion layered on top of a real
+  // permission check, not a pure hasPermission gate.
+  if (
+    currentUser &&
+    (!hasPermission("user:view") || currentUser.role === ROLE_NAMES.CLIENT)
+  ) {
     return <AccessDenied message="You do not have access to the Users page." />;
   }
 

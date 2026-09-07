@@ -36,6 +36,13 @@ async def list_categories(
     no-op for every other role. Omitting it (every caller that predates
     this flag — the Roles page roster, the Rules engine picker) is
     byte-identical to the old unconditional behavior.
+
+    The Reporting Manager mapping is an optional, additive HR layer
+    (see root CLAUDE.md's "Organization Structure") — most Account
+    Managers have no rows in reporting_manager_teams at all. For those,
+    `mine=true` falls back to the full unscoped list instead of an
+    empty one, since "no HR override configured" should mean default
+    full visibility, not zero categories.
     """
 
     category_ids: list[UUID] | None = None
@@ -45,9 +52,11 @@ async def list_categories(
         )
 
         reporting_manager_repository = ReportingManagerRepository(db)
-        category_ids = await reporting_manager_repository.list_category_ids_by_account_manager(
+        mapped_category_ids = await reporting_manager_repository.list_category_ids_by_account_manager(
             current_user.user_id
         )
+        if mapped_category_ids:
+            category_ids = mapped_category_ids
 
     repository = CategoryRepository(db)
 

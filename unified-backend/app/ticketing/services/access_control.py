@@ -138,9 +138,38 @@ def resolve_status_after_assignment(
     return None
 
 
+def resolve_communication_visibility_tier(current_user: User) -> str:
+    """
+    The single source of truth for how far a user's
+    communication:view_all / communication:view_assigned grant reaches
+    — used by both InboxService (the list side) and the view_only
+    branches of ensure_agent_can_view_ticket /
+    ensure_agent_can_view_pending_interaction (the detail side), so the
+    two can never drift into disagreeing about who can see what.
+
+    Returns "all" if the caller holds communication:view_all (checked
+    first — holding both permissions always resolves to the broader
+    tier, never accidentally narrowed by also holding view_assigned),
+    "assigned" if they hold only communication:view_assigned, or
+    "none" if they hold neither — callers must treat "none" as an
+    unconditional deny, not merely "no widening applied".
+    """
+
+    if has_permission(current_user, "communication:view_all"):
+        return "all"
+
+    if has_permission(current_user, "communication:view_assigned"):
+        return "assigned"
+
+    return "none"
+
+
 def ensure_agent_can_view_ticket(
     ticket: Ticket,
     current_user: User,
+    *,
+    view_only: bool = False,
+    bypass_category_scope: bool = False,
 ) -> None:
     """
     Category-scoped visibility for Team Lead/Staff (see
@@ -171,6 +200,20 @@ def ensure_agent_can_view_ticket(
     action already reaches this same function first, so this one
     check now closes the gap everywhere at once rather than needing a
     separate fix per call site.
+
+    `view_only=True` (passed only by OpenEmailService.get_email_details
+    — the "open and read a communication" surface, never an action
+    call site) is a genuinely separate, communication-permission-driven
+    authorization branch from everything below it — see
+    resolve_communication_visibility_tier's own docstring. Every other
+    call site (reply, transfer, escalate, attachments, SLA, ...) never
+    passes this and is completely unaffected by anything in this
+    branch; they keep the plain category/ticket:editother_ticket rule
+    unchanged. Account Manager's own ownership ceiling is deliberately
+    NOT enforced inside this branch either (this function has no DB
+    access) — the caller (OpenEmailService.get_email_details) pairs
+    this with ensure_account_manager_owns_ticket_client itself, the
+    same pattern used everywhere else in interaction_service.py.
     """
 
     if current_user.role.name not in AGENT_ROLE_NAMES:
@@ -178,6 +221,51 @@ def ensure_agent_can_view_ticket(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have access to this ticket.",
         )
+
+    if view_only:
+        # A ticket-scoped ticket:editother_ticket override is a
+        # distinct, explicit, per-ticket grant (approved via the RBAC
+        # Permission Request workflow) — not "merely owning a ticket"
+        # — so it stays first and wins regardless of the communication
+        # permission tier, matching its existing behavior on every
+        # other call site (below) and matching the pre-existing
+        # ordering this branch is derived from.
+        if has_permission_for_ticket(current_user, "ticket:editother_ticket", ticket.ticket_id):
+            return
+
+        tier = resolve_communication_visibility_tier(current_user)
+        if tier == "none":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this communication.",
+            )
+
+        role_name = current_user.role.name
+
+        if role_name == ACCOUNT_MANAGER_ROLE_NAME:
+            # Client-ownership ceiling enforced separately by the
+            # caller — see this function's own docstring above.
+            return
+
+        if role_name not in CATEGORY_SCOPED_ROLE_NAMES:
+            # Site Lead / Super Admin / any other role with no
+            # narrower business-defined scope — tier is already
+            # confirmed non-"none" above.
+            return
+
+        if tier == "all":
+            return
+
+        user_category_names = {
+            c.category_name for c in getattr(current_user, "categories", None) or []
+        }
+
+        if ticket.ticket_type not in user_category_names:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this communication.",
+            )
+        return
 
     if current_user.role.name not in CATEGORY_SCOPED_ROLE_NAMES:
         return
@@ -192,6 +280,18 @@ def ensure_agent_can_view_ticket(
     # has_permission_for_ticket check ensure_agent_can_act_on_ticket
     # already runs for the *action* side of this same scenario.
     if has_permission_for_ticket(current_user, "ticket:editother_ticket", ticket.ticket_id):
+        return
+
+    # bypass_category_scope=True (passed only by
+    # ensure_agent_can_act_on_ticket, only when it has already
+    # confirmed current_user is a communication:reply_external-backed
+    # forward recipient of this ticket's own thread — see that
+    # function's own docstring) is the same shape as the
+    # ticket:editother_ticket bypass just above: an explicit,
+    # message-specific grant that legitimately crosses the
+    # category boundary for this one ticket, never a blanket
+    # widening for every ticket in or out of category.
+    if bypass_category_scope:
         return
 
     user_category_names = {
@@ -278,6 +378,9 @@ async def ensure_agent_can_act_on_ticket(
     current_user: User,
     escalation_repository=None,
     escalation_handling_sla_repository=None,
+    *,
+    permission_backed: str | None = None,
+    is_forward_recipient: bool = False,
 ) -> None:
     """
     Working a ticket — replying, adding an internal note, changing
@@ -344,9 +447,33 @@ async def ensure_agent_can_act_on_ticket(
     ticket is how you become its assigned agent in the first place)
     or transfer_agent (already gated by ensure_can_reassign_ticket,
     which is supervisor-only regardless of current assignment).
+
+    `permission_backed`/`is_forward_recipient` (passed only by
+    InteractionService.add_reply, which already independently
+    re-checks the exact same permission via ensure_has_permission right
+    after this returns) extend the pre-existing pending-item "forward
+    recipient" exception (see ensure_agent_can_view_pending_interaction)
+    to a communication that has since become a ticket: a
+    communication:reply_external holder who was explicitly named as a
+    recipient of a Forward on THIS ticket's own thread (computed by the
+    caller — this function has no DB access) may reply even though
+    they're neither the assigned agent nor a supervisor nor an
+    editother_ticket holder. This is deliberately narrower than the
+    permission alone — `is_forward_recipient` must independently be
+    True — so holding communication:reply_external never becomes a
+    blanket "reply to any ticket" grant; it only ever widens access for
+    the specific ticket whose thread this user was actually forwarded.
     """
 
-    ensure_agent_can_view_ticket(ticket, current_user)
+    forward_access = bool(
+        permission_backed
+        and is_forward_recipient
+        and has_permission(current_user, permission_backed)
+    )
+
+    ensure_agent_can_view_ticket(
+        ticket, current_user, bypass_category_scope=forward_access
+    )
 
     await ensure_ticket_not_frozen_by_escalation(
         ticket, escalation_repository, escalation_handling_sla_repository
@@ -362,6 +489,8 @@ async def ensure_agent_can_act_on_ticket(
         current_user, "ticket:editother_ticket", ticket.ticket_id
     ):
         return
+    elif forward_access:
+        return
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -373,6 +502,8 @@ async def ensure_account_manager_owns_ticket_client(
     ticket: Ticket,
     current_user: User,
     client_repository,
+    *,
+    bypass: bool = False,
 ) -> None:
     """
     `ensure_agent_can_view_ticket` only handles the Team Lead/Staff
@@ -386,7 +517,20 @@ async def ensure_account_manager_owns_ticket_client(
     untouched here (Team Lead/Staff already get their own gate from
     ensure_agent_can_view_ticket; Site Lead/Super Admin stay
     unrestricted everywhere by design).
+
+    `bypass=True` (passed only by InteractionService.add_reply, and
+    only once it has independently confirmed current_user is a
+    communication:reply_external-backed forward recipient of this
+    ticket's own thread — see ensure_agent_can_act_on_ticket's matching
+    parameter) skips the ownership check entirely: an Account Manager
+    explicitly forwarded a communication on a ticket belonging to a
+    client they don't themselves own is still exactly the person this
+    whole feature exists to admit, same as the ticket:editother_ticket/
+    bypass_category_scope escape hatches elsewhere in this file.
     """
+
+    if bypass:
+        return
 
     if current_user.role.name != ACCOUNT_MANAGER_ROLE_NAME:
         return
@@ -455,6 +599,8 @@ async def ensure_agent_can_view_pending_interaction(
     client_repository,
     *,
     view_only: bool = False,
+    permission_backed: str | None = None,
+    is_forward_recipient: bool = False,
     folder_shared_bypass: bool = False,
 ) -> None:
     """
@@ -466,9 +612,9 @@ async def ensure_agent_can_view_pending_interaction(
     Manager for that category (ReportingManagerTeam — see
     reporting_manager_repository); or, either way, a global-inbox role
     (Site Lead/Super Admin). Team Lead/Staff are deliberately excluded
-    from both — they never see a pending item in their own inbox list
-    either, so a crafted request for its interaction_id shouldn't work
-    either.
+    from both by *default* — they never see a pending item in their
+    own inbox list either — but see `permission_backed` below for the
+    real, permission-based way past this for the actions that have one.
 
     The category-mailbox check reuses `client_repository`'s own DB
     session (`client_repository.db`) to build a ReportingManagerRepository
@@ -482,51 +628,135 @@ async def ensure_agent_can_view_pending_interaction(
     Shared by InteractionService (claim/archive/snooze/tags/folder/
     drafts) and OpenEmailService (opening the thread itself) so
     "can act on it" and "can see it" stay the same rule — except for
-    the `view_only` escape hatch below, which deliberately only
-    applies to the "can see it" side.
+    the `view_only`/`permission_backed` escape hatches below.
 
-    `view_only=True` (passed only by OpenEmailService.get_email_details,
-    never by any of InteractionService's action call sites) additionally
-    admits anyone holding `communication:view_all` — the same permission
-    InboxService.get_inbox already gates the list view on for Super
-    Admin/Site Lead/Account Manager. Without this, a manager forwarding
-    a still-pending mail item to an internal user (
-    InteractionService.forward_to_internal_user, delivered via a
-    MAIL_FORWARDED Notification rather than the normal scoped inbox
-    query) handed that recipient a link to an item this function would
-    otherwise always 403 for them on — Staff/Team Lead were never in
-    scope here at all, and granting the permission through RBAC's
-    Manage-Permissions editor had no effect, since this check was
-    purely role/ownership-based with no permission read anywhere in it.
-    This intentionally does not widen the *action* call sites (claim/
-    archive/snooze/tags/folder/drafts/forward/reply) — holding
-    communication:view_all lets a role open and read a pending item
-    it was sent, not act on someone else's.
+    `view_only=True` (passed only by OpenEmailService.get_email_details)
+    is a separate, communication-permission-driven authorization branch
+    — see resolve_communication_visibility_tier's own docstring (the
+    same "widen seeing, never acting" split `folder_shared_bypass`
+    below also follows). A caller holding neither communication:view_all nor
+    communication:view_assigned is denied outright; a communication:
+    view_all holder (any role, since no business rule outside Account
+    Manager's own client-ownership ceiling limits this) sees any
+    pending item regardless of ownership; every other case (a
+    communication:view_assigned-only Team Lead/Staff, or an Account
+    Manager under either tier) falls through to the same ownership
+    checks below, which is what keeps Team Lead/Staff excluded from
+    pending items by default (they never own a client or a Reporting-
+    Manager category mapping) and keeps Account Manager's ownership
+    ceiling intact even when they hold communication:view_all.
+
+    `permission_backed="<permission name>"` (passed only by the action
+    call sites that already run that exact same `ensure_has_permission`
+    check immediately afterward — Reply/Forward/the four draft actions
+    pass "communication:reply_external", Archive passes
+    "communication:archive") admits anyone holding that permission,
+    ownership aside entirely — EXCEPT for "communication:reply_external"
+    specifically, which additionally requires `is_forward_recipient`
+    (see below). Before this exception was scoped down, holding
+    communication:reply_external was sufficient on its own to reply to
+    ANY pending mail item, forwarded or not — the permission itself was
+    treated as the authority, matching how a plain role-granted
+    communication:view_all already lets someone past ownership to
+    *view* anything. That was deliberately too broad: a
+    communication:reply_external holder with no relationship at all to
+    a given pending item (never its owning client/category, never
+    forwarded it) could still reply to it, which is a real "reply to
+    any ticket" leak this permission must never grant (see the RBAC
+    permission-compliance audit's own framing of least-privilege
+    scoping). `communication:archive` is untouched — Archive was never
+    part of the forwarded-recipient scenario this narrowing exists for.
+
+    `is_forward_recipient=True` (computed by the caller — this function
+    has no DB access — via InteractionService._is_forwarded_to_user,
+    which walks the item's own thread for a Forward action naming this
+    user; see that method's own docstring) is what lets a
+    communication:reply_external holder past ownership for Reply/
+    Forward/the four draft actions specifically: a manager forwarding a
+    still-pending mail item to an internal user (InteractionService.
+    forward_to_internal_user, delivered via a MAIL_FORWARDED
+    Notification rather than the normal scoped inbox query), or sharing
+    a rule-filed folder with one (Rule.shared_user_ids —
+    MailFolderService/InboxService's own folder-sharing bypass — folder
+    sharing doesn't set is_forward_recipient, but such a recipient
+    already reaches the ordinary ownership checks below through
+    `bypass_ownership_scope` at the InboxService list-query level, a
+    separate mechanism), left that recipient able to see the item but
+    never reply to it. This keeps the widening scoped to the actual
+    people a specific communication was shared with — a
+    communication:reply_external holder who was NOT named as a Forward
+    recipient of THIS item (e.g. it was forwarded to a different
+    colleague instead) still falls through to the ownership checks
+    below and is denied unless they also happen to own the client/
+    category mailbox.
+
+    Since `permission_backed` is only ever passed by an action that
+    already independently re-checks the exact same permission right
+    after this call returns, this ownership bypass never grants a
+    capability with nothing else backing it — it isn't a blanket "any
+    permission holder can do anything" widening, just each action
+    deferring entirely to its own permission (plus, for
+    reply_external, confirmed forward-recipient status) instead of
+    also requiring ownership. Claim is deliberately excluded (see
+    scripts/rbac_seed/seed.py's retirement note on
+    `communication:assign`: "pre-ticket handoff is claim, an ownership
+    mechanism, not a permission" — there is no RBAC permission for it
+    to defer to), and so are Tags/Folder-assignment, which have no
+    permission check of their own either.
 
     `folder_shared_bypass=True` (computed by the caller from
     MailFolderService.resolve_folder_access(...).via_sharing — the
     same signal InboxService.get_inbox's own `bypass_ownership_scope`
-    already keys off for the list view) additionally admits a viewer
-    who can see this item purely because a Rule filed it into a
+    already keys off for the list view) is a third, independent
+    `view_only` widening: a viewer whose communication permission tier
+    is not "none" (checked first, same as above) additionally passes
+    if they can see this item purely because a Rule filed it into a
     folder genuinely shared with them (the rule's shared_user_ids/
-    shared_distribution_list_ids), without requiring
-    communication:view_all. Only honored together with `view_only` —
-    same "widen seeing, never acting" rule as the permission check
-    above. Without this, a shared Team Lead could see the row in the
-    folder's own listing (GET /inbox?folder_id=...) but get a 403
-    opening it here — a real gap once folder-filing removes an item
-    from the folder-sharing recipient's own scoped Inbox (see
+    shared_distribution_list_ids) — even if their tier is only
+    "assigned", or they're an Account Manager who doesn't own this
+    item's client. Only honored together with `view_only` — same
+    "widen seeing, never acting" rule as the checks above. Without
+    this, a shared Team Lead could see the row in the folder's own
+    listing (GET /inbox?folder_id=...) but get a 403 opening it here —
+    a real gap once folder-filing removes an item from the folder-
+    sharing recipient's own scoped Inbox (see
     InteractionRepository.list_inbox's folder_id handling).
     """
 
-    if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
-        return
+    if view_only:
+        tier = resolve_communication_visibility_tier(current_user)
+        if tier == "none":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this communication.",
+            )
 
-    if view_only and (
-        has_permission(current_user, "communication:view_all")
-        or folder_shared_bypass
-    ):
-        return
+        role_name = current_user.role.name
+
+        if role_name in GLOBAL_INBOX_ROLE_NAMES:
+            # No narrower business scope is defined for these roles —
+            # tier is already confirmed non-"none" above.
+            return
+
+        if tier == "all" and role_name != ACCOUNT_MANAGER_ROLE_NAME:
+            return
+
+        if folder_shared_bypass:
+            return
+
+        # tier == "assigned" (Team Lead/Staff — excluded from pending
+        # items by default, matching the pre-existing convention), or
+        # role == Account Manager under either tier — fall through to
+        # the ownership checks below.
+    else:
+        if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
+            return
+
+        if permission_backed == "communication:reply_external":
+            if is_forward_recipient and has_permission(current_user, permission_backed):
+                return
+        elif permission_backed and has_permission(current_user, permission_backed):
+            return
 
     if interaction.client_id is None and getattr(interaction, "category_id", None) is not None:
         if client_repository is not None:
@@ -564,32 +794,44 @@ async def ensure_agent_can_view_pending_interaction(
         )
 
 
-def ensure_can_compose_for_client(client, current_user: User) -> None:
+def ensure_can_compose_for_client(
+    client, current_user: User, required_permission: str = "communication:reply_external"
+) -> None:
     """
-    Gates POST /inbox/compose — who may author a brand-new outbound
-    email (no prior inbound message) to one of the platform's
-    clients. `communication:reply_external` (RBAC's own Manage-
-    Permissions editor — the same permission Reply/Reply All on an
-    already-ticketed message already gate on, see
-    MessageDetailsView.tsx's canReplyExternal) is the source of truth
-    for whether a role/user may compose external mail at all; this
-    used to be a hardcoded role-name check (Site Lead/Super Admin
+    Gates who may author an outbound email to one of the platform's
+    clients from a specific mailbox (a client's own inbox). Two real
+    callers use this today, each requiring a different permission for
+    the same underlying ownership rule (see `required_permission`
+    below):
+    - `InteractionService.compose_email` (brand-new outbound message,
+      no prior inbound thread — Mail's own "Compose" button) requires
+      `communication:create` (RBAC Enforcement Audit, Phase 18/BD-11 —
+      Compose was deliberately split out from Reply/Forward's shared
+      permission once the two were confirmed to represent genuinely
+      distinct capabilities).
+    - `InteractionService.forward_to_internal_user` (forwarding an
+      existing thread) and `OutgoingMailService` (the standalone
+      `POST /api/mail/outgoing` primitive, client_id branch, see BD-15)
+      both keep the original `communication:reply_external` — this
+      function's default — unchanged.
+    This used to be a hardcoded role-name check (Site Lead/Super Admin
     unconditionally, Account Manager only their own clients, every
     other role — including a Team Lead explicitly granted the
     permission — unconditionally denied), which meant granting the
     permission through the RBAC UI had no effect here.
 
     Business ownership stays exactly as before on top of the
-    permission check: Site Lead/Super Admin remain unrestricted,
-    Account Manager stays scoped to their own clients (this is a data-
+    permission check, and is identical regardless of which permission
+    was required: Site Lead/Super Admin remain unrestricted, Account
+    Manager stays scoped to their own clients (this is a data-
     ownership rule, not a permission gap, so it isn't satisfied by
     holding the permission alone). Any other role holding the
-    permission (e.g. Team Lead) is unrestricted like Site Lead/Super
-    Admin — Compose has no per-role client-ownership concept outside
-    Account Manager's own-clients rule.
+    permission is unrestricted like Site Lead/Super Admin — this
+    function has no per-role client-ownership concept outside Account
+    Manager's own-clients rule.
     """
 
-    ensure_has_permission(current_user, "communication:reply_external")
+    ensure_has_permission(current_user, required_permission)
 
     if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
         return
@@ -606,24 +848,29 @@ def ensure_can_compose_for_client(client, current_user: User) -> None:
 
 
 async def ensure_can_compose_for_category(
-    category, current_user: User, reporting_manager_repository
+    category,
+    current_user: User,
+    reporting_manager_repository,
+    required_permission: str = "communication:reply_external",
 ) -> None:
     """
     Gates sending as a CATEGORY shared mailbox (Compose/Forward's From
     field, when a category rather than a client is selected) — the
-    same `communication:reply_external` baseline ensure_can_compose_
-    for_client requires, plus the category equivalent of that
-    function's Account-Manager-owns-client rule: an Account Manager
-    may only send as a category they're the Reporting Manager for
-    (ReportingManagerTeam), the same ownership check
-    ensure_agent_can_view_pending_interaction already applies to a
-    category-mailbox item on the read side. Every other permission-
-    holding role (Site Lead/Super Admin, and any role explicitly
-    granted the permission) is unrestricted, mirroring
-    ensure_can_compose_for_client exactly.
+    category equivalent of ensure_can_compose_for_client's Account-
+    Manager-owns-client rule: an Account Manager may only send as a
+    category they're the Reporting Manager for (ReportingManagerTeam),
+    the same ownership check ensure_agent_can_view_pending_interaction
+    already applies to a category-mailbox item on the read side. See
+    ensure_can_compose_for_client's docstring for which permission each
+    real caller passes (Compose: communication:create; Forward and the
+    standalone outgoing-mail primitive: communication:reply_external,
+    this function's default). Every other permission-holding role
+    (Site Lead/Super Admin, and any role explicitly granted the
+    permission) is unrestricted, mirroring ensure_can_compose_for_client
+    exactly.
     """
 
-    ensure_has_permission(current_user, "communication:reply_external")
+    ensure_has_permission(current_user, required_permission)
 
     if current_user.role.name in GLOBAL_INBOX_ROLE_NAMES:
         return
@@ -834,3 +1081,23 @@ def ensure_can_reassign_ticket(current_user: User) -> None:
         return
 
     ensure_has_permission(current_user, "ticket:transfer")
+
+
+def ensure_can_assign_unowned_ticket(current_user: User) -> None:
+    """
+    Moving a ticket that currently has NO owner (agent_id is None) to a
+    specific *other* named agent is assignment, not transfer — it must
+    require ticket:assign, and deliberately has no SUPERVISOR_ROLE_NAMES
+    bypass (unlike ensure_can_reassign_ticket above). Team Lead/Account
+    Manager/Site Lead/Super Admin all hold ticket:assign by role default
+    today, so this changes nothing for them in practice; it only closes
+    the gap where a ticket:transfer-only holder (or a supervisor role
+    whose ticket:assign grant was revoked/overridden away) could assign
+    an unowned ticket without ever holding ticket:assign.
+
+    Callers must check ticket.agent_id is None themselves before calling
+    this — an already-owned ticket must go through
+    ensure_can_reassign_ticket instead.
+    """
+
+    ensure_has_permission(current_user, "ticket:assign")

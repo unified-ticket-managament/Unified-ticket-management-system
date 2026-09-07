@@ -57,7 +57,17 @@ export function CategoryFormDialog({ open, onOpenChange, category }: CategoryFor
   const [originalMappingId, setOriginalMappingId] = useState<string | null>(null);
 
   const hasPermission = useAuthStore((s) => s.hasPermission);
-  const canManageAccountManager = hasPermission("org:manage_reporting_managers");
+  const currentUser = useAuthStore((s) => s.user);
+  const hasReportingManagerAdminPermission = hasPermission("org:manage_reporting_managers");
+  // An Account Manager may always manage their OWN Reporting Manager
+  // mapping (self-service, enforced authoritatively by the backend —
+  // see ReportingManagerService.ensure_can_manage_mapping) without
+  // holding the broad org:manage_reporting_managers permission. This
+  // just unlocks the read/UI here; attempting another AM's mapping
+  // still 403s server-side and is already handled below as a
+  // non-blocking toast.
+  const canManageAccountManager =
+    hasReportingManagerAdminPermission || currentUser?.role === ACCOUNT_MANAGER_ROLE_NAME;
 
   const recipientsQuery = useQuery({
     queryKey: ["category-picker-recipients"],

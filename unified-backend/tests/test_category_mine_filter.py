@@ -99,14 +99,24 @@ async def test_account_manager_mine_true_gets_only_own_categories(monkeypatch):
     assert _FakeCategoryRepository.last_call_category_ids == [own_category]
 
 
-async def test_account_manager_mine_true_with_no_mappings_gets_empty_list(monkeypatch):
+async def test_account_manager_mine_true_with_no_mappings_falls_back_to_everything(
+    monkeypatch,
+):
+    # An Account Manager with zero reporting_manager_teams rows is the
+    # common case (it's an optional, additive HR layer — see root
+    # CLAUDE.md's "Organization Structure" section), not an edge case.
+    # `mine=true` used to pass an empty category_ids list here, which
+    # CategoryRepository.list_all's `IN (...)` turns into zero rows —
+    # silently emptying the Create Ticket category dropdown for most
+    # Account Managers. "No HR override configured" should mean default
+    # full visibility, not zero categories.
     am_id = uuid4()
     _patch_repositories(monkeypatch, category_ids_by_am={})
 
     current_user = _FakeUser(am_id, "Account Manager")
     await list_categories(mine=True, current_user=current_user, db=_FakeDB())
 
-    assert _FakeCategoryRepository.last_call_category_ids == []
+    assert _FakeCategoryRepository.last_call_category_ids is None
 
 
 async def test_non_account_manager_role_mine_true_is_a_no_op(monkeypatch):

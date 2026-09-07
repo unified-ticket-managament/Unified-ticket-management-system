@@ -24,12 +24,13 @@ Backed by `OrganizationService` (`app/rbac/services/organization_service.py`). B
 
 | Method | Path | Purpose | Auth |
 |---|---|---|---|
-| POST | `/api/v1/audit-logs` | Create a manual system-level audit log | authenticated + hardcoded `role.name == "Super Admin"` check |
-| GET | `/api/v1/audit-logs` | List audit logs (paginated) | authenticated + hardcoded `role.name == "Super Admin"` check |
+| POST | `/api/v1/audit-logs` | Create a manual system-level audit log (admin escape hatch — not the real audit-writing path; zero legitimate callers repo-wide) | authenticated + hardcoded `role.name == "Super Admin"` check |
+| GET | `/api/v1/audit-logs` | List audit logs (paginated) | `audit:view` |
+| GET | `/api/v1/audit-logs/export` | Stream every matching audit log as CSV (unpaginated) | `audit:view` **and** `audit:export` |
 | GET | `/api/v1/audit-logs/{id}` | Get one audit log | `audit:view` |
 | GET | `/api/v1/audit-logs/user/{user_id}` | All audit logs for one user | `audit:view` |
-| DELETE | `/api/v1/audit-logs/{id}` | Delete an audit log | authenticated + hardcoded `role.name == "Super Admin"` check |
+| DELETE | `/api/v1/audit-logs/{id}` | **Retired outright (Phase 6 / BD-HC3)** — no longer registered on the router; `AuditLogService.delete_log`/`AuditLogRepository.delete` were removed alongside it, since the route was their only caller. Audit rows are append-only by design; a repo-wide search confirmed zero legitimate callers before removal. | n/a |
 
-**Note the inconsistency, confirmed as-is in code**: the list/create/delete endpoints check a hardcoded role name string rather than the `audit:view`/`audit:export` permission the rest of this domain uses — worth flagging if this area is ever revised, since it means a future role rename ("Super Admin" → something else) would silently break these three routes without an obvious error.
+**Corrected note (was previously stale here): only `create` still uses the hardcoded `role.name == "Super Admin"` check, by deliberate design** — it's an administrative escape hatch, not the system's real audit-writing path, and the "Super Admin" string is intentional there, not an oversight. `list`/`get`/`user`/`export` were moved onto the real `audit:view`/`audit:export` permission system (Phase 6 / BD-HC2 and a later export-permission pass): the prior hardcoded check on `list` had already caused a real bug — a Site Lead holding `audit:view` by default but not literally named "Super Admin" got a 403 the frontend's own permission gate didn't predict. See `docs/AUDIT_LOG_BACKLOG.md` and `docs/04-functional-modules/audit-management.md` for the current state and what (if anything) remains outstanding here.
 
 **Writers of RBAC `audit_logs`** (confirmed, not exhaustive of every mutation in the system): `AuthService` (`auth.login`, `auth.login_failed`, `auth.logout`, `auth.change_password`), `UserService` (`user.create/update/delete/activate/deactivate/role_changed`), `RoleService` (`role.create/update/delete`), `RolePermissionService` (`role.permissions_added/removed`), `PermissionOverrideService`, `PermissionRequestService`. Many other RBAC mutations still leave this table untouched — verify per-action before assuming a row exists.
