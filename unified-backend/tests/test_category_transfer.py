@@ -131,6 +131,14 @@ async def test_category_transfer_moves_ticket_and_writes_both_audit_entries(db_s
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
     caller = await _with_categories(db_session, team_lead)
+    # _make_scenario's ticket starts unowned (agent_id=None), so
+    # transfer_agent's first hop here is an ASSIGN, not a TRANSFER — it
+    # requires ticket:assign with no SUPERVISOR_ROLE_NAMES bypass (see
+    # ensure_can_assign_unowned_ticket). Real Team Leads hold this by
+    # RBAC default (scripts/rbac_seed/seed.py); this mirrors what the
+    # JWT/auth layer would have populated onto `.permissions` in
+    # production for this same caller.
+    caller.permissions = ["ticket:assign"]
     target = await _get_active_user_in_category(db_session, OTHER_CATEGORY)
 
     original_ticket_id = ticket.ticket_id
@@ -184,6 +192,14 @@ async def test_sequential_category_transfers_accumulate_without_overwriting(db_s
 
     _team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
     caller = await _get_site_lead(db_session)
+    # First hop below assigns the still-unowned ticket (agent_id=None),
+    # which requires ticket:assign with no role bypass — see the first
+    # test in this file for the full rationale. Site Lead holds it by
+    # RBAC default; every subsequent hop reassigns an already-owned
+    # ticket, which Site Lead bypasses unconditionally as a
+    # SUPERVISOR_ROLE_NAMES member (ensure_can_reassign_ticket), so no
+    # further permissions are needed here.
+    caller.permissions = ["ticket:assign"]
 
     hops = [OTHER_CATEGORY, THIRD_CATEGORY, TEAM_LEAD_CATEGORY]
     service = _build_interaction_service(db_session)
@@ -219,6 +235,11 @@ async def test_invalid_destination_category_is_rejected(db_session):
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
     caller = await _with_categories(db_session, team_lead)
+    # Ticket starts unowned — see the first test in this file for why
+    # this requires ticket:assign, which Team Lead holds by RBAC
+    # default. Without it, the 403 from ensure_can_assign_unowned_ticket
+    # would mask the 400 this test is actually about.
+    caller.permissions = ["ticket:assign"]
     target = await _get_active_user_in_category(db_session, OTHER_CATEGORY)
 
     service = _build_interaction_service(db_session)
@@ -248,6 +269,10 @@ async def test_new_agent_outside_destination_category_is_rejected(db_session):
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
     caller = await _with_categories(db_session, team_lead)
+    # Ticket starts unowned — see the first test in this file for why
+    # this requires ticket:assign, which Team Lead holds by RBAC
+    # default.
+    caller.permissions = ["ticket:assign"]
     # A user in a category other than the destination we're claiming.
     mismatched_target = await _get_active_user_in_category(db_session, THIRD_CATEGORY)
 
@@ -282,6 +307,13 @@ async def test_multi_category_user_eligible_for_either_category_not_a_third(db_s
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
     caller = await _get_site_lead(db_session)
+    # First call below assigns the still-unowned ticket, requiring
+    # ticket:assign with no role bypass — see the first test in this
+    # file for the full rationale. Site Lead holds it by RBAC default;
+    # the two later calls reassign an already-owned ticket, which Site
+    # Lead bypasses unconditionally (SUPERVISOR_ROLE_NAMES), so no
+    # further permissions are needed here.
+    caller.permissions = ["ticket:assign"]
 
     ar_category = await _get_category(db_session, OTHER_CATEGORY)
     pp_category = await _get_category(db_session, TEAM_LEAD_CATEGORY)
@@ -382,6 +414,13 @@ async def test_category_name_omitted_or_unchanged_leaves_ticket_type_untouched(d
 
     team_lead, _client, ticket, _resolution_sla = await _make_scenario(db_session)
     caller = await _with_categories(db_session, team_lead)
+    # First call below assigns the still-unowned ticket, requiring
+    # ticket:assign with no role bypass — see the first test in this
+    # file for the full rationale. Team Lead holds it by RBAC default;
+    # the second call reassigns an already-owned ticket, which Team
+    # Lead bypasses unconditionally (SUPERVISOR_ROLE_NAMES), so no
+    # further permissions are needed here.
+    caller.permissions = ["ticket:assign"]
     staff_owner = await _get_staff_owner(db_session, team_lead)
 
     service = _build_interaction_service(db_session)

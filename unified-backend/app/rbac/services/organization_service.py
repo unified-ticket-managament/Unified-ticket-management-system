@@ -234,7 +234,6 @@ class OrganizationService:
         manager_id/teamlead_id traversal already built for permission-
         override scoping — used to scope an Account Manager's
         permission-override grant authority to "their own reports"
-<<<<<<< Updated upstream
         only. Must stay role-shaped exactly as it always has; widening
         it to match the Organization Chart's own literal traversal
         would change who an Account Manager can grant/revoke
@@ -246,8 +245,6 @@ class OrganizationService:
         get_reporting_scope_user_ids (Users-page visibility) passes
         True, so a deactivated report doesn't drop out of its own
         manager's Users-page view.
-=======
->>>>>>> Stashed changes
         only: both Team-Lead-mediated reports and Staff reporting
         directly to the AM (see _build_subtree's Account Manager
         branch). Must stay role-shaped exactly as it always has;
@@ -415,6 +412,14 @@ class OrganizationService:
         user: User,
         children: list[OrganizationNode] | None = None,
     ) -> OrganizationNode:
+
+        # Not every caller hands us a User whose `.categories` was
+        # eager-loaded (e.g. a root user fetched via a one-off
+        # `select(User).options(joinedload(User.role))` query) — see
+        # UserRepository.ensure_categories_loaded's own docstring for
+        # why a bare `user.categories` access can't safely do this
+        # itself under AsyncSession.
+        await self.user_repository.ensure_categories_loaded(user)
 
         # `departments` (plural, the new multi-category-aware field)
         # is the real source; `department` (singular, pre-existing) is

@@ -117,24 +117,38 @@ async def attachment_to_metadata(
             is_inline=False,
         )
 
-    # preview_url is signed for every real (non-external-link) attachment,
-    # not just images — pre-send attachment-preview UIs (Reply's pre-ticket
-    # draft list, Forward's original-attachments list) need an inline-
-    # disposition URL for any file type, not only images; the browser's own
-    # native rendering still decides what "preview" actually looks like per
-    # mime type, this just stops the server from forcing a download.
-    download_url, preview_url = await asyncio.gather(
-        storage_service.presigned_get_url(
+    # preview_url is only ever signed for a genuinely previewable image
+    # (is_previewable_image — extension-based, never attachment.mime_type,
+    # see that function's own docstring for the spoofed-Content-Type XSS
+    # this guards against, and NEVER_INLINE_EXTENSIONS in utils/constants.py
+    # for why SVG specifically is excluded despite its image/* MIME type).
+    # Every other attachment still gets a real download_url; pre-send
+    # attachment-preview UIs (Reply's pre-ticket draft list, Forward's
+    # original-attachments list) fall back to that via previewHrefFor()
+    # on the frontend rather than requiring an inline-disposition URL for
+    # every file type.
+    is_image = is_previewable_image(attachment.filename)
+
+    if is_image:
+        download_url, preview_url = await asyncio.gather(
+            storage_service.presigned_get_url(
+                object_key=attachment.storage_key,
+                filename=attachment.filename,
+                inline=False,
+            ),
+            storage_service.presigned_get_url(
+                object_key=attachment.storage_key,
+                filename=attachment.filename,
+                inline=True,
+            ),
+        )
+    else:
+        download_url = await storage_service.presigned_get_url(
             object_key=attachment.storage_key,
             filename=attachment.filename,
             inline=False,
-        ),
-        storage_service.presigned_get_url(
-            object_key=attachment.storage_key,
-            filename=attachment.filename,
-            inline=True,
-        ),
-    )
+        )
+        preview_url = None
 
     return AttachmentMetadata(
         id=attachment.attachment_id,
@@ -861,11 +875,7 @@ class AttachmentService:
         # ticket:delete_attachment permission — Full for Super Admin/
         # Site Lead/Account Manager (own clients, checked above), a
         # personal override for everyone else.
-<<<<<<< Updated upstream
         ensure_has_permission(current_user, "ticket:delete_attachment")
-=======
-        ensure_has_permission(current_user, "ticket:archive_attachment")
->>>>>>> Stashed changes
 
         # Re-fetch for ticket_id — _resolve_and_authorize already
         # validated access via this same interaction; this is just

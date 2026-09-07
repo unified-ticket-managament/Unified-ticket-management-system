@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from sqlalchemy import delete, func, insert, or_, select, update
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -479,6 +480,27 @@ class UserRepository(BaseRepository):
         )
 
         return list(result.scalars().all())
+
+    async def ensure_categories_loaded(self, user: User) -> None:
+        """
+        Guarantees `user.categories` is safe to read without triggering
+        an implicit lazy load — needed because some callers hand
+        OrganizationService a User fetched via a bespoke query that
+        eager-loads `.role` but not `.categories` (e.g. this module's
+        own get_by_category, or a caller building its own `select(User)`
+        directly rather than going through one of this repository's
+        categories-eager-loading methods above). Under AsyncSession, a
+        bare `user.categories` access on an unloaded relationship
+        raises MissingGreenlet rather than lazily querying — this does
+        the load explicitly, via an awaited `refresh`, instead.
+
+        A no-op (no query) when `categories` is already loaded, so
+        calling this defensively on every node built by
+        OrganizationService is cheap for the common case.
+        """
+
+        if "categories" in sa_inspect(user).unloaded:
+            await self.db.refresh(user, attribute_names=["categories"])
 
     async def get_by_category(
         self,
