@@ -384,6 +384,15 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
   const reportingManagerOptions = allUsers.filter((u) => u.user_id !== user?.user_id);
 
   useEffect(() => {
+    // Create-only auto-assist: clearing stale hierarchy fields when the
+    // role dropdown moves to a non-hierarchy role, and auto-assigning an
+    // Account-Manager-creator as the new user's manager. Must not run
+    // during Edit — this effect's derived showHierarchyFields/roleName
+    // can be stale (computed from the pre-reset() defaultValues) on the
+    // dialog's first open, which would otherwise clear or reassign an
+    // existing user's real manager_id before the admin touches anything.
+    if (mode !== "create") return;
+
     if (!showHierarchyFields) {
       setValue("manager_id", "");
       setValue("teamlead_id", "");
@@ -398,7 +407,7 @@ export function UserFormDialog({ open, onOpenChange, user, defaultRoleId }: User
         setValue("teamlead_id", "");
       }
     }
-  }, [showHierarchyFields, showStaffHierarchy, currentUser, setValue]);
+  }, [mode, showHierarchyFields, showStaffHierarchy, currentUser, setValue]);
 
   const mutation = useMutation({
     mutationFn: async (values: UserFormValues) => {

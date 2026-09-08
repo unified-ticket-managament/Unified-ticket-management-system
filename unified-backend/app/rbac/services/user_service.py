@@ -1033,21 +1033,42 @@ class UserService:
         category_fields_touched = (
             category_ids_update is not None or "category_id" in update_data
         )
+        existing_category_ids = [c.category_id for c in user.categories] or (
+            [user.category_id] if user.category_id else []
+        )
 
-        if category_fields_touched or update_data.keys() & {
-            "role_id", "manager_id", "teamlead_id",
-        }:
+        # Presence in the payload isn't enough to re-run this check — the
+        # Edit User form always resends role_id (and, for roles that show
+        # it, manager_id/teamlead_id/category_ids) unchanged on every
+        # save, even one that only touches an unrelated field like
+        # is_active. Re-running the check purely because the key is
+        # present would re-validate against the referenced manager's
+        # current role (or the assigned Team Lead's current categories)
+        # every time, and could reject an update over data that has
+        # since drifted — even though this request never intended to
+        # touch the assignment. Gate on an actual value change instead,
+        # same as manager_id_changed/teamlead_id_changed below.
+        if category_fields_touched:
+            resolved_category_ids = self._resolve_category_ids(
+                update_data.get("category_id"), category_ids_update,
+            )
+            category_ids_changed = set(resolved_category_ids) != set(existing_category_ids)
+        else:
+            resolved_category_ids = existing_category_ids
+            category_ids_changed = False
+
+        role_changed = new_role is not None and new_role.role_id != user.role_id
+        manager_id_changed = (
+            "manager_id" in update_data and update_data["manager_id"] != user.manager_id
+        )
+        teamlead_id_changed = (
+            "teamlead_id" in update_data and update_data["teamlead_id"] != user.teamlead_id
+        )
+
+        if category_ids_changed or role_changed or manager_id_changed or teamlead_id_changed:
             effective_manager_id = update_data.get("manager_id", user.manager_id)
             effective_teamlead_id = update_data.get("teamlead_id", user.teamlead_id)
-
-            if category_fields_touched:
-                effective_category_ids = self._resolve_category_ids(
-                    update_data.get("category_id"), category_ids_update,
-                )
-            else:
-                effective_category_ids = [c.category_id for c in user.categories] or (
-                    [user.category_id] if user.category_id else []
-                )
+            effective_category_ids = resolved_category_ids
 
             await self._validate_manager_and_teamlead(
                 final_role_name,
