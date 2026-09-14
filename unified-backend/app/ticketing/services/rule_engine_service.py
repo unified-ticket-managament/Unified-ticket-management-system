@@ -239,6 +239,7 @@ class RuleEngineService:
                 interaction=interaction,
                 rule_category=rule.category,
                 rule_id=rule.rule_id,
+                rule_created_by=rule.created_by,
                 forwarded_user_ids=forwarded_user_ids,
             )
 
@@ -249,6 +250,7 @@ class RuleEngineService:
         interaction: Interaction,
         rule_category: str,
         rule_id: UUID | None = None,
+        rule_created_by: UUID | None = None,
         forwarded_user_ids: set[UUID] | None = None,
     ) -> None:
         """
@@ -267,6 +269,25 @@ class RuleEngineService:
         otpNotificationToInboxItem) for whoever it was sent to, not
         just their external inbox.
         """
+
+        # Who this forward is FROM, for display — the person who set
+        # up the rule (Rule.created_by), not the recipient and not a
+        # generic "Agent"/"System" label. Resolved once per rule-
+        # forward action (not per recipient) and reused for both the
+        # outbound envelope's from_name and the forward Interaction's
+        # own performed_by/payload.envelope, mirroring how manual
+        # forward (InteractionService.forward_to_internal_user)
+        # attributes to current_user. Falls back to the same
+        # SYSTEM/"System" actor AuditLogService.resolve_agent_actor
+        # already uses for every other genuinely-unattributable
+        # automatic write (e.g. rule.created_by itself is None on old
+        # data, or that user has since been deleted).
+        rule_creator = (
+            await self.user_repository.get_by_id(rule_created_by)
+            if rule_created_by is not None
+            else None
+        )
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(rule_creator)
 
         emails_by_id = await self.user_repository.get_active_emails_by_ids(employee_user_ids)
 
@@ -362,6 +383,7 @@ class RuleEngineService:
         for user_id, recipient_email in to_forward.items():
             envelope = OutboundEnvelope(
                 from_email=mailbox_address,
+                from_name=actor_name,
                 to_email=recipient_email,
                 subject=forward_subject,
                 message_id=f"<rule-forward-{uuid4().hex}@{message_domain}>",
@@ -414,7 +436,6 @@ class RuleEngineService:
             )
             for user_id in succeeded_user_ids
         ]
-        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(None)
         forward_interaction = await self.interaction_repository.create(
             InteractionCreate(
                 ticket_id=interaction.ticket_id,
@@ -424,8 +445,15 @@ class RuleEngineService:
                 # PENDING_SEND, so this row never enters the delayed-
                 # send/Undo-Send machinery that path implies.
                 status=InteractionStatus.ASSIGNED,
+                performed_by=actor_id,
                 payload={
                     "message": forward_body,
+                    # Same shape manual forward's own payload.envelope
+                    # carries (see MessageDetailsView.replyBubble,
+                    # which reads payload.envelope.from_name) — without
+                    # this, the Mail thread view has nothing but the
+                    # literal fallback text to show for who forwarded.
+                    "envelope": {"from_name": actor_name},
                     "recipients": [
                         r.model_dump(mode="json") for r in resolved_recipients
                     ],

@@ -214,7 +214,16 @@ function replyBubble(reply: InteractionResponse): BubbleData {
   };
   return {
     key: reply.interaction_id,
-    senderName: payload.envelope?.from_name || "Agent",
+    // "Agent" used to be the fallback here, but it's actively
+    // misleading for a rule-forwarded message (no human agent sent
+    // it) — "System" matches the label this codebase already uses
+    // everywhere else for an unattributable/automated actor (see
+    // AuditLogService.resolve_agent_actor, TicketAttachmentsTab,
+    // TicketPropertiesCard). Only reachable for rows created before
+    // RuleEngineService started populating payload.envelope.from_name
+    // (every new forward, manual or rule-based, now sets a real name
+    // or an explicit "System").
+    senderName: payload.envelope?.from_name || "System",
     senderEmail: payload.envelope?.from_email ?? null,
     toLabel: payload.envelope?.to_email ?? null,
     timestamp: reply.created_at,

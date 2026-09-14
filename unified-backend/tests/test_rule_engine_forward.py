@@ -16,16 +16,29 @@ from app.ticketing.enums.rule_enums import RuleCategory
 from app.ticketing.services.rule_engine_service import RuleEngineService
 
 
+class _FakeUser:
+    """Minimal stand-in for shared_models.models.User — only the
+    attributes AuditLogService.resolve_agent_actor reads."""
+
+    def __init__(self, user_id, name):
+        self.user_id = user_id
+        self.name = name
+
+
 class _FakeUserRepository:
-    def __init__(self, emails_by_id, names_by_id=None):
+    def __init__(self, emails_by_id, names_by_id=None, users_by_id=None):
         self._emails_by_id = emails_by_id
         self._names_by_id = names_by_id or {}
+        self._users_by_id = users_by_id or {}
 
     async def get_active_emails_by_ids(self, user_ids):
         return {uid: self._emails_by_id[uid] for uid in user_ids if uid in self._emails_by_id}
 
     async def get_names_by_ids(self, user_ids):
         return {uid: self._names_by_id[uid] for uid in user_ids if uid in self._names_by_id}
+
+    async def get_by_id(self, user_id):
+        return self._users_by_id.get(user_id)
 
 
 class _FakeNotificationRepository:
@@ -115,11 +128,13 @@ class _SelectiveFailureMailProvider:
     def __init__(self, failing_email):
         self._failing_email = failing_email
         self.sent_to = []
+        self.sent_envelopes = []
 
     async def send_email(self, envelope):
         if envelope.to_email == self._failing_email:
             raise RuntimeError("simulated send failure")
         self.sent_to.append(envelope.to_email)
+        self.sent_envelopes.append(envelope)
         return None
 
 
@@ -566,3 +581,118 @@ class TestForwardToEmployeesCreatesInteractionB:
         # entity_id is the newly-created B's own id, not the original's.
         assert audit_calls[0]["entity_id"] == interaction_repository.returned[0].interaction_id
         assert audit_calls[0]["entity_id"] != original.interaction_id
+
+
+class TestForwardToEmployeesAttribution:
+    """
+    Coverage for the "shows Agent instead of who forwarded it" fix: a
+    Rule-forward must attribute to the person who set the rule up
+    (Rule.created_by), the same way a manual forward attributes to
+    current_user — never a bare "Agent" placeholder.
+    """
+
+    async def test_attributes_to_rule_creator_on_envelope_and_interaction(self, monkeypatch):
+        creator_id = uuid4()
+        recipient_id = uuid4()
+        emails_by_id = {recipient_id: "recipient@probeps.com"}
+        interaction_repository = _FakeInteractionRepository()
+        mail_provider = _SelectiveFailureMailProvider(failing_email="nobody@probeps.com")
+        service = _make_service(
+            _FakeUserRepository(
+                emails_by_id,
+                names_by_id={recipient_id: "Recipient Name"},
+                users_by_id={creator_id: _FakeUser(creator_id, "kamal")},
+            ),
+            _FakeNotificationService(),
+            mail_provider,
+            monkeypatch,
+            interaction_repository=interaction_repository,
+        )
+        original = _FakeInteraction(
+            uuid4(),
+            {"subject": "Test subject", "body": "Test body", "from_email": "client@example.com"},
+        )
+
+        await service._forward_to_employees(
+            [recipient_id],
+            interaction=original,
+            rule_category=RuleCategory.MAIL_RULE,
+            rule_created_by=creator_id,
+        )
+
+        # The real outbound send carries the rule creator's name, not a
+        # generic label — this is what a recipient's actual inbox shows.
+        assert len(mail_provider.sent_envelopes) == 1
+        assert mail_provider.sent_envelopes[0].from_name == "kamal"
+
+        # The thread-integrated Interaction B is attributed to the same
+        # person, both via the real FK (performed_by, which drives
+        # performed_by_name on read) and via payload.envelope.from_name
+        # (what the Mail thread view's replyBubble actually reads).
+        assert len(interaction_repository.created) == 1
+        created = interaction_repository.created[0]
+        assert created.performed_by == creator_id
+        assert created.payload["envelope"]["from_name"] == "kamal"
+
+    async def test_falls_back_to_system_when_rule_has_no_creator(self, monkeypatch):
+        # rule.created_by is None (e.g. old data predating that column,
+        # or a system-seeded rule) — must fall back to the same
+        # SYSTEM/"System" actor every other unattributable automatic
+        # write uses, never the misleading "Agent" placeholder.
+        recipient_id = uuid4()
+        emails_by_id = {recipient_id: "recipient@probeps.com"}
+        interaction_repository = _FakeInteractionRepository()
+        mail_provider = _SelectiveFailureMailProvider(failing_email="nobody@probeps.com")
+        service = _make_service(
+            _FakeUserRepository(emails_by_id),
+            _FakeNotificationService(),
+            mail_provider,
+            monkeypatch,
+            interaction_repository=interaction_repository,
+        )
+        original = _FakeInteraction(
+            uuid4(),
+            {"subject": "Test subject", "body": "Test body", "from_email": "client@example.com"},
+        )
+
+        await service._forward_to_employees(
+            [recipient_id],
+            interaction=original,
+            rule_category=RuleCategory.MAIL_RULE,
+            rule_created_by=None,
+        )
+
+        assert mail_provider.sent_envelopes[0].from_name == "System"
+        created = interaction_repository.created[0]
+        assert created.performed_by is None
+        assert created.payload["envelope"]["from_name"] == "System"
+
+    async def test_falls_back_to_system_when_rule_creator_no_longer_resolves(self, monkeypatch):
+        # rule.created_by points at a real id, but that user no longer
+        # resolves (e.g. deleted) — same "System" fallback, not "Agent".
+        stale_creator_id = uuid4()
+        recipient_id = uuid4()
+        emails_by_id = {recipient_id: "recipient@probeps.com"}
+        interaction_repository = _FakeInteractionRepository()
+        mail_provider = _SelectiveFailureMailProvider(failing_email="nobody@probeps.com")
+        service = _make_service(
+            _FakeUserRepository(emails_by_id),  # users_by_id left empty
+            _FakeNotificationService(),
+            mail_provider,
+            monkeypatch,
+            interaction_repository=interaction_repository,
+        )
+        original = _FakeInteraction(
+            uuid4(),
+            {"subject": "Test subject", "body": "Test body", "from_email": "client@example.com"},
+        )
+
+        await service._forward_to_employees(
+            [recipient_id],
+            interaction=original,
+            rule_category=RuleCategory.MAIL_RULE,
+            rule_created_by=stale_creator_id,
+        )
+
+        assert mail_provider.sent_envelopes[0].from_name == "System"
+        assert interaction_repository.created[0].performed_by is None
