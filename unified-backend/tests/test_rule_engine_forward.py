@@ -696,3 +696,74 @@ class TestForwardToEmployeesAttribution:
 
         assert mail_provider.sent_envelopes[0].from_name == "System"
         assert interaction_repository.created[0].performed_by is None
+
+
+class TestForwardToEmployeesRuleName:
+    """
+    Coverage for payload["rule_name"] — the Mail thread's "Rule
+    action" row needs a human-readable rule name (see the approved
+    "Conversation/Thread Event Model" plan's Phase 1), not just the
+    opaque rule_id UUID payload["rule_id"] already carried. Threaded
+    through the same way rule_id/rule_created_by already are.
+    """
+
+    async def test_payload_includes_rule_name_when_given(self, monkeypatch):
+        recipient_id = uuid4()
+        emails_by_id = {recipient_id: "recipient@probeps.com"}
+        interaction_repository = _FakeInteractionRepository()
+        mail_provider = _SelectiveFailureMailProvider(failing_email="nobody@probeps.com")
+        service = _make_service(
+            _FakeUserRepository(emails_by_id, names_by_id={recipient_id: "Recipient Name"}),
+            _FakeNotificationService(),
+            mail_provider,
+            monkeypatch,
+            interaction_repository=interaction_repository,
+        )
+        original = _FakeInteraction(
+            uuid4(),
+            {"subject": "Test subject", "body": "Test body", "from_email": "client@example.com"},
+        )
+        rule_id = uuid4()
+
+        await service._forward_to_employees(
+            [recipient_id],
+            interaction=original,
+            rule_category=RuleCategory.MAIL_RULE,
+            rule_id=rule_id,
+            rule_name="taral sharma",
+        )
+
+        created = interaction_repository.created[0]
+        assert created.payload["rule_name"] == "taral sharma"
+        assert created.payload["rule_id"] == str(rule_id)
+
+    async def test_payload_rule_name_is_none_when_not_given(self, monkeypatch):
+        # Mirrors rule_id's own existing "always present as a key,
+        # None when not supplied" shape — a manual forward
+        # (InteractionService.forward_to_internal_user) never calls
+        # this method at all, so it never has either key; this only
+        # covers a rule-forward call site that, hypothetically, didn't
+        # pass a name.
+        recipient_id = uuid4()
+        emails_by_id = {recipient_id: "recipient@probeps.com"}
+        interaction_repository = _FakeInteractionRepository()
+        mail_provider = _SelectiveFailureMailProvider(failing_email="nobody@probeps.com")
+        service = _make_service(
+            _FakeUserRepository(emails_by_id, names_by_id={recipient_id: "Recipient Name"}),
+            _FakeNotificationService(),
+            mail_provider,
+            monkeypatch,
+            interaction_repository=interaction_repository,
+        )
+        original = _FakeInteraction(
+            uuid4(),
+            {"subject": "Test subject", "body": "Test body", "from_email": "client@example.com"},
+        )
+
+        await service._forward_to_employees(
+            [recipient_id],
+            interaction=original,
+            rule_category=RuleCategory.MAIL_RULE,
+        )
+
+        assert interaction_repository.created[0].payload["rule_name"] is None

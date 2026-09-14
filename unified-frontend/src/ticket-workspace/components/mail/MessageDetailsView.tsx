@@ -6,6 +6,7 @@ import {
   Archive,
   ArrowLeft,
   Check,
+  Cog,
   ExternalLink,
   FilePlus,
   FolderInput,
@@ -214,15 +215,15 @@ function replyBubble(reply: InteractionResponse): BubbleData {
   };
   return {
     key: reply.interaction_id,
-    // "Agent" used to be the fallback here, but it's actively
-    // misleading for a rule-forwarded message (no human agent sent
-    // it) — "System" matches the label this codebase already uses
-    // everywhere else for an unattributable/automated actor (see
-    // AuditLogService.resolve_agent_actor, TicketAttachmentsTab,
-    // TicketPropertiesCard). Only reachable for rows created before
-    // RuleEngineService started populating payload.envelope.from_name
-    // (every new forward, manual or rule-based, now sets a real name
-    // or an explicit "System").
+    // Only reachable for REPLY today — FORWARD rows are intercepted
+    // above the caller of this function and rendered via
+    // ForwardActionRow instead (see the "Conversation/Thread Event
+    // Model" plan's Phase 1). "System" matches the label this
+    // codebase already uses everywhere else for an unattributable/
+    // automated actor (AuditLogService.resolve_agent_actor,
+    // TicketAttachmentsTab, TicketPropertiesCard) — a real agent
+    // reply always has a resolvable envelope.from_name, so this is
+    // just a defensive fallback, not an expected case.
     senderName: payload.envelope?.from_name || "System",
     senderEmail: payload.envelope?.from_email ?? null,
     toLabel: payload.envelope?.to_email ?? null,
@@ -236,6 +237,105 @@ function replyBubble(reply: InteractionResponse): BubbleData {
     dispatchError: reply.dispatch_error,
     performedBy: reply.performed_by,
   };
+}
+
+interface ForwardRecipient {
+  user_id: string;
+  name: string | null;
+  email: string;
+}
+
+interface ForwardActionData {
+  key: string;
+  // Distinguished purely from data already on the row — never
+  // viewer-dependent, so this never differs between two people
+  // looking at the same thread (see the approved "Conversation/
+  // Thread Event Model" plan's governing principle). A rule-driven
+  // forward's payload always carries a "rule_id" key (RuleEngineService.
+  // _forward_to_employees), even when its value is null on old data;
+  // a manual forward (InteractionService.forward_to_internal_user)
+  // never writes that key at all.
+  kind: "rule" | "manual";
+  timestamp: string;
+  actorName: string;
+  ruleName: string | null;
+  recipients: ForwardRecipient[];
+}
+
+function forwardAction(reply: InteractionResponse): ForwardActionData {
+  const payload = reply.payload as {
+    envelope?: { from_name?: string };
+    rule_name?: string | null;
+    recipients?: ForwardRecipient[];
+  };
+  return {
+    key: reply.interaction_id,
+    kind: "rule_id" in reply.payload ? "rule" : "manual",
+    timestamp: reply.created_at,
+    actorName: payload.envelope?.from_name || "System",
+    ruleName: payload.rule_name ?? null,
+    recipients: payload.recipients ?? [],
+  };
+}
+
+// A rule-driven or manual forward is an automated/administrative
+// action performed ON this conversation, not a message a person typed
+// into it — rendering it as a normal chat bubble (the previous
+// behavior) made a Rule's configured creator look like they'd
+// personally sent a message to everyone who can see the thread. This
+// renders identically for every viewer; the only thing that varies
+// per-viewer is the additive "You received this..." line below, shown
+// only when the current viewer is actually one of the forward's real
+// recipients — never something that decides whether the row itself
+// appears (it always does, for anyone who can see the thread root).
+function ForwardActionRow({
+  data,
+  currentUserId,
+}: {
+  data: ForwardActionData;
+  currentUserId?: string | null;
+}) {
+  const isRecipient =
+    !!currentUserId && data.recipients.some((r) => r.user_id === currentUserId);
+  const recipientLabel =
+    data.recipients.map((r) => r.name || r.email).join(", ") || "no one (send failed)";
+  const Icon = data.kind === "rule" ? Cog : ForwardIcon;
+
+  return (
+    <div className="mx-auto flex w-full max-w-xl flex-col gap-1 rounded-lg border border-border bg-muted/30 px-4 py-2.5 text-[12px]">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="flex items-center gap-1.5 font-semibold uppercase tracking-wide text-muted-foreground">
+          <Icon className="h-3.5 w-3.5" />
+          {data.kind === "rule" ? "Rule Action" : "Manual Forward"}
+        </span>
+        <span className="text-[11px] text-muted-foreground">{formatDateTime(data.timestamp)}</span>
+      </div>
+      {isRecipient && (
+        <p className="font-medium text-primary">
+          You received this forwarded {data.kind === "rule" ? "copy" : "email"}
+        </p>
+      )}
+      {data.kind === "rule" ? (
+        <>
+          <p className="text-foreground">
+            Forwarded to: <span className="font-medium">{recipientLabel}</span>
+          </p>
+          <p className="text-muted-foreground">
+            Rule: {data.ruleName || "Unnamed rule"} · Created by: {data.actorName}
+          </p>
+        </>
+      ) : (
+        <>
+          <p className="text-foreground">
+            Forwarded by: <span className="font-medium">{data.actorName}</span>
+          </p>
+          <p className="text-muted-foreground">
+            To: <span className="font-medium text-foreground">{recipientLabel}</span>
+          </p>
+        </>
+      )}
+    </div>
+  );
 }
 
 function Bubble({
@@ -1298,6 +1398,15 @@ export function MessageDetailsView({
             <div className="flex flex-col gap-3">
               <Bubble data={rootBubble(email)} />
               {email.replies.map((reply) => {
+                if (reply.interaction_type === "FORWARD") {
+                  return (
+                    <ForwardActionRow
+                      key={reply.interaction_id}
+                      data={forwardAction(reply)}
+                      currentUserId={currentUser?.user_id}
+                    />
+                  );
+                }
                 const bubbleData = replyBubble(reply);
                 return (
                   <Bubble

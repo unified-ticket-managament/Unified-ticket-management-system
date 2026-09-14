@@ -212,6 +212,7 @@ class RuleEngineService:
             )
 
         elif action.type == RuleActionType.MOVE_TO_FOLDER:
+            old_folder_id = interaction.folder_id
             folder = await ensure_folder(
                 action.folder_name,
                 created_by=rule.created_by,
@@ -224,6 +225,36 @@ class RuleEngineService:
                 interaction.interaction_id,
                 folder.folder_id,
                 action.folder_name,
+            )
+            # Manual PATCH /inbox/{id}/folder already writes an
+            # INTERACTION_FOLDER_CHANGED audit row (InteractionService.
+            # set_interaction_folder) — a Rule-driven move previously
+            # left no record anywhere. Mirrors that same call shape so
+            # the Audit Log tab shows both origins identically;
+            # deliberately not surfaced in the Mail thread itself (see
+            # the approved plan's Part 5 — folder moves stay Audit-Log-
+            # only, never a conversation bubble). actor_id/actor_name
+            # reuse the same rule_creator resolution _forward_to_
+            # employees already does for this rule, so a folder move
+            # and a forward from the same rule attribute identically.
+            rule_creator = (
+                await self.user_repository.get_by_id(rule.created_by)
+                if rule.created_by is not None
+                else None
+            )
+            actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+                rule_creator
+            )
+            await AuditLogService.log_event(
+                self.interaction_repository.db,
+                entity_type=AuditEntityType.INTERACTION,
+                entity_id=interaction.interaction_id,
+                event_type=AuditEventType.INTERACTION_FOLDER_CHANGED,
+                actor_id=actor_id,
+                actor_name=actor_name,
+                actor_role=actor_role,
+                old_values={"folder_id": old_folder_id, "rule_id": rule.rule_id},
+                new_values={"folder_id": folder.folder_id, "rule_id": rule.rule_id},
             )
 
         elif action.type == RuleActionType.FORWARD_TO:
@@ -239,6 +270,7 @@ class RuleEngineService:
                 interaction=interaction,
                 rule_category=rule.category,
                 rule_id=rule.rule_id,
+                rule_name=rule.name,
                 rule_created_by=rule.created_by,
                 forwarded_user_ids=forwarded_user_ids,
             )
@@ -250,6 +282,7 @@ class RuleEngineService:
         interaction: Interaction,
         rule_category: str,
         rule_id: UUID | None = None,
+        rule_name: str | None = None,
         rule_created_by: UUID | None = None,
         forwarded_user_ids: set[UUID] | None = None,
     ) -> None:
@@ -459,6 +492,14 @@ class RuleEngineService:
                     ],
                     "forwarded_interaction_id": str(interaction.interaction_id),
                     "rule_id": str(rule_id) if rule_id is not None else None,
+                    # Human-readable label for the Mail thread's "Rule
+                    # action" row (see MessageDetailsView.replyBubble) —
+                    # without this, the UI would have nothing but the
+                    # opaque rule_id UUID to show for which rule fired.
+                    # Manual forward's own payload never has this key,
+                    # same as rule_id — used together to distinguish a
+                    # rule-driven forward from a manual one.
+                    "rule_name": rule_name,
                     "dispatch_status": "SENT",
                 },
                 is_visible=True,
