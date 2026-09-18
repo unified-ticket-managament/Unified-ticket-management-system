@@ -9,6 +9,8 @@
 
 from datetime import datetime, timedelta, timezone
 
+from pydantic import BaseModel
+
 from app.core.config import Settings
 import app.ticketing.services.graph_mail_poller as graph_mail_poller_module
 
@@ -776,6 +778,95 @@ async def test_mailbox_stall_does_not_alert_before_threshold(monkeypatch):
 
     assert alert_calls == []
     assert fake_repo.mark_alerted_calls == []
+
+
+# ---------------------------------------------------------------
+# EmailRequest schema-mapping failure (the "Taral mail polling"
+# incident): map_external_email_to_interaction raising for one
+# message used to crash the whole per-message loop uncaught, before
+# the checkpoint was ever advanced — every later tick re-fetched the
+# identical batch and crashed on the same message forever, silently
+# dropping everything that would have been processed after it in the
+# same and every subsequent batch (in the real incident, mail from
+# dr.sharma@probeps.com landed after the poison message and was never
+# stored). Fixed in graph_mail_poller.py by catching ValidationError
+# around just that call and skipping only the one bad message.
+# ---------------------------------------------------------------
+
+
+class _TinyValidationModel(BaseModel):
+    value: int
+
+
+def _map_with_one_poison_message(poison_id: str):
+    def _map(payload, landed_mailbox=None):
+        if payload.id == poison_id:
+            # Raises a real pydantic.ValidationError — "not-an-int"
+            # can't coerce to int — standing in for the real observed
+            # cause (an internetMessageId over 255 characters failing
+            # EmailRequest's own field constraint).
+            _TinyValidationModel(value="not-an-int")
+        return payload
+
+    return _map
+
+
+async def test_poll_skips_message_that_fails_schema_mapping_without_blocking_others(monkeypatch):
+    settings = _settings()
+    tick_started_at = datetime.now(timezone.utc)
+    before_time = tick_started_at - timedelta(minutes=10)
+    poison_time = tick_started_at - timedelta(minutes=7)
+    after_time = tick_started_at - timedelta(minutes=5)
+
+    before_payload = _FakeReceivedPayload("before-msg", before_time)
+    poison_payload = _FakeReceivedPayload("poison-msg", poison_time)
+    dr_sharma_payload = _FakeReceivedPayload("dr-sharma-msg", after_time)
+
+    mail_provider_client = _FakeGraphMailProviderClient(
+        messages=[before_payload, poison_payload, dr_sharma_payload]
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "get_mail_provider_client",
+        lambda settings, mailbox_address=None: mail_provider_client,
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "map_external_email_to_interaction",
+        _map_with_one_poison_message("poison-msg"),
+    )
+
+    received = []
+
+    class _RecordingEmailService:
+        async def receive_email(self, email_request, files=None):
+            received.append(email_request.id)
+
+            class _Response:
+                pass
+
+            return _Response()
+
+    monkeypatch.setattr(
+        graph_mail_poller_module, "_build_email_service", lambda db: _RecordingEmailService()
+    )
+
+    mailbox = "taral@probeps.com"
+    await graph_mail_poller_module._poll_one_mailbox(settings, mailbox, tick_started_at)
+
+    # Both real messages were stored — including the one that arrived
+    # after the poison message, proving the batch didn't stop partway
+    # through it.
+    assert received == ["before-msg", "dr-sharma-msg"]
+
+    # Treated as terminal/non-retryable: never holds the checkpoint
+    # back, so the mailbox doesn't get stuck re-fetching (and
+    # re-crashing on) the same poison message forever.
+    assert graph_mail_poller_module._state.checkpoints[mailbox] == tick_started_at
+    assert "poison-msg" not in graph_mail_poller_module._state.failure_counts.get(mailbox, {})
 
 
 async def test_mailbox_stall_does_not_realert_immediately(monkeypatch):

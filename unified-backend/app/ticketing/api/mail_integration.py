@@ -31,6 +31,7 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 from shared_models.models import User
 
@@ -237,9 +238,40 @@ async def _process_graph_notification(
     # message would have routed correctly via polling (see
     # EmailRequest.landed_mailbox / EmailService.receive_email's own
     # handling of it, added by a prior commit for the poller alone).
-    email_request = map_external_email_to_interaction(
-        payload, landed_mailbox=get_settings().graph_mailbox_address
-    )
+    try:
+        email_request = map_external_email_to_interaction(
+            payload, landed_mailbox=get_settings().graph_mailbox_address
+        )
+    except ValidationError as exc:
+        # Terminal, non-retryable: something about this specific message
+        # doesn't fit EmailRequest's schema (e.g. an internetMessageId
+        # longer than 255 characters — see graph_mail_poller.py's
+        # identical guard, added for the same underlying bug on the
+        # polling transport). Unlike the poller, there's no shared
+        # checkpoint here to get stuck — only this one notification is
+        # lost — but left uncaught it would raise out of this
+        # BackgroundTasks task with no trace in inbound_mail_failures at
+        # all. Log and record it instead.
+        logger.error(
+            "Graph notification for message %s failed to map to EmailRequest "
+            "schema and was skipped: %s",
+            item.resourceData.id,
+            exc,
+        )
+        try:
+            async with AsyncSessionLocal() as failure_db:
+                await InboundMailFailureRepository(failure_db).record_or_increment(
+                    message_id=item.resourceData.id,
+                    mailbox_address=get_settings().graph_mailbox_address,
+                    error_summary=f"EmailRequest schema validation failed: {exc}",
+                )
+                await failure_db.commit()
+        except Exception:
+            logger.exception(
+                "Failed to persist inbound_mail_failures row for %s",
+                item.resourceData.id,
+            )
+        return
 
     files = None
     if payload.id and (
