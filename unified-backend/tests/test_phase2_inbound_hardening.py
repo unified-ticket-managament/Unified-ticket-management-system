@@ -9,6 +9,7 @@
 
 from datetime import datetime, timedelta, timezone
 
+from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
 import app.ticketing.services.graph_mail_poller as graph_mail_poller_module
@@ -586,6 +587,65 @@ async def test_webhook_success_marks_prior_failure_resolved(monkeypatch):
     )
 
     assert resolved_calls == [("<webhook-msg@example.com>", "ticketing@probeps.com")]
+
+
+class _TinyValidationModel(BaseModel):
+    value: int
+
+
+def _raising_map(payload, landed_mailbox=None):
+    # Raises a real pydantic.ValidationError — "not-an-int" can't
+    # coerce to int — standing in for the real observed cause (an
+    # internetMessageId over 255 characters failing EmailRequest's own
+    # field constraint). See graph_mail_poller.py's identical guard
+    # and test_graph_mail_poller_multi_mailbox.py's
+    # test_poll_skips_message_that_fails_schema_mapping_without_
+    # blocking_others for the polling-transport counterpart of this
+    # exact bug.
+    _TinyValidationModel(value="not-an-int")
+
+
+async def test_webhook_skips_message_that_fails_schema_mapping(monkeypatch, caplog):
+    """
+    Webhook-side counterpart of the "Taral mail polling" incident fix:
+    map_external_email_to_interaction raising for a schema-invalid
+    message must be recorded to inbound_mail_failures and skipped, not
+    raise unhandled out of this BackgroundTasks task (which previously
+    left the message with zero trace anywhere — not even
+    inbound_mail_failures — unlike every other failure branch in this
+    same function).
+    """
+
+    settings = _settings(graph_webhook_client_state="secret")
+
+    class _NeverCalledEmailService:
+        async def receive_email(self, email_request, files=None):
+            raise AssertionError("receive_email must not be called for a mapping failure")
+
+    _wire_webhook_common(monkeypatch, settings, _NeverCalledEmailService())
+    monkeypatch.setattr(mail_integration_module, "map_external_email_to_interaction", _raising_map)
+
+    recorded = []
+
+    class _Repo:
+        def __init__(self, db):
+            pass
+
+        async def record_or_increment(self, *, message_id, mailbox_address, error_summary):
+            recorded.append((message_id, mailbox_address))
+
+        async def mark_resolved(self, *, message_id, mailbox_address):
+            pass
+
+    monkeypatch.setattr(mail_integration_module, "InboundMailFailureRepository", _Repo)
+
+    with caplog.at_level("ERROR"):
+        await mail_integration_module._process_graph_notification(
+            _webhook_item(), _FakeMailProviderClient(_webhook_payload())
+        )
+
+    assert recorded == [("abc", "ticketing@probeps.com")]
+    assert any("failed to map to EmailRequest schema" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------

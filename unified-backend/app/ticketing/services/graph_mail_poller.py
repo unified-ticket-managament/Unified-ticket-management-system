@@ -21,6 +21,8 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
+from pydantic import ValidationError
+
 from app.core.config import Settings
 from app.database.session import AsyncSessionLocal
 from app.notifications.repository import NotificationRepository
@@ -362,10 +364,13 @@ async def _poll_one_mailbox(
             settings, mailbox_address, error_summary=f"GraphAPIError({exc.status_code}): {exc}"
         )
         return
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "Graph mail polling: failed to list new messages for mailbox %s",
             mailbox_address,
+        )
+        await _record_mailbox_fetch_failure_and_maybe_alert(
+            settings, mailbox_address, error_summary=f"{type(exc).__name__}: {exc}"
         )
         return
 
@@ -380,9 +385,28 @@ async def _poll_one_mailbox(
     earliest_unresolved_received_at: datetime | None = None
 
     for payload in messages:
-        email_request = map_external_email_to_interaction(
-            payload, landed_mailbox=mailbox_address
-        )
+        try:
+            email_request = map_external_email_to_interaction(
+                payload, landed_mailbox=mailbox_address
+            )
+        except ValidationError as exc:
+            # Terminal, per-message, non-retryable: something about this
+            # specific message doesn't fit EmailRequest's schema — e.g. an
+            # internetMessageId longer than 255 characters, observed from
+            # Microsoft Teams "missed activity" notification emails. Left
+            # uncaught this crashes the whole tick before the checkpoint is
+            # ever saved (escaping to poll_new_messages' outer catch-all,
+            # which doesn't record anything either), permanently blocking
+            # this mailbox at the exact same message on every future tick.
+            # Skip just this one message instead — retrying can never fix it.
+            logger.error(
+                "Graph poll: message %s failed to map to EmailRequest schema "
+                "and was skipped: %s",
+                payload.internetMessageId,
+                exc,
+            )
+            continue
+
         message_key = payload.internetMessageId
 
         files = None

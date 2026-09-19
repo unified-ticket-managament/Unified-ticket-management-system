@@ -925,7 +925,7 @@ class GraphMailProviderClient(MailProviderClient):
         while url is not None:
 
             async def _attempt(url: str = url) -> httpx.Response:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient(timeout=60.0) as client:
                     return await client.get(url, headers=await self._authorized_headers())
 
             response = await call_with_graph_retry(

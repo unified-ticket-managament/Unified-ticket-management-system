@@ -111,6 +111,7 @@ alembic -c alembic_ticketing/alembic.ini upgrade head
 
 
 netstat -ano | findstr :8000
+taskkill /PID 25144 /F
  
 
 
