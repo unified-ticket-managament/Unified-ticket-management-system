@@ -18,14 +18,17 @@ class InteractionCreate(BaseModel):
     subject: str | None = Field(default=None, max_length=500)
     payload: dict[str, Any] = Field(default_factory=dict)
     is_visible: bool = True
-    message_id: str | None = Field(default=None, max_length=255)
+    # 998, matching Interaction.message_id / EmailRequest.message_id —
+    # RFC 5322's own hard limit on an unfolded header line. See
+    # schemas/email.py's message_id field for the full rationale.
+    message_id: str | None = Field(default=None, max_length=998)
     client_id: UUID | None = None
     category_id: UUID | None = None
     parent_interaction_id: UUID | None = None
     received_at: datetime | None = None
     is_draft: bool = False
-    conversation_id: str | None = Field(default=None, max_length=255)
-    in_reply_to_message_id: str | None = Field(default=None, max_length=255)
+    conversation_id: str | None = Field(default=None, max_length=998)
+    in_reply_to_message_id: str | None = Field(default=None, max_length=998)
     references: list[str] | None = None
     # Real-column mirror of the same-named keys already written into
     # `payload` for every outbound (Compose/Reply/Reply-All/Forward/
@@ -39,7 +42,7 @@ class InteractionCreate(BaseModel):
     dispatch_status: str | None = Field(default=None, max_length=20)
     dispatch_error: str | None = None
     send_after: datetime | None = None
-    provider_message_id: str | None = Field(default=None, max_length=255)
+    provider_message_id: str | None = Field(default=None, max_length=998)
     # Client-generated Send/Retry-Send idempotency key — see
     # Interaction.dispatch_idempotency_key's own docstring for the
     # (performed_by, key) scoping. None (the default) for every

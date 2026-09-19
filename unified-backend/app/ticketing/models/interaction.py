@@ -184,8 +184,15 @@ class Interaction(Base):
         nullable=False,
     )
 
+    # 998, not 255: RFC 5322's own hard limit on an unfolded header
+    # line — see schemas/email.py's EmailRequest.message_id docstring
+    # for the full rationale. Widened via a dedicated migration
+    # (widen_message_id_and_related_columns) rather than 255, which
+    # previously caused Microsoft Graph messages with a longer
+    # internetMessageId (observed from Teams notifications) to fail
+    # EmailRequest validation entirely.
     message_id: Mapped[str | None] = mapped_column(
-        String(255),
+        String(998),
         unique=True,
         nullable=True,
     )
@@ -248,13 +255,13 @@ class Interaction(Base):
     # inbound EMAIL row, promoted to first-class columns so thread
     # matching doesn't need to deserialize payload JSON.
     conversation_id: Mapped[str | None] = mapped_column(
-        String(255),
+        String(998),
         nullable=True,
         index=True,
     )
 
     in_reply_to_message_id: Mapped[str | None] = mapped_column(
-        String(255),
+        String(998),
         nullable=True,
         index=True,
     )
@@ -311,7 +318,7 @@ class Interaction(Base):
     # future Sent-Items-reconciliation or reply-threading feature can
     # look one up directly instead of scanning JSONB.
     provider_message_id: Mapped[str | None] = mapped_column(
-        String(255),
+        String(998),
         nullable=True,
         index=True,
     )

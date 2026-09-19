@@ -37,7 +37,11 @@ class InboundMailFailure(Base):
         default=uuid.uuid4,
     )
 
-    message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # 998, matching Interaction.message_id — see its own docstring for
+    # the full rationale. Must stay in lockstep: a long-message-id
+    # interaction that fails for some other genuine reason still needs
+    # to be able to record its own diagnostic failure row here.
+    message_id: Mapped[str] = mapped_column(String(998), nullable=False)
 
     mailbox_address: Mapped[str] = mapped_column(String(255), nullable=False)
 

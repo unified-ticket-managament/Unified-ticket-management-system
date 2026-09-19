@@ -12,6 +12,12 @@ from datetime import datetime, timedelta, timezone
 from pydantic import BaseModel
 
 from app.core.config import Settings
+from app.ticketing.schemas.mail_integration import (
+    GraphEmailAddress,
+    GraphItemBody,
+    GraphRecipient,
+    IncomingMailPayload,
+)
 import app.ticketing.services.graph_mail_poller as graph_mail_poller_module
 
 
@@ -865,6 +871,79 @@ async def test_poll_skips_message_that_fails_schema_mapping_without_blocking_oth
     # Treated as terminal/non-retryable: never holds the checkpoint
     # back, so the mailbox doesn't get stuck re-fetching (and
     # re-crashing on) the same poison message forever.
+    assert graph_mail_poller_module._state.checkpoints[mailbox] == tick_started_at
+    assert "poison-msg" not in graph_mail_poller_module._state.failure_counts.get(mailbox, {})
+
+
+def _real_graph_payload(internet_message_id: str, msg_id: str) -> IncomingMailPayload:
+    return IncomingMailPayload(
+        id=msg_id,
+        internetMessageId=internet_message_id,
+        subject="Real payload test",
+        from_=GraphRecipient(emailAddress=GraphEmailAddress(address="sender@example.com")),
+        toRecipients=[
+            GraphRecipient(emailAddress=GraphEmailAddress(address="ticketing@probeps.com"))
+        ],
+        body=GraphItemBody(contentType="text", content="hello"),
+    )
+
+
+async def test_poll_skips_message_with_internet_message_id_over_new_998_limit(monkeypatch):
+    """
+    Option B widened EmailRequest.message_id from 255 to 998 characters
+    — this proves the safety net still holds at the *new* boundary,
+    end-to-end, using the real (not monkeypatched) IncomingMailPayload
+    schema and map_external_email_to_interaction: a message whose
+    internetMessageId is still over 998 characters must still be
+    skipped without blocking the messages around it, exactly like the
+    original 255-character incident this whole mechanism guards
+    against.
+    """
+
+    settings = _settings()
+    tick_started_at = datetime.now(timezone.utc)
+
+    before_payload = _real_graph_payload(
+        "<before@example.com>", "before-msg"
+    )
+    too_long_id = f"<{'x' * 990}@example.com>"
+    poison_payload = _real_graph_payload(too_long_id, "poison-msg")
+    after_payload = _real_graph_payload("<after@example.com>", "after-msg")
+
+    mail_provider_client = _FakeGraphMailProviderClient(
+        messages=[before_payload, poison_payload, after_payload]
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module,
+        "get_mail_provider_client",
+        lambda settings, mailbox_address=None: mail_provider_client,
+    )
+    monkeypatch.setattr(
+        graph_mail_poller_module, "AsyncSessionLocal", lambda: _CommittableFakeDBSession()
+    )
+    # Deliberately NOT monkeypatching map_external_email_to_interaction
+    # here — the real function and the real EmailRequest schema must be
+    # the ones raising/skipping, not a synthetic stand-in.
+
+    received = []
+
+    class _RecordingEmailService:
+        async def receive_email(self, email_request, files=None):
+            received.append(email_request.message_id)
+
+            class _Response:
+                pass
+
+            return _Response()
+
+    monkeypatch.setattr(
+        graph_mail_poller_module, "_build_email_service", lambda db: _RecordingEmailService()
+    )
+
+    mailbox = "ticketing@probeps.com"
+    await graph_mail_poller_module._poll_one_mailbox(settings, mailbox, tick_started_at)
+
+    assert received == ["<before@example.com>", "<after@example.com>"]
     assert graph_mail_poller_module._state.checkpoints[mailbox] == tick_started_at
     assert "poison-msg" not in graph_mail_poller_module._state.failure_counts.get(mailbox, {})
 

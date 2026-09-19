@@ -96,10 +96,17 @@ class EmailRequest(BaseModel):
     # as `cc` above.
     to_recipients: list[EmailStr] = Field(default_factory=list)
 
+    # 998, not 255: RFC 5322 section 2.1.1's own hard limit on an
+    # unfolded header line — the closest thing to a standards-derived
+    # ceiling for a Message-ID value. 255 previously crashed the whole
+    # inbound-mail poll tick for any message whose internetMessageId
+    # exceeded it (see graph_mail_poller.py's ValidationError guard,
+    # which remains as the backstop for anything still over 998, or
+    # any other future schema violation).
     message_id: str = Field(
         ...,
         min_length=1,
-        max_length=255,
+        max_length=998,
     )
 
     # Mailbox arrival time reported by the provider — the SLA clock
@@ -111,7 +118,11 @@ class EmailRequest(BaseModel):
     # references) matches a message_id we've already stored, this
     # email is threaded onto that conversation/ticket instead of
     # becoming a new inbox item.
-    in_reply_to: str | None = Field(default=None, max_length=255)
+    # Same value space as message_id above (a raw Message-ID header) —
+    # kept at the same max_length so a legitimately long original
+    # message's id is never accepted on ingestion but then rejected
+    # when a reply's In-Reply-To/References references it.
+    in_reply_to: str | None = Field(default=None, max_length=998)
 
     references: list[str] = Field(default_factory=list)
 
@@ -119,7 +130,10 @@ class EmailRequest(BaseModel):
     # until Task 1 ships; accepted now (optional) so this schema
     # doesn't need to change again once it does. Highest-priority
     # thread-match signal when present (see EmailService.receive_email).
-    conversation_id: str | None = Field(default=None, max_length=255)
+    # Widened to 998 alongside message_id/in_reply_to for consistency
+    # across every Graph-derived identifier field, even though Graph's
+    # own conversationId isn't known to exceed 255 in practice.
+    conversation_id: str | None = Field(default=None, max_length=998)
 
     # Microsoft Graph's own native message id (distinct from
     # message_id above, which is the RFC 5322 Message-ID header — see
@@ -128,8 +142,9 @@ class EmailRequest(BaseModel):
     # ingested before a future feature (native reply/replyAll/forward,
     # Sent-Items reconciliation) needs it — see this repo's own
     # architectural-gaps notes on why backfilling this later would
-    # otherwise be required.
-    provider_message_id: str | None = Field(default=None, max_length=255)
+    # otherwise be required. Widened to 998 alongside the other
+    # identifier fields for consistency.
+    provider_message_id: str | None = Field(default=None, max_length=998)
 
     # True only when NDR-signature detection (bounce_detection.
     # is_bounce_notification, called from mail_mapping_service.
