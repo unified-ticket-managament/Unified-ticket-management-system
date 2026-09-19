@@ -104,13 +104,36 @@ class InboxService:
         *,
         assigned_to_me: bool = False,
         bypass_ownership_scope: bool = False,
-    ) -> tuple[UUID | None, list[str] | None, UUID | None, list[UUID] | None, list[UUID] | None]:
+    ) -> tuple[
+        UUID | None,
+        list[str] | None,
+        UUID | None,
+        list[UUID] | None,
+        list[UUID] | None,
+        list[UUID] | None,
+    ]:
         """
         Resolves the same role-based scoping tuple
         (account_manager_id, ticket_types, assigned_agent_id,
-        extra_ticket_ids, category_ids) `get_inbox` and
+        extra_ticket_ids, category_ids,
+        account_manager_self_filed_folder_ids) `get_inbox` and
         `get_folder_counts` both need, so the two can never drift into
         applying different visibility rules for the same user.
+
+        `account_manager_self_filed_folder_ids` (new): for an Account
+        Manager only, every MailFolder whose name is currently
+        referenced by a create_folder/move_to_folder action on a Rule
+        THIS account manager created (rule.created_by ==
+        current_user.user_id) — reusing rule_access.folder_name_to_rules,
+        the same grouping MailFolderService/get_folder_counts already
+        use for folder-sharing, rather than reimplementing it. `None`
+        for every other role/branch (including bypass_ownership_scope).
+        See list_inbox's own docstring for why this exists: a rule
+        someone else created that files a client's mail into a folder
+        must never remove that client's owning Account Manager from
+        their own default Pending Inbox — only a folder the Account
+        Manager's own rule files into keeps today's "moved out of my
+        Inbox" behavior.
 
         `bypass_ownership_scope`: set only by `get_inbox` when the
         caller has already confirmed (via MailFolderService.
@@ -190,6 +213,7 @@ class InboxService:
         assigned_agent_id: UUID | None = None
         extra_ticket_ids: list[UUID] | None = None
         category_ids: list[UUID] | None = None
+        account_manager_self_filed_folder_ids: list[UUID] | None = None
 
         if bypass_ownership_scope:
             # A confirmed folder-sharing grant for this one request —
@@ -217,6 +241,39 @@ class InboxService:
             category_ids = await reporting_manager_repository.list_category_ids_by_account_manager(
                 current_user.user_id
             )
+
+            # An Account Manager must never lose default-Inbox
+            # visibility into their own client's mail just because
+            # someone ELSE's rule filed it into a folder — only a
+            # folder THIS account manager's own rule files into keeps
+            # counting as "they organized their own inbox" (see
+            # list_inbox's own docstring for where this is applied).
+            # Reuses rule_access.folder_name_to_rules, the same
+            # folder-name -> referencing-rules grouping
+            # MailFolderService/get_folder_counts already compute for
+            # the unrelated folder-sharing feature — never
+            # reimplemented a second time here.
+            from app.ticketing.repositories.mail_folder_repository import (
+                MailFolderRepository,
+            )
+            from app.ticketing.repositories.rule_repository import RuleRepository
+            from app.ticketing.services.rule_access import folder_name_to_rules
+
+            rule_repository = RuleRepository(self.interaction_repository.db)
+            mail_folder_repository = MailFolderRepository(
+                self.interaction_repository.db
+            )
+            all_rules = await rule_repository.list_all()
+            name_to_rules = folder_name_to_rules(all_rules)
+            all_folders = await mail_folder_repository.list_all()
+            account_manager_self_filed_folder_ids = [
+                folder.folder_id
+                for folder in all_folders
+                if any(
+                    rule.created_by == current_user.user_id
+                    for rule in name_to_rules.get(folder.name, [])
+                )
+            ]
         elif tier == "all":
             # communication:view_all -> no filter at all, for any role
             # other than Account Manager (handled above); otherwise
@@ -275,7 +332,14 @@ class InboxService:
         if assigned_to_me:
             assigned_agent_id = current_user.user_id
 
-        return account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids, category_ids
+        return (
+            account_manager_id,
+            ticket_types,
+            assigned_agent_id,
+            extra_ticket_ids,
+            category_ids,
+            account_manager_self_filed_folder_ids,
+        )
 
     async def get_inbox(
         self,
@@ -344,12 +408,17 @@ class InboxService:
                     detail="Invalid pagination cursor.",
                 ) from exc
 
-        account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids, category_ids = (
-            await self._resolve_scope(
-                current_user,
-                assigned_to_me=assigned_to_me,
-                bypass_ownership_scope=bypass_ownership_scope,
-            )
+        (
+            account_manager_id,
+            ticket_types,
+            assigned_agent_id,
+            extra_ticket_ids,
+            category_ids,
+            account_manager_self_filed_folder_ids,
+        ) = await self._resolve_scope(
+            current_user,
+            assigned_to_me=assigned_to_me,
+            bypass_ownership_scope=bypass_ownership_scope,
         )
 
         interactions, total = await self.interaction_repository.list_inbox(
@@ -367,6 +436,7 @@ class InboxService:
             category_filter=category_filter,
             priority_filter=priority_filter,
             account_manager_category_ids=category_ids,
+            account_manager_self_filed_folder_ids=account_manager_self_filed_folder_ids,
         )
 
         interactions_with_attachments: set = set()
@@ -632,9 +702,14 @@ class InboxService:
         first, rather than a single OR'd WHERE clause.
         """
 
-        account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids, category_ids = (
-            await self._resolve_scope(current_user)
-        )
+        (
+            account_manager_id,
+            ticket_types,
+            assigned_agent_id,
+            extra_ticket_ids,
+            category_ids,
+            _account_manager_self_filed_folder_ids,
+        ) = await self._resolve_scope(current_user)
 
         return await self.interaction_repository.count_by_folder(
             account_manager_id=account_manager_id,
@@ -660,9 +735,14 @@ class InboxService:
         once the agent actually opens it.
         """
 
-        account_manager_id, ticket_types, assigned_agent_id, extra_ticket_ids, category_ids = (
-            await self._resolve_scope(current_user)
-        )
+        (
+            account_manager_id,
+            ticket_types,
+            assigned_agent_id,
+            extra_ticket_ids,
+            category_ids,
+            account_manager_self_filed_folder_ids,
+        ) = await self._resolve_scope(current_user)
 
         return await self.interaction_repository.count_by_view(
             account_manager_id=account_manager_id,
@@ -671,6 +751,7 @@ class InboxService:
             assigned_agent_id=assigned_agent_id,
             extra_ticket_ids=extra_ticket_ids,
             account_manager_category_ids=category_ids,
+            account_manager_self_filed_folder_ids=account_manager_self_filed_folder_ids,
         )
 
     async def get_sent(self, current_user: User) -> SentResponse:

@@ -444,6 +444,7 @@ class InteractionRepository:
         category_filter: str | None = None,
         priority_filter: TicketPriority | None = None,
         account_manager_category_ids: list[UUID] | None = None,
+        account_manager_self_filed_folder_ids: list[UUID] | None = None,
     ) -> tuple[list[Interaction], int]:
         """
         The role-scoped inbox query — always over thread ROOTS
@@ -471,7 +472,27 @@ class InteractionRepository:
           Inbox view — see that branch below — since a user who has
           filed something away has, by definition, already triaged it
           out of the default Inbox. Still reachable via folder_id
-          (any view) or view=="all".
+          (any view) or view=="all". EXCEPT for an Account Manager
+          viewing a folder that THEY did not file into themselves —
+          see `account_manager_self_filed_folder_ids` below — this
+          exception is scoped to the default, folder_id-less Pending
+          tab; explicitly combining `folder_id` with view=="pending" is
+          an edge case no real caller sends today (folder browsing
+          always requests view="all"), so it's intentionally left as
+          whatever the two filters compose to rather than special-cased.
+        - `account_manager_self_filed_folder_ids`: only meaningful when
+          `account_manager_id` is also set and `view=="pending"`. Every
+          MailFolder id THIS Account Manager's own rule(s) file into
+          (see InboxService._resolve_scope, which computes this via
+          rule_access.folder_name_to_rules). A rule someone ELSE
+          created must never remove the owning Account Manager's own
+          client mail from their default Pending Inbox just because it
+          also happens to move that mail into a folder — only a folder
+          this Account Manager's own rule files into keeps today's
+          "filed away, out of Pending" behavior. `None`/empty means
+          this Account Manager authored no folder-filing rules, so no
+          foldered item under their own clients is excluded from
+          Pending at all.
         - `ticket_types` set: Team Lead scoping — only threads whose
           ticket is filed under one of these work-specialization
           categories (a Team Lead may belong to more than one — see
@@ -616,10 +637,12 @@ class InteractionRepository:
         # that's the separate, intentionally-comprehensive "All Inboxes"
         # escape hatch, not one of the named Mail folders.
         if view == "pending":
-            query = query.where(
+            pending_conditions = [
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.PENDING,
                 Interaction.direction == InteractionDirection.INBOUND,
+            ]
+            if account_manager_id is None:
                 # A filed item (folder_id set, whether by a Rule's
                 # move_to_folder action or a manual drag via PATCH
                 # /inbox/{id}/folder) has been deliberately triaged out
@@ -628,8 +651,26 @@ class InteractionRepository:
                 # sharing/visibility rules), just no longer via the
                 # default Inbox tab. Outlook-style "move to folder
                 # removes it from Inbox" semantics.
-                Interaction.folder_id.is_(None),
-            )
+                pending_conditions.append(Interaction.folder_id.is_(None))
+            elif account_manager_self_filed_folder_ids:
+                # Account Manager exception: only a folder THIS Account
+                # Manager's own rule files into keeps the "filed away"
+                # exclusion above — a folder some other rule (someone
+                # else's) files their client's mail into must never
+                # remove it from their own default Pending Inbox. See
+                # this method's own docstring on
+                # account_manager_self_filed_folder_ids.
+                pending_conditions.append(
+                    or_(
+                        Interaction.folder_id.is_(None),
+                        Interaction.folder_id.notin_(account_manager_self_filed_folder_ids),
+                    )
+                )
+            # else: account_manager_id is set but this Account Manager
+            # authored no folder-filing rules — every foldered item
+            # under their own clients was filed by someone else, so no
+            # folder_id restriction applies to them at all.
+            query = query.where(*pending_conditions)
         elif view == "replied":
             query = query.where(
                 Interaction.ticket_id.is_(None),
@@ -867,6 +908,7 @@ class InteractionRepository:
         assigned_agent_id: UUID | None = None,
         extra_ticket_ids: list[UUID] | None = None,
         account_manager_category_ids: list[UUID] | None = None,
+        account_manager_self_filed_folder_ids: list[UUID] | None = None,
     ) -> dict[str, int]:
         """
         One query, five conditional counts (Postgres FILTER) — the
@@ -876,18 +918,38 @@ class InteractionRepository:
         now fetched lazily (only once a tab is actually opened); this
         keeps the badge counts accurate regardless of which tabs have
         been visited yet.
+
+        `account_manager_self_filed_folder_ids` — same meaning and same
+        Pending-count exception as list_inbox's own param of the same
+        name; kept in lockstep with it so this badge count can never
+        disagree with the actual Pending list.
         """
 
         # Direction filters mirror list_inbox's own — see that method's
         # comment for why "ticketed"/the unfiltered "all" count are
         # deliberately exempt.
+        pending_filter_conditions = [
+            Interaction.ticket_id.is_(None),
+            Interaction.status == InteractionStatus.PENDING,
+            Interaction.direction == InteractionDirection.INBOUND,
+        ]
+        if account_manager_id is None:
+            pending_filter_conditions.append(Interaction.folder_id.is_(None))
+        elif account_manager_self_filed_folder_ids:
+            # See list_inbox's own account_manager_self_filed_folder_ids
+            # comment: only a folder this Account Manager's own rule
+            # files into keeps counting as "filed away" here.
+            pending_filter_conditions.append(
+                or_(
+                    Interaction.folder_id.is_(None),
+                    Interaction.folder_id.notin_(account_manager_self_filed_folder_ids),
+                )
+            )
+        # else: account_manager_id set but this Account Manager authored
+        # no folder-filing rules — no folder_id restriction at all.
+
         query = select(
-            func.count().filter(
-                Interaction.ticket_id.is_(None),
-                Interaction.status == InteractionStatus.PENDING,
-                Interaction.direction == InteractionDirection.INBOUND,
-                Interaction.folder_id.is_(None),
-            ),
+            func.count().filter(*pending_filter_conditions),
             func.count().filter(
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.ASSIGNED,

@@ -6,6 +6,12 @@ export const api = axios.create({
   baseURL: API_URL,
   headers: { "Content-Type": "application/json" },
   withCredentials: false,
+  // Without this, a stalled backend (e.g. its DB connection pool
+  // saturated by a background job) leaves requests pending forever —
+  // the UI just spins with no feedback. A timeout turns that into a
+  // normal "can't reach the server" AxiosError (no `response`), which
+  // callers already handle.
+  timeout: 15000,
 });
 
 let refreshPromise: Promise<string | null> | null = null;
