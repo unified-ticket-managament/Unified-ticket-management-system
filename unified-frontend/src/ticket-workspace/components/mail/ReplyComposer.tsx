@@ -5,11 +5,13 @@ import { Check, Loader2, Paperclip, Send, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { AttachmentDropArea } from "@tw/components/common/AttachmentDropArea";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { DistributionListMultiSelect } from "@tw/components/common/DistributionListMultiSelect";
 import { MultiRecipientCombobox, type RecipientChip } from "@tw/components/common/MultiRecipientCombobox";
 import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
+import { useAttachmentListIntake } from "@tw/hooks/useAttachmentListIntake";
 import {
   ATTACHMENT_ACCEPT_ATTR,
   MAX_ATTACHMENT_FILES,
@@ -23,6 +25,7 @@ import {
   escapeHtml,
   htmlToPlainText,
   isRichContent,
+  resolveCidImagesForEditing,
   resolveInlineImageSources,
 } from "@tw/lib/richText";
 import { isValidEmailAddress } from "@tw/lib/validation";
@@ -142,7 +145,9 @@ export function ReplyComposer({
 }: ReplyComposerProps) {
   const [bodyHtml, setBodyHtml] = useState(() => {
     if (hasExistingDraft) {
-      if (initialBodyHtml) return initialBodyHtml;
+      // A saved draft stores pasted images as cid: references — resolve
+      // them to viewable URLs so they render instead of broken icons.
+      if (initialBodyHtml) return resolveCidImagesForEditing(initialBodyHtml, draftAttachments);
       return initialMessage ? `<p>${escapeHtml(initialMessage).replace(/\n/g, "<br/>")}</p>` : "";
     }
     // A genuinely new (never a resumed draft) Reply/Reply All session
@@ -169,8 +174,18 @@ export function ReplyComposer({
   const [isSendingDraft, setIsSendingDraft] = useState(false);
   const [isDiscarding, setIsDiscarding] = useState(false);
   const [attachErrors, setAttachErrors] = useState<string[]>([]);
+  // Deleting is a round trip of several seconds on a slow link; a second
+  // click while one is in flight used to fire a second, overlapping
+  // delete. Remember which one is pending and ignore further clicks.
+  const [removingAttachmentId, setRemovingAttachmentId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const skipNextAutoSave = useRef(true);
+  // Set while an autosave is scheduled but hasn't fired yet, so closing
+  // the composer (e.g. the email window) inside that debounce window
+  // saves the last keystrokes instead of dropping them. Never flushed
+  // after Send/Discard — see skipFlushOnUnmount.
+  const pendingAutoSaveFlush = useRef<(() => void) | null>(null);
+  const skipFlushOnUnmount = useRef(false);
   const savedIndicatorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isEmpty =
@@ -242,19 +257,37 @@ export function ReplyComposer({
   // composer doesn't immediately re-save whatever it was just
   // prefilled with (a saved draft, or the default recipient).
   useEffect(() => {
+    pendingAutoSaveFlush.current = null;
     if (skipNextAutoSave.current) {
       skipNextAutoSave.current = false;
       return;
     }
     if (isEmpty) return;
 
+    // New edits after a failed/aborted Send mean the draft matters again.
+    skipFlushOnUnmount.current = false;
     const timer = setTimeout(() => {
+      pendingAutoSaveFlush.current = null;
       persistDraft();
     }, 1200);
+    pendingAutoSaveFlush.current = () => {
+      void onSaveDraft(
+        htmlToPlainText(bodyHtml),
+        parseEmails(cc),
+        parseEmails(bcc),
+        isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined
+      );
+    };
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bodyHtml, cc, bcc, isTicketed]);
+
+  useEffect(() => {
+    return () => {
+      if (!skipFlushOnUnmount.current) pendingAutoSaveFlush.current?.();
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -266,6 +299,9 @@ export function ReplyComposer({
     if (hasPendingImageUploads) return;
     if (hasInvalidRecipient) return;
     if (selectedTo.length === 0) return;
+    // Send consumes the draft — a flush when this composer unmounts
+    // afterwards would resurrect it.
+    skipFlushOnUnmount.current = true;
 
     if (isTicketed) {
       onSend({
@@ -290,6 +326,7 @@ export function ReplyComposer({
   }
 
   async function handleDiscard() {
+    skipFlushOnUnmount.current = true;
     if (isTicketed) {
       onCancel();
       return;
@@ -300,7 +337,7 @@ export function ReplyComposer({
     onCancel();
   }
 
-  async function handleAddDraftFiles(incoming: FileList) {
+  async function handleAddDraftFiles(incoming: FileList | File[]) {
     const { accepted, errors } = validateFiles(Array.from(incoming));
     setAttachErrors(errors);
     if (accepted.length === 0) return;
@@ -310,10 +347,42 @@ export function ReplyComposer({
     setIsUploadingFile(false);
   }
 
+  async function handleRemoveDraftAttachment(attachmentId: string) {
+    if (removingAttachmentId) return;
+    setRemovingAttachmentId(attachmentId);
+    try {
+      await onRemoveDraftAttachment(attachmentId);
+    } finally {
+      setRemovingAttachmentId(null);
+    }
+  }
+
   const draftAttachmentCount = draftAttachments.length;
 
+  // Drag-and-drop / paste feed the same two paths the Attach button
+  // already uses: the local File[] list for a ticketed thread, or the
+  // immediate draft upload for a pre-ticket one.
+  const addFilesToList = useAttachmentListIntake(files, setFiles);
+  function handleIntakeFiles(incoming: File[]) {
+    if (isTicketed) {
+      setShowAttachments(true);
+      addFilesToList(incoming);
+      return;
+    }
+    void handleAddDraftFiles(incoming);
+  }
+  const intakeDisabled =
+    isSending ||
+    isSendingDraft ||
+    isDiscarding ||
+    (!isTicketed && (isUploadingFile || draftAttachmentCount >= MAX_ATTACHMENT_FILES));
+
   return (
-    <div className="border-t border-border bg-muted/20 p-4">
+    <AttachmentDropArea
+      className="border-b border-border bg-muted/20 p-4"
+      onFiles={handleIntakeFiles}
+      disabled={intakeDisabled}
+    >
       <div className="mb-3 flex items-center justify-between">
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {mode === "replyAll" ? "Reply All" : "Reply"}
@@ -541,7 +610,8 @@ export function ReplyComposer({
                       </span>
                       <button
                         type="button"
-                        onClick={() => onRemoveDraftAttachment(attachment.id)}
+                        onClick={() => handleRemoveDraftAttachment(attachment.id)}
+                        disabled={removingAttachmentId !== null}
                         aria-label={`Remove ${attachment.filename}`}
                         className="flex-none rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-destructive"
                       >
@@ -603,6 +673,6 @@ export function ReplyComposer({
           </div>
         </>
       )}
-    </div>
+    </AttachmentDropArea>
   );
 }

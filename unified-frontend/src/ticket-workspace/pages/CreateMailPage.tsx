@@ -6,8 +6,10 @@ import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
 import { EmptyState } from "@tw/components/common/EmptyState";
 import { TextArea, TextInput, SelectInput } from "@tw/components/common/FormField";
+import { AttachmentDropArea } from "@tw/components/common/AttachmentDropArea";
 import { FileDropzone } from "@tw/components/common/FileDropzone";
 import { useApiAction } from "@tw/hooks/useApiAction";
+import { useAttachmentListIntake } from "@tw/hooks/useAttachmentListIntake";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { receiveIncomingEmail } from "@tw/api/email";
@@ -55,6 +57,8 @@ export function CreateMailPage() {
       setToEmail((current) => current || clients[0].inbox_email);
     }
   }, [clients]);
+
+  const addFilesToList = useAttachmentListIntake(files, setFiles);
 
   const { run, isLoading } = useApiAction(receiveIncomingEmail, {
     successMessage: (res) => `Email delivered to ${res.client_name}'s inbox.`,
@@ -109,7 +113,7 @@ export function CreateMailPage() {
             </div>
           }
         >
-          <div className="flex flex-col gap-4">
+          <AttachmentDropArea className="flex flex-col gap-4" onFiles={addFilesToList} disabled={isLoading}>
             {clients.length === 0 ? (
               <p className="rounded-md2 border border-warning/20 bg-warning/5 px-3.5 py-2.5 text-xs text-slate-700">
                 No clients with a configured distribution email yet — onboard one via{" "}
@@ -177,7 +181,7 @@ export function CreateMailPage() {
                 <MailPlus size={15} /> Receive Email
               </Button>
             </div>
-          </div>
+          </AttachmentDropArea>
         </Card>
 
         {lastResult && (

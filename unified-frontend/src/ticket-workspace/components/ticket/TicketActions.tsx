@@ -14,6 +14,7 @@ import {
 import { Button } from "@tw/components/common/Button";
 import { Modal } from "@tw/components/common/Modal";
 import { SelectInput, TextArea } from "@tw/components/common/FormField";
+import { AttachmentDropArea } from "@tw/components/common/AttachmentDropArea";
 import { FileDropzone } from "@tw/components/common/FileDropzone";
 import {
   SearchableSelect,
@@ -23,6 +24,7 @@ import { RequestTicketAccessDialog } from "@tw/components/ticket/RequestTicketAc
 import { validateFiles } from "@tw/lib/attachmentMeta";
 import { formatAssigneeLabel } from "@tw/lib/format";
 import { useApiAction } from "@tw/hooks/useApiAction";
+import { useAttachmentListIntake } from "@tw/hooks/useAttachmentListIntake";
 import {
   changeTicketPriority,
   changeTicketStatus,
@@ -110,6 +112,7 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   // behavior) — a pure additive UI narrowing, see loadTransferCandidates.
   const [transferCategory, setTransferCategory] = useState("");
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const addUploadFiles = useAttachmentListIntake(uploadFiles, setUploadFiles);
 
   const { run: runStatus, isLoading: isStatusLoading } = useApiAction(changeTicketStatus, {
     successMessage: "Ticket status changed.",
@@ -704,7 +707,17 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
           </Button>
         }
       >
-        <FileDropzone label="Files" files={uploadFiles} onFilesChange={setUploadFiles} />
+        {/* tabIndex lets a click inside the modal focus this area, so a
+            Ctrl+V right after has somewhere to land (the modal body has
+            no input of its own to hold focus). */}
+        <AttachmentDropArea
+          onFiles={addUploadFiles}
+          disabled={isUploadLoading}
+          tabIndex={-1}
+          className="outline-none"
+        >
+          <FileDropzone label="Files" files={uploadFiles} onFilesChange={setUploadFiles} />
+        </AttachmentDropArea>
       </Modal>
 
       <Modal

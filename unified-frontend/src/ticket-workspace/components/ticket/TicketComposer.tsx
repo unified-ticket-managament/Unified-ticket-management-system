@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Lock, Paperclip, X } from "lucide-react";
+import { AttachmentDropArea } from "@tw/components/common/AttachmentDropArea";
 import { Card } from "@tw/components/common/Card";
 import { Button } from "@tw/components/common/Button";
 import { EnvelopePreview } from "@tw/components/common/EnvelopePreview";
@@ -13,6 +14,7 @@ import { DistributionListMultiSelect } from "@tw/components/common/DistributionL
 import { validateFiles } from "@tw/lib/attachmentMeta";
 import { generateIdempotencyKey } from "@tw/lib/idempotency";
 import { useApiAction } from "@tw/hooks/useApiAction";
+import { useAttachmentListIntake } from "@tw/hooks/useAttachmentListIntake";
 import { listClientContacts } from "@tw/api/clients";
 import {
   addInternalNote,
@@ -469,6 +471,12 @@ export function TicketComposer({
     return options;
   }, [contacts, fromEmail]);
 
+  // Drag-and-drop / paste feed the same File[] lists the Attachments
+  // dropzones already own: the Reply tab's, or the Internal Note tab's
+  // (whose own "Upload to ticket" button then behaves as before).
+  const addReplyFiles = useAttachmentListIntake(replyFiles, setReplyFiles);
+  const addNoteFiles = useAttachmentListIntake(attachFiles, setAttachFiles);
+
   if (!activeTicket) return null;
 
   const isReply = activeMode === "reply";
@@ -479,6 +487,15 @@ export function TicketComposer({
   // letting a second click fire a second, differently-keyed send.
   const isLoading = isReply ? isReplyLoading || isUploadLoading : isNoteLoading;
   const isTicketClosed = activeTicket.current_status === "CLOSED";
+  function handleIntakeFiles(incoming: File[]) {
+    // See addReplyFiles/addNoteFiles above.
+    if (isReply) {
+      addReplyFiles(incoming);
+      return;
+    }
+    setShowAttach(true);
+    addNoteFiles(incoming);
+  }
 
   // ticket:reply and communication:reply_internal are independent UI gates —
   // one governs only the Reply interface, the other only the Internal Note
@@ -618,7 +635,11 @@ export function TicketComposer({
           This ticket is closed — reopen it to reply or add a note.
         </p>
       ) : (
-      <div className="flex flex-col gap-3">
+      <AttachmentDropArea
+        className="flex flex-col gap-3"
+        onFiles={handleIntakeFiles}
+        disabled={isLoading || !hasComposePermission}
+      >
         {!lockMode && (
           <div className="flex rounded-md2 border border-border p-0.5 text-xs font-semibold">
             <button
@@ -840,7 +861,7 @@ export function TicketComposer({
         </div>
         </>
         )}
-      </div>
+      </AttachmentDropArea>
       )}
     </Card>
   );

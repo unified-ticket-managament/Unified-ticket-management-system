@@ -1389,6 +1389,13 @@ export function useMailInbox() {
         draft_attachments: selectedEmail.draft_attachments.filter((a) => a.id !== attachmentId),
       });
     }
+    if (result === null) {
+      // The request failed from this tab's point of view, but the server
+      // may well have completed it (a slow delete whose response never
+      // arrived) — reload the draft so the list shows what is really
+      // attached instead of a chip for a file that is already gone.
+      await openThread(interactionId, { markRead: false });
+    }
     return result !== null;
   }
 

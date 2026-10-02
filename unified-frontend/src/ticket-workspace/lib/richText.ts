@@ -222,6 +222,48 @@ export function resolveCidImagesForDisplay(
   return container.innerHTML;
 }
 
+// Editing counterpart of resolveCidImagesForDisplay, for a reopened
+// saved draft: its stored body_html references pasted images as
+// `cid:{content_id}` (see resolveInlineImageSources, applied at every
+// save), which a browser can't load — so the composer showed broken-
+// image icons. Swap each `cid:` for that draft attachment's own
+// presigned preview URL (the company logo goes back to its static
+// asset). Unlike the display version, an image whose attachment can't
+// be found is left untouched rather than replaced with placeholder
+// text, so nothing is silently rewritten inside the user's draft. The
+// <img>'s data-local-id/data-content-id are kept, which is what lets
+// resolveInlineImageSources turn it back into `cid:` on the next save.
+export function resolveCidImagesForEditing(
+  html: string,
+  attachments: Array<{ content_id?: string | null; download_url?: string; preview_url?: string | null }>
+): string {
+  if (typeof document === "undefined" || !/cid:/i.test(html)) return html;
+
+  const byContentId = new Map(
+    attachments
+      .filter((a) => a.content_id)
+      .map((a) => [normalizeContentId(a.content_id as string), a])
+  );
+
+  const container = document.createElement("div");
+  container.innerHTML = html;
+
+  container.querySelectorAll("img").forEach((img) => {
+    const src = img.getAttribute("src") ?? "";
+    if (!/^cid:/i.test(src)) return;
+    const contentId = normalizeContentId(src.replace(/^cid:/i, ""));
+    if (contentId === COMPANY_LOGO_CONTENT_ID) {
+      img.setAttribute("src", COMPANY_LOGO_DISPLAY_SRC);
+      return;
+    }
+    const attachment = byContentId.get(contentId);
+    const url = attachment?.preview_url || attachment?.download_url;
+    if (url) img.setAttribute("src", url);
+  });
+
+  return container.innerHTML;
+}
+
 // Shared Tailwind arbitrary-variant classes for a container rendering
 // a message's real body_html via dangerouslySetInnerHTML (Mail thread
 // bubbles, Ticket Timeline, Interaction details, the full-page

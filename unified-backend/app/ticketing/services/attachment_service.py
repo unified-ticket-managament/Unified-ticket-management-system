@@ -898,7 +898,29 @@ class AttachmentService:
         # An external-link attachment has no object in our own storage
         # to delete — only the DB row itself.
         if not attachment.is_external_link:
-            await self.storage_service.delete(object_key=attachment.storage_key)
+            try:
+                await self.storage_service.delete(object_key=attachment.storage_key)
+            except Exception:
+                # Deleting must be repeatable: if the object is already gone
+                # (an earlier attempt removed it but never got as far as the
+                # DB row), the row still has to be removable — otherwise the
+                # user is stuck with an attachment that can never be deleted
+                # and every retry is an unhandled 500. Anything that is not
+                # "already gone" is still raised.
+                try:
+                    still_stored = await self.storage_service.exists(
+                        object_key=attachment.storage_key
+                    )
+                except Exception:
+                    still_stored = True
+                if still_stored:
+                    raise
+                logger.warning(
+                    "Attachment %s: storage object %s was already gone; "
+                    "removing the database row.",
+                    attachment.attachment_id,
+                    attachment.storage_key,
+                )
         await self.attachment_repository.delete(attachment)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(

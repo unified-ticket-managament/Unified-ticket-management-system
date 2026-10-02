@@ -8,8 +8,8 @@ import {
   formatBytes,
   iconForFilename,
   openLocalFile,
-  validateFiles,
 } from "@tw/lib/attachmentMeta";
+import { attachmentDedupeKey, mergeAttachmentFiles } from "@tw/lib/attachmentIntake";
 
 const DEFAULT_HINT = `Up to ${MAX_ATTACHMENT_FILES} files, ${
   MAX_ATTACHMENT_SIZE_BYTES / (1024 * 1024)
@@ -21,10 +21,6 @@ interface FileDropzoneProps {
   files: File[];
   onFilesChange: (files: File[]) => void;
   disabled?: boolean;
-}
-
-function dedupeKey(file: File): string {
-  return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
 export function FileDropzone({
@@ -39,10 +35,7 @@ export function FileDropzone({
   const [errors, setErrors] = useState<string[]>([]);
 
   function addFiles(incoming: FileList | File[]) {
-    const existingKeys = new Set(files.map(dedupeKey));
-    const newFiles = Array.from(incoming).filter((f) => !existingKeys.has(dedupeKey(f)));
-
-    const { accepted, errors: validationErrors } = validateFiles([...files, ...newFiles]);
+    const { accepted, errors: validationErrors } = mergeAttachmentFiles(files, incoming);
     setErrors(validationErrors);
     onFilesChange(accepted);
   }
@@ -57,6 +50,7 @@ export function FileDropzone({
       <span className="mb-1.5 block text-xs font-semibold text-slate-600">{label}</span>
 
       <div
+        data-attachment-dropzone
         onDragOver={(e) => {
           e.preventDefault();
           if (!disabled) setIsDragOver(true);
@@ -114,7 +108,7 @@ export function FileDropzone({
             const Icon = iconForFilename(file.name);
             return (
               <li
-                key={dedupeKey(file)}
+                key={attachmentDedupeKey(file)}
                 className="flex items-center gap-2.5 rounded-md2 border border-border bg-surface px-3 py-1.5"
               >
                 <Icon size={14} className="flex-none text-muted" />

@@ -6,6 +6,7 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { AccessDenied } from "@/components/shared/stats";
 import { AppLayout } from "@tw/components/layout/AppLayout";
 import { ComposeView, type ComposeInitialValues } from "@tw/components/mail/ComposeView";
+import { EmailWindow } from "@tw/components/mail/EmailWindow";
 import { MailReadingPaneEmptyState } from "@tw/components/mail/MailReadingPaneEmptyState";
 import { MailSidebar } from "@tw/components/mail/MailSidebar";
 import { MailWorkspaceLayout } from "@tw/components/mail/MailWorkspaceLayout";
@@ -427,6 +428,23 @@ export function InboxPage() {
     />
   );
 
+  // While the double-click window is open it owns the one live
+  // MessageDetailsView (and with it the one ReplyComposer) for the
+  // selected email. The panel behind the overlay must not also mount a
+  // second, independent composer — two of them would each debounce-save
+  // to the same server draft and the last writer would win — so it shows
+  // a placeholder until the window closes, then remounts from the saved
+  // draft.
+  const windowOwnsEmail = isFullScreenOpen && Boolean(selectedEmail);
+  const openInWindowNotice = (
+    <div
+      data-testid="email-open-in-window-notice"
+      className="flex h-full min-h-[200px] items-center justify-center p-8 text-center text-sm text-muted-foreground"
+    >
+      This message is open in its own window.
+    </div>
+  );
+
   // Panel 3 (Message Details) — same priority order as the original
   // single-pane layout's own ternary below: selectedEmail is checked
   // ahead of selectedSystemNotification so opening a specific message
@@ -440,6 +458,9 @@ export function InboxPage() {
   // than the single-pane layout could offer, since the list never has
   // to be replaced just to show that one notification.
   const desktopDetailPanel = selectedEmail ? (
+    windowOwnsEmail ? (
+      openInWindowNotice
+    ) : (
     <MessageDetailsView
       variant="panel"
       email={selectedEmail}
@@ -459,6 +480,7 @@ export function InboxPage() {
       onMarkRead={mail.markRead}
       onMarkUnread={mail.markUnread}
     />
+    )
   ) : mail.selectedSystemNotification ? (
     <SystemMailDetailsView
       variant="panel"
@@ -535,6 +557,8 @@ export function InboxPage() {
           <div className="min-h-[560px] min-w-0 flex-1">
             {rulesOpen ? (
               <RulesPanel onFoldersMayHaveChanged={mail.refreshFolders} />
+            ) : selectedEmail && windowOwnsEmail ? (
+              openInWindowNotice
             ) : selectedEmail ? (
               // Checked ahead of the System-folder branch below: opening a
               // specific message (e.g. via the interaction_id query param a
@@ -644,13 +668,13 @@ export function InboxPage() {
         </div>
       )}
     </AppLayout>
-    <Dialog open={isFullScreenOpen} onOpenChange={setIsFullScreenOpen}>
-      <DialogContent className="flex h-[85vh] max-h-[85vh] w-full max-w-5xl flex-col gap-0 overflow-hidden p-0">
-        <div className="h-full w-full min-h-0 flex-1 overflow-y-auto">
-          {fullScreenDetail}
-        </div>
-      </DialogContent>
-    </Dialog>
+    <EmailWindow
+      open={isFullScreenOpen}
+      onClose={() => setIsFullScreenOpen(false)}
+      title={selectedEmail?.subject ?? "Email"}
+    >
+      {fullScreenDetail}
+    </EmailWindow>
     {/* Compose — same modal presentation as the email-detail Dialog
         above (identical size/centering/corners/overlay classes), so
         Compose reads as one consistent "opens in a big reading/writing

@@ -1358,6 +1358,46 @@ export function MessageDetailsView({
           header, alongside Subject/Date, instead of buried mid-scroll. */}
       {isFullscreen && <div className="border-b border-border px-5 py-4">{senderInfoSection}</div>}
 
+      {/* Reply / Reply All composer — directly under the message header
+          (and, in the fullscreen window, the sender info), above the
+          thread, so opening it never means scrolling to the bottom of a
+          long conversation. Same single ReplyComposer for the panel and
+          the double-click window; only its position in this column
+          changed. */}
+      {!isClosed && replyMode && (
+        <ReplyComposer
+          mode={replyMode}
+          toEmail={ticketReplyDraft?.to_email ?? email.from_email}
+          contacts={contacts}
+          subject={email.subject}
+          initialCc={
+            ticketReplyDraft
+              ? ticketReplyDraft.cc
+              : hasDraft
+                ? email.draft_cc
+                : replyMode === "replyAll"
+                  ? computeReplyAllCc(email)
+                  : []
+          }
+          initialBcc={ticketReplyDraft ? ticketReplyDraft.bcc : hasDraft ? email.draft_bcc : []}
+          initialMessage={ticketReplyDraft ? ticketReplyDraft.message : hasDraft ? email.draft_message ?? "" : ""}
+          initialBodyHtml={ticketReplyDraft ? ticketReplyDraft.body_html : hasDraft ? email.draft_body_html : null}
+          hasExistingDraft={Boolean(ticketReplyDraft) || hasDraft}
+          signatureHtml={currentUser?.signature_html}
+          isTicketed={isTicketed}
+          draftAttachments={email.draft_attachments}
+          isSending={isReplying || isReplyingTicket || isUploadingAttachment}
+          onCancel={() => setReplyMode(null)}
+          onSend={handleSend}
+          onSaveDraft={handleSaveDraft}
+          onSendDraft={handleSendDraft}
+          onDiscardDraft={handleDiscardDraft}
+          onUploadDraftAttachment={handleUploadDraftAttachment}
+          onRemoveDraftAttachment={handleRemoveDraftAttachment}
+          onUploadInlineImage={handleUploadInlineImage}
+        />
+      )}
+
       {/* Attachments / Tags / Message Body — the only scrolling region */}
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <div className="flex flex-col gap-5">
@@ -1435,40 +1475,6 @@ export function MessageDetailsView({
         <div className="border-t border-border p-4 text-center text-[12px] text-muted-foreground">
           This ticket is closed — reopen it from the ticket page to reply.
         </div>
-      )}
-
-      {!isClosed && replyMode && (
-        <ReplyComposer
-          mode={replyMode}
-          toEmail={ticketReplyDraft?.to_email ?? email.from_email}
-          contacts={contacts}
-          subject={email.subject}
-          initialCc={
-            ticketReplyDraft
-              ? ticketReplyDraft.cc
-              : hasDraft
-                ? email.draft_cc
-                : replyMode === "replyAll"
-                  ? computeReplyAllCc(email)
-                  : []
-          }
-          initialBcc={ticketReplyDraft ? ticketReplyDraft.bcc : hasDraft ? email.draft_bcc : []}
-          initialMessage={ticketReplyDraft ? ticketReplyDraft.message : hasDraft ? email.draft_message ?? "" : ""}
-          initialBodyHtml={ticketReplyDraft ? ticketReplyDraft.body_html : hasDraft ? email.draft_body_html : null}
-          hasExistingDraft={Boolean(ticketReplyDraft) || hasDraft}
-          signatureHtml={currentUser?.signature_html}
-          isTicketed={isTicketed}
-          draftAttachments={email.draft_attachments}
-          isSending={isReplying || isReplyingTicket || isUploadingAttachment}
-          onCancel={() => setReplyMode(null)}
-          onSend={handleSend}
-          onSaveDraft={handleSaveDraft}
-          onSendDraft={handleSendDraft}
-          onDiscardDraft={handleDiscardDraft}
-          onUploadDraftAttachment={handleUploadDraftAttachment}
-          onRemoveDraftAttachment={handleRemoveDraftAttachment}
-          onUploadInlineImage={handleUploadInlineImage}
-        />
       )}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

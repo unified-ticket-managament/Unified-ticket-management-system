@@ -14,7 +14,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { WorkflowLoader } from "@/components/common/WorkflowLoader";
+import { AttachmentDropArea } from "@tw/components/common/AttachmentDropArea";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
+import { useAttachmentListIntake } from "@tw/hooks/useAttachmentListIntake";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
 import { listInternalNoteRecipients } from "@tw/api/interaction";
 import {
@@ -563,6 +565,9 @@ export function ComposeView({
   const remainingAttachmentSlots = isForward
     ? Math.max(0, MAX_ATTACHMENT_FILES - originalAttachmentCount)
     : MAX_ATTACHMENT_FILES;
+  // Drag-and-drop / paste feed the same list (and the same Forward cap)
+  // the Browse button does.
+  const addFilesToList = useAttachmentListIntake(files, setFiles, remainingAttachmentSlots);
 
   // Forward's "To" is a chip list (MultiRecipientCombobox) — every
   // chip it produces is already individually validated at add-time
@@ -764,7 +769,9 @@ export function ComposeView({
   }
 
   return (
-    <div
+    <AttachmentDropArea
+      onFiles={addFilesToList}
+      disabled={isSending || !canCompose}
       className={cn(
         "flex flex-col overflow-hidden",
         variant !== "panel" && "rounded-xl border border-border bg-card shadow-card"
@@ -1092,6 +1099,6 @@ export function ComposeView({
           </div>
         </div>
       )}
-    </div>
+    </AttachmentDropArea>
   );
 }

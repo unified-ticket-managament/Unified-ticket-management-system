@@ -12,8 +12,8 @@ import {
   formatBytes,
   iconForFilename,
   openLocalFile,
-  validateFiles,
 } from "@tw/lib/attachmentMeta";
+import { attachmentDedupeKey, mergeAttachmentFiles } from "@tw/lib/attachmentIntake";
 
 interface AttachmentUploaderProps {
   files: File[];
@@ -24,10 +24,6 @@ interface AttachmentUploaderProps {
   // already occupy some of the 10-attachment total (see ComposeView's
   // remainingSlots computation).
   maxFiles?: number;
-}
-
-function dedupeKey(file: File): string {
-  return `${file.name}:${file.size}:${file.lastModified}`;
 }
 
 // Shared drag-and-drop + browse + preview + remove attachment picker
@@ -46,9 +42,7 @@ export function AttachmentUploader({
   const [errors, setErrors] = useState<string[]>([]);
 
   function addFiles(incoming: FileList | File[]) {
-    const existingKeys = new Set(files.map(dedupeKey));
-    const newFiles = Array.from(incoming).filter((f) => !existingKeys.has(dedupeKey(f)));
-    const { accepted, errors: validationErrors } = validateFiles([...files, ...newFiles], maxFiles);
+    const { accepted, errors: validationErrors } = mergeAttachmentFiles(files, incoming, maxFiles);
     setErrors(validationErrors);
     onFilesChange(accepted);
   }
@@ -61,6 +55,7 @@ export function AttachmentUploader({
   return (
     <div>
       <div
+        data-attachment-dropzone
         onDragOver={(e) => {
           e.preventDefault();
           if (!disabled) setIsDragOver(true);
@@ -122,7 +117,7 @@ export function AttachmentUploader({
             const Icon = iconForFilename(file.name);
             return (
               <li
-                key={dedupeKey(file)}
+                key={attachmentDedupeKey(file)}
                 className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-1.5"
               >
                 <Icon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
