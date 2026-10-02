@@ -52,6 +52,9 @@ class InteractionCreate(BaseModel):
     # EmailService._receive_bounce.
     is_bounce: bool = False
 
+    # See Interaction.is_otp — set only by EmailService.receive_email.
+    is_otp: bool = False
+
 
 class InteractionUpdate(BaseModel):
     ticket_id: UUID | None = None

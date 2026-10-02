@@ -19,6 +19,7 @@ from .message_read_receipt import MessageReadReceipt
 from .ticket_escalation import TicketEscalation
 from .escalation_handling_sla import EscalationHandlingSLA
 from .rule import Rule
+from .rule_run import RuleRun, RuleRunItem
 from .distribution_list import DistributionList, DistributionListMember
 from .inbound_mail_failure import InboundMailFailure
 
@@ -43,6 +44,8 @@ __all__ = [
     "TicketEscalation",
     "EscalationHandlingSLA",
     "Rule",
+    "RuleRun",
+    "RuleRunItem",
     "DistributionList",
     "DistributionListMember",
     "InboundMailFailure",

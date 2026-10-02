@@ -130,6 +130,11 @@ class RuleCreate(BaseModel):
     # fresh at every request. Validated server-side in RuleService
     # against real, active Distribution Lists — never trusted as-is.
     shared_distribution_list_ids: list[UUID] = Field(default_factory=list)
+    # One-time command, never stored on the Rule: when true, the saved
+    # rule is queued (in the same transaction) for a single background
+    # pass over existing mail — see RuleRunService.queue_run. A later
+    # edit without it never re-runs the rule.
+    run_now: bool = False
 
     @field_validator("conditions")
     @classmethod
@@ -153,6 +158,8 @@ class RuleUpdate(BaseModel):
     stop_processing: bool = False
     shared_user_ids: list[UUID] = Field(default_factory=list)
     shared_distribution_list_ids: list[UUID] = Field(default_factory=list)
+    # See RuleCreate.run_now.
+    run_now: bool = False
 
     @field_validator("conditions")
     @classmethod
@@ -160,6 +167,43 @@ class RuleUpdate(BaseModel):
         if not value.rules:
             raise ValueError("A rule needs at least one condition.")
         return value
+
+
+class RuleRunSummary(ORMBase):
+    """
+    A "Run rule now" execution's progress — see app.ticketing.models.
+    rule_run.RuleRun. Counts only, never email content; error_samples
+    carry interaction ids and the error text.
+    """
+
+    run_id: UUID
+    rule_id: UUID | None
+    rule_name: str
+    status: str
+    status_reason: str | None
+    phase: str
+    triggered_by: UUID
+    rule_owner_id: UUID | None
+    impersonator_id: UUID | None
+    cutoff_at: datetime
+    scanned_count: int
+    matched_count: int
+    succeeded_count: int
+    already_applied_count: int
+    skipped_count: int
+    failed_count: int
+    forwards_sent_count: int
+    skipped_by_reason: dict
+    error_samples: list
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    heartbeat_at: datetime | None
+
+
+class RuleRunRef(BaseModel):
+    run_id: UUID
+    status: str
 
 
 class RuleEnabledUpdate(BaseModel):
@@ -188,6 +232,9 @@ class RuleResponse(ORMBase):
     stop_processing: bool
     priority: int
     created_by: UUID | None
+    # Display name of created_by — filled in by list_all (batch lookup);
+    # None when the creator is unknown/deleted or on other endpoints.
+    created_by_name: str | None = None
     shared_user_ids: list[UUID]
     shared_distribution_list_ids: list[UUID]
     created_at: datetime
@@ -200,3 +247,7 @@ class RuleResponse(ORMBase):
     # override this per-rule since rule:view_all can surface rules the
     # viewer can see but not manage — see rule_access.can_manage_rule.
     can_manage: bool = True
+    # The rule's queued/running "Run rule now" execution, if any — set
+    # by create/update when run_now was requested (the newly queued run,
+    # or the one already in progress), and by list_all for display.
+    active_run: RuleRunRef | None = None

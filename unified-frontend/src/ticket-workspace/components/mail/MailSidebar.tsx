@@ -7,6 +7,7 @@ import {
   FileEdit,
   Folder,
   Inbox as InboxIcon,
+  KeyRound,
   Pencil,
   Plus,
   Reply,
@@ -36,13 +37,17 @@ import { useApiAction } from "@tw/hooks/useApiAction";
 import type { MailViewKey } from "@tw/hooks/useMailInbox";
 import type { MailFolder } from "@tw/types";
 
-// Exact order required by the Mail spec: Compose, All, Inbox,
+// Exact order required by the Mail spec: Compose, All, Inbox, OTPs,
 // My Claims, Sent, Drafts, Replied, Ticketed, Archived.
 // Compose is rendered separately above this list (it's an action,
 // not a folder view).
 const VIEW_ITEMS: Array<{ key: MailViewKey; label: string; icon: LucideIcon }> = [
   { key: "pending", label: "All", icon: InboxIcon },
   { key: "unassigned", label: "Inbox", icon: UserX },
+  // Fixed system section, not a mail folder — OTP mail the backend's
+  // OTP classifier flagged (GET /inbox?view=otp), kept out of
+  // Inbox/All server-side. Badge = unread OTPs.
+  { key: "otp", label: "OTPs", icon: KeyRound },
   { key: "mine", label: "My Tickets", icon: UserCheck },
   { key: "sent", label: "Sent", icon: Send },
   { key: "drafts", label: "Drafts", icon: FileEdit },

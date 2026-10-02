@@ -226,7 +226,9 @@ export interface CurrentUser {
 // Account Manager Inbox
 // ==========================================================
 
-export type InboxView = "pending" | "replied" | "ticketed" | "archived" | "all";
+// "otp" — the Mail "OTPs" section: roots the backend's OTP classifier
+// flagged, which "pending"/"replied" exclude server-side.
+export type InboxView = "pending" | "replied" | "ticketed" | "archived" | "all" | "otp";
 export type InboxScope = "mine" | "all";
 
 export interface InboxItem {

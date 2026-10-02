@@ -65,7 +65,7 @@ export function EditProfileDialog({ open, onOpenChange, record }: EditProfileDia
   const { toast } = useToast();
   const { t } = useTranslation();
   const currentUser = useAuthStore((s) => s.user);
-  const setUser = useAuthStore((s) => s.setUser);
+  const refreshUser = useAuthStore((s) => s.refreshUser);
   const queryClient = useQueryClient();
 
   const editProfileSchema = useMemo(
@@ -109,7 +109,7 @@ export function EditProfileDialog({ open, onOpenChange, record }: EditProfileDia
     },
     onSuccess: async () => {
       const me = await authService.me();
-      setUser(me);
+      refreshUser(me);
       await queryClient.invalidateQueries({ queryKey: [PROFILE_RECORD_QUERY_KEY] });
       toast({
         title: t("profile.toastUpdatedTitle"),

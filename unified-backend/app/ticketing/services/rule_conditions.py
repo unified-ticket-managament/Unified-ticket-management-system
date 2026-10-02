@@ -32,6 +32,37 @@ class RuleEmailContext:
         self.sender_domain = email.split("@", 1)[1] if "@" in email else ""
 
 
+def build_rule_email_context(
+    *,
+    from_email: str | None,
+    subject: str | None,
+    body: str | None,
+    client_id: UUID | None,
+    cc: list[str] | None,
+    attachments: list[tuple[str, str | None]],
+    otp_detected: bool,
+) -> RuleEmailContext:
+    """
+    The one place a RuleEmailContext is assembled — used both by
+    EmailService.receive_email (a just-received email) and by "Run rule
+    now" (an Interaction already stored), so historical mail is matched
+    with exactly the same inputs/normalization the live path uses.
+    `attachments` is (filename, mime_type) per stored attachment.
+    """
+
+    return RuleEmailContext(
+        from_email=from_email,
+        subject=subject,
+        body=body,
+        client_id=client_id,
+        has_attachments=bool(attachments),
+        cc_recipients=[str(addr).lower() for addr in (cc or []) if addr],
+        attachment_filenames=[filename for filename, _ in attachments],
+        attachment_mime_types=[mime for _, mime in attachments if mime],
+        otp_detected=otp_detected,
+    )
+
+
 def _text_matches(operator: str, haystack: str, needle: str) -> bool:
     haystack = haystack.strip().lower()
     needle = needle.strip().lower()

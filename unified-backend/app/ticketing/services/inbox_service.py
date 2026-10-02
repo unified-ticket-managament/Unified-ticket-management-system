@@ -752,6 +752,7 @@ class InboxService:
             extra_ticket_ids=extra_ticket_ids,
             account_manager_category_ids=category_ids,
             account_manager_self_filed_folder_ids=account_manager_self_filed_folder_ids,
+            viewer_user_id=current_user.user_id,
         )
 
     async def get_sent(self, current_user: User) -> SentResponse:

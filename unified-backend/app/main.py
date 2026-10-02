@@ -21,6 +21,10 @@ from app.core.graph_subscription_scheduler import (
     start_scheduler as start_graph_subscription_scheduler,
 )
 from app.core.request_timing import get_stage_times, reset_stage_times
+from app.core.rule_run_scheduler import (
+    shutdown_scheduler as shutdown_rule_run_scheduler,
+    start_scheduler as start_rule_run_scheduler,
+)
 from app.core.sla_scheduler import shutdown_scheduler, start_scheduler
 from app.database.timing import get_db_time_ms, reset_db_time
 from app.notifications.routes import router as notifications_router
@@ -65,7 +69,9 @@ async def lifespan(app: FastAPI):
     start_graph_subscription_scheduler()
     start_graph_mail_poll_scheduler()
     start_draft_retention_scheduler()
+    start_rule_run_scheduler()
     yield
+    shutdown_rule_run_scheduler()
     shutdown_draft_retention_scheduler()
     shutdown_graph_mail_poll_scheduler()
     shutdown_graph_subscription_scheduler()

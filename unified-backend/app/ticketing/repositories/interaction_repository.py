@@ -11,12 +11,34 @@ from app.core.request_timing import timed_stage
 from app.ticketing.enums import EscalationStatus, InteractionDirection, InteractionStatus, TicketPriority
 from app.ticketing.models.client import Client
 from app.ticketing.models.interaction import Interaction
+from app.ticketing.models.message_read_receipt import MessageReadReceipt
 from app.ticketing.models.ticket import Ticket
 from app.ticketing.models.ticket_escalation import TicketEscalation
 from app.ticketing.schemas.interaction import (
     InteractionCreate,
     InteractionUpdate,
 )
+
+
+def _otp_view_conditions() -> tuple:
+    """
+    The Mail "OTPs" section's own predicate (on top of list_inbox's
+    usual root/EMAIL/visible base and the caller's role scope): an
+    inbound, not-yet-ticketed thread root the existing OTP classifier
+    flagged (Interaction.is_otp), still in an inbox state (PENDING or
+    ASSIGNED). The "pending" and "replied" views exclude is_otp roots,
+    so an OTP root lives here instead of the Inbox, never in both.
+    Archiving an OTP moves it to "archived", and a ticket made from one
+    moves it to "ticketed", same as any other Inbox item. Shared by
+    list_inbox and count_by_view so the list and its badge can't drift.
+    """
+
+    return (
+        Interaction.is_otp.is_(True),
+        Interaction.ticket_id.is_(None),
+        Interaction.direction == InteractionDirection.INBOUND,
+        Interaction.status.in_((InteractionStatus.PENDING, InteractionStatus.ASSIGNED)),
+    )
 
 
 class InteractionVisiblePage:
@@ -518,6 +540,12 @@ class InteractionRepository:
           - "all": every root email regardless of state — the "All
             Inboxes" overview, normally paired with no account_manager
             scoping.
+          - "otp": the Mail "OTPs" section — roots the existing OTP
+            classifier flagged (Interaction.is_otp). See
+            _otp_view_conditions. "pending" and "replied" exclude these
+            roots, so OTPs never show in the Inbox. Same role scope,
+            client/category filters, search and pagination as every
+            other view.
 
         `limit=None` (the default) preserves this method's original
         unbounded behavior, with `total` just `len(items)` — no
@@ -641,6 +669,9 @@ class InteractionRepository:
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.PENDING,
                 Interaction.direction == InteractionDirection.INBOUND,
+                # OTP roots live in the "otp" view instead — see
+                # _otp_view_conditions.
+                Interaction.is_otp.is_(False),
             ]
             if account_manager_id is None:
                 # A filed item (folder_id set, whether by a Rule's
@@ -676,7 +707,10 @@ class InteractionRepository:
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.ASSIGNED,
                 Interaction.direction == InteractionDirection.INBOUND,
+                Interaction.is_otp.is_(False),
             )
+        elif view == "otp":
+            query = query.where(*_otp_view_conditions())
         elif view == "ticketed":
             query = query.where(Interaction.ticket_id.isnot(None))
         elif view == "archived":
@@ -909,6 +943,7 @@ class InteractionRepository:
         extra_ticket_ids: list[UUID] | None = None,
         account_manager_category_ids: list[UUID] | None = None,
         account_manager_self_filed_folder_ids: list[UUID] | None = None,
+        viewer_user_id: UUID | None = None,
     ) -> dict[str, int]:
         """
         One query, five conditional counts (Postgres FILTER) — the
@@ -923,6 +958,12 @@ class InteractionRepository:
         Pending-count exception as list_inbox's own param of the same
         name; kept in lockstep with it so this badge count can never
         disagree with the actual Pending list.
+
+        Also returns "otp" (every root in list_inbox's "otp" view) and
+        "otp_unread" (those `viewer_user_id` has no read receipt for —
+        the same message_read_receipts rows InboxItemResponse.is_read
+        reads, keyed by thread root). With no `viewer_user_id`,
+        "otp_unread" equals "otp".
         """
 
         # Direction filters mirror list_inbox's own — see that method's
@@ -932,6 +973,7 @@ class InteractionRepository:
             Interaction.ticket_id.is_(None),
             Interaction.status == InteractionStatus.PENDING,
             Interaction.direction == InteractionDirection.INBOUND,
+            Interaction.is_otp.is_(False),
         ]
         if account_manager_id is None:
             pending_filter_conditions.append(Interaction.folder_id.is_(None))
@@ -948,12 +990,22 @@ class InteractionRepository:
         # else: account_manager_id set but this Account Manager authored
         # no folder-filing rules — no folder_id restriction at all.
 
+        otp_unread_conditions = list(_otp_view_conditions())
+        if viewer_user_id is not None:
+            otp_unread_conditions.append(
+                ~exists().where(
+                    MessageReadReceipt.user_id == viewer_user_id,
+                    MessageReadReceipt.interaction_id == Interaction.interaction_id,
+                )
+            )
+
         query = select(
             func.count().filter(*pending_filter_conditions),
             func.count().filter(
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.ASSIGNED,
                 Interaction.direction == InteractionDirection.INBOUND,
+                Interaction.is_otp.is_(False),
             ),
             func.count().filter(Interaction.ticket_id.isnot(None)),
             func.count().filter(
@@ -962,6 +1014,8 @@ class InteractionRepository:
                 Interaction.direction == InteractionDirection.INBOUND,
             ),
             func.count(),
+            func.count().filter(*_otp_view_conditions()),
+            func.count().filter(*otp_unread_conditions),
         )
 
         if account_manager_id is not None or client_id is not None:
@@ -1003,7 +1057,7 @@ class InteractionRepository:
         )
 
         result = await self.db.execute(query)
-        pending, replied, ticketed, archived, all_count = result.one()
+        pending, replied, ticketed, archived, all_count, otp, otp_unread = result.one()
 
         return {
             "pending": pending,
@@ -1011,6 +1065,8 @@ class InteractionRepository:
             "ticketed": ticketed,
             "archived": archived,
             "all": all_count,
+            "otp": otp,
+            "otp_unread": otp_unread,
         }
 
     async def list_thread(
@@ -1775,6 +1831,34 @@ class InteractionRepository:
         await self.db.refresh(interaction)
 
         return interaction
+
+    async def set_folder_if_unfiled(
+        self,
+        interaction: Interaction,
+        folder_id: UUID,
+    ) -> bool:
+        """
+        Files `interaction` into `folder_id` only if it is still
+        unfiled — one conditional UPDATE, so a concurrent manual move
+        (or another rule's filing) that lands first always wins. Used by
+        "Run rule now", which must never overwrite an existing filing on
+        historical mail. Returns whether this call filed it; either way
+        `interaction` is refreshed to the row's current folder_id.
+        """
+
+        result = await self.db.execute(
+            update(Interaction)
+            .where(
+                Interaction.interaction_id == interaction.interaction_id,
+                Interaction.folder_id.is_(None),
+            )
+            .values(folder_id=folder_id)
+            .execution_options(synchronize_session=False)
+        )
+
+        await self.db.refresh(interaction, attribute_names=["folder_id"])
+
+        return bool(result.rowcount)
 
     async def clear_folder_for_folder_id(self, folder_id: UUID) -> int:
         """

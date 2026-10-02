@@ -121,7 +121,7 @@ def _split_uuids(raw: str | None) -> list[UUID]:
 async def get_inbox(
     client_id: UUID | None = Query(default=None),
     folder_id: UUID | None = Query(default=None),
-    view: str = Query(default="pending", pattern="^(pending|replied|ticketed|archived|all)$"),
+    view: str = Query(default="pending", pattern="^(pending|replied|ticketed|archived|all|otp)$"),
     scope: str = Query(default="mine", pattern="^(mine|all)$"),
     search: str | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1, le=200),
@@ -140,7 +140,9 @@ async def get_inbox(
     `view` selects which root emails: not-yet-actioned ("pending"),
     replied-but-never-ticketed ("replied"), promoted-to-a-ticket
     ("ticketed"), marked Informational/Archive ("archived"), or every
-    one of them ("all").
+    one of them ("all"). "otp" is the Mail "OTPs" section: roots the
+    existing OTP classifier flagged, which "pending"/"replied" exclude
+    (see InteractionRepository.list_inbox) — under the same role scope.
 
     `folder_id` further narrows to one custom folder — orthogonal to
     `view`, composes with any of the above.
@@ -312,7 +314,8 @@ async def get_view_counts(
     Pending/Replied/Ticketed/Archived/All badge counts in one query,
     under the same role scoping as GET /inbox — lets the Mail
     sidebar show accurate tab counts without fetching each tab's
-    actual row data until it's opened.
+    actual row data until it's opened. Also "otp"/"otp_unread" — the
+    OTPs section's total and the caller's own unread count.
     """
 
     repository = InteractionRepository(db)

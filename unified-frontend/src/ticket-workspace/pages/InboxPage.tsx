@@ -24,6 +24,7 @@ import type { AttachmentMeta } from "@tw/types";
 const VIEW_LABELS: Record<MailViewKey, string> = {
   pending: "All",
   unassigned: "Inbox",
+  otp: "OTPs",
   mine: "My Tickets",
   sent: "Sent",
   drafts: "Drafts",

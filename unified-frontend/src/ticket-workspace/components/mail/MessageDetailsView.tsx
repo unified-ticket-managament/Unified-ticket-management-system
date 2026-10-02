@@ -636,11 +636,11 @@ export function MessageDetailsView({
   // backend check in interaction_service.py). Reuses this file's own
   // useApiAction convention (loading state + toast-on-error) rather
   // than a hand-rolled boolean.
-  const setUser = useAuthStore((s) => s.setUser);
+  const refreshUser = useAuthStore((s) => s.refreshUser);
   const replyAccessCheck = useApiAction(async (mode: "reply" | "replyAll") => {
     try {
       const freshUser = await authService.me();
-      setUser(freshUser); // keeps every other permission-derived UI in this session in sync too
+      refreshUser(freshUser); // keeps every other permission-derived UI in this session in sync too (merges — never reverts a just-dragged Mail panel width)
       const hasFlat = freshUser.permissions.includes("communication:reply_external");
       const hasScoped =
         freshUser.scoped_permissions?.["communication:reply_external"]?.includes(

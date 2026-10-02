@@ -96,7 +96,7 @@ export function TicketComposer({
   const { activeTicket, timeline } = useWorkflowContext();
   const { currentUser } = useAuthContext();
   const { pushToast } = useToast();
-  const setUser = useAuthStore((s) => s.setUser);
+  const refreshUser = useAuthStore((s) => s.refreshUser);
   const [activeMode, setActiveMode] = useState<ComposerMode>(mode);
   // HTML string (Tiptap), not plain text — see RichTextEditor.tsx.
   // Flattened to plain text (htmlToPlainText) at send time for the
@@ -241,8 +241,8 @@ export function TicketComposer({
   // communication:reply_internal grant rather than a stale one.
   useEffect(() => {
     if (activeMode !== "note") return;
-    authService.me().then(setUser).catch(() => {});
-  }, [activeMode, setUser]);
+    authService.me().then(refreshUser).catch(() => {});
+  }, [activeMode, refreshUser]);
 
   // Envelope preview — derived from the latest inbound email on this
   // ticket's timeline, so the agent sees exactly where a reply will

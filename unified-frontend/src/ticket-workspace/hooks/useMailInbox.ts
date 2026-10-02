@@ -21,6 +21,7 @@ import {
   uploadDraftAttachment as uploadDraftAttachmentRequest,
   type ComposeEmailPayload,
   type ForwardToInternalUserPayload,
+  type InboxViewCounts,
 } from "@tw/api/inbox";
 import { deleteAttachment } from "@tw/api/interaction";
 import { createMailFolder, deleteMailFolder, listMailFolders } from "@tw/api/mailFolder";
@@ -331,7 +332,10 @@ function matchesSearch(item: InboxItem, term: string): boolean {
   return SEARCHABLE_FIELDS.some((getField) => getField(item).toLowerCase().includes(term));
 }
 
-type BaseTabKey = "pending" | "replied" | "ticketed" | "archived" | "all";
+// "otp" (the OTPs section) is a plain GET /inbox?view=otp tab like the
+// others — the backend already keeps OTP roots out of "pending"/
+// "replied", so nothing here filters OTPs client-side.
+type BaseTabKey = "pending" | "replied" | "ticketed" | "archived" | "all" | "otp";
 // "replied" here is the internal, role-scoped, status-based tab
 // (ticket_id IS NULL AND status==ASSIGNED — "this thread has been
 // responded to by someone in scope, not yet ticketed") — it still
@@ -415,6 +419,7 @@ export function useMailInbox() {
     ticketed: [],
     archived: [],
     all: [],
+    otp: [],
   });
   const [sentItems, setSentItems] = useState<InboxItem[]>([]);
   // Reply messages this user has personally sent — the "Replied"
@@ -466,18 +471,21 @@ export function useMailInbox() {
     ticketed: 0,
     archived: 0,
     all: 0,
+    otp: 0,
   });
   // Real Pending/Replied/Ticketed/Archived/All counts, fetched
   // eagerly via one cheap aggregate query — kept separate from
   // rowsByTab so the sidebar badges stay accurate even for a tab
   // whose actual row data hasn't been fetched yet (see loadedKeysRef
   // below).
-  const [baseViewCounts, setBaseViewCounts] = useState<Record<BaseTabKey, number>>({
+  const [baseViewCounts, setBaseViewCounts] = useState<InboxViewCounts>({
     pending: 0,
     replied: 0,
     ticketed: 0,
     archived: 0,
     all: 0,
+    otp: 0,
+    otp_unread: 0,
   });
   // Which views/tabs have actually been fetched at least once — a
   // ref, not state, since it's pure bookkeeping read by refresh()/
@@ -1160,9 +1168,22 @@ export function useMailInbox() {
     );
   }, []);
 
+  // Keeps the OTPs badge (server-side otp_unread) in step with an
+  // OTP row's read-state change in this session, without refetching
+  // the counts — same instant-feedback role as patchRowIsRead.
+  function adjustOtpUnread(interactionId: string, isRead: boolean) {
+    const otpRow = rowsByTab.otp.find((item) => item.interaction_id === interactionId);
+    if (!otpRow || Boolean(otpRow.is_read) === isRead) return;
+    setBaseViewCounts((prev) => ({
+      ...prev,
+      otp_unread: Math.max(0, prev.otp_unread + (isRead ? -1 : 1)),
+    }));
+  }
+
   async function markRead(interactionId: string) {
     const result = await runMarkRead(interactionId);
     if (result) {
+      adjustOtpUnread(interactionId, true);
       patchRowIsRead(interactionId, true);
       if (selectedEmail?.interaction_id === interactionId) {
         setSelectedEmail({ ...selectedEmail, is_read: true });
@@ -1173,6 +1194,7 @@ export function useMailInbox() {
   async function markUnread(interactionId: string) {
     const result = await runMarkUnread(interactionId);
     if (result) {
+      adjustOtpUnread(interactionId, false);
       patchRowIsRead(interactionId, false);
       if (selectedEmail?.interaction_id === interactionId) {
         setSelectedEmail({ ...selectedEmail, is_read: false });
@@ -1229,6 +1251,7 @@ export function useMailInbox() {
       // refetch. When markRead is false (a refresh/re-open of an
       // already-open thread), reflect the response's real state
       // instead of forcing it read.
+      adjustOtpUnread(interactionId, result.is_read);
       patchRowIsRead(interactionId, result.is_read);
       return;
     }
@@ -1496,6 +1519,7 @@ export function useMailInbox() {
     ticketed: rowsByTab.ticketed,
     archived: rowsByTab.archived,
     all: rowsByTab.all,
+    otp: rowsByTab.otp,
     unassigned,
     mine,
     sent: sentItems,
@@ -1541,6 +1565,9 @@ export function useMailInbox() {
       replied: repliedItems.length,
       drafts: draftItems.length,
       system: systemNotifications.filter((n) => !n.is_read).length,
+      // Unread, like System — the server's authorized unread OTP count,
+      // never part of the Inbox/All counts above.
+      otp: baseViewCounts.otp_unread,
     }),
     [
       baseViewCounts,

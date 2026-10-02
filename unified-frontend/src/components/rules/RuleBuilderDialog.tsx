@@ -83,6 +83,10 @@ export function RuleBuilderDialog({
   const [exceptions, setExceptions] = useState<RuleConditionGroup>(emptyGroup());
   const [actions, setActions] = useState<RuleActionItem[]>([]);
   const [stopProcessing, setStopProcessing] = useState(false);
+  // One-time "Run rule now" command — never part of the saved rule, so
+  // it always starts unchecked, for a new rule and an edit alike (see
+  // the re-seed effect below). Only sent as run_now on this one save.
+  const [runNow, setRunNow] = useState(false);
   const [sharedUserIds, setSharedUserIds] = useState<string[]>([]);
   const [sharedDistributionListIds, setSharedDistributionListIds] = useState<string[]>([]);
   const [isSaving, setIsSaving] = useState(false);
@@ -91,6 +95,7 @@ export function RuleBuilderDialog({
   // fresh "New Rule" (rule === null) or editing a specific one.
   useEffect(() => {
     if (!open) return;
+    setRunNow(false);
     if (rule) {
       setCategory(rule.category);
       setName(rule.name);
@@ -147,12 +152,18 @@ export function RuleBuilderDialog({
         : !!a.folder_name?.trim()
     );
 
+  // The backend only runs enabled rules, so a disabled rule can't be run
+  // against existing mail either.
+  const willRunNow = runNow && isEnabled;
+  const hasForwardAction = actions.some((a) => a.type === "forward_to");
+
   async function handleSave() {
     if (!isValid) return;
     setIsSaving(true);
     try {
+      let saved: RuleResponse;
       if (isEditing && rule) {
-        await updateRule(rule.rule_id, {
+        saved = await updateRule(rule.rule_id, {
           name: name.trim(),
           is_enabled: isEnabled,
           conditions,
@@ -161,10 +172,10 @@ export function RuleBuilderDialog({
           stop_processing: stopProcessing,
           shared_user_ids: sharedUserIds,
           shared_distribution_list_ids: sharedDistributionListIds,
+          run_now: willRunNow,
         });
-        toast({ title: "Rule updated" });
       } else {
-        await createRule({
+        saved = await createRule({
           name: name.trim(),
           category,
           is_enabled: isEnabled,
@@ -174,8 +185,21 @@ export function RuleBuilderDialog({
           stop_processing: stopProcessing,
           shared_user_ids: sharedUserIds,
           shared_distribution_list_ids: sharedDistributionListIds,
+          run_now: willRunNow,
         });
-        toast({ title: "Rule created" });
+      }
+      // The historical run happens in the background — never claim it
+      // has finished; the Rules list shows its progress.
+      if (willRunNow && saved.active_run) {
+        toast({
+          title: "Rule saved",
+          description:
+            saved.active_run.status === "running"
+              ? "This rule is already running against existing messages."
+              : "Running this rule against existing messages…",
+        });
+      } else {
+        toast({ title: isEditing ? "Rule updated" : "Rule created" });
       }
       onSaved();
       onOpenChange(false);
@@ -379,6 +403,30 @@ export function RuleBuilderDialog({
             <Checkbox checked={stopProcessing} onCheckedChange={(v) => setStopProcessing(!!v)} />
             Stop processing more rules
           </label>
+
+          {/* Run rule now — a one-time command for this save only. The
+              backend scopes it to mail both the rule's owner and the
+              person saving may act on; it's never an org-wide scan. */}
+          <div className="space-y-1">
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={willRunNow}
+                disabled={!isEnabled}
+                onCheckedChange={(v) => setRunNow(!!v)}
+              />
+              Run rule now
+            </label>
+            <p className="pl-6 text-xs text-muted-foreground">
+              {isEnabled
+                ? "Run this rule once against existing matching emails after saving."
+                : "Enable the rule to run it against existing emails."}
+            </p>
+            {willRunNow && hasForwardAction && (
+              <p className="pl-6 text-xs text-warning">
+                Matching existing emails will be forwarded for real — up to 500 per run.
+              </p>
+            )}
+          </div>
         </div>
 
         <DialogFooter>

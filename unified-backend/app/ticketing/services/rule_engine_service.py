@@ -1,6 +1,9 @@
 import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -43,6 +46,46 @@ _FORWARD_NOTIFICATION_TYPES = [
     NotificationType.MAIL_RULE_FORWARDED,
     NotificationType.OTP_FORWARDED,
 ]
+
+# Advisory-lock namespace for "a rule forward of this interaction is in
+# progress" — shared by the live path (transaction-scoped lock, below)
+# and Run rule now (a session-scoped lock held on its own dedicated
+# connection across the SENDING commit — see rule_run_worker), so the
+# two can never both pass the durable dedup check for the same email
+# before either has recorded its forward.
+RULE_FORWARD_LOCK_NAMESPACE = 731_402
+
+RULE_FORWARD_LOCK_SQL = text("SELECT pg_advisory_xact_lock(:ns, hashtext(:key))")
+
+
+@dataclass
+class RunNowActionContext:
+    """
+    Passed to _execute_action only by "Run rule now" (rule_run_worker)
+    — never by the live intake path, whose behavior is unchanged when
+    this is None. Carries the run's identity into the audit rows the
+    action itself writes, and the two places run-now's semantics differ
+    from intake on purpose:
+    - move_to_folder never overwrites an existing filing (a human's or
+      another rule's) — it only files mail that is still unfiled, via an
+      atomic conditional update so a concurrent manual move wins.
+    - forward_to calls `before_forward_send` after dedup has resolved the
+      final recipient set but before the first external send, so the
+      worker can durably record SENDING first (at-most-once).
+    `outcome` is filled in by the action for the worker to record.
+    """
+
+    run_id: UUID
+    triggered_by: UUID
+    before_forward_send: Callable[[list[UUID]], Awaitable[None]] | None = None
+    outcome: dict = field(default_factory=dict)
+
+    def audit_values(self) -> dict:
+        return {
+            "source": "run_now",
+            "run_id": self.run_id,
+            "triggered_by": self.triggered_by,
+        }
 
 
 class RuleEngineService:
@@ -197,7 +240,11 @@ class RuleEngineService:
         interaction: Interaction,
         rule: Rule,
         forwarded_user_ids: set[UUID] | None = None,
+        run_now: RunNowActionContext | None = None,
     ) -> None:
+        # `rule` only needs rule_id/name/category/created_by — run-now
+        # passes its frozen snapshot of the rule here, not the live row.
+        #
         # Folder creation is normally already done eagerly by
         # RuleService.create/update the moment the rule was saved —
         # this call is a safety net (idempotent get-or-create, via the
@@ -218,7 +265,30 @@ class RuleEngineService:
                 created_by=rule.created_by,
                 mail_folder_repository=self.mail_folder_repository,
             )
-            await self.interaction_repository.set_folder(interaction, folder.folder_id)
+            if run_now is not None:
+                # Historical mail: never overwrite an existing filing.
+                # Already in the target folder is a no-op with no audit
+                # row, so a re-run can't pile up duplicate events.
+                if old_folder_id == folder.folder_id:
+                    run_now.outcome.update(status="already_applied", folder_id=folder.folder_id)
+                    return
+                filed = await self.interaction_repository.set_folder_if_unfiled(
+                    interaction, folder.folder_id
+                )
+                if not filed:
+                    current_folder_id = interaction.folder_id
+                    if current_folder_id == folder.folder_id:
+                        run_now.outcome.update(status="already_applied", folder_id=folder.folder_id)
+                    else:
+                        run_now.outcome.update(
+                            status="skipped",
+                            skip_reason="already_filed",
+                            folder_id=current_folder_id,
+                        )
+                    return
+                run_now.outcome.update(status="applied", folder_id=folder.folder_id)
+            else:
+                await self.interaction_repository.set_folder(interaction, folder.folder_id)
             logger.info(
                 "RULE_FOLDER_FILED rule_id=%s interaction_id=%s folder_id=%s folder_name=%r",
                 rule.rule_id,
@@ -254,7 +324,11 @@ class RuleEngineService:
                 actor_name=actor_name,
                 actor_role=actor_role,
                 old_values={"folder_id": old_folder_id, "rule_id": rule.rule_id},
-                new_values={"folder_id": folder.folder_id, "rule_id": rule.rule_id},
+                new_values={
+                    "folder_id": folder.folder_id,
+                    "rule_id": rule.rule_id,
+                    **(run_now.audit_values() if run_now is not None else {}),
+                },
             )
 
         elif action.type == RuleActionType.FORWARD_TO:
@@ -273,7 +347,25 @@ class RuleEngineService:
                 rule_name=rule.name,
                 rule_created_by=rule.created_by,
                 forwarded_user_ids=forwarded_user_ids,
+                run_now=run_now,
             )
+
+    async def _lock_interaction_for_forward(self, interaction_id: UUID) -> None:
+        """
+        Live path only: a transaction-scoped advisory lock (released at
+        the intake request's own commit/rollback) so a concurrent "Run
+        rule now" forward of the same email — which holds the same key
+        on its own connection — can't race the durable dedup check
+        below. Skipped for hand-rolled fake sessions in unit tests.
+        """
+
+        db = self.interaction_repository.db
+        if not isinstance(db, AsyncSession):
+            return
+        await db.execute(
+            RULE_FORWARD_LOCK_SQL,
+            {"ns": RULE_FORWARD_LOCK_NAMESPACE, "key": str(interaction_id)},
+        )
 
     async def _forward_to_employees(
         self,
@@ -285,8 +377,14 @@ class RuleEngineService:
         rule_name: str | None = None,
         rule_created_by: UUID | None = None,
         forwarded_user_ids: set[UUID] | None = None,
+        run_now: RunNowActionContext | None = None,
     ) -> None:
         """
+        `run_now` — see RunNowActionContext. When set, the outcome
+        (sent/failed/duplicate-skipped recipient ids) is reported back
+        through it, and its before_forward_send hook runs once the final
+        recipient set is known, right before the first external send.
+
         Shared by OTP Rules and Mail Rules alike (`rule_category`
         selects only the notification title/type below) — two
         distinct, complementary effects, not one or the other: a real
@@ -331,7 +429,12 @@ class RuleEngineService:
                 rule_category,
                 interaction.interaction_id,
             )
+            if run_now is not None:
+                run_now.outcome.update(status="skipped", skip_reason="no_active_recipients")
             return
+
+        if run_now is None:
+            await self._lock_interaction_for_forward(interaction.interaction_id)
 
         # Idempotency guard — the actual fix for a recipient seeing the
         # same forwarded email twice. Two layers, both keyed on "has
@@ -378,8 +481,18 @@ class RuleEngineService:
                     continue
             to_forward[user_id] = recipient_email
 
+        if run_now is not None:
+            run_now.outcome["skipped_duplicate_user_ids"] = [
+                user_id for user_id in emails_by_id if user_id not in to_forward
+            ]
+
         if not to_forward:
+            if run_now is not None:
+                run_now.outcome.update(status="already_applied")
             return
+
+        if run_now is not None and run_now.before_forward_send is not None:
+            await run_now.before_forward_send(list(to_forward))
 
         payload = interaction.payload or {}
         subject = payload.get("subject") or "(no subject)"
@@ -444,6 +557,13 @@ class RuleEngineService:
         if forwarded_user_ids is not None:
             forwarded_user_ids |= succeeded_user_ids
 
+        if run_now is not None:
+            run_now.outcome.update(
+                status="sent" if succeeded_user_ids else "failed",
+                sent_user_ids=list(succeeded_user_ids),
+                failed_user_ids=[u for u in to_forward if u not in succeeded_user_ids],
+            )
+
         if not succeeded_user_ids:
             return
 
@@ -501,6 +621,11 @@ class RuleEngineService:
                     # rule-driven forward from a manual one.
                     "rule_name": rule_name,
                     "dispatch_status": "SENT",
+                    **(
+                        {"source": "run_now", "run_id": str(run_now.run_id)}
+                        if run_now is not None
+                        else {}
+                    ),
                 },
                 is_visible=True,
                 # A synthetic id for the row itself — distinct from each
@@ -534,6 +659,7 @@ class RuleEngineService:
                 "forwarded_interaction_id": interaction.interaction_id,
                 "rule_id": rule_id,
                 "recipient_user_ids": list(succeeded_user_ids),
+                **(run_now.audit_values() if run_now is not None else {}),
             },
         )
 

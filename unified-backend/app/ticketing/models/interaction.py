@@ -351,6 +351,23 @@ class Interaction(Base):
         server_default="false",
     )
 
+    # The persisted result of the existing semantic OTP classifier
+    # (otp_classifier.classify_otp_email), stamped once per inbound
+    # EMAIL row by EmailService.receive_email — per message, never per
+    # conversation. Backs the Mail "OTPs" section: list_inbox's "otp"
+    # view selects thread roots where this is true, and its "pending"/
+    # "replied" views exclude them, so an OTP root never appears in
+    # both. A classification only — grants no visibility by itself;
+    # every OTP query still runs under the caller's normal mail scope.
+    # False for every outbound/reply/note row and every row that
+    # predates this column (see scripts/backfill_interaction_is_otp.py).
+    is_otp: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        server_default="false",
+    )
+
     # ------------------------
 
     ticket: Mapped["Ticket"] = relationship(

@@ -13,6 +13,7 @@ from app.ticketing.repositories.distribution_list_repository import (
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
+from app.ticketing.repositories.user_repository import UserRepository
 from app.ticketing.schemas.rule import (
     RuleCreate,
     RuleReorderRequest,
@@ -29,6 +30,7 @@ from app.ticketing.services.rule_folder_sync import (
     ensure_action_folders,
     folder_names_from_actions,
 )
+from app.ticketing.services.rule_run_service import RuleRunService, to_ref
 
 # Rule create/update/enable/disable/delete/reorder are system
 # administrative config changes, not "ticket-related audit activity" —
@@ -120,6 +122,46 @@ class RuleService:
             )
         )
 
+    async def _queue_run_now(self, rule: Rule, current_user: User):
+        """
+        "Run rule now": queue one background run of the just-saved rule
+        in this same transaction (so the save and the queued run commit
+        together, or neither does), or hand back the run already in
+        progress for it. Only ever reached with run_now=true — a plain
+        save never queues anything.
+        """
+
+        run, created = await RuleRunService(self.rule_repository.db).queue_run(rule, current_user)
+        if created:
+            await self._log_rule_action(
+                current_user=current_user,
+                action="rule.run_now.requested",
+                entity_id=rule.rule_id,
+                new_value={
+                    "run_id": str(run.run_id),
+                    "rule_owner_id": str(rule.created_by) if rule.created_by else None,
+                    "triggered_by": str(current_user.user_id),
+                    "impersonator_id": (
+                        str(run.impersonator_id) if run.impersonator_id else None
+                    ),
+                    "actions": [a.get("type") for a in rule.actions if isinstance(a, dict)],
+                },
+            )
+        return to_ref(run)
+
+    async def get_latest_run(self, rule_id: UUID, current_user: User):
+        ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
+        rule = await self._get_or_404(rule_id)
+        user_dl_ids = await self._user_distribution_list_ids(current_user)
+        _ensure_can_view(rule, current_user, user_dl_ids)
+        run = await RuleRunService(self.rule_repository.db).get_latest(rule_id)
+        if run is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="This rule has not been run against existing messages.",
+            )
+        return RuleRunService.to_summary(run)
+
     async def _user_distribution_list_ids(self, current_user: User) -> set[UUID]:
         return await self.distribution_list_repository.list_active_list_ids_for_user(
             current_user.user_id
@@ -190,7 +232,19 @@ class RuleService:
             rules = await self.rule_repository.list_owned_or_shared(
                 current_user.user_id, user_dl_ids
             )
-        return [self._to_response(r, current_user, user_dl_ids) for r in rules]
+        active_runs = await RuleRunService(self.rule_repository.db).list_active_by_rule_ids(
+            [r.rule_id for r in rules]
+        )
+        creator_names = await UserRepository(self.rule_repository.db).get_names_by_ids(
+            list({r.created_by for r in rules if r.created_by})
+        )
+        responses = []
+        for r in rules:
+            response = self._to_response(r, current_user, user_dl_ids)
+            response.active_run = to_ref(active_runs.get(r.rule_id))
+            response.created_by_name = creator_names.get(r.created_by)
+            responses.append(response)
+        return responses
 
     async def get(self, rule_id: UUID, current_user: User) -> RuleResponse:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
@@ -254,7 +308,10 @@ class RuleService:
             },
         )
 
-        return RuleResponse.model_validate(created)
+        response = RuleResponse.model_validate(created)
+        if request.run_now:
+            response.active_run = await self._queue_run_now(created, current_user)
+        return response
 
     async def update(self, rule_id: UUID, request: RuleUpdate, current_user: User) -> RuleResponse:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)
@@ -307,7 +364,10 @@ class RuleService:
             },
         )
 
-        return RuleResponse.model_validate(saved)
+        response = RuleResponse.model_validate(saved)
+        if request.run_now:
+            response.active_run = await self._queue_run_now(saved, current_user)
+        return response
 
     async def set_enabled(self, rule_id: UUID, is_enabled: bool, current_user: User) -> RuleResponse:
         ensure_has_permission(current_user, RULE_MANAGE_PERMISSION)

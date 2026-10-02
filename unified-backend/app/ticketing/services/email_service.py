@@ -40,7 +40,7 @@ from app.ticketing.services.attachment_service import (
 )
 from app.ticketing.services.audit_log_service import AuditLogService
 from app.ticketing.services.otp_classifier import classify_otp_email
-from app.ticketing.services.rule_conditions import RuleEmailContext
+from app.ticketing.services.rule_conditions import build_rule_email_context
 from app.ticketing.services.rule_engine_service import RuleEngineService
 from app.ticketing.services.sla_service import SLAService
 from app.ticketing.services.sla_escalation_rules import RecipientContext, resolve_team_lead
@@ -417,6 +417,22 @@ class EmailService:
         }
 
         # ---------------------------------------
+        # Semantic OTP classification — the one existing classifier
+        # (otp_classifier.classify_otp_email), run once per message
+        # before the row is created so its result can be persisted on
+        # it (Interaction.is_otp, which drives the Mail "OTPs" section
+        # and the Inbox's OTP exclusion). The same result object is
+        # reused below for Response SLA completion and the Mail/OTP
+        # Rules context — never re-classified.
+        # ---------------------------------------
+
+        otp_classification = classify_otp_email(
+            email.subject,
+            email.body,
+            threshold=settings.otp_nlp_confidence_threshold,
+        )
+
+        # ---------------------------------------
         # Convert Email → Interaction
         # ---------------------------------------
 
@@ -463,6 +479,8 @@ class EmailService:
     # _dispatch_columns_from_payload). See interaction_service.py's
     # own docstring for that mirroring convention.
     provider_message_id=email.provider_message_id,
+
+    is_otp=otp_classification.is_otp,
 )
 
         created = (
@@ -659,13 +677,9 @@ class EmailService:
         # SLAService.complete_first_response_clock. The root
         # interaction id, not this reply's own id, since
         # FirstResponseSLA is always keyed by the thread root.
+        # `otp_classification` was computed before the row was
+        # created (see "Semantic OTP classification" above).
         # ---------------------------------------
-
-        otp_classification = classify_otp_email(
-            email.subject,
-            email.body,
-            threshold=settings.otp_nlp_confidence_threshold,
-        )
 
         logger.info(
             "OTP classification for interaction %s: is_otp=%s confidence=%.2f (threshold=%.2f)",
@@ -698,17 +712,13 @@ class EmailService:
         # ---------------------------------------
 
         if self.rule_engine_service is not None:
-            rule_context = RuleEmailContext(
+            rule_context = build_rule_email_context(
                 from_email=email.from_email,
                 subject=email.subject,
                 body=email.body,
                 client_id=client.client_id if client is not None else None,
-                has_attachments=bool(attachment_metas),
-                cc_recipients=[addr.lower() for addr in (email.cc or [])],
-                attachment_filenames=[meta.filename for meta in attachment_metas],
-                attachment_mime_types=[
-                    meta.mime_type for meta in attachment_metas if meta.mime_type
-                ],
+                cc=email.cc,
+                attachments=[(meta.filename, meta.mime_type) for meta in attachment_metas],
                 otp_detected=otp_classification.is_otp,
             )
             await self.rule_engine_service.evaluate_and_execute_for_email(

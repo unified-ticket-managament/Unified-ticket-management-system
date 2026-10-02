@@ -75,17 +75,23 @@ export async function getFolderCounts(
 // GET /inbox/view-counts — Pending/Replied/Ticketed/Archived/All
 // badge counts in one query, under the same role scoping as
 // GET /inbox. Lets the sidebar show accurate tab counts without
-// fetching each tab's actual row data until it's opened.
-export async function getViewCounts(
-  clientId?: string
-): Promise<{ pending: number; replied: number; ticketed: number; archived: number; all: number }> {
-  const { data } = await apiClient.get<{
-    pending: number;
-    replied: number;
-    ticketed: number;
-    archived: number;
-    all: number;
-  }>("/inbox/view-counts", { params: { client_id: clientId } });
+// fetching each tab's actual row data until it's opened. `otp` is the
+// OTPs section's total, `otp_unread` the caller's own unread OTP count
+// (the OTPs badge) — both already excluded from `pending`/`replied`.
+export interface InboxViewCounts {
+  pending: number;
+  replied: number;
+  ticketed: number;
+  archived: number;
+  all: number;
+  otp: number;
+  otp_unread: number;
+}
+
+export async function getViewCounts(clientId?: string): Promise<InboxViewCounts> {
+  const { data } = await apiClient.get<InboxViewCounts>("/inbox/view-counts", {
+    params: { client_id: clientId },
+  });
   return data;
 }
 

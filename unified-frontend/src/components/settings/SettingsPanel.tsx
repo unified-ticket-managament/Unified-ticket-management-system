@@ -81,7 +81,7 @@ export function SettingsPanel({ open, record, authUser }: SettingsPanelProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
-  const setUser = useAuthStore((s) => s.setUser);
+  const refreshUser = useAuthStore((s) => s.refreshUser);
   const setLanguage = useSettingsStore((s) => s.setLanguage);
 
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
@@ -131,7 +131,7 @@ export function SettingsPanel({ open, record, authUser }: SettingsPanelProps) {
     },
     onSuccess: async () => {
       const me = await authService.me();
-      setUser(me);
+      refreshUser(me);
       await queryClient.invalidateQueries({ queryKey: [PROFILE_RECORD_QUERY_KEY] });
       toast({
         title: t("settings.preferencesUpdatedToast"),
@@ -153,7 +153,7 @@ export function SettingsPanel({ open, record, authUser }: SettingsPanelProps) {
     },
     onSuccess: async () => {
       const me = await authService.me();
-      setUser(me);
+      refreshUser(me);
       await queryClient.invalidateQueries({ queryKey: [PROFILE_RECORD_QUERY_KEY] });
       toast({
         title: t("settings.signatureUpdatedToast"),

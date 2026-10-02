@@ -26,11 +26,15 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuthStore } from "@/store/auth-store";
 import {
   deleteRule,
+  getLatestRuleRun,
   listRules,
   reorderRule,
   setRuleEnabled,
   type RuleCategory,
   type RuleResponse,
+  type RuleRunRef,
+  type RuleRunStatus,
+  type RuleRunSummary,
 } from "@tw/api/rules";
 
 import { RuleBuilderDialog } from "@/components/rules/RuleBuilderDialog";
@@ -80,6 +84,101 @@ function summarizeActions(rule: RuleResponse): string {
 // summaries, which are free-text and often longer than a table column
 // comfortably fits. Same data/handlers as before this redesign, only
 // the surrounding markup changed.
+const RUN_STATUS_LABELS: Record<RuleRunStatus, string> = {
+  queued: "Queued",
+  running: "Running",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
+  capped: "Capped",
+};
+
+const RUN_STATUS_CLASSES: Record<RuleRunStatus, string> = {
+  queued: "bg-muted text-muted-foreground",
+  running: "bg-primary/10 text-primary",
+  completed: "bg-success/10 text-success",
+  failed: "bg-destructive/10 text-destructive",
+  cancelled: "bg-muted text-muted-foreground",
+  capped: "bg-warning/10 text-warning",
+};
+
+const RUN_POLL_MS = 4000;
+
+function isActiveRunStatus(status: RuleRunStatus): boolean {
+  return status === "queued" || status === "running";
+}
+
+// "Run rule now" progress for one rule. Polls only while a run is
+// queued/running (signalled by the rule's own active_run from GET
+// /rules), then keeps showing the final result for as long as the list
+// stays mounted — so a run that finishes between list refreshes isn't
+// silently lost from view.
+function RuleRunProgress({ ruleId, activeRun }: { ruleId: string; activeRun: RuleRunRef | null }) {
+  const [summary, setSummary] = useState<RuleRunSummary | null>(null);
+  const activeRunId = activeRun?.run_id ?? null;
+
+  useEffect(() => {
+    if (!activeRunId) return;
+    const controller = new AbortController();
+    let timer: number | undefined;
+
+    async function poll() {
+      try {
+        const latest = await getLatestRuleRun(ruleId, controller.signal);
+        setSummary(latest);
+        if (isActiveRunStatus(latest.status)) {
+          timer = window.setTimeout(poll, RUN_POLL_MS);
+        }
+      } catch (error) {
+        if (axios.isCancel(error)) return;
+        // A transient failure shouldn't end progress reporting — retry
+        // on the normal cadence.
+        timer = window.setTimeout(poll, RUN_POLL_MS);
+      }
+    }
+
+    poll();
+    return () => {
+      controller.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [ruleId, activeRunId]);
+
+  const status: RuleRunStatus | null = summary?.status ?? activeRun?.status ?? null;
+  if (!status) return null;
+
+  const counts = summary
+    ? [
+        ["Scanned", summary.scanned_count],
+        ["Matched", summary.matched_count],
+        ["Processed", summary.succeeded_count + summary.already_applied_count],
+        ["Skipped", summary.skipped_count],
+        ["Failed", summary.failed_count],
+      ]
+    : [];
+
+  return (
+    <div className="mt-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold uppercase tracking-wide text-muted-foreground">
+          Run against existing messages
+        </span>
+        <span className={`rounded px-1.5 py-0.5 font-medium ${RUN_STATUS_CLASSES[status]}`}>
+          {RUN_STATUS_LABELS[status]}
+        </span>
+      </div>
+      {counts.length > 0 && (
+        <p className="mt-1 text-muted-foreground">
+          {counts.map(([label, value]) => `${label} ${value}`).join(" · ")}
+        </p>
+      )}
+      {summary?.status_reason && (status === "capped" || status === "failed" || status === "cancelled") && (
+        <p className="mt-1 text-muted-foreground">{summary.status_reason}</p>
+      )}
+    </div>
+  );
+}
+
 function RuleList({
   category,
   rules,
@@ -214,6 +313,13 @@ function RuleList({
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action</p>
               <p className="mt-1 text-sm text-foreground/90">{summarizeActions(rule)}</p>
             </div>
+
+            <RuleRunProgress ruleId={rule.rule_id} activeRun={rule.active_run} />
+
+            <p className="mt-3 text-xs text-muted-foreground">
+              Created by{" "}
+              <span className="font-medium text-foreground/90">{rule.created_by_name ?? "Unknown"}</span>
+            </p>
           </div>
         );
       })}

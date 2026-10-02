@@ -17,6 +17,7 @@ from app.ticketing.schemas.rule import (
     RuleEnabledUpdate,
     RuleReorderRequest,
     RuleResponse,
+    RuleRunSummary,
     RuleUpdate,
 )
 from app.ticketing.services.rule_service import RuleService
@@ -57,6 +58,25 @@ async def get_rule(
 ):
     service = RuleService(RuleRepository(db), MailFolderRepository(db), DistributionListRepository(db), InteractionRepository(db))
     return await service.get(rule_id, current_user=current_user)
+
+
+@router.get(
+    "/{rule_id}/runs/latest",
+    response_model=RuleRunSummary,
+)
+async def get_latest_rule_run(
+    rule_id: UUID,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Progress of this rule's most recent "Run rule now" execution — the
+    UI polls this after a save with run_now=true. Same rule:manage +
+    can-view-this-rule gate as GET /rules/{id}.
+    """
+
+    service = RuleService(RuleRepository(db), MailFolderRepository(db), DistributionListRepository(db), InteractionRepository(db))
+    return await service.get_latest_run(rule_id, current_user=current_user)
 
 
 @router.post(
