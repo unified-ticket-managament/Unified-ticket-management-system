@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, Poppins } from "next/font/google";
 
 import "./globals.css";
+import { CrossTabAuthSync } from "@/components/auth/CrossTabAuthSync";
 import { Toaster } from "@/components/ui/toaster";
 import { QueryProvider } from "@/providers/query-provider";
 
@@ -26,6 +27,7 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className={`${inter.variable} ${poppins.variable} font-sans`}>
         <QueryProvider>
+          <CrossTabAuthSync />
           {children}
           <Toaster />
         </QueryProvider>
