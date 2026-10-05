@@ -181,13 +181,54 @@ describe("MessageDetailsView — Reply / Reply All composer placement", () => {
     expect(precedes(composer, screen.getByRole("heading", { name: "Message" }))).toBe(true);
   });
 
-  it("renders exactly one composer, and does so by layout order rather than scrolling", async () => {
-    const scrollIntoView = vi.fn();
-    Element.prototype.scrollIntoView = scrollIntoView;
+  it("renders exactly one composer", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
     const user = userEvent.setup();
     renderView("fullscreen");
     await user.click(screen.getByRole("button", { name: /^reply$/i }));
     await waitFor(() => expect(screen.getAllByTestId("reply-composer")).toHaveLength(1));
+  });
+
+  it.each(["panel", "fullscreen"] as const)(
+    "%s: Reply and Reply All scroll the mounted composer into view",
+    async (variant) => {
+      const scrollIntoView = vi.fn(function (this: Element) {
+        // The target must already be in the DOM when we scroll to it.
+        expect(this.querySelector('[data-testid="reply-composer"]')).not.toBeNull();
+      });
+      Element.prototype.scrollIntoView = scrollIntoView;
+      const user = userEvent.setup();
+      renderView(variant);
+
+      await user.click(screen.getByRole("button", { name: /^reply$/i }));
+      await screen.findByTestId("reply-composer");
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+      expect(scrollIntoView).toHaveBeenLastCalledWith(expect.objectContaining({ block: "nearest" }));
+
+      // Switching to Reply All re-scrolls without remounting the composer.
+      await user.click(screen.getByRole("button", { name: /reply all/i }));
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2));
+      expect(composerMounts.mock.calls.length).toBeGreaterThan(0);
+      expect(screen.getAllByTestId("reply-composer")).toHaveLength(1);
+    }
+  );
+
+  it("clicking Reply again while the composer is already open still scrolls to it", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const user = userEvent.setup();
+    renderView("panel");
+    await user.click(screen.getByRole("button", { name: /^reply$/i }));
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: /^reply$/i }));
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2));
+  });
+
+  it("auto-opening a saved draft does not scroll", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    renderView("panel", makeEmail({ draft_message: "work in progress" }));
+    await screen.findByTestId("reply-composer");
     expect(scrollIntoView).not.toHaveBeenCalled();
   });
 

@@ -665,9 +665,27 @@ export function MessageDetailsView({
     return mode;
   });
 
+  // Reply / Reply All scroll-into-view. The composer is mounted
+  // conditionally (replyMode) above the thread, so a user scrolled to the
+  // bottom of a long email would otherwise have it open off-screen. The
+  // tick is bumped only by an explicit Reply / Reply All click — never by
+  // the auto-open of a saved draft when a thread is opened — and the
+  // effect runs after the commit that mounted the composer, so the ref is
+  // populated. scrollIntoView moves only the composer's scrollable
+  // ancestors, and the wrapper is never re-keyed, so draft state is kept.
+  const replyComposerRef = useRef<HTMLDivElement>(null);
+  const [replyScrollTick, setReplyScrollTick] = useState(0);
+  useEffect(() => {
+    if (replyScrollTick === 0) return;
+    replyComposerRef.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [replyScrollTick]);
+
   async function handleReplyClick(mode: "reply" | "replyAll") {
     const result = await replyAccessCheck.run(mode);
-    if (result) setReplyMode(result);
+    if (result) {
+      setReplyMode(result);
+      setReplyScrollTick((tick) => tick + 1);
+    }
   }
   const [newTag, setNewTag] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -1405,6 +1423,7 @@ export function MessageDetailsView({
           the double-click window; only its position in this column
           changed. */}
       {!isClosed && replyMode && (
+        <div ref={replyComposerRef} className="scroll-mt-3">
         <ReplyComposer
           mode={replyMode}
           toEmail={ticketReplyDraft?.to_email ?? email.from_email}
@@ -1436,6 +1455,7 @@ export function MessageDetailsView({
           onRemoveDraftAttachment={handleRemoveDraftAttachment}
           onUploadInlineImage={handleUploadInlineImage}
         />
+        </div>
       )}
 
       {/* Attachments / Tags / Message Body — the only scrolling region */}
