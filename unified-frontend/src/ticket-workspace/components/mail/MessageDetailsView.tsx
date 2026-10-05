@@ -408,6 +408,49 @@ function Bubble({
             )}
           </div>
         )}
+        {(() => {
+          // This message's own regular attachments, shown between its
+          // header and its body (Outlook-style). Inline/embedded images
+          // (e.g. a signature logo referenced via cid:) already render
+          // inside the body via resolveCidImagesForDisplay — don't list
+          // them again here.
+          const visibleAttachments = data.attachments?.filter((a) => !a.is_inline) ?? [];
+          return visibleAttachments.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5 border-b border-border/60 pb-2.5">
+            {visibleAttachments.map((a) =>
+              a.is_external_link ? (
+                <a
+                  key={a.id}
+                  href={a.download_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Opens the original OneDrive/SharePoint link"
+                  className="flex max-w-full items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-[11.5px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5"
+                >
+                  <ExternalLink className="h-3 w-3 flex-none text-muted-foreground" />
+                  <span className="truncate">{a.filename}</span>
+                  <span className="flex-none text-[10px] font-normal text-muted-foreground">(link)</span>
+                </a>
+              ) : (
+                <button
+                  key={a.id}
+                  type="button"
+                  onClick={() => handleAttachmentDownload(a.id, a.filename)}
+                  disabled={downloadingAttachmentId === a.id}
+                  className="flex max-w-full items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-left text-[11.5px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {downloadingAttachmentId === a.id ? (
+                    <Loader2 className="h-3 w-3 flex-none animate-spin text-muted-foreground" />
+                  ) : (
+                    <Paperclip className="h-3 w-3 flex-none text-muted-foreground" />
+                  )}
+                  <span className="truncate">{a.filename}</span>
+                </button>
+              )
+            )}
+          </div>
+          );
+        })()}
         <div
           ref={ref}
           className={cn(
@@ -432,47 +475,6 @@ function Bubble({
           dangerouslySetInnerHTML={{ __html: renderedBody }}
         />
         {isOverflowing && <ShowMoreToggle isExpanded={isExpanded} onToggle={toggle} />}
-        {(() => {
-          // Inline/embedded images (e.g. a signature logo referenced
-          // via cid: above) already render inside the body via
-          // resolveCidImagesForDisplay — don't list them again here.
-          const visibleAttachments = data.attachments?.filter((a) => !a.is_inline) ?? [];
-          return visibleAttachments.length > 0 && (
-          <div className="mt-3 flex flex-col gap-1.5">
-            {visibleAttachments.map((a) =>
-              a.is_external_link ? (
-                <a
-                  key={a.id}
-                  href={a.download_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  title="Opens the original OneDrive/SharePoint link"
-                  className="flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-[11.5px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5"
-                >
-                  <ExternalLink className="h-3 w-3 flex-none text-muted-foreground" />
-                  <span className="truncate">{a.filename}</span>
-                  <span className="flex-none text-[10px] font-normal text-muted-foreground">(link)</span>
-                </a>
-              ) : (
-                <button
-                  key={a.id}
-                  type="button"
-                  onClick={() => handleAttachmentDownload(a.id, a.filename)}
-                  disabled={downloadingAttachmentId === a.id}
-                  className="flex w-full items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-left text-[11.5px] font-medium text-foreground transition-colors hover:border-primary/40 hover:bg-primary/5 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {downloadingAttachmentId === a.id ? (
-                    <Loader2 className="h-3 w-3 flex-none animate-spin text-muted-foreground" />
-                  ) : (
-                    <Paperclip className="h-3 w-3 flex-none text-muted-foreground" />
-                  )}
-                  <span className="truncate">{a.filename}</span>
-                </button>
-              )
-            )}
-          </div>
-          );
-        })()}
       </div>
     </div>
   );

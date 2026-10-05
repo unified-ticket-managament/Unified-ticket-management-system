@@ -238,3 +238,62 @@ describe("MessageDetailsView — Reply / Reply All composer placement", () => {
     expect(screen.getByText(/ticket is closed/i)).toBeInTheDocument();
   });
 });
+
+describe("MessageDetailsView — attachments sit between a message's header and its body", () => {
+  const att = (id: string, filename: string, extra: object = {}) => ({
+    id,
+    filename,
+    mime_type: "application/pdf",
+    size: 1024,
+    download_url: `/attachments/${id}`,
+    ...extra,
+  });
+
+  it("shows each message's own attachments above that message's body, skipping inline images", () => {
+    renderView(
+      "panel",
+      makeEmail({
+        body: "First body text",
+        attachments: [att("a1", "Report.pdf"), att("a2", "Invoice.xlsx"), att("a3", "logo.png", { is_inline: true })],
+        replies: [
+          {
+            interaction_id: "r1",
+            ticket_id: null,
+            interaction_type: "REPLY",
+            status: "ASSIGNED",
+            direction: "OUTBOUND",
+            performed_by: "u1",
+            payload: { message: "Second body text" },
+            is_visible: true,
+            removed_by: null,
+            removed_at: null,
+            message_id: null,
+            created_at: "2026-01-01T11:00:00Z",
+            attachments: [att("a4", "Reply.pdf")],
+          } as never,
+        ],
+      })
+    );
+
+    const body1 = screen.getByText("First body text");
+    const report = screen.getByRole("button", { name: /Report\.pdf/ });
+    const invoice = screen.getByRole("button", { name: /Invoice\.xlsx/ });
+    const body2 = screen.getByText("Second body text");
+    const replyAtt = screen.getByRole("button", { name: /Reply\.pdf/ });
+
+    // Message 1: its attachments precede its body, and sit together.
+    expect(precedes(report, body1)).toBe(true);
+    expect(precedes(invoice, body1)).toBe(true);
+    expect(report.parentElement).toBe(invoice.parentElement);
+    // Message 2's attachment stays with message 2, not hoisted to message 1.
+    expect(precedes(body1, replyAtt)).toBe(true);
+    expect(precedes(replyAtt, body2)).toBe(true);
+    // Inline (signature/CID) images are not listed as attachments.
+    expect(screen.queryByRole("button", { name: /logo\.png/ })).not.toBeInTheDocument();
+  });
+
+  it("renders no attachment section when a message has none", () => {
+    renderView("panel", makeEmail({ attachments: [] }));
+    expect(screen.queryByRole("button", { name: /\.pdf/ })).not.toBeInTheDocument();
+  });
+});

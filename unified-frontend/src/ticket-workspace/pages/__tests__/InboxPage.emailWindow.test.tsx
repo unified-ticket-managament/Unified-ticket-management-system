@@ -37,9 +37,10 @@ vi.mock("@tw/hooks/useMailInbox", () => ({
 }));
 vi.mock("@tw/hooks/useIsDesktopViewport", () => ({ useIsDesktopViewport: () => true }));
 vi.mock("@tw/context/WorkflowContext", () => ({
-  useWorkflowContext: () => ({ selectedEmail: email, setSelectedEmail: vi.fn(), categories: [] }),
+  useWorkflowContext: () => ({ selectedEmail: email, setSelectedEmail: vi.fn(), categories: [], allCategories: [], allCategoriesLoading: false, allCategoriesError: false }),
 }));
 vi.mock("@tw/context/AuthContext", () => ({ useAuthContext: () => ({ currentUser: null }) }));
+vi.mock("@tw/context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 vi.mock("@tw/api/inbox", () => ({ getComposeDraft: vi.fn() }));
 vi.mock("@/components/shared/stats", () => ({ AccessDenied: () => null }));
 vi.mock("@/components/rules/RulesPanel", () => ({ RulesPanel: () => null }));

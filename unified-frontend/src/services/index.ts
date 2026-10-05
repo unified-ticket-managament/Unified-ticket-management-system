@@ -29,7 +29,10 @@ import {
 
 export const authService = {
   login: async (data: LoginForm) => {
-    const response = await api.post<TokenResponse>("/auth/login", data);
+    // Login runs several DB round trips (and may open a fresh connection);
+    // against the remote dev DB that can exceed the 15s global timeout,
+    // which the login page misreports as "Can't reach the server".
+    const response = await api.post<TokenResponse>("/auth/login", data, { timeout: 60000 });
 
     setTokens(
       response.data.access_token,
