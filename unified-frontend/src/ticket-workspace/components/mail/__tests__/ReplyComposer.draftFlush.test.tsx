@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ReplyComposer } from "@tw/components/mail/ReplyComposer";
 
+vi.mock("@/hooks/use-email-signatures", () => ({ useEmailSignatures: () => ({ data: undefined }) }));
 vi.mock("@tw/context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 // Minimal editor stand-in that drives `onChange` the way TipTap does.
 vi.mock("@tw/components/mail/RichTextEditor", () => ({

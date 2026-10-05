@@ -9,6 +9,7 @@ import { ReplyComposer } from "@tw/components/mail/ReplyComposer";
 // default font wrapper) for sends AND for saved drafts (which the
 // server later sends verbatim).
 
+vi.mock("@/hooks/use-email-signatures", () => ({ useEmailSignatures: () => ({ data: undefined }) }));
 vi.mock("@tw/context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 vi.mock("@tw/components/mail/RichTextEditor", () => ({
   RichTextEditor: ({ onChange }: { onChange: (html: string) => void }) => (

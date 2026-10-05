@@ -7,6 +7,7 @@ import { createRichTextExtensions } from "@tw/components/mail/RichTextEditor";
 import { createPasteHandler, parsePlainTextClipboard } from "@tw/lib/clipboardPaste";
 import { fakeDataTransfer } from "@tw/lib/__tests__/testUtils";
 import { buildForwardHtml, buildInitialBodyHtml, buildOutgoingBodyHtml } from "@tw/lib/richText";
+import { buildSignatureBlockHtml } from "@tw/lib/signatures";
 
 // Headless TipTap editor with EXACTLY the production extension set and
 // paste wiring (createRichTextExtensions + the same editorProps the
@@ -380,12 +381,19 @@ describe("signature and quoted content stay separate", () => {
     '<p><strong>Hari Krishna</strong><br><span style="color: #0070c0;">Probe Practice Solutions</span><br><a href="https://probeps.com">probeps.com</a></p>';
 
   it("formatting the new text never touches the signature or its logo", () => {
-    const editor = makeEditor(buildInitialBodyHtml({ signatureHtml: SIGNATURE }));
+    // A migrated default signature: the user's text plus the company
+    // logo, now carried as ordinary signature content.
+    const block = buildSignatureBlockHtml({ id: "sig-1", html: SIGNATURE + '<div><img src="cid:company-signature-logo-v1" alt="Probe Practice Solutions" width="150"></div>' }, {});
+    const editor = makeEditor(buildInitialBodyHtml({ signatureBlockHtml: block }));
     const signatureBefore = editor.getHTML().slice("<p></p>".length);
     editor.commands.focus("start");
     editor.chain().setFontSize("18pt").setColor("#ff0000").insertContent("Thank you for the update.").run();
     const html = editor.getHTML();
-    expect(html.endsWith(signatureBefore)).toBe(true);
+    // The managed signature block (a block node) gets TipTap's usual
+    // trailing empty paragraph after it — dropped again by toEmailHtml.
+    const withoutTrailing = (value: string) => value.replace(/(<p><\/p>)+$/, "");
+    expect(withoutTrailing(html).endsWith(withoutTrailing(signatureBefore))).toBe(true);
+    expect(html).toContain('<div data-utms-signature="sig-1">');
     expect(html).toContain('<img src="/probe-practice-solutions-logo.jpg" alt="Probe Practice Solutions" width="150">');
     expect(html).toContain('<span style="color: rgb(0, 112, 192);">Probe Practice Solutions</span>');
 

@@ -42,8 +42,13 @@ import {
   filterLiveInlineImageIds,
   htmlToPlainText,
   isRichContent,
+  resolveCidImagesForEditing,
   type TrackedInlineImage,
 } from "@tw/lib/richText";
+import { signatureImagePreviewAttachments } from "@tw/lib/signatures";
+import { SignatureSelector } from "@tw/components/mail/SignatureSelector";
+import { initialSignatureBlockHtml, useComposerSignature } from "@tw/hooks/useComposerSignature";
+import { useEmailSignatures } from "@/hooks/use-email-signatures";
 import type { ClientContact } from "@tw/types";
 // Cross-alias imports, same deliberate exception MessageDetailsView.tsx
 // already documents: useAuthContext() only re-exposes the store's
@@ -119,6 +124,31 @@ export function TicketComposer({
   const signaturePrefillRef = useRef<string | null>(null);
   const isMessageEmpty = (html: string) =>
     html === signaturePrefillRef.current || isRichTextEmpty(html);
+  // The user's saved signatures (one cached query shared by every
+  // composer). Read through a ref inside the async draft-fetch effect
+  // below so it always sees the latest value.
+  const { data: signatures } = useEmailSignatures();
+  const signaturesRef = useRef(signatures);
+  useEffect(() => {
+    signaturesRef.current = signatures;
+  }, [signatures]);
+  // Set (to a fresh "<ticket_id>:<n>" key) when a ticket with no reply
+  // draft opened before signatures had loaded — useComposerSignature
+  // then inserts the default once they arrive. Only honored while that
+  // same ticket is open in Reply mode, so a stale key never fires on
+  // another ticket or on an Internal Note.
+  const [signatureAutoInsertKey, setSignatureAutoInsertKey] = useState<string | null>(null);
+  const signature = useComposerSignature({
+    signatures,
+    bodyHtml: messageHtml,
+    setBodyHtml: setMessageHtml,
+    autoInsert:
+      activeMode === "reply" &&
+      !!activeTicket &&
+      !!signatureAutoInsertKey?.startsWith(`${activeTicket.ticket_id}:`),
+    autoInsertKey: signatureAutoInsertKey,
+    baselineRef: signaturePrefillRef,
+  });
   const [hasPendingImageUploads, setHasPendingImageUploads] = useState(false);
   // Every interaction_id a pasted-screenshot upload returned during
   // this compose session — unlike a regular file attachment, a
@@ -328,7 +358,13 @@ export function TicketComposer({
           if (draft.cc.length > 0) setReplyCc(draft.cc.join(", "));
           if (draft.bcc.length > 0) setReplyBcc(draft.bcc.join(", "));
           if (draft.body_html) {
-            setMessageHtml(draft.body_html);
+            // Stored signature images/logo are cid: references — show them.
+            setMessageHtml(
+              resolveCidImagesForEditing(
+                draft.body_html,
+                signatureImagePreviewAttachments(signaturesRef.current?.image_urls ?? {})
+              )
+            );
           } else if (draft.message) {
             setMessageHtml(`<p>${escapeHtml(draft.message).replace(/\n/g, "<br/>")}</p>`);
           }
@@ -337,15 +373,21 @@ export function TicketComposer({
           if (cancelled) return;
           replyDraftIdRef.current = null;
           // No saved reply draft on this ticket — prefill the user's
-          // saved signature, but only into a genuinely empty box.
+          // default signature, but only into a genuinely empty box.
           // messageHtml is shared across Reply/Note (see this effect's
           // own doc comment above), so this must never clobber Note
           // content the user already typed before switching tabs.
           // Never fires for Internal Note (see the `else` branch below,
           // which has no signature concept at all).
+          if (!signaturesRef.current) {
+            setSignatureAutoInsertKey(`${activeTicket.ticket_id}:${Date.now()}`);
+            return;
+          }
+          const block = initialSignatureBlockHtml(signaturesRef.current);
+          if (!block) return;
           setMessageHtml((prev) => {
-            if (!isRichTextEmpty(prev) || !currentUser?.signature_html) return prev;
-            const prefill = buildInitialBodyHtml({ signatureHtml: currentUser.signature_html });
+            if (!isRichTextEmpty(prev)) return prev;
+            const prefill = buildInitialBodyHtml({ signatureBlockHtml: block });
             signaturePrefillRef.current = prefill;
             return prefill;
           });
@@ -763,9 +805,20 @@ export function TicketComposer({
         )}
 
         <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-medium text-muted">
-            {isReply ? "Message to client" : "Note (visible to agents only)"}
-          </label>
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-xs font-medium text-muted">
+              {isReply ? "Message to client" : "Note (visible to agents only)"}
+            </label>
+            {isReply && (
+              <SignatureSelector
+                options={signature.options}
+                selectedId={signature.selectedId}
+                hasSavedSignatures={signature.hasSavedSignatures}
+                onSelect={signature.selectSignature}
+                disabled={isLoading}
+              />
+            )}
+          </div>
           <RichTextEditor
             value={messageHtml}
             onChange={setMessageHtml}

@@ -1048,7 +1048,6 @@ export function MessageDetailsView({
       subject: email.subject,
       body: email.body,
       bodyHtml: email.body_html ?? undefined,
-      signatureHtml: currentUser?.signature_html ?? undefined,
     });
     onForward({
       clientId: email.client_id,
@@ -1444,7 +1443,6 @@ export function MessageDetailsView({
           initialMessage={ticketReplyDraft ? ticketReplyDraft.message : hasDraft ? email.draft_message ?? "" : ""}
           initialBodyHtml={ticketReplyDraft ? ticketReplyDraft.body_html : hasDraft ? email.draft_body_html : null}
           hasExistingDraft={Boolean(ticketReplyDraft) || hasDraft}
-          signatureHtml={currentUser?.signature_html}
           isTicketed={isTicketed}
           draftAttachments={email.draft_attachments}
           isSending={isReplying || isReplyingTicket || isUploadingAttachment}

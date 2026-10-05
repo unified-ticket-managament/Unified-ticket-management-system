@@ -31,14 +31,19 @@ import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
 import { DistributionListMultiSelect } from "@tw/components/common/DistributionListMultiSelect";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
+import { SignatureSelector } from "@tw/components/mail/SignatureSelector";
+import { useEmailSignatures } from "@/hooks/use-email-signatures";
+import { initialSignatureBlockHtml, useComposerSignature } from "@tw/hooks/useComposerSignature";
 import {
   buildInitialBodyHtml,
   buildOutgoingBodyHtml,
   escapeHtml,
   filterLiveInlineImageIds,
   htmlToPlainText,
+  resolveCidImagesForEditing,
   type TrackedInlineImage,
 } from "@tw/lib/richText";
+import { replaceSignatureBlock, signatureImagePreviewAttachments } from "@tw/lib/signatures";
 import { isValidEmailAddress } from "@tw/lib/validation";
 import { MAX_ATTACHMENT_FILES, formatBytes, iconForFilename, previewHrefFor } from "@tw/lib/attachmentMeta";
 import { generateIdempotencyKey } from "@tw/lib/idempotency";
@@ -311,27 +316,50 @@ export function ComposeView({
   // to N members at send time, not one value.
   const [distributionListIds, setDistributionListIds] = useState<string[]>([]);
   const [subject, setSubject] = useState(initialValues?.subject ?? "");
+  // The user's saved signatures — one cached query shared by every
+  // composer (see useEmailSignatures).
+  const { data: signatures } = useEmailSignatures();
+  const isReopenedDraft = Boolean(initialValues?.draftInteractionId);
+  // New Compose and every Forward start with the user's default
+  // signature; a reopened draft keeps exactly what it was saved with.
+  const startsWithDefaultSignature =
+    !isReopenedDraft && (isForward || (!initialValues?.bodyHtml && !initialValues?.message));
   const [bodyHtml, setBodyHtml] = useState(() => {
-    if (initialValues?.bodyHtml) return initialValues.bodyHtml;
+    if (initialValues?.bodyHtml) {
+      if (isReopenedDraft) {
+        // Stored signature images/logo are cid: references — show them.
+        return resolveCidImagesForEditing(
+          initialValues.bodyHtml,
+          signatureImagePreviewAttachments(signatures?.image_urls ?? {})
+        );
+      }
+      // Forward: the quoted message arrives prebuilt (buildForwardHtml);
+      // the default signature goes above its "Forwarded message" banner.
+      return isForward
+        ? replaceSignatureBlock(initialValues.bodyHtml, initialSignatureBlockHtml(signatures))
+        : initialValues.bodyHtml;
+    }
     if (initialValues?.message) {
       return `<p>${escapeHtml(initialValues.message).replace(/\n/g, "<br/>")}</p>`;
     }
-    // A genuinely new, empty Compose session (never a reopened draft
-    // — see draftInteractionIdRef below — and never Forward, whose
-    // own quoted content already came through initialValues.bodyHtml
-    // above via buildForwardHtml) gets the user's saved signature
-    // prefilled. See shared_models.models.User.signature_html's own
-    // docstring.
-    if (!initialValues?.draftInteractionId && currentUser?.signature_html) {
-      return buildInitialBodyHtml({ signatureHtml: currentUser.signature_html });
+    if (startsWithDefaultSignature) {
+      return buildInitialBodyHtml({ signatureBlockHtml: initialSignatureBlockHtml(signatures) });
     }
     return "";
   });
   // The exact prefill computed above, captured once — lets the `isEmpty`
   // check below treat an untouched signature-only body the same as a
   // truly empty one, so a signature alone can never be sent as a
-  // complete email by itself.
+  // complete email by itself. useComposerSignature keeps it in step if
+  // the signature is swapped before anything is typed.
   const initialBodyHtmlRef = useRef(bodyHtml);
+  const signature = useComposerSignature({
+    signatures,
+    bodyHtml,
+    setBodyHtml,
+    autoInsert: startsWithDefaultSignature,
+    baselineRef: initialBodyHtmlRef,
+  });
   const [files, setFiles] = useState<File[]>([]);
   const [hasPendingImageUploads, setHasPendingImageUploads] = useState(false);
   // The server-side Compose draft backing this session, once one
@@ -1015,7 +1043,16 @@ export function ComposeView({
             </div>
 
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">Message</label>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <label className="block text-xs font-medium text-muted-foreground">Message</label>
+                <SignatureSelector
+                  options={signature.options}
+                  selectedId={signature.selectedId}
+                  hasSavedSignatures={signature.hasSavedSignatures}
+                  onSelect={signature.selectSignature}
+                  disabled={isSending}
+                />
+              </div>
               <RichTextEditor
                 value={bodyHtml}
                 onChange={setBodyHtml}

@@ -13,6 +13,7 @@ vi.mock("@tw/context/ToastContext", () => ({ useToast: () => ({ pushToast }) }))
 vi.mock("@tw/context/WorkflowContext", () => ({
   useWorkflowContext: () => ({ activeTicket, timeline: [] }),
 }));
+vi.mock("@/hooks/use-email-signatures", () => ({ useEmailSignatures: () => ({ data: undefined }) }));
 vi.mock("@tw/context/AuthContext", () => ({
   useAuthContext: () => ({ currentUser: { user_id: "u1", signature_html: null, permissions } }),
 }));

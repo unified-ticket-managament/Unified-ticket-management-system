@@ -7,6 +7,7 @@ import { fakeDataTransfer, makeFile } from "@tw/lib/__tests__/testUtils";
 
 const pushToast = vi.fn();
 vi.mock("@tw/context/ToastContext", () => ({ useToast: () => ({ pushToast }) }));
+vi.mock("@/hooks/use-email-signatures", () => ({ useEmailSignatures: () => ({ data: undefined }) }));
 vi.mock("@tw/context/AuthContext", () => ({
   useAuthContext: () => ({
     currentUser: {

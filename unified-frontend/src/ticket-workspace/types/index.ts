@@ -217,8 +217,8 @@ export interface CurrentUser {
   permissions: string[];
   scoped_permissions?: Record<string, string[]>;
   employee_number?: string | null;
-  // Per-user email signature (sanitized HTML) — see
-  // shared_models.models.User.signature_html's own docstring.
+  // LEGACY single signature — composers use the saved signatures
+  // (GET /auth/me/signatures, @/hooks/use-email-signatures) instead.
   signature_html?: string | null;
 }
 

@@ -13,6 +13,7 @@ RBAC owns:
     - PermissionRequest
     - ReportingManagerTeam
     - ImpersonationSession
+    - EmailSignature / EmailSignatureImage
 """
 
 from shared_models.database import Base
@@ -25,6 +26,7 @@ from app.rbac.models.permission_override import UserPermissionOverride
 from app.rbac.models.permission_request import PermissionRequest
 from app.rbac.models.reporting_manager_team import ReportingManagerTeam
 from app.rbac.models.impersonation_session import ImpersonationSession
+from app.rbac.models.email_signature import EmailSignature, EmailSignatureImage
 
 __all__ = [
     "Base",
@@ -38,4 +40,6 @@ __all__ = [
     "PermissionRequest",
     "ReportingManagerTeam",
     "ImpersonationSession",
+    "EmailSignature",
+    "EmailSignatureImage",
 ]

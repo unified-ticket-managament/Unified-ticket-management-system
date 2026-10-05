@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ReplyComposer } from "@tw/components/mail/ReplyComposer";
 import type { AttachmentMeta } from "@tw/types";
 
+vi.mock("@/hooks/use-email-signatures", () => ({ useEmailSignatures: () => ({ data: undefined }) }));
 vi.mock("@tw/context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 // Exposes the HTML the composer hands the editor, so the test can see
 // exactly what a reopened draft would render.

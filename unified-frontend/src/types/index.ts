@@ -47,9 +47,10 @@ export interface AuthUser {
   time_format?: string | null;
   time_zone?: string | null;
   default_dashboard?: string | null;
-  // Per-user email signature (sanitized HTML), inserted client-side
-  // into Compose/Reply/Forward — see shared_models.models.User.
-  // signature_html's own docstring.
+  // LEGACY single signature — no longer read by any composer. Saved
+  // signatures (many, one default) come from GET /auth/me/signatures
+  // (see EmailSignatureList); this value only survives server-side as
+  // the fallback for a user with no saved signatures.
   signature_html?: string | null;
   // Mail Inbox panel widths (px), Outlook-style 3-panel layout — see
   // MailWorkspaceLayout.tsx and shared_models.models.User.
@@ -352,4 +353,40 @@ export interface ReportingManagerAssignment {
   assigned_by: string | null;
   assigned_by_name: string | null;
   assigned_at: string;
+}
+
+// ==========================================================
+// Email signatures (Profile → Settings, and every composer)
+// ==========================================================
+
+// One of the user's saved, named signatures. `html` is server-
+// sanitized and references images only as `cid:` (a `sigimg-...`
+// upload, or the company logo) — see lib/signatures.ts for how it's
+// turned into something displayable and back.
+export interface EmailSignature {
+  signature_id: string;
+  name: string;
+  html: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EmailSignatureList {
+  signatures: EmailSignature[];
+  default_signature_id: string | null;
+  // Only when `signatures` is empty: the legacy single signature (plus
+  // company logo), so a user with nothing saved keeps today's default.
+  fallback_signature_html: string | null;
+  // content_id ("sigimg-<hex>") -> short-lived preview URL.
+  image_urls: Record<string, string>;
+}
+
+export interface EmailSignatureImage {
+  image_id: string;
+  content_id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  preview_url: string | null;
 }

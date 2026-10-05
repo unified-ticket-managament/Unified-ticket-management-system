@@ -155,6 +155,7 @@ from app.ticketing.models.attachment import Attachment
 from app.ticketing.models.interaction import Interaction
 from app.ticketing.repositories.attachment_repository import AttachmentRepository
 from app.ticketing.schemas.attachment import (
+    AttachmentCreate,
     AttachmentMetadata,
     InlineImageUploadResponse,
     TicketAttachmentItem,
@@ -174,6 +175,11 @@ from app.ticketing.schemas.payloads import EmailPayload, EnvelopeAttachment, Out
 from app.ticketing.services.company_signature_logo import (
     COMPANY_LOGO_CONTENT_ID,
     build_company_logo_attachment,
+)
+from app.ticketing.services.signature_inline_images import (
+    is_signature_image_storage_key,
+    referenced_signature_image_ids,
+    signature_image_content_id,
 )
 from app.ticketing.services.attachment_service import (
     AttachmentLoadError,
@@ -288,6 +294,7 @@ class InteractionService:
         ticket_escalation_repository: TicketEscalationRepository | None = None,
         distribution_list_repository: DistributionListRepository | None = None,
         rule_repository: RuleRepository | None = None,
+        signature_image_repository=None,
     ):
         self.interaction_repository = interaction_repository
         self.ticket_repository = ticket_repository
@@ -322,6 +329,10 @@ class InteractionService:
         # an empty resolution (see recipient_merge.py's own
         # never-raise convention) rather than an error.
         self.distribution_list_repository = distribution_list_repository
+        # Optional — resolves `cid:sigimg-...` signature images at send
+        # time (see _attach_signature_images). Built lazily from this
+        # request's own session when omitted; tests inject a fake.
+        self.signature_image_repository = signature_image_repository
 
     def _escalation_handling_sla_repository_or_none(self):
         """
@@ -1264,6 +1275,93 @@ class InteractionService:
 
         return envelope
 
+    async def _attach_signature_images(
+        self,
+        interaction: Interaction,
+        envelope: OutboundEnvelope | None,
+        owner_user_id: UUID,
+    ) -> OutboundEnvelope | None:
+        """
+        Turns every `cid:sigimg-<hex>` signature image in the outgoing
+        body into a true inline MIME part — the user-uploaded
+        counterpart to the company logo _finalize_envelope_attachments
+        adds (see signature_inline_images.py for the cid contract).
+        Called right before _finalize_envelope_attachments on every
+        human-composed send path (Compose, Forward, Reply, Ticket
+        Reply, and their drafts, which send through those same methods).
+
+        For each referenced image owned by `owner_user_id` (the
+        sending, effective user) that the envelope doesn't already
+        carry (e.g. a forwarded message's own copy), an inline
+        Attachment row is created on `interaction` pointing at the
+        image's existing storage object — no per-email byte copy — so
+        the message's own in-app read views resolve it like any other
+        inline image, and later edits/deletes of the signature can't
+        change it. A reference to an image this user doesn't own is
+        never embedded, the same "only your own content" rule
+        _reassign_inline_image_interactions applies.
+        """
+
+        if (
+            envelope is None
+            or not envelope.body_html
+            or self.attachment_repository is None
+            or self.storage_service is None
+        ):
+            return envelope
+
+        already_carried = {a.content_id for a in envelope.attachments if a.content_id}
+        image_ids = [
+            image_id
+            for image_id in referenced_signature_image_ids(envelope.body_html)
+            if signature_image_content_id(image_id) not in already_carried
+        ]
+        if not image_ids:
+            return envelope
+
+        repository = self.signature_image_repository
+        if repository is None:
+            from app.rbac.repositories.email_signature_repository import (
+                EmailSignatureRepository,
+            )
+
+            repository = EmailSignatureRepository(self.interaction_repository.db)
+
+        images = await repository.list_images_by_ids(owner_user_id, image_ids)
+        if not images:
+            return envelope
+
+        created = []
+        for image in sorted(images, key=lambda i: image_ids.index(i.image_id)):
+            created.append(
+                await self.attachment_repository.create(
+                    AttachmentCreate(
+                        interaction_id=interaction.interaction_id,
+                        filename=image.filename,
+                        mime_type=image.mime_type,
+                        size_bytes=image.size_bytes,
+                        storage_key=image.storage_key,
+                        bucket_name=image.bucket_name,
+                        content_id=signature_image_content_id(image.image_id),
+                        is_inline=True,
+                    )
+                )
+            )
+
+        try:
+            loaded = await load_envelope_attachments(created, self.storage_service)
+        except AttachmentLoadError as exc:
+            raise HTTPException(
+                status_code=http_status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+
+        envelope = envelope.model_copy(
+            update={"attachments": [*envelope.attachments, *loaded]}
+        )
+        interaction.payload["envelope"] = envelope.model_dump()
+        return envelope
+
     @staticmethod
     def _finalize_envelope_attachments(
         interaction: Interaction,
@@ -1948,6 +2046,9 @@ class InteractionService:
             )
 
         if envelope is not None:
+            envelope = await self._attach_signature_images(
+                interaction, envelope, current_user.user_id
+            )
             envelope = self._finalize_envelope_attachments(interaction, envelope)
             await self._schedule_delayed_send(interaction, envelope)
 
@@ -2199,6 +2300,9 @@ class InteractionService:
             )
 
         if envelope is not None:
+            envelope = await self._attach_signature_images(
+                interaction, envelope, current_user.user_id
+            )
             envelope = self._finalize_envelope_attachments(interaction, envelope)
             await self._schedule_delayed_send(interaction, envelope)
 
@@ -2586,6 +2690,9 @@ class InteractionService:
                 interaction, envelope, existing_attachment_source_interaction_id
             )
 
+        envelope = await self._attach_signature_images(
+            interaction, envelope, current_user.user_id
+        )
         envelope = self._finalize_envelope_attachments(interaction, envelope)
         await self._schedule_delayed_send(interaction, envelope)
 
@@ -2956,6 +3063,9 @@ class InteractionService:
                 expected_performed_by=current_user.user_id,
             )
 
+        envelope = await self._attach_signature_images(
+            interaction, envelope, current_user.user_id
+        )
         envelope = self._finalize_envelope_attachments(interaction, envelope)
         await self._schedule_delayed_send(interaction, envelope)
 
@@ -4928,7 +5038,11 @@ class InteractionService:
 
         attachments = await self.attachment_repository.list_by_interaction_id(interaction_id)
         for attachment in attachments:
-            await self.storage_service.delete(object_key=attachment.storage_key)
+            # A signature image's object is shared with the user's
+            # EmailSignatureImage row (see signature_inline_images.py) —
+            # only this row goes, never the object itself.
+            if not is_signature_image_storage_key(attachment.storage_key):
+                await self.storage_service.delete(object_key=attachment.storage_key)
             await self.attachment_repository.delete(attachment)
 
     async def _discard_draft_core(self, draft: Interaction) -> None:

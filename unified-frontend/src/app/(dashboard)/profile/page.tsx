@@ -100,7 +100,7 @@ export default function ProfilePage() {
           <DialogHeader>
             <DialogTitle>{t("nav.settings")}</DialogTitle>
           </DialogHeader>
-          <SettingsPanel open={settingsOpen} record={record} authUser={user} />
+          <SettingsPanel open={settingsOpen} record={record} />
         </DialogContent>
       </Dialog>
     </div>

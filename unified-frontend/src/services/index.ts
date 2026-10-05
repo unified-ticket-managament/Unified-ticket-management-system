@@ -5,6 +5,9 @@ import {
   CategoryForm,
   CategoryMember,
   EligibleApproverUser,
+  EmailSignature,
+  EmailSignatureImage,
+  EmailSignatureList,
   ImpersonationStartResponse,
   LoginForm,
   MyPermissionsResponse,
@@ -627,6 +630,50 @@ export const auditService = {
       }
     );
 
+    return response.data;
+  },
+};
+
+/* -------------------------------------------------------------------------- */
+/*                              EMAIL SIGNATURES                              */
+/* -------------------------------------------------------------------------- */
+
+// Self-service only — every route acts on the authenticated (effective,
+// when impersonating) user; there is no user id to pass.
+export const signatureService = {
+  list: async (): Promise<EmailSignatureList> => {
+    const response = await api.get<EmailSignatureList>("/auth/me/signatures");
+    return response.data;
+  },
+
+  create: async (data: { name: string; html: string; is_default?: boolean }): Promise<EmailSignature> => {
+    const response = await api.post<EmailSignature>("/auth/me/signatures", data);
+    return response.data;
+  },
+
+  update: async (id: string, data: { name?: string; html?: string }): Promise<EmailSignature> => {
+    const response = await api.patch<EmailSignature>(`/auth/me/signatures/${id}`, data);
+    return response.data;
+  },
+
+  delete: async (id: string): Promise<void> => {
+    await api.delete(`/auth/me/signatures/${id}`);
+  },
+
+  setDefault: async (id: string): Promise<EmailSignature> => {
+    const response = await api.post<EmailSignature>(`/auth/me/signatures/${id}/set-default`);
+    return response.data;
+  },
+
+  uploadImage: async (file: File): Promise<EmailSignatureImage> => {
+    const form = new FormData();
+    form.append("file", file);
+    // This client defaults to Content-Type: application/json, which makes
+    // axios serialize a FormData body to JSON (the file never arrives —
+    // FastAPI 422s). Multipart lets axios send real form data + boundary.
+    const response = await api.post<EmailSignatureImage>("/auth/me/signature-images", form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
     return response.data;
   },
 };

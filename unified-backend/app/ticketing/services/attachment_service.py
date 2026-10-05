@@ -38,6 +38,7 @@ from app.ticketing.services.access_control import (
     ensure_ticket_not_closed,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.signature_inline_images import is_signature_image_storage_key
 from app.ticketing.storage.base import StorageService
 from app.ticketing.utils.constants import (
     IMAGE_EXTENSIONS,
@@ -897,7 +898,12 @@ class AttachmentService:
 
         # An external-link attachment has no object in our own storage
         # to delete — only the DB row itself.
-        if not attachment.is_external_link:
+        # A signature image's object is shared with the user's
+        # EmailSignatureImage row (see signature_inline_images.py) —
+        # removing one sent message's reference must not delete it.
+        if not attachment.is_external_link and not is_signature_image_storage_key(
+            attachment.storage_key
+        ):
             try:
                 await self.storage_service.delete(object_key=attachment.storage_key)
             except Exception:

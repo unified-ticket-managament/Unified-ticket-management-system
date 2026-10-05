@@ -167,8 +167,8 @@ export function resolveInlineImageSources(html: string): string {
     }
   });
 
-  // The system-managed company logo (see buildSignatureBlockHtml
-  // above) is inserted with a plain static-asset `src` for on-screen
+  // The system-managed company logo (see lib/signatures.ts
+  // toEditorSignatureHtml) is inserted with a plain static-asset `src` for on-screen
   // display/drafts — unlike a pasted image, it always has a fixed,
   // known content id, so it's never removed here even if somehow
   // untracked; it just becomes the same `cid:` reference every time.
@@ -225,7 +225,7 @@ export function resolveCidImagesForDisplay(
     if (!/^cid:/i.test(src)) return;
     const contentId = normalizeContentId(src.replace(/^cid:/i, ""));
     // The company logo has no backing Attachment row (see
-    // buildSignatureBlockHtml/resolveInlineImageSources above) — it's
+    // lib/signatures.ts/resolveInlineImageSources above) — it's
     // resolved straight back to the static asset instead of via the
     // message's own attachment list.
     if (contentId === COMPANY_LOGO_CONTENT_ID) {
@@ -531,35 +531,24 @@ export function renderThreadedMessageHtml(
   return html;
 }
 
-// The Probe Practice Solutions logo is a system-managed asset, not
-// part of any user's own editable signature_html — see
-// interaction_service.py's _finalize_envelope_attachments (backend)
-// for the other half of this pair. COMPANY_LOGO_CONTENT_ID must stay
-// byte-identical to that file's own copy of the same constant; it's
-// the `cid:` value Graph resolves this image against on the recipient
-// side. COMPANY_LOGO_DISPLAY_SRC is a plain static asset served from
-// this app's own /public folder — used only for on-screen display
-// (composing, drafts, and reading a sent message back); it is never
-// what actually gets sent (see resolveInlineImageSources below, which
-// rewrites it to `cid:${COMPANY_LOGO_CONTENT_ID}` right before Send).
+// The Probe Practice Solutions logo is a system-managed asset (one
+// bundled file, no per-user upload) that a signature may reference as
+// `cid:${COMPANY_LOGO_CONTENT_ID}` — every pre-existing user's migrated
+// default signature does. It is no longer appended to every signature
+// automatically: it's ordinary signature content now, which a user can
+// keep, remove, or replace with their own uploaded logos (see
+// lib/signatures.ts). See interaction_service.py's
+// _finalize_envelope_attachments (backend) for the other half of this
+// pair. COMPANY_LOGO_CONTENT_ID must stay byte-identical to that file's
+// own copy of the same constant; it's the `cid:` value Graph resolves
+// this image against on the recipient side. COMPANY_LOGO_DISPLAY_SRC is
+// a plain static asset served from this app's own /public folder —
+// used only for on-screen display (composing, drafts, and reading a
+// sent message back); it is never what actually gets sent (see
+// resolveInlineImageSources above, which rewrites it to
+// `cid:${COMPANY_LOGO_CONTENT_ID}` right before Send).
 export const COMPANY_LOGO_CONTENT_ID = "company-signature-logo-v1";
-const COMPANY_LOGO_DISPLAY_SRC = "/probe-practice-solutions-logo.jpg";
-
-// Combines a user's own signature text with the system-managed company
-// logo — the one place the two are stitched together into outgoing
-// HTML. Deliberately not stored this way in User.signature_html itself
-// (that field stays logo-free, still rejects any <img> a user tries to
-// save) — the logo is appended here, at composer-render time, so its
-// asset/lifecycle stays entirely independent of any per-user row. No
-// signature means no logo either (mirrors "wherever the normal
-// signature is applicable").
-function buildSignatureBlockHtml(signatureHtml?: string | null): string {
-  if (!signatureHtml) return "";
-  return (
-    `${signatureHtml}` +
-    `<div><img src="${COMPANY_LOGO_DISPLAY_SRC}" alt="Probe Practice Solutions" width="150"/></div>`
-  );
-}
+export const COMPANY_LOGO_DISPLAY_SRC = "/probe-practice-solutions-logo.jpg";
 
 export function buildForwardHtml(params: {
   fromLabel: string;
@@ -573,19 +562,20 @@ export function buildForwardHtml(params: {
   // rendering, which already prefers body_html over body the same
   // way. Falls back to escaping `body` as plain text when absent.
   bodyHtml?: string;
-  // The composing user's own saved signature (already sanitized
-  // server-side — see shared_models.models.User.signature_html's own
-  // docstring), inserted just below the leading cursor paragraph and
-  // above the "Forwarded message" banner/quoted content — never
-  // inside the quote itself.
-  signatureHtml?: string;
+  // The composer's managed signature block (lib/signatures.ts
+  // buildSignatureBlockHtml), inserted just below the leading cursor
+  // paragraph and above the "Forwarded message" banner/quoted content
+  // — never inside the quote itself. Usually omitted: ComposeView
+  // inserts the user's default signature at that same spot itself once
+  // their signatures have loaded (replaceSignatureBlock).
+  signatureBlockHtml?: string;
 }): string {
-  const { fromLabel, dateLabel, subject, body, bodyHtml, signatureHtml } = params;
+  const { fromLabel, dateLabel, subject, body, bodyHtml, signatureBlockHtml } = params;
   const quotedContent = bodyHtml
     ? bodyHtml
     : escapeHtml(body).replace(/\n/g, "<br/>");
   return (
-    `<p></p>${buildSignatureBlockHtml(signatureHtml)}<p>---------- Forwarded message ----------</p>` +
+    `<p></p>${signatureBlockHtml ?? ""}<p>---------- Forwarded message ----------</p>` +
     `<p>From: ${escapeHtml(fromLabel)}<br/>Date: ${escapeHtml(dateLabel)}<br/>Subject: ${escapeHtml(subject)}</p>` +
     `<blockquote>${quotedContent}</blockquote>`
   );
@@ -593,12 +583,12 @@ export function buildForwardHtml(params: {
 
 // New Compose / Reply / Reply All's initial editor content — an empty
 // leading paragraph (cursor position for the user's own new text)
-// followed by their saved signature, if they have one. Forward has
-// its own variant of this same idea baked into buildForwardHtml above
-// (the signature has to land before the forwarded-message banner, not
-// at the very end), so this helper is for the two simpler cases only.
-export function buildInitialBodyHtml(params: { signatureHtml?: string }): string {
-  const { signatureHtml } = params;
-  const block = buildSignatureBlockHtml(signatureHtml);
-  return block ? `<p></p>${block}` : "";
+// followed by the managed signature block (lib/signatures.ts
+// buildSignatureBlockHtml), if there is one. Forward has its own
+// variant of this same idea baked into buildForwardHtml above (the
+// signature has to land before the forwarded-message banner, not at
+// the very end), so this helper is for the simpler cases only.
+export function buildInitialBodyHtml(params: { signatureBlockHtml?: string | null }): string {
+  const { signatureBlockHtml } = params;
+  return signatureBlockHtml ? `<p></p>${signatureBlockHtml}` : "";
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildInitialBodyHtml, resolveCidImagesForEditing, resolveInlineImageSources } from "@tw/lib/richText";
+import { buildSignatureBlockHtml } from "@tw/lib/signatures";
 
 const attachments = [
   { content_id: "abc123", download_url: "https://s/dl", preview_url: "https://s/preview-abc" },
@@ -25,7 +26,9 @@ describe("resolveCidImagesForEditing (reopened draft)", () => {
 
   it("restores the company logo from its stored cid: back to the static asset the editor displays", () => {
     // The signature block's own display src, as the composer prefills it.
-    const displayHtml = buildInitialBodyHtml({ signatureHtml: "<p>Regards</p>" });
+    const displayHtml = buildInitialBodyHtml({
+      signatureBlockHtml: buildSignatureBlockHtml({ id: "sig-1", html: '<p>Regards</p><div><img src="cid:company-signature-logo-v1" alt="Probe Practice Solutions" width="150"></div>' }, {}),
+    });
     const displaySrc = srcs(displayHtml).find(Boolean)!;
     const stored = resolveInlineImageSources(displayHtml);
     const cidSrc = srcs(stored).find((s) => s?.startsWith("cid:"))!;

@@ -113,8 +113,11 @@ class UpdateProfileRequest(BaseModel):
     time_zone: str | None = None
     default_dashboard: str | None = None
 
-    # Self-service signature editor — see shared_models.models.User.
-    # signature_html's own docstring. Sanitized server-side
+    # LEGACY single-signature field, still accepted for backward
+    # compatibility: it is now only the fallback signature for a user
+    # with no saved EmailSignature rows (see EmailSignatureService /
+    # GET /auth/me/signatures, which the Settings UI and composers use).
+    # Sanitized server-side
     # (AuthService.update_profile) before being persisted; capped here
     # rather than at the DB-column level since this string is
     # concatenated into every outbound email the user sends.

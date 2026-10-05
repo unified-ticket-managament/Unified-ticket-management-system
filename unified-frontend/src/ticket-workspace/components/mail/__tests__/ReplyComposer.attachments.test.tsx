@@ -8,6 +8,7 @@ import { fakeDataTransfer, makeFile } from "@tw/lib/__tests__/testUtils";
 import type { AttachmentMeta } from "@tw/types";
 
 const pushToast = vi.fn();
+vi.mock("@/hooks/use-email-signatures", () => ({ useEmailSignatures: () => ({ data: undefined }) }));
 vi.mock("@tw/context/ToastContext", () => ({ useToast: () => ({ pushToast }) }));
 
 // TipTap has its own jsdom-hostile internals and its paste/drop handling

@@ -11,6 +11,9 @@ import { DistributionListMultiSelect } from "@tw/components/common/DistributionL
 import { MultiRecipientCombobox, type RecipientChip } from "@tw/components/common/MultiRecipientCombobox";
 import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
+import { SignatureSelector } from "@tw/components/mail/SignatureSelector";
+import { useEmailSignatures } from "@/hooks/use-email-signatures";
+import { initialSignatureBlockHtml, useComposerSignature } from "@tw/hooks/useComposerSignature";
 import { useAttachmentListIntake } from "@tw/hooks/useAttachmentListIntake";
 import {
   ATTACHMENT_ACCEPT_ATTR,
@@ -27,6 +30,7 @@ import {
   htmlToPlainText,
   resolveCidImagesForEditing,
 } from "@tw/lib/richText";
+import { signatureImagePreviewAttachments } from "@tw/lib/signatures";
 import { isValidEmailAddress } from "@tw/lib/validation";
 import type { AttachmentMeta, ClientContact } from "@tw/types";
 
@@ -58,15 +62,12 @@ interface ReplyComposerProps {
   // True only when this session is resuming a real, previously-saved
   // draft (a ticketed ticketReplyDraft, or a pre-ticket hasDraft) —
   // distinct from initialMessage being merely empty, which a genuinely
-  // new session also starts as. Gates whether the user's saved
+  // new session also starts as. Gates whether the user's default
   // signature gets prefilled: never on a resumed draft (its own saved
-  // state, including a deliberate signature removal, must not be
-  // silently overwritten), only on a brand-new composer.
+  // state, including a signature the user picked or deliberately
+  // removed, must not be silently overwritten), only on a brand-new
+  // composer.
   hasExistingDraft?: boolean;
-  // The composing user's own saved signature (already sanitized
-  // server-side) — see shared_models.models.User.signature_html's own
-  // docstring.
-  signatureHtml?: string | null;
   isSending: boolean;
   onCancel: () => void;
   // Ticketed-thread send — files are local (`File[]`) and only
@@ -129,7 +130,6 @@ export function ReplyComposer({
   initialMessage = "",
   initialBodyHtml,
   hasExistingDraft = false,
-  signatureHtml,
   isSending,
   onCancel,
   onSend,
@@ -142,23 +142,42 @@ export function ReplyComposer({
   onRemoveDraftAttachment,
   onUploadInlineImage,
 }: ReplyComposerProps) {
+  // The user's saved signatures — one cached query shared by every
+  // composer (see useEmailSignatures), not a fetch per Reply click.
+  const { data: signatures } = useEmailSignatures();
   const [bodyHtml, setBodyHtml] = useState(() => {
     if (hasExistingDraft) {
-      // A saved draft stores pasted images as cid: references — resolve
-      // them to viewable URLs so they render instead of broken icons.
-      if (initialBodyHtml) return resolveCidImagesForEditing(initialBodyHtml, draftAttachments);
+      // A saved draft stores pasted and signature images as cid:
+      // references — resolve them to viewable URLs so they render
+      // instead of broken icons.
+      if (initialBodyHtml) {
+        return resolveCidImagesForEditing(initialBodyHtml, [
+          ...draftAttachments,
+          ...signatureImagePreviewAttachments(signatures?.image_urls ?? {}),
+        ]);
+      }
       return initialMessage ? `<p>${escapeHtml(initialMessage).replace(/\n/g, "<br/>")}</p>` : "";
     }
     // A genuinely new (never a resumed draft) Reply/Reply All session
-    // gets the user's saved signature prefilled — see
-    // shared_models.models.User.signature_html's own docstring.
-    return signatureHtml ? buildInitialBodyHtml({ signatureHtml }) : "";
+    // starts with the user's default signature — Graph's reply action
+    // quotes the original below the whole body, so it lands above the
+    // quoted message.
+    return buildInitialBodyHtml({ signatureBlockHtml: initialSignatureBlockHtml(signatures) });
   });
   // The exact prefill computed above, captured once — see
   // ComposeView.tsx's identical use of this pattern for why: an
   // untouched signature-only body must count as empty, both for the
   // Send-disabled check and for the auto-save "nothing typed yet" guard.
+  // useComposerSignature keeps it in step if the signature is swapped
+  // before anything is typed.
   const initialBodyHtmlRef = useRef(bodyHtml);
+  const signature = useComposerSignature({
+    signatures,
+    bodyHtml,
+    setBodyHtml,
+    autoInsert: !hasExistingDraft,
+    baselineRef: initialBodyHtmlRef,
+  });
   const [hasPendingImageUploads, setHasPendingImageUploads] = useState(false);
   const [selectedTo, setSelectedTo] = useState<RecipientChip[]>(toEmail ? [{ email: toEmail }] : []);
   const [cc, setCc] = useState(initialCc.join(", "));
@@ -476,6 +495,15 @@ export function ReplyComposer({
       </div>
 
       <div className="mt-3">
+        <div className="mb-1 flex justify-end">
+          <SignatureSelector
+            options={signature.options}
+            selectedId={signature.selectedId}
+            hasSavedSignatures={signature.hasSavedSignatures}
+            onSelect={signature.selectSignature}
+            disabled={isSending || isSendingDraft}
+          />
+        </div>
         <RichTextEditor
           value={bodyHtml}
           onChange={setBodyHtml}

@@ -10,6 +10,7 @@ import {
   toEmailHtml,
 } from "@tw/lib/emailHtml";
 import { buildInitialBodyHtml, buildOutgoingBodyHtml, COMPANY_LOGO_CONTENT_ID } from "@tw/lib/richText";
+import { buildSignatureBlockHtml } from "@tw/lib/signatures";
 
 function parse(html: string): HTMLElement {
   const container = document.createElement("div");
@@ -167,7 +168,13 @@ describe("buildOutgoingBodyHtml — the body_html every email send/draft submits
 
   it("keeps the signature's own formatting and turns its logo into the cid reference", () => {
     const initial = buildInitialBodyHtml({
-      signatureHtml: '<p><strong>Hari Krishna</strong><br><span style="color: #0070c0">Probe</span></p>',
+      signatureBlockHtml: buildSignatureBlockHtml(
+        {
+          id: "sig-1",
+          html: '<p><strong>Hari Krishna</strong><br><span style="color: #0070c0">Probe</span></p><div><img src="cid:company-signature-logo-v1" alt="Probe Practice Solutions" width="150"></div>',
+        },
+        {}
+      ),
     });
     const out = buildOutgoingBodyHtml(`<p>Thank you.</p>${initial}`)!;
     expect(out).toContain(`cid:${COMPANY_LOGO_CONTENT_ID}`);

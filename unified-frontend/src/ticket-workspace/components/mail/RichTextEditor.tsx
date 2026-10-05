@@ -24,6 +24,7 @@ import { hasFailedImageUpload } from "@tw/lib/richText";
 import { TableBubbleMenu } from "@tw/components/mail/TableBubbleMenu";
 import { EmailEditorToolbar } from "@tw/components/mail/EmailEditorToolbar";
 import { Indent } from "@tw/components/mail/extensions/Indent";
+import { SignatureBlock } from "@tw/components/mail/extensions/SignatureBlock";
 
 // Pasted-inline-image support (see lib/clipboardPaste.ts) needs a
 // few custom attributes preserved through TipTap's HTML
@@ -581,6 +582,7 @@ export function createRichTextExtensions(placeholder = "Write your message...") 
     Indent,
     Placeholder.configure({ placeholder }),
     PastedImage.configure({ inline: true, allowBase64: false }),
+    SignatureBlock,
     ResizableTable.configure({ resizable: false }),
     TableRow,
     ResizableTableHeader,
