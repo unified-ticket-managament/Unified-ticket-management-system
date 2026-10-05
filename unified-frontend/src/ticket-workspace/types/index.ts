@@ -228,7 +228,8 @@ export interface CurrentUser {
 
 // "otp" — the Mail "OTPs" section: roots the backend's OTP classifier
 // flagged, which "pending"/"replied" exclude server-side.
-export type InboxView = "pending" | "replied" | "ticketed" | "archived" | "all" | "otp";
+// "trash" — roots a user soft-deleted (GET /inbox?view=trash); restorable.
+export type InboxView = "pending" | "replied" | "ticketed" | "archived" | "all" | "otp" | "trash" | "flagged";
 export type InboxScope = "mine" | "all";
 
 export interface InboxItem {
@@ -274,6 +275,10 @@ export interface InboxItem {
   // this superseded. Optional so any stale-shaped cached response
   // still degrades to the old openedIds-based rendering.
   is_read?: boolean;
+  // The caller's own Flag / Pin on this thread (personal, server-side).
+  // Pinned rows arrive sorted to the top of the list.
+  is_flagged?: boolean;
+  is_pinned?: boolean;
   // Only set (true) on a Drafts-tab row derived from a Compose draft
   // (draftItemToInboxItem, when the underlying DraftItem.root_
   // interaction_id was null — a Reply draft always has a real root).

@@ -12,6 +12,7 @@ import { MailSidebar } from "@tw/components/mail/MailSidebar";
 import { MailWorkspaceLayout } from "@tw/components/mail/MailWorkspaceLayout";
 import { MessageDetailsView } from "@tw/components/mail/MessageDetailsView";
 import { MessageList } from "@tw/components/mail/MessageList";
+import { MailBulkProvider } from "@tw/components/mail/MailBulkContext";
 import { SystemMailDetailsView } from "@tw/components/mail/SystemMailDetailsView";
 import { SystemMailList } from "@tw/components/mail/SystemMailList";
 import { useIsDesktopViewport } from "@tw/hooks/useIsDesktopViewport";
@@ -20,6 +21,7 @@ import { getComposeDraft } from "@tw/api/inbox";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { RulesPanel } from "@/components/rules/RulesPanel";
+import type { PendingMessageAction, MessageActionKey } from "@tw/lib/messageActions";
 import type { AttachmentMeta } from "@tw/types";
 
 const VIEW_LABELS: Record<MailViewKey, string> = {
@@ -32,6 +34,8 @@ const VIEW_LABELS: Record<MailViewKey, string> = {
   replied: "Replied",
   ticketed: "Ticketed",
   archived: "Archived",
+  flagged: "Flagged",
+  trash: "Trash",
   all: "All Inboxes",
   system: "System",
 };
@@ -95,6 +99,11 @@ export function InboxPage() {
   // useCallback deps below stay untouched.
   const selectedEmailRef = useRef(selectedEmail);
   selectedEmailRef.current = selectedEmail;
+  // A message-row "More actions" pick that needs the reading pane's
+  // own handlers/dialogs (reply, forward, ticket, archive) — handed to
+  // that message's MessageDetailsView once it's open, so each action
+  // keeps a single implementation. See MessageActionsMenu.tsx.
+  const [pendingAction, setPendingAction] = useState<PendingMessageAction | null>(null);
   const previousEmailRef = useRef<typeof selectedEmail>(null);
   // Compose now opens as its own modal (see the Dialog at the bottom of
   // this component) — if it's opened from inside the email-detail modal
@@ -212,6 +221,21 @@ export function InboxPage() {
     const openedAsCompose = await handleOpen(interactionId);
     if (!openedAsCompose) setIsFullScreenOpen(true);
   }
+
+  async function handleMessageAction(interactionId: string, action: MessageActionKey) {
+    if (selectedEmailRef.current?.interaction_id !== interactionId) {
+      const openedAsCompose = await handleOpen(interactionId);
+      if (openedAsCompose) return;
+    }
+    setPendingAction({ interactionId, action });
+  }
+
+  // Drops a hand-off whose message never opened (the open failed), so
+  // it can't fire later when that message is opened for another reason.
+  useEffect(() => {
+    if (!pendingAction || mail.openingId !== null) return;
+    if (selectedEmail?.interaction_id !== pendingAction.interactionId) setPendingAction(null);
+  }, [pendingAction, selectedEmail, mail.openingId]);
 
   // Refreshing an already-open message's details isn't "opening it
   // to read" — pass markRead: false so this never silently undoes an
@@ -385,6 +409,11 @@ export function InboxPage() {
       onRefresh={mail.refresh}
       hasMore={mail.folderRowsHasMore}
       onLoadMore={mail.loadMoreFolderRows}
+      folders={mail.folders}
+      onMessageAction={handleMessageAction}
+      onMarkRead={mail.markRead}
+      onMarkUnread={mail.markUnread}
+      onAssignFolder={mail.assignFolder}
     />
   ) : mail.activeView === "system" ? (
     <SystemMailList
@@ -425,6 +454,11 @@ export function InboxPage() {
       onRefresh={mail.refresh}
       hasMore={mail.hasMore}
       onLoadMore={mail.loadMore}
+      folders={mail.folders}
+      onMessageAction={handleMessageAction}
+      onMarkRead={mail.markRead}
+      onMarkUnread={mail.markUnread}
+      onAssignFolder={mail.assignFolder}
     />
   );
 
@@ -479,6 +513,8 @@ export function InboxPage() {
       onAssignFolder={mail.assignFolder}
       onMarkRead={mail.markRead}
       onMarkUnread={mail.markUnread}
+      pendingAction={pendingAction}
+      onPendingActionHandled={() => setPendingAction(null)}
     />
     )
   ) : mail.selectedSystemNotification ? (
@@ -523,7 +559,12 @@ export function InboxPage() {
   ) : null;
 
   return (
-    <>
+    <MailBulkProvider
+      resetKey={`${mail.activeView}|${mail.activeFolderId ?? ""}`}
+      isTrash={mail.activeView === "trash" && !mail.activeFolderId}
+      onMessageAction={handleMessageAction}
+      refreshAfterMutation={mail.refreshAfterMutation}
+    >
     <AppLayout>
       {/* No title passed above (per Mail spec: no page header) — the
           top navbar (h-16) + main's own p-6 padding are the only other
@@ -585,6 +626,8 @@ export function InboxPage() {
                 onAssignFolder={mail.assignFolder}
                 onMarkRead={mail.markRead}
                 onMarkUnread={mail.markUnread}
+                pendingAction={pendingAction}
+                onPendingActionHandled={() => setPendingAction(null)}
               />
             ) : mail.activeFolderId ? (
               <MessageList
@@ -613,6 +656,11 @@ export function InboxPage() {
                 onRefresh={mail.refresh}
                 hasMore={mail.folderRowsHasMore}
                 onLoadMore={mail.loadMoreFolderRows}
+                folders={mail.folders}
+                onMessageAction={handleMessageAction}
+                onMarkRead={mail.markRead}
+                onMarkUnread={mail.markUnread}
+                onAssignFolder={mail.assignFolder}
               />
             ) : mail.activeView === "system" || mail.selectedSystemNotification ? (
               // The `||` half covers an OTP-forward row opened from the
@@ -662,6 +710,11 @@ export function InboxPage() {
                 onRefresh={mail.refresh}
                 hasMore={mail.hasMore}
                 onLoadMore={mail.loadMore}
+                folders={mail.folders}
+                onMessageAction={handleMessageAction}
+                onMarkRead={mail.markRead}
+                onMarkUnread={mail.markUnread}
+                onAssignFolder={mail.assignFolder}
               />
             )}
           </div>
@@ -708,6 +761,6 @@ export function InboxPage() {
         </div>
       </DialogContent>
     </Dialog>
-    </>
+    </MailBulkProvider>
   );
 }

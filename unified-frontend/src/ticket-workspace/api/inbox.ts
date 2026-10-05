@@ -37,6 +37,8 @@ export async function getInbox(
     category?: string;
     priority?: string;
     assignedToMe?: boolean;
+    // The caller's own flagged mail only.
+    flagged?: boolean;
   },
   signal?: AbortSignal
 ): Promise<InboxResponse> {
@@ -52,6 +54,7 @@ export async function getInbox(
       category: options?.category,
       priority: options?.priority,
       assigned_to_me: options?.assignedToMe,
+      flagged: options?.flagged,
     },
     signal,
   });
@@ -86,6 +89,10 @@ export interface InboxViewCounts {
   all: number;
   otp: number;
   otp_unread: number;
+  // Soft-deleted roots the caller can see (the Trash badge).
+  trash: number;
+  // The caller's own flagged mail (the Flagged badge).
+  flagged: number;
 }
 
 export async function getViewCounts(clientId?: string): Promise<InboxViewCounts> {
@@ -568,5 +575,70 @@ export async function forwardToInternalUser(
     `/inbox/${payload.interactionId}/forward`,
     formData
   );
+  return data;
+}
+
+// POST /inbox/bulk-action — ONE request for a whole selection. The
+// backend runs the matching existing single-interaction workflow once
+// per id, each authorized independently, and returns per-id results
+// (partial success is normal). Reply / Reply All / Forward are not part
+// of it: those open the per-message composer one at a time.
+export type BulkMailActionName =
+  | "mark_read"
+  | "mark_unread"
+  | "archive"
+  | "move"
+  | "delete"
+  | "create_ticket"
+  | "link_ticket"
+  | "attach_to_ticket"
+  | "restore"
+  | "flag"
+  | "unflag"
+  | "pin"
+  | "unpin";
+
+export interface BulkMailActionPayload {
+  interactionIds: string[];
+  action: BulkMailActionName;
+  // move — null/undefined unfiles
+  folderId?: string | null;
+  // link_ticket / attach_to_ticket
+  ticketId?: string;
+  newAgentId?: string | null;
+  newPriority?: string | null;
+  // create_ticket
+  ticketType?: string;
+  currentPriority?: string;
+  agentId?: string | null;
+}
+
+export interface BulkMailActionResponse {
+  requested: number;
+  succeeded: number;
+  failed: number;
+  skipped?: number;
+  results: {
+    interaction_id: string;
+    status: "success" | "failed" | "skipped";
+    reason?: string | null;
+    ticket_id?: string | null;
+  }[];
+}
+
+export async function bulkMailAction(
+  payload: BulkMailActionPayload
+): Promise<BulkMailActionResponse> {
+  const { data } = await apiClient.post<BulkMailActionResponse>("/inbox/bulk-action", {
+    interaction_ids: payload.interactionIds,
+    action: payload.action,
+    folder_id: payload.folderId ?? null,
+    ticket_id: payload.ticketId ?? null,
+    new_agent_id: payload.newAgentId ?? null,
+    new_priority: payload.newPriority ?? null,
+    ticket_type: payload.ticketType ?? null,
+    current_priority: payload.currentPriority ?? "MEDIUM",
+    agent_id: payload.agentId ?? null,
+  });
   return data;
 }

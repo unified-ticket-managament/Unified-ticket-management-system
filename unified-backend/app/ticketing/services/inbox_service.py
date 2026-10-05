@@ -15,6 +15,7 @@ from app.ticketing.repositories.interaction_repository import (
 from app.ticketing.repositories.message_read_receipt_repository import (
     MessageReadReceiptRepository,
 )
+from app.ticketing.repositories.message_mark_repository import MessageMarkRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
 
@@ -89,6 +90,7 @@ class InboxService:
         user_repository: UserRepository | None = None,
         ticket_repository: TicketRepository | None = None,
         read_receipt_repository: MessageReadReceiptRepository | None = None,
+        message_mark_repository: MessageMarkRepository | None = None,
         sla_service: SLAService | None = None,
     ):
         self.interaction_repository = interaction_repository
@@ -96,6 +98,7 @@ class InboxService:
         self.user_repository = user_repository
         self.ticket_repository = ticket_repository
         self.read_receipt_repository = read_receipt_repository
+        self.message_mark_repository = message_mark_repository
         self.sla_service = sla_service
 
     async def _resolve_scope(
@@ -356,6 +359,7 @@ class InboxService:
         priority_filter: TicketPriority | None = None,
         assigned_to_me: bool = False,
         bypass_ownership_scope: bool = False,
+        flagged_only: bool = False,
     ) -> InboxResponse:
         """
         Returns the role-scoped inbox for the current user.
@@ -437,6 +441,11 @@ class InboxService:
             priority_filter=priority_filter,
             account_manager_category_ids=category_ids,
             account_manager_self_filed_folder_ids=account_manager_self_filed_folder_ids,
+            # Pinned mail floats to the top of this user's list.
+            pinned_first_for_user_id=current_user.user_id,
+            flagged_by_user_id=(
+                current_user.user_id if flagged_only or view == "flagged" else None
+            ),
         )
 
         interactions_with_attachments: set = set()
@@ -464,6 +473,13 @@ class InboxService:
         read_interaction_ids: set[UUID] = set()
         if self.read_receipt_repository is not None:
             read_interaction_ids = await self.read_receipt_repository.get_read_interaction_ids(
+                current_user.user_id,
+                [i.interaction_id for i in interactions],
+            )
+
+        marks_by_id: dict[UUID, tuple[bool, bool]] = {}
+        if self.message_mark_repository is not None:
+            marks_by_id = await self.message_mark_repository.get_marks(
                 current_user.user_id,
                 [i.interaction_id for i in interactions],
             )
@@ -635,6 +651,10 @@ class InboxService:
                     ),
 
                     is_read=interaction.interaction_id in read_interaction_ids,
+
+                    is_flagged=marks_by_id.get(interaction.interaction_id, (False, False))[0],
+
+                    is_pinned=marks_by_id.get(interaction.interaction_id, (False, False))[1],
 
                     first_response_sla=first_response_sla_by_id.get(
                         interaction.interaction_id

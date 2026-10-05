@@ -335,7 +335,15 @@ function matchesSearch(item: InboxItem, term: string): boolean {
 // "otp" (the OTPs section) is a plain GET /inbox?view=otp tab like the
 // others — the backend already keeps OTP roots out of "pending"/
 // "replied", so nothing here filters OTPs client-side.
-type BaseTabKey = "pending" | "replied" | "ticketed" | "archived" | "all" | "otp";
+type BaseTabKey =
+  | "pending"
+  | "replied"
+  | "ticketed"
+  | "archived"
+  | "all"
+  | "otp"
+  | "trash"
+  | "flagged";
 // "replied" here is the internal, role-scoped, status-based tab
 // (ticket_id IS NULL AND status==ASSIGNED — "this thread has been
 // responded to by someone in scope, not yet ticketed") — it still
@@ -420,6 +428,8 @@ export function useMailInbox() {
     archived: [],
     all: [],
     otp: [],
+    trash: [],
+    flagged: [],
   });
   const [sentItems, setSentItems] = useState<InboxItem[]>([]);
   // Reply messages this user has personally sent — the "Replied"
@@ -472,6 +482,8 @@ export function useMailInbox() {
     archived: 0,
     all: 0,
     otp: 0,
+    trash: 0,
+    flagged: 0,
   });
   // Real Pending/Replied/Ticketed/Archived/All counts, fetched
   // eagerly via one cheap aggregate query — kept separate from
@@ -486,6 +498,8 @@ export function useMailInbox() {
     all: 0,
     otp: 0,
     otp_unread: 0,
+    trash: 0,
+    flagged: 0,
   });
   // Which views/tabs have actually been fetched at least once — a
   // ref, not state, since it's pure bookkeeping read by refresh()/
@@ -661,7 +675,7 @@ export function useMailInbox() {
           key,
           {
             clientId: clientIdFilter,
-            scope: key === "all" ? "all" : undefined,
+            scope: key === "all" || key === "flagged" ? "all" : undefined,
             limit: MAIL_TAB_FETCH_SIZE,
             offset: 0,
             priority: priorityFilter === "ALL" ? undefined : priorityFilter,
@@ -704,7 +718,7 @@ export function useMailInbox() {
           key,
           {
             clientId: clientIdFilter,
-            scope: key === "all" ? "all" : undefined,
+            scope: key === "all" || key === "flagged" ? "all" : undefined,
             limit: MAIL_TAB_FETCH_SIZE,
             offset: alreadyLoaded,
             priority: priorityFilter === "ALL" ? undefined : priorityFilter,
@@ -1527,6 +1541,8 @@ export function useMailInbox() {
     archived: rowsByTab.archived,
     all: rowsByTab.all,
     otp: rowsByTab.otp,
+    trash: rowsByTab.trash,
+    flagged: rowsByTab.flagged,
     unassigned,
     mine,
     sent: sentItems,
@@ -1697,6 +1713,9 @@ export function useMailInbox() {
     loadMore,
     managedClientCount,
     refresh,
+    // One counts + active-tab refetch for a whole bulk action (never
+    // once per selected message).
+    refreshAfterMutation,
     refreshFolders,
     createFolder,
     deleteFolder,

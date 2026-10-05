@@ -5,6 +5,7 @@ import {
   Archive,
   Bell,
   FileEdit,
+  Flag,
   Folder,
   Inbox as InboxIcon,
   KeyRound,
@@ -54,6 +55,10 @@ const VIEW_ITEMS: Array<{ key: MailViewKey; label: string; icon: LucideIcon }> =
   { key: "replied", label: "Replied", icon: Reply },
   { key: "ticketed", label: "Ticketed", icon: TicketIcon },
   { key: "archived", label: "Archived", icon: Archive },
+  // The caller's own flagged mail across every folder (GET /inbox?view=flagged).
+  { key: "flagged", label: "Flagged", icon: Flag },
+  // Soft-deleted mail (GET /inbox?view=trash) — restorable.
+  { key: "trash", label: "Trash", icon: Trash2 },
   // Internal system notices (SLA breach ladder + escalation workflow)
   // rendered in mail format — see useMailInbox.ts's systemNotifications
   // and SystemMailList/SystemMailDetailsView. Not part of the Mail

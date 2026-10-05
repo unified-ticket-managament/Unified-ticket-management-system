@@ -82,6 +82,7 @@ import {
   type TrackedInlineImage,
 } from "@tw/lib/richText";
 import { showUndoSendToast } from "@tw/lib/undoSend";
+import type { PendingMessageAction } from "@tw/lib/messageActions";
 import type {
   AssignableAgentsResponse,
   AttachmentMeta,
@@ -530,6 +531,11 @@ interface MessageDetailsViewProps {
   onAssignFolder: (interactionId: string, folderId: string | null) => Promise<boolean>;
   onMarkRead: (interactionId: string) => void;
   onMarkUnread: (interactionId: string) => void;
+  // An action picked from a message row's "More actions" menu
+  // (MessageActionsMenu.tsx) for this message — run through this
+  // view's own toolbar handlers below, then cleared.
+  pendingAction?: PendingMessageAction | null;
+  onPendingActionHandled?: () => void;
 }
 
 export function MessageDetailsView({
@@ -550,6 +556,8 @@ export function MessageDetailsView({
   onMarkUnread,
   onUpdateTags,
   onAssignFolder,
+  pendingAction = null,
+  onPendingActionHandled,
 }: MessageDetailsViewProps) {
   // `categories` used to be fetched independently here on every
   // single mount (i.e. every time a message was opened) — it's now
@@ -1110,6 +1118,38 @@ export function MessageDetailsView({
   }
 
   const archiveDisabled = isTicketed || email.status !== "PENDING" || isArchiving;
+
+  // Row-menu hand-off: same guards as the toolbar buttons below, so a
+  // menu pick can never do what the matching button would refuse to.
+  // The backend still re-checks every one of these.
+  useEffect(() => {
+    if (!pendingAction || pendingAction.interactionId !== email.interaction_id) return;
+    onPendingActionHandled?.();
+    switch (pendingAction.action) {
+      case "reply":
+      case "replyAll":
+        if (!canReplyExternal) break;
+        if (isClosed) {
+          pushToast("This ticket is closed — replies are disabled.", "info");
+          break;
+        }
+        handleReplyClick(pendingAction.action);
+        break;
+      case "forward":
+        handleForwardClick();
+        break;
+      case "createTicket":
+        if (canConvertToTicket && !isTicketed) setCreateOpen(true);
+        break;
+      case "linkTicket":
+        if (canAttachToTicket && !isTicketed) openAttachDialog();
+        break;
+      case "archive":
+        if (canArchive && !archiveDisabled) handleArchive();
+        break;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAction, email.interaction_id]);
 
   // Shared between the bottom-pinned toolbar (panel/standalone) and
   // the top toolbar (fullscreen, see the "isFullscreen" branch below)

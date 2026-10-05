@@ -5777,3 +5777,83 @@ class InteractionService:
             removed_at=interaction.removed_at,
             message="Interaction hidden successfully.",
         )
+
+    async def restore_interaction(
+        self,
+        ticket_id: UUID | None,
+        interaction_id: UUID,
+        current_user: User,
+    ) -> HideInteractionResponse:
+        """
+        Mail Trash -> Restore: undoes hide_interaction. Authorized exactly
+        like the delete it reverses (same ticket scope + ticket:hide_interaction
+        for ticketed mail, same pending-interaction gate otherwise), so
+        anyone who could delete a message can restore it and nobody else.
+        """
+
+        if ticket_id is not None:
+            ticket = await self._get_ticket_or_404(ticket_id)
+            ensure_ticket_not_closed(ticket)
+            ensure_agent_can_view_ticket(ticket, current_user)
+            await ensure_account_manager_owns_ticket_client(
+                ticket, current_user, self.client_repository
+            )
+            ensure_has_permission(current_user, "ticket:hide_interaction")
+        else:
+            pending = await self.interaction_repository.get_by_id(interaction_id)
+            if pending is not None:
+                await self._ensure_can_act_on_pending_interaction(pending, current_user)
+
+        actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
+            current_user
+        )
+
+        interaction = await self.interaction_repository.get_by_id(
+            interaction_id
+        )
+
+        if interaction is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_404_NOT_FOUND,
+                detail="Interaction not found.",
+            )
+
+        if interaction.ticket_id != ticket_id:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Interaction does not belong to this ticket.",
+            )
+
+        # removed_at marks a user's delete (see the repository's trash
+        # predicate) — other is_visible=False rows aren't restorable.
+        if interaction.is_visible or interaction.removed_at is None:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="Interaction is not in the trash.",
+            )
+
+        interaction = await self.interaction_repository.unhide(interaction)
+
+        await AuditLogService.log_event(
+            self.interaction_repository.db,
+            entity_type=AuditEntityType.INTERACTION,
+            entity_id=interaction.interaction_id,
+            event_type=AuditEventType.INTERACTION_RESTORED,
+            actor_id=actor_id,
+            actor_name=actor_name,
+            actor_role=actor_role,
+            old_values={"is_visible": False},
+            new_values={
+                "is_visible": True,
+                "ticket_id": interaction.ticket_id,
+            },
+        )
+
+        return HideInteractionResponse(
+            interaction_id=interaction.interaction_id,
+            ticket_id=interaction.ticket_id,
+            is_visible=interaction.is_visible,
+            removed_by=interaction.removed_by,
+            removed_at=interaction.removed_at,
+            message="Interaction restored successfully.",
+        )

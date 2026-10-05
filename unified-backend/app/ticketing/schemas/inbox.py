@@ -88,6 +88,11 @@ class InboxItemResponse(BaseModel):
     # change.
     is_read: bool = False
 
+    # The caller's own Flag / Pin on this thread (message_marks) — personal,
+    # never another user's.
+    is_flagged: bool = False
+    is_pinned: bool = False
+
     # The real, DB-backed First Response SLA state for this row's
     # thread root — None once ticketed or if no clock exists. See
     # OpenEmailResponse's matching field for why this exists.

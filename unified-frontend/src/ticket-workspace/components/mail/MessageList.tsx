@@ -7,10 +7,15 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  Flag,
+  Mail,
+  MailOpen,
+  Pin,
   Paperclip,
   RefreshCw,
   Search,
   SlidersHorizontal,
+  Undo2,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -30,7 +35,16 @@ import { cn } from "@/lib/utils";
 import { useSettingsStore } from "@/store/settings-store";
 import { TIME_FILTERS, type TimeFilterKey } from "@tw/hooks/useMailInbox";
 import { formatRelativeTime } from "@/lib/utils";
-import type { CategoryResponse, ClientResponse, InboxItem, SLAPolicyResponse, TicketPriority } from "@tw/types";
+import type { CategoryResponse, ClientResponse, InboxItem, MailFolder, SLAPolicyResponse, TicketPriority } from "@tw/types";
+import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { MessageActionsMenu } from "@tw/components/mail/MessageActionsMenu";
+import { MessageContextMenuContent } from "@tw/components/mail/MessageContextMenu";
+import { MailSelectionBar } from "@tw/components/mail/MailSelectionBar";
+import { useMailBulk } from "@tw/components/mail/MailBulkContext";
+import { resolveContextTarget, resolveRowClick } from "@tw/lib/mailSelection";
+import { rowClientLabel, rowSender, rowSubject, readToggleLabel } from "@tw/lib/messageRow";
+import { buildMessageMenu, hasMessageMenu, type MessageActionKey, type MessageActionRow } from "@tw/lib/messageActions";
 import { MailEmptyState } from "@tw/components/mail/MailEmptyState";
 import { listSlaPolicies } from "@tw/api/sla";
 import {
@@ -98,6 +112,8 @@ function statusMeta(item: InboxItem): { label: string; variant: "warning" | "suc
 // First 80–120 characters of the latest message as a row preview —
 // empty (not a placeholder) when there's nothing to show.
 const PREVIEW_MAX_LENGTH = 110;
+// toggleRead does not depend on permissions; only the labels are used.
+const NO_PERMS = { replyExternal: false, createTicket: false, attachToTicket: false, archive: false, moveToFolder: false };
 
 function previewOf(message: string | null | undefined): string {
   const trimmed = message?.trim();
@@ -185,6 +201,14 @@ interface MessageListProps {
   // action from this component.
   hasMore: boolean;
   onLoadMore: () => Promise<void>;
+  // Per-row "More actions" (⋮) menu — optional so this stays additive
+  // for any caller not yet passing them; the menu only renders when
+  // all four are provided. See MessageActionsMenu.tsx.
+  folders?: MailFolder[];
+  onMessageAction?: (interactionId: string, action: MessageActionKey) => void;
+  onMarkRead?: (interactionId: string) => void;
+  onMarkUnread?: (interactionId: string) => void;
+  onAssignFolder?: (interactionId: string, folderId: string | null) => Promise<boolean>;
 }
 
 export function MessageList({
@@ -215,6 +239,11 @@ export function MessageList({
   onRefresh,
   hasMore,
   onLoadMore,
+  folders,
+  onMessageAction,
+  onMarkRead,
+  onMarkUnread,
+  onAssignFolder,
 }: MessageListProps) {
   const [sort, setSort] = useState<SortKey>("newest");
   // Unread/attachments have no backend filter equivalent (unread
@@ -224,6 +253,10 @@ export function MessageList({
   // is currently loaded, same as before.
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [attachmentsOnly, setAttachmentsOnly] = useState(false);
+  // Like unread/attachments: narrows the rows already loaded, using the
+  // caller's own is_flagged (GET /inbox?flagged=true is the server-side
+  // equivalent for callers that want the full filtered set).
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
   const [slaRiskFilter, setSlaRiskFilter] = useState<SlaRiskFilter>("ALL");
 
   // Pagination — operates on `filtered` (this list's own current
@@ -237,6 +270,9 @@ export function MessageList({
   const setPersistedPageSize = useSettingsStore((s) => s.setMailMessagesPerPage);
   const pageSize: MessageListPageSize = isValidPageSize(persistedPageSize) ? persistedPageSize : 50;
   const [page, setPage] = useState(1);
+  // Row whose ⋮ menu is open — keeps its hover overlay visible even
+  // though the pointer has moved onto the menu.
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   // True while "Last Page" is fetching additional batches to find the
   // real final page — see goToLast below.
   const [isJumpingToLast, setIsJumpingToLast] = useState(false);
@@ -328,11 +364,15 @@ export function MessageList({
     let rows = Array.from(new Map(items.map((item) => [item.interaction_id, item])).values());
     if (unreadOnly) rows = rows.filter((item) => isItemUnread(item, openedIds));
     if (attachmentsOnly) rows = rows.filter((item) => item.has_attachments);
+    if (flaggedOnly) rows = rows.filter((item) => item.is_flagged);
     if (slaRiskFilter !== "ALL") {
       rows = rows.filter((item) => firstResponseTierFor(item) === slaRiskFilter);
     }
 
+    // Pinned mail always leads (the server already pages that way); the
+    // chosen sort then orders within the pinned and unpinned groups.
     return [...rows].sort((a, b) => {
+      if (Boolean(a.is_pinned) !== Boolean(b.is_pinned)) return a.is_pinned ? -1 : 1;
       if (sort === "sender") {
         const aName = a.category_id ? a.category_name || "" : a.client_name;
         const bName = b.category_id ? b.category_name || "" : b.client_name;
@@ -343,7 +383,7 @@ export function MessageList({
       return sort === "oldest" ? aTime - bTime : bTime - aTime;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, unreadOnly, attachmentsOnly, sort, openedIds, slaRiskFilter, targetMinutes, now]);
+  }, [items, unreadOnly, attachmentsOnly, flaggedOnly, sort, openedIds, slaRiskFilter, targetMinutes, now]);
 
   // `filtered.length` is "everything currently loaded and matching
   // every active filter" — the real total once `hasMore` is false, or
@@ -367,6 +407,57 @@ export function MessageList({
   );
   const pageEndIndex = pageStartIndex + pageItems.length;
 
+  // ---- Multi-select (state lives in MailBulkProvider; null → no bulk) ----
+  const bulk = useMailBulk();
+  const bulkClear = bulk?.clear;
+  const bulkPrune = bulk?.prune;
+
+  // Rows are selectable by the same id every per-message action uses.
+  const openIdOf = (item: InboxItem) => item.open_interaction_id ?? item.interaction_id;
+  const toActionRow = (item: InboxItem): MessageActionRow => ({
+    ...item,
+    isUnread: isItemUnread(item, openedIds),
+  });
+  const visibleSelectableIds = useMemo(
+    () => pageItems.filter((item) => hasMessageMenu({ ...item, isUnread: false })).map(openIdOf),
+    [pageItems]
+  );
+  const selectedRows = useMemo(
+    () =>
+      bulk && bulk.selectedIds.size > 0
+        ? filtered
+            .filter((item) => bulk.selectedIds.has(openIdOf(item)))
+            .map((item) => toActionRow(item))
+        : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [bulk?.selectedIds, filtered, openedIds]
+  );
+
+  // A different page / sort / filter / search is a different result set —
+  // the selection does not follow it (no persistent cross-page selection).
+  useEffect(() => {
+    bulkClear?.();
+  }, [
+    bulkClear,
+    page,
+    pageSize,
+    sort,
+    unreadOnly,
+    attachmentsOnly,
+    slaRiskFilter,
+    search,
+    timeFilter,
+    clientFilter,
+    priorityFilter,
+    categoryFilter,
+  ]);
+
+  // A refetch can drop rows (archived, deleted, ticketed): keep only the
+  // ones still loaded so a stale id is never sent.
+  useEffect(() => {
+    bulkPrune?.(items.map(openIdOf));
+  }, [bulkPrune, items]);
+
   // Resets to page 1 whenever the page size changes or any filter/
   // sort this component owns changes — `items` itself (the folder/
   // view's underlying data, or a search/priority/category/time-filter
@@ -377,7 +468,7 @@ export function MessageList({
   useEffect(() => {
     setPage(1);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageSize, items, unreadOnly, attachmentsOnly, sort, slaRiskFilter]);
+  }, [pageSize, items, unreadOnly, attachmentsOnly, flaggedOnly, sort, slaRiskFilter]);
 
   // Separate safety net for section 13's "data changed under you"
   // case (e.g. a mutation removes a row from the current page while
@@ -492,6 +583,7 @@ export function MessageList({
     priorityFilter !== "ALL",
     unreadOnly,
     attachmentsOnly,
+    flaggedOnly,
     categoryFilter !== "ALL",
     timeFilter !== "ALL",
     slaRiskFilter !== "ALL",
@@ -638,6 +730,10 @@ export function MessageList({
               <Checkbox checked={attachmentsOnly} onCheckedChange={(v) => setAttachmentsOnly(Boolean(v))} />
               Has attachments
             </label>
+            <label className="flex items-center gap-2 py-1 text-xs">
+              <Checkbox checked={flaggedOnly} onCheckedChange={(v) => setFlaggedOnly(Boolean(v))} />
+              Flagged
+            </label>
 
             {activeFilterCount > 0 && (
               <button
@@ -647,6 +743,7 @@ export function MessageList({
                   onCategoryFilterChange("ALL");
                   setUnreadOnly(false);
                   setAttachmentsOnly(false);
+                  setFlaggedOnly(false);
                   setSlaRiskFilter("ALL");
                   onTimeFilterChange("ALL");
                 }}
@@ -658,6 +755,14 @@ export function MessageList({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {bulk && folders && filtered.length > 0 && (
+        <MailSelectionBar
+          visibleIds={visibleSelectableIds}
+          selectedRows={selectedRows}
+          folders={folders}
+        />
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {isLoading && filtered.length === 0 ? (
@@ -682,6 +787,7 @@ export function MessageList({
             <MailEmptyState onCompose={onCompose} />
           </div>
         ) : (
+          <TooltipProvider delayDuration={300}>
           <ul className="divide-y divide-border">
             {pageItems.map((item) => {
               const openId = item.open_interaction_id ?? item.interaction_id;
@@ -694,13 +800,33 @@ export function MessageList({
               // A CATEGORY-mailbox row has no client — category_id is
               // set instead (see InboxItem's own docstring).
               const isCategoryInbox = !!item.category_id;
-              const displayName = isCategoryInbox ? item.category_name || "Category" : item.client_name;
+              const clientLabel = rowClientLabel(item);
+              const sender = rowSender(item);
+              const subject = rowSubject(item);
+              // Avatar initials follow the primary line (sender).
+              const displayName = sender;
+              const overlayPinned = menuOpenId === openId;
 
-              return (
-                <li key={item.interaction_id}>
+              const selectable = Boolean(bulk) && hasMessageMenu({ ...item, isUnread });
+              const isChecked = selectable && bulk!.selectedIds.has(openId);
+              const selectionActive = (bulk?.selectedIds.size ?? 0) > 0;
+              const canContextMenu =
+                selectable && !!(folders && onMessageAction && onMarkRead && onMarkUnread && onAssignFolder);
+
+              const rowContent = (
+                <>
                   <button
                     type="button"
-                    onClick={() => {
+                    onClick={(event) => {
+                      // Ctrl (Win/Linux) / Cmd (macOS) + Click toggles
+                      // this row in the selection and does NOT open it,
+                      // so it can't change the reading pane, mark the
+                      // thread read, or disturb the rest of the selection.
+                      if (selectable && bulk && resolveRowClick(event, bulk.platform) === "toggle") {
+                        event.preventDefault();
+                        bulk.toggle(openId);
+                        return;
+                      }
                       // Already open in the reading pane — re-firing
                       // onOpen would just re-run "open thread" (and
                       // its mark-read side effect) for no reason; use
@@ -708,12 +834,16 @@ export function MessageList({
                       if (isSelected) return;
                       onOpen(openId);
                     }}
-                    onDoubleClick={() => onOpenFullScreen?.(openId)}
+                    onDoubleClick={(event) => {
+                      if (selectable && bulk && resolveRowClick(event, bulk.platform) === "toggle") return;
+                      onOpenFullScreen?.(openId);
+                    }}
                     disabled={isOpening}
                     className={cn(
                       "group flex w-full items-start gap-3 px-4 py-3 text-left transition-all duration-150 hover:z-[1] hover:-translate-y-0.5 hover:bg-muted/60 hover:shadow-sm",
                       isUnread && "bg-primary/[0.03]",
                       isSelected && "bg-primary/10 hover:bg-primary/10",
+                      isChecked && "bg-primary/[0.08]",
                       isOpening && "opacity-60"
                     )}
                   >
@@ -727,35 +857,54 @@ export function MessageList({
                         <span
                           className={cn(
                             "truncate text-[13.5px]",
-                            isUnread ? "font-semibold text-foreground" : "font-medium text-foreground/90"
+                            isUnread ? "font-semibold text-foreground" : "font-normal text-foreground/90"
                           )}
                         >
-                          {displayName}
-                        </span>
-                        {isCategoryInbox && (
-                          <span className="flex-none rounded border border-border px-1 py-px text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                            Category
-                          </span>
-                        )}
-                        {item.has_attachments && <Paperclip className="h-3 w-3 flex-none text-muted-foreground" />}
-                        <span className="ml-auto flex-none whitespace-nowrap text-[11px] text-muted-foreground">
-                          {formatRelativeTime(item.latest_at ?? item.received_at)}
+                          {sender}
                         </span>
                       </div>
-                      <p
-                        className={cn(
-                          "mt-0.5 truncate text-[13px]",
-                          isUnread ? "font-medium text-foreground" : "text-muted-foreground"
+                      <div className="mt-0.5 flex items-center gap-1.5">
+                        <p
+                          className={cn(
+                            "truncate text-[13px]",
+                            isUnread ? "font-semibold text-foreground" : "text-foreground/80"
+                          )}
+                        >
+                          {subject}
+                        </p>
+                        {item.has_attachments && (
+                          <Paperclip className="h-3 w-3 flex-none text-muted-foreground" aria-label="Has attachment" />
                         )}
-                      >
-                        {item.subject}
+                        {item.is_flagged && (
+                          <Flag className="h-3 w-3 flex-none fill-destructive text-destructive" aria-label="Flagged" />
+                        )}
+                        {item.is_pinned && (
+                          <Pin className="h-3 w-3 flex-none fill-primary text-primary" aria-label="Pinned" />
+                        )}
+                      </div>
+                      <p className="mt-0.5 truncate text-[12px] text-muted-foreground">
+                        {clientLabel && (
+                          <span className="font-medium text-foreground/70">
+                            {isCategoryInbox ? `Category · ${clientLabel}` : clientLabel}
+                            {preview ? " · " : ""}
+                          </span>
+                        )}
+                        {preview}
                       </p>
-                      {preview && (
-                        <p className="mt-0.5 truncate text-[12px] text-muted-foreground">{preview}</p>
-                      )}
                     </div>
 
-                    <div className="flex flex-none flex-col items-end gap-1.5 pl-1">
+                    <div className="flex min-w-[100px] flex-none flex-col items-end gap-1.5 pl-1">
+                      {/* Timestamp keeps its slot; the hover overlay below
+                          sits on top of it (opacity only, no reflow). */}
+                      <span
+                        className={cn(
+                          "h-6 whitespace-nowrap text-[11px] leading-6 text-muted-foreground transition-opacity",
+                          canContextMenu && "group-hover/row:opacity-0 max-lg:opacity-0",
+                          overlayPinned && "opacity-0"
+                        )}
+                      >
+                        {formatRelativeTime(item.latest_at ?? item.received_at)}
+                      </span>
                       {/* First Response SLA tier — only a still-pending
                           message has one; a ticketed row's relevant
                           clock is Resolution SLA, shown on the Tickets
@@ -773,10 +922,147 @@ export function MessageList({
                       </Badge>
                     </div>
                   </button>
-                </li>
+                  {folders && onMessageAction && onMarkRead && onMarkUnread && onAssignFolder && hasMessageMenu({ ...item, isUnread }) && (
+                    <div
+                      className={cn(
+                        "absolute right-4 top-3 z-[2] flex h-6 items-center gap-0.5 rounded-md bg-background opacity-0 shadow-sm ring-1 ring-border transition-opacity focus-within:opacity-100 group-hover/row:opacity-100 max-lg:opacity-100",
+                        overlayPinned && "opacity-100"
+                      )}
+                    >
+                      {bulk?.isTrash ? (
+                        // Trash: the only quick action is Restore (same
+                        // bulk "restore" path as the toolbar/context menu).
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              aria-label="Restore"
+                              disabled={bulk.busy}
+                              onClick={() => bulk.runBulk("restore", [toActionRow(item)])}
+                              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+                            >
+                              <Undo2 className="h-4 w-4" />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent>Restore</TooltipContent>
+                        </Tooltip>
+                      ) : (
+                        <>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={readToggleLabel(buildMessageMenu({ ...item, isUnread }, NO_PERMS).toggleRead)}
+                            onClick={() =>
+                              isUnread ? onMarkRead(openId) : onMarkUnread(openId)
+                            }
+                            className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring max-lg:hidden"
+                          >
+                            {isUnread ? <Mail className="h-4 w-4" /> : <MailOpen className="h-4 w-4" />}
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          {readToggleLabel(buildMessageMenu({ ...item, isUnread }, NO_PERMS).toggleRead)}
+                        </TooltipContent>
+                      </Tooltip>
+                      {(["flag", "pin"] as const).map((kind) => {
+                        const menuModel = buildMessageMenu({ ...item, isUnread }, NO_PERMS);
+                        const action = kind === "flag" ? menuModel.toggleFlag : menuModel.togglePin;
+                        const on = kind === "flag" ? item.is_flagged : item.is_pinned;
+                        const label = { flag: "Flag", unflag: "Unflag", pin: "Pin", unpin: "Unpin" }[action];
+                        const Icon = kind === "flag" ? Flag : Pin;
+                        return (
+                          <Tooltip key={kind}>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                aria-label={label}
+                                aria-pressed={Boolean(on)}
+                                onClick={() => void bulk?.markMessage(openId, action)}
+                                className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring max-lg:hidden"
+                              >
+                                <Icon
+                                  className={cn(
+                                    "h-4 w-4",
+                                    on && (kind === "flag" ? "fill-destructive text-destructive" : "fill-primary text-primary")
+                                  )}
+                                />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent>{label}</TooltipContent>
+                          </Tooltip>
+                        );
+                      })}
+                      <MessageActionsMenu
+                        item={item}
+                        isUnread={isUnread}
+                        folders={folders}
+                        onMessageAction={onMessageAction}
+                        onMarkRead={onMarkRead}
+                        onMarkUnread={onMarkUnread}
+                        onAssignFolder={onAssignFolder}
+                        onOpenChange={(open) => setMenuOpenId(open ? openId : null)}
+                      />
+                        </>
+                      )}
+                    </div>
+                  )}
+                  {selectable && (
+                    <div
+                      className={cn(
+                        "absolute left-4 top-3 z-[2] flex h-9 w-9 items-center justify-center rounded-full bg-background transition-opacity focus-within:opacity-100",
+                        isChecked || selectionActive ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"
+                      )}
+                    >
+                      <Checkbox
+                        checked={isChecked}
+                        onCheckedChange={() => bulk!.toggle(openId)}
+                        aria-label={isChecked ? "Deselect message" : "Select message"}
+                      />
+                    </div>
+                  )}
+                </>
+              );
+
+              if (!canContextMenu) {
+                return (
+                  <li key={item.interaction_id} className="group/row relative">
+                    {rowContent}
+                  </li>
+                );
+              }
+
+              return (
+                <ContextMenu key={item.interaction_id}>
+                  <ContextMenuTrigger asChild>
+                    <li
+                      className="group/row relative"
+                      onContextMenu={() => {
+                        // Right-click on a selected row keeps the whole
+                        // selection (bulk menu); on an unselected row it
+                        // replaces the selection with just that row.
+                        const target = resolveContextTarget(bulk!.selectedIds, openId);
+                        if (target.selection !== bulk!.selectedIds) bulk!.setSelection(target.selection);
+                      }}
+                    >
+                      {rowContent}
+                    </li>
+                  </ContextMenuTrigger>
+                  <MessageContextMenuContent
+                    item={item}
+                    isUnread={isUnread}
+                    folders={folders!}
+                    selectedRows={bulk!.selectedIds.has(openId) ? selectedRows : [toActionRow(item)]}
+                    onMessageAction={onMessageAction!}
+                    onMarkRead={onMarkRead!}
+                    onMarkUnread={onMarkUnread!}
+                    onAssignFolder={onAssignFolder!}
+                  />
+                </ContextMenu>
               );
             })}
           </ul>
+          </TooltipProvider>
         )}
       </div>
 

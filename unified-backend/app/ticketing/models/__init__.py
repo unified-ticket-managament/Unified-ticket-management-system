@@ -16,6 +16,7 @@ from .resolution_sla import ResolutionSLA
 from .resolution_sla_pause_interval import ResolutionSLAPauseInterval
 from .sla_breach_notification import SLABreachNotification
 from .message_read_receipt import MessageReadReceipt
+from .message_mark import MessageMark
 from .ticket_escalation import TicketEscalation
 from .escalation_handling_sla import EscalationHandlingSLA
 from .rule import Rule

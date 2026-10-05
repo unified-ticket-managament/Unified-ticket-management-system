@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import exists, func, or_, select, tuple_, update
+from sqlalchemy import case, exists, false, func, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from shared_models.models import Category, User
@@ -11,6 +11,7 @@ from app.core.request_timing import timed_stage
 from app.ticketing.enums import EscalationStatus, InteractionDirection, InteractionStatus, TicketPriority
 from app.ticketing.models.client import Client
 from app.ticketing.models.interaction import Interaction
+from app.ticketing.models.message_mark import MessageMark
 from app.ticketing.models.message_read_receipt import MessageReadReceipt
 from app.ticketing.models.ticket import Ticket
 from app.ticketing.models.ticket_escalation import TicketEscalation
@@ -38,6 +39,21 @@ def _otp_view_conditions() -> tuple:
         Interaction.ticket_id.is_(None),
         Interaction.direction == InteractionDirection.INBOUND,
         Interaction.status.in_((InteractionStatus.PENDING, InteractionStatus.ASSIGNED)),
+    )
+
+
+def _trash_view_conditions() -> tuple:
+    """
+    The Mail "Trash" section: roots a user soft-deleted through
+    InteractionRepository.hide. `removed_at` is only ever set by that
+    path, so it separates a user's delete from the other is_visible=False
+    rows (bounce notices, merged/consumed rows). Shared by list_inbox and
+    count_by_view so the list and its badge can't drift.
+    """
+
+    return (
+        Interaction.is_visible.is_(False),
+        Interaction.removed_at.isnot(None),
     )
 
 
@@ -467,6 +483,8 @@ class InteractionRepository:
         priority_filter: TicketPriority | None = None,
         account_manager_category_ids: list[UUID] | None = None,
         account_manager_self_filed_folder_ids: list[UUID] | None = None,
+        pinned_first_for_user_id: UUID | None = None,
+        flagged_by_user_id: UUID | None = None,
     ) -> tuple[list[Interaction], int]:
         """
         The role-scoped inbox query — always over thread ROOTS
@@ -646,8 +664,11 @@ class InteractionRepository:
         if folder_id is not None:
             query = query.where(Interaction.folder_id == folder_id)
 
+        if view == "trash":
+            query = query.where(*_trash_view_conditions())
+        else:
+            query = query.where(Interaction.is_visible.is_(True))
         query = query.where(
-            Interaction.is_visible.is_(True),
             Interaction.interaction_type == "EMAIL",
             Interaction.parent_interaction_id.is_(None),
         )
@@ -711,6 +732,7 @@ class InteractionRepository:
             )
         elif view == "otp":
             query = query.where(*_otp_view_conditions())
+        # view == "trash": the visibility predicate above is the whole filter.
         elif view == "ticketed":
             query = query.where(Interaction.ticket_id.isnot(None))
         elif view == "archived":
@@ -720,12 +742,43 @@ class InteractionRepository:
                 Interaction.direction == InteractionDirection.INBOUND,
             )
         # view == "all": no further filter — every root email.
+        # view == "flagged": likewise — the caller's own flags (applied below)
+        # narrow every visible root, whatever its state.
 
         if search:
             query = query.where(Interaction.subject.ilike(f"%{search}%"))
 
+        # Flagged filter — the caller's OWN flags only, applied after
+        # every visibility/scope predicate above so it can only narrow.
+        if flagged_by_user_id is not None:
+            query = query.where(
+                exists().where(
+                    MessageMark.user_id == flagged_by_user_id,
+                    MessageMark.interaction_id == Interaction.interaction_id,
+                    MessageMark.flagged_at.isnot(None),
+                )
+            )
+
+        # Pinned-first (the caller's own pins) — offset pagination only;
+        # the opt-in keyset cursor keeps its pure (received_at, id) order.
+        pin_order = []
+        if pinned_first_for_user_id is not None and cursor is None:
+            pin_order = [
+                case(
+                    (
+                        exists().where(
+                            MessageMark.user_id == pinned_first_for_user_id,
+                            MessageMark.interaction_id == Interaction.interaction_id,
+                            MessageMark.pinned_at.isnot(None),
+                        ),
+                        0,
+                    ),
+                    else_=1,
+                )
+            ]
+
         if limit is None:
-            query = query.order_by(Interaction.received_at.desc())
+            query = query.order_by(*pin_order, Interaction.received_at.desc())
             result = await self.db.execute(query)
             items = list(result.scalars().all())
             return items, len(items)
@@ -736,7 +789,7 @@ class InteractionRepository:
         total = count_result.scalar_one()
 
         page_query = query.order_by(
-            Interaction.received_at.desc(), Interaction.interaction_id.desc()
+            *pin_order, Interaction.received_at.desc(), Interaction.interaction_id.desc()
         ).limit(limit)
 
         if cursor is not None:
@@ -969,7 +1022,11 @@ class InteractionRepository:
         # Direction filters mirror list_inbox's own — see that method's
         # comment for why "ticketed"/the unfiltered "all" count are
         # deliberately exempt.
+        # is_visible is no longer in the shared WHERE (the Trash count
+        # needs the hidden rows), so every other count carries it itself.
+        visible = Interaction.is_visible.is_(True)
         pending_filter_conditions = [
+            visible,
             Interaction.ticket_id.is_(None),
             Interaction.status == InteractionStatus.PENDING,
             Interaction.direction == InteractionDirection.INBOUND,
@@ -990,7 +1047,18 @@ class InteractionRepository:
         # else: account_manager_id set but this Account Manager authored
         # no folder-filing rules — no folder_id restriction at all.
 
-        otp_unread_conditions = list(_otp_view_conditions())
+        # The viewer's own flags only (no viewer → nothing to count).
+        flagged_conditions = [
+            exists().where(
+                MessageMark.user_id == viewer_user_id,
+                MessageMark.interaction_id == Interaction.interaction_id,
+                MessageMark.flagged_at.isnot(None),
+            )
+            if viewer_user_id is not None
+            else false()
+        ]
+
+        otp_unread_conditions = [visible, *_otp_view_conditions()]
         if viewer_user_id is not None:
             otp_unread_conditions.append(
                 ~exists().where(
@@ -1002,20 +1070,24 @@ class InteractionRepository:
         query = select(
             func.count().filter(*pending_filter_conditions),
             func.count().filter(
+                visible,
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.ASSIGNED,
                 Interaction.direction == InteractionDirection.INBOUND,
                 Interaction.is_otp.is_(False),
             ),
-            func.count().filter(Interaction.ticket_id.isnot(None)),
+            func.count().filter(visible, Interaction.ticket_id.isnot(None)),
             func.count().filter(
+                visible,
                 Interaction.ticket_id.is_(None),
                 Interaction.status == InteractionStatus.IGNORED,
                 Interaction.direction == InteractionDirection.INBOUND,
             ),
-            func.count(),
-            func.count().filter(*_otp_view_conditions()),
+            func.count().filter(visible),
+            func.count().filter(visible, *_otp_view_conditions()),
             func.count().filter(*otp_unread_conditions),
+            func.count().filter(*_trash_view_conditions()),
+            func.count().filter(visible, *flagged_conditions),
         )
 
         if account_manager_id is not None or client_id is not None:
@@ -1051,13 +1123,22 @@ class InteractionRepository:
                 query = query.where(Ticket.agent_id == assigned_agent_id)
 
         query = query.where(
-            Interaction.is_visible.is_(True),
             Interaction.interaction_type == "EMAIL",
             Interaction.parent_interaction_id.is_(None),
         )
 
         result = await self.db.execute(query)
-        pending, replied, ticketed, archived, all_count, otp, otp_unread = result.one()
+        (
+            pending,
+            replied,
+            ticketed,
+            archived,
+            all_count,
+            otp,
+            otp_unread,
+            trash,
+            flagged,
+        ) = result.one()
 
         return {
             "pending": pending,
@@ -1067,6 +1148,8 @@ class InteractionRepository:
             "all": all_count,
             "otp": otp,
             "otp_unread": otp_unread,
+            "trash": trash,
+            "flagged": flagged,
         }
 
     async def list_thread(
@@ -1900,6 +1983,21 @@ class InteractionRepository:
 
         await self.db.flush()
 
+        await self.db.refresh(interaction)
+
+        return interaction
+
+    async def unhide(self, interaction: Interaction) -> Interaction:
+        """
+        Restores a soft-deleted interaction (Trash -> Restore): visible
+        again, with the removal markers cleared.
+        """
+
+        interaction.is_visible = True
+        interaction.removed_by = None
+        interaction.removed_at = None
+
+        await self.db.flush()
         await self.db.refresh(interaction)
 
         return interaction

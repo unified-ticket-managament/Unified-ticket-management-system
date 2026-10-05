@@ -15,6 +15,7 @@ from app.ticketing.repositories.distribution_list_repository import (
     DistributionListRepository,
 )
 from app.ticketing.schemas.attachment import AttachmentMetadata, InlineImageUploadResponse
+from app.ticketing.repositories.message_mark_repository import MessageMarkRepository
 from app.ticketing.repositories.interaction_repository import (
     InteractionRepository,
 )
@@ -25,6 +26,13 @@ from app.ticketing.repositories.message_read_receipt_repository import (
 from app.ticketing.repositories.rule_repository import RuleRepository
 from app.ticketing.repositories.ticket_repository import TicketRepository
 from app.ticketing.repositories.user_repository import UserRepository
+from app.ticketing.schemas.bulk_mail_action import (
+    BulkMailActionRequest,
+    BulkMailActionResponse,
+)
+from app.ticketing.services.bulk_mail_action_service import (
+    build_bulk_mail_action_service,
+)
 from app.ticketing.schemas.compose import (
     ComposeDraftResponse,
     ComposeDraftSaveRequest,
@@ -121,7 +129,7 @@ def _split_uuids(raw: str | None) -> list[UUID]:
 async def get_inbox(
     client_id: UUID | None = Query(default=None),
     folder_id: UUID | None = Query(default=None),
-    view: str = Query(default="pending", pattern="^(pending|replied|ticketed|archived|all|otp)$"),
+    view: str = Query(default="pending", pattern="^(pending|replied|ticketed|archived|all|otp|trash|flagged)$"),
     scope: str = Query(default="mine", pattern="^(mine|all)$"),
     search: str | None = Query(default=None),
     limit: int | None = Query(default=None, ge=1, le=200),
@@ -130,6 +138,7 @@ async def get_inbox(
     category: str | None = Query(default=None),
     priority: TicketPriority | None = Query(default=None),
     assigned_to_me: bool = Query(default=False),
+    flagged: bool = Query(default=False),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
@@ -140,7 +149,8 @@ async def get_inbox(
     `view` selects which root emails: not-yet-actioned ("pending"),
     replied-but-never-ticketed ("replied"), promoted-to-a-ticket
     ("ticketed"), marked Informational/Archive ("archived"), or every
-    one of them ("all"). "otp" is the Mail "OTPs" section: roots the
+    one of them ("all"). "flagged" is every visible root the caller has
+    flagged (their own marks; Trash excluded). "otp" is the Mail "OTPs" section: roots the
     existing OTP classifier flagged, which "pending"/"replied" exclude
     (see InteractionRepository.list_inbox) — under the same role scope.
 
@@ -158,6 +168,10 @@ async def get_inbox(
     Mail page's "My Claims" ticketed section (see InboxService.
     _resolve_scope) — has no effect for Staff, whose scope already
     always means "assigned to me."
+
+    `flagged=true` narrows to the caller's own flagged threads (personal
+    follow-up marks, message_marks) — composes with every other filter
+    and never widens visibility.
 
     `limit`/`offset`/`search` are all optional and additive — omitting
     `limit` returns the exact same unbounded response this endpoint
@@ -217,6 +231,7 @@ async def get_inbox(
 
     service = InboxService(
         repository,
+        message_mark_repository=MessageMarkRepository(db),
         attachment_repository=attachment_repository,
         user_repository=user_repository,
         ticket_repository=ticket_repository,
@@ -238,6 +253,7 @@ async def get_inbox(
         priority_filter=priority,
         assigned_to_me=assigned_to_me,
         bypass_ownership_scope=bypass_ownership_scope,
+        flagged_only=flagged,
     )
 
 
@@ -384,6 +400,34 @@ async def get_drafts(
     service = InboxService(repository)
 
     return await service.get_drafts(current_user)
+
+
+# ---------------------------------------------------------
+# Bulk action — one action applied independently to many interactions
+# ---------------------------------------------------------
+#
+# Registered before "/{interaction_id}" for the same static-path reason
+# as /sent and /compose. Reply/Reply All/Forward are deliberately NOT
+# bulk-sent here: each goes through its own per-interaction composer.
+
+@router.post(
+    "/bulk-action",
+    response_model=BulkMailActionResponse,
+    status_code=200,
+)
+async def bulk_mail_action(
+    request: BulkMailActionRequest,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Runs the requested single-interaction workflow once per selected
+    interaction, each authorized and isolated in its own savepoint, and
+    returns per-interaction results (partial success is normal).
+    """
+
+    service = build_bulk_mail_action_service(db)
+    return await service.run(request, current_user)
 
 
 # ---------------------------------------------------------

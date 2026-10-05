@@ -41,6 +41,8 @@ class AuditEventType(str, Enum):
     TICKET_CLOSED = "TICKET_CLOSED"
     TICKET_REOPENED = "TICKET_REOPENED"
     INTERACTION_HIDDEN = "INTERACTION_HIDDEN"
+    # Mail Trash -> Restore (InteractionService.restore_interaction).
+    INTERACTION_RESTORED = "INTERACTION_RESTORED"
     ATTACHMENT_UPLOADED = "ATTACHMENT_UPLOADED"
     # Symmetric with ATTACHMENT_UPLOADED — AttachmentService.
     # delete_attachment previously deleted with no audit trail at all.
