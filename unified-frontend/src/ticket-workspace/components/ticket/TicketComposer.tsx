@@ -37,11 +37,11 @@ import { isValidEmailAddress } from "@tw/lib/validation";
 import { showUndoSendToast } from "@tw/lib/undoSend";
 import {
   buildInitialBodyHtml,
+  buildOutgoingBodyHtml,
   escapeHtml,
   filterLiveInlineImageIds,
   htmlToPlainText,
   isRichContent,
-  resolveInlineImageSources,
   type TrackedInlineImage,
 } from "@tw/lib/richText";
 import type { ClientContact } from "@tw/types";
@@ -103,9 +103,10 @@ export function TicketComposer({
   // HTML string (Tiptap), not plain text — see RichTextEditor.tsx.
   // Flattened to plain text (htmlToPlainText) at send time for the
   // always-required `message`/`note` field, with a sanitized-on-the-
-  // backend HTML counterpart sent alongside it as `body_html` when
-  // the content actually contains real formatting/a table/an inline
-  // image (isRichContent) — see handleSend below.
+  // backend HTML counterpart sent alongside it as `body_html`
+  // (buildOutgoingBodyHtml — always for a Reply, only when there is
+  // real formatting/a table/an inline image for an Internal Note) —
+  // see handleSend below.
   const [messageHtml, setMessageHtml] = useState("");
   // The exact signature-only prefill injected below (Reply mode, no
   // saved draft — see the draft-fetch effect), if any, for whichever
@@ -390,14 +391,14 @@ export function TicketComposer({
           cc: parseEmails(replyCc),
           bcc: parseEmails(replyBcc),
           message: htmlToPlainText(messageHtml),
-          body_html: isRichContent(messageHtml) ? resolveInlineImageSources(messageHtml) : undefined,
+          body_html: buildOutgoingBodyHtml(messageHtml),
         });
         replyDraftIdRef.current = result.interaction_id;
       } else {
         const result = await saveTicketNoteDraft(activeTicket.ticket_id, {
           subject: noteSubject,
           note: htmlToPlainText(messageHtml),
-          body_html: isRichContent(messageHtml) ? resolveInlineImageSources(messageHtml) : undefined,
+          body_html: isRichContent(messageHtml) ? buildOutgoingBodyHtml(messageHtml) : undefined,
           recipient_user_ids: noteToIds,
         });
         noteDraftIdRef.current = result.interaction_id;
@@ -535,9 +536,10 @@ export function TicketComposer({
     }
 
     const plainMessage = htmlToPlainText(messageHtml);
-    const bodyHtml = isRichContent(messageHtml)
-      ? resolveInlineImageSources(messageHtml)
-      : undefined;
+    // Email replies always carry the formatted body; an internal note
+    // (never emailed) keeps sending body_html only when it actually
+    // has formatting, so plain notes render exactly as before.
+    const bodyHtml = isReply || isRichContent(messageHtml) ? buildOutgoingBodyHtml(messageHtml) : undefined;
     // Only submit ids for images still actually present (as a real
     // cid: reference) in the body being sent — a paste-then-delete/
     // replace/undo before Send must not resurrect a stale attachment.

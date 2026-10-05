@@ -252,3 +252,67 @@
   background-size: 600px 100%;
   animation: shimmer 1.6s ease-in-out infinite;
 }
+
+/*
+ * Email composer body (RichTextEditor.tsx). Scoped to .utms-email-editor
+ * only — nothing else in the app is affected. Every value here mirrors
+ * the EMAIL_* constants in src/ticket-workspace/lib/emailHtml.ts, which
+ * toEmailHtml() inlines into the sent message: keep the two in sync so
+ * the recipient sees what the author saw. The body is always a white
+ * "page" (as in Outlook) because that is what the recipient gets.
+ */
+.utms-email-editor .ProseMirror {
+  background-color: #ffffff;
+  color: #000000;
+  font-family: "Times New Roman", Times, serif;
+  font-size: 11pt;
+  line-height: 1.35;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.utms-email-editor .ProseMirror p {
+  margin: 0 0 10px;
+}
+
+.utms-email-editor .ProseMirror li > p {
+  margin: 0;
+}
+
+.utms-email-editor .ProseMirror ul,
+.utms-email-editor .ProseMirror ol {
+  margin: 0 0 10px;
+  padding-left: 40px;
+}
+
+.utms-email-editor .ProseMirror li ul,
+.utms-email-editor .ProseMirror li ol {
+  margin: 0;
+}
+
+.utms-email-editor .ProseMirror ul { list-style-type: disc; }
+.utms-email-editor .ProseMirror ul ul { list-style-type: circle; }
+.utms-email-editor .ProseMirror ul ul ul { list-style-type: square; }
+.utms-email-editor .ProseMirror ol { list-style-type: decimal; }
+.utms-email-editor .ProseMirror ol ol { list-style-type: lower-alpha; }
+.utms-email-editor .ProseMirror ol ol ol { list-style-type: lower-roman; }
+
+.utms-email-editor .ProseMirror blockquote {
+  margin: 0 0 10px;
+  padding-left: 12px;
+  border-left: 2px solid #cccccc;
+  color: #555555;
+}
+
+.utms-email-editor .ProseMirror a {
+  color: #0563c1;
+  text-decoration: underline;
+}
+
+.utms-email-editor .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: #9ca3af;
+  pointer-events: none;
+}

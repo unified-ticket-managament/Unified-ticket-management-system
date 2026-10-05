@@ -58,13 +58,110 @@ _ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
 # by this set.
 _ALLOWED_URL_SCHEMES = {"http", "https", "mailto", "cid"}
 
+# Outbound-only additions for the composer's Outlook-style formatting
+# toolbar (font family/size, text color, highlight, alignment,
+# indentation, strikethrough — see the frontend's lib/emailHtml.ts,
+# which also inlines paragraph spacing and the default font at send
+# time). Email clients ignore <style> blocks/classes far too often, so
+# this formatting can only survive as inline `style` — allowed here on
+# text/block tags and links only, never on table/td/th
+# (_style_email_tables below still owns those, unconditionally) and
+# never on img. Inbound
+# sender HTML keeps the original narrower allow-list above, unchanged.
+_OUTBOUND_STYLED_TAGS = {
+    "p", "div", "span", "li", "ul", "ol", "blockquote", "a",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+}
+_OUTBOUND_ALLOWED_TAGS = _ALLOWED_TAGS | {"span", "s"}
+_OUTBOUND_ALLOWED_ATTRIBUTES: dict[str, set[str]] = {
+    **_ALLOWED_ATTRIBUTES,
+    **{tag: _ALLOWED_ATTRIBUTES.get(tag, set()) | {"style"} for tag in _OUTBOUND_STYLED_TAGS},
+}
+
+# Per-property value grammar — deliberately strict: anything that
+# doesn't match (url(), expression(), escapes, comments, @-rules, or
+# just an unexpected shape) drops that one declaration, and a style
+# attribute left with no valid declarations is dropped entirely.
+_CSS_LENGTH = r"-?\d+(?:\.\d+)?(?:px|pt|em|rem|%)?"
+_CSS_COLOR = r"#[0-9a-f]{3,8}|rgba?\(\s*[\d.\s,%]+\)|[a-z]{3,20}"
+_CSS_PROPERTY_PATTERNS: dict[str, "re.Pattern[str]"] = {
+    name: re.compile(rf"^(?:{pattern})$", re.IGNORECASE)
+    for name, pattern in {
+        "color": _CSS_COLOR,
+        "background-color": _CSS_COLOR,
+        "font-family": r"[\w\s,'\"-]{1,200}",
+        "font-size": r"\d+(?:\.\d+)?(?:px|pt|em|rem|%)|xx-small|x-small|small|medium|large|x-large|xx-large",
+        "font-weight": r"normal|bold|bolder|lighter|[1-9]00",
+        "font-style": r"normal|italic|oblique",
+        "text-decoration": r"[a-z\s-]{1,60}",
+        "text-decoration-line": r"[a-z\s-]{1,60}",
+        "text-align": r"left|right|center|justify|start|end",
+        "line-height": rf"normal|{_CSS_LENGTH}",
+        "margin": rf"(?:{_CSS_LENGTH}|auto)(?:\s+(?:{_CSS_LENGTH}|auto)){{0,3}}",
+        "margin-top": rf"{_CSS_LENGTH}|auto",
+        "margin-right": rf"{_CSS_LENGTH}|auto",
+        "margin-bottom": rf"{_CSS_LENGTH}|auto",
+        "margin-left": rf"{_CSS_LENGTH}|auto",
+        "padding-left": _CSS_LENGTH,
+        "border-left": rf"\d+(?:\.\d+)?(?:px|pt)\s+(?:solid|dashed|dotted)\s+(?:{_CSS_COLOR})",
+        "list-style-type": r"disc|circle|square|decimal|lower-alpha|upper-alpha|lower-roman|upper-roman|none",
+    }.items()
+}
+
+
+def _filter_style_value(style: str) -> str | None:
+    kept: list[str] = []
+    for declaration in style.split(";"):
+        if ":" not in declaration:
+            continue
+        name, _, value = declaration.partition(":")
+        name = name.strip().lower()
+        value = re.sub(r"\s*!important\s*$", "", value.strip(), flags=re.IGNORECASE)
+        pattern = _CSS_PROPERTY_PATTERNS.get(name)
+        if pattern is None or not value or not pattern.match(value):
+            continue
+        kept.append(f"{name}:{value}")
+    return ";".join(kept) + ";" if kept else None
+
+
+def _outbound_attribute_filter(tag: str, attribute: str, value: str) -> str | None:
+    if attribute == "style":
+        return _filter_style_value(value)
+    return value
+
+
+_SPAN_TOKEN = re.compile(r"<span(?:\s[^>]*)?>|</span>", re.IGNORECASE)
+
+
+def _unwrap_bare_spans(html: str) -> str:
+    """
+    A pasted <span> whose every style declaration was filtered out
+    (e.g. Excel's mso-number-format) is a meaningless wrapper — remove
+    it (keeping its content) so outbound markup stays as clean as it
+    was before <span> was allowed at all. nh3's output is well-formed,
+    so a simple open/close stack is enough to pair each tag.
+    """
+    if "<span" not in html:
+        return html
+    stack: list[bool] = []
+
+    def _replace(match: "re.Match[str]") -> str:
+        token = match.group(0)
+        if token.startswith("</"):
+            return "" if (stack.pop() if stack else True) else token
+        bare = token.lower() == "<span>"
+        stack.append(bare)
+        return "" if bare else token
+
+    return _SPAN_TOKEN.sub(_replace, html)
+
 
 def sanitize_outbound_html(html: str) -> str:
     """
     Strips everything outside the allow-list above (script tags,
     event-handler attributes, javascript: URLs, iframes/objects/
-    embeds, style attributes, arbitrary remote images, etc.) before
-    `body_html` is allowed to reach an OutboundEnvelope. Called once,
+    embeds, unsafe/unknown inline CSS, arbitrary remote images, etc.)
+    before `body_html` is allowed to reach an OutboundEnvelope. Called once,
     from email_envelope.py, rather than at every individual caller.
 
     Also applies `_style_email_tables` (see below) — every caller of
@@ -73,7 +170,13 @@ def sanitize_outbound_html(html: str) -> str:
     data table the agent pasted in, never structural/layout markup.
     """
 
-    return _style_email_tables(_clean_html(html))
+    cleaned = _clean_html(
+        html,
+        tags=_OUTBOUND_ALLOWED_TAGS,
+        attributes=_OUTBOUND_ALLOWED_ATTRIBUTES,
+        attribute_filter=_outbound_attribute_filter,
+    )
+    return _style_email_tables(_unwrap_bare_spans(cleaned))
 
 
 def sanitize_inbound_html(html: str) -> str:
@@ -102,11 +205,17 @@ def sanitize_inbound_html(html: str) -> str:
     return _style_qualifying_inbound_tables(_clean_html(html))
 
 
-def _clean_html(html: str) -> str:
+def _clean_html(
+    html: str,
+    tags: set[str] = _ALLOWED_TAGS,
+    attributes: dict[str, set[str]] = _ALLOWED_ATTRIBUTES,
+    attribute_filter=None,
+) -> str:
     cleaned = nh3.clean(
         html,
-        tags=_ALLOWED_TAGS,
-        attributes=_ALLOWED_ATTRIBUTES,
+        tags=tags,
+        attributes=attributes,
+        attribute_filter=attribute_filter,
         url_schemes=_ALLOWED_URL_SCHEMES,
         link_rel=None,
     )
@@ -142,9 +251,10 @@ def _strip_non_cid_images(html: str) -> str:
 # gap only shows up once a message actually reaches a real inbox.
 # Inline styles are required (not a <style> block) for Outlook
 # compatibility. Applied unconditionally, not merged with any existing
-# style attribute — nh3.clean above never allows one through in the
-# first place (see _ALLOWED_ATTRIBUTES), so there is never a pasted
-# style attribute here to preserve or conflict with.
+# style attribute — nh3.clean above never allows one through on
+# table/td/th in the first place (see _ALLOWED_ATTRIBUTES and
+# _OUTBOUND_STYLED_TAGS), so there is never a pasted style attribute
+# here to preserve or conflict with.
 _TABLE_STYLE_BASE = "border-collapse:collapse;"
 # Used unmodified by _style_qualifying_inbound_tables below (inbound
 # tables have no resize concept — always the fixed 100% default).

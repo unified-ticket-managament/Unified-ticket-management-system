@@ -12,10 +12,24 @@
 // Detection uses the plain browser ClipboardEvent/DataTransfer API —
 // no navigator.clipboard.read() permission prompt is needed or used.
 
-import { DOMParser as ProseMirrorDOMParser } from "@tiptap/pm/model";
+import {
+  DOMParser as ProseMirrorDOMParser,
+  Fragment,
+  type Node as ProseMirrorNode,
+  type ResolvedPos,
+  Slice,
+} from "@tiptap/pm/model";
 import { TextSelection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import DOMPurify from "dompurify";
+
+import {
+  EMAIL_DEFAULT_FONT_FAMILY,
+  EMAIL_DEFAULT_FONT_SIZE,
+  INDENT_STEP_PX,
+  findFontFamilyOption,
+  fontSizeToPoints,
+} from "@tw/lib/emailHtml";
 
 // ---------------------------------------------------------------
 // Detection — pure, framework-agnostic
@@ -77,9 +91,14 @@ const ALLOWED_TAGS = [
   "em",
   "i",
   "u",
+  "s",
+  "strike",
+  "del",
+  "span",
   "ul",
   "ol",
   "li",
+  "blockquote",
   "table",
   "thead",
   "tbody",
@@ -90,22 +109,381 @@ const ALLOWED_TAGS = [
   "a",
 ];
 
-const ALLOWED_ATTR = ["href", "src", "alt", "title", "colspan", "rowspan"];
+const ALLOWED_ATTR = ["href", "src", "alt", "title", "colspan", "rowspan", "style"];
+
+// ---------------------------------------------------------------
+// Pasted inline-CSS normalization
+// ---------------------------------------------------------------
+//
+// Office/web clipboard HTML carries dozens of inline declarations per
+// run (mso-*, line-height, margins, explicit default fonts/colors).
+// Only formatting the toolbar itself can represent survives, in the
+// same shape the toolbar produces — so a paste never brings in huge
+// fonts, odd margins, or properties the backend sanitizer would strip
+// anyway. "Default-looking" values (black text, white background, the
+// default 11pt size, left alignment) are dropped too: they'd only pin
+// the pasted run to explicit formatting identical to the default.
+
+const DEFAULT_TEXT_COLORS = new Set([
+  "windowtext",
+  "black",
+  "#000",
+  "#000000",
+  "rgb(0,0,0)",
+  "inherit",
+  "initial",
+  "currentcolor",
+  "auto",
+  "unset",
+]);
+const DEFAULT_BACKGROUNDS = new Set([
+  "transparent",
+  "white",
+  "#fff",
+  "#ffffff",
+  "window",
+  "none",
+  "inherit",
+  "initial",
+  "unset",
+  "rgba(0,0,0,0)",
+  "rgb(255,255,255)",
+]);
+const SAFE_COLOR_VALUE = /^(#[0-9a-f]{3,8}|rgba?\([\d.\s,%]+\)|[a-z]{3,20})$/i;
+const MIN_PASTED_FONT_PT = 7;
+const MAX_PASTED_FONT_PT = 36;
+
+function normalizeColor(value: string, defaults: Set<string>): string | null {
+  const compact = value.trim().toLowerCase().replace(/\s+/g, "");
+  if (!SAFE_COLOR_VALUE.test(compact) || defaults.has(compact)) return null;
+  return compact;
+}
+
+// Lengths Word/Outlook emit for indentation (in, pt, cm) -> px.
+function lengthToPx(value: string): number | null {
+  const match = value.trim().match(/^(-?\d*\.?\d+)(px|pt|in|cm|mm|em)?$/i);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  const factor: Record<string, number> = { px: 1, pt: 4 / 3, in: 96, cm: 96 / 2.54, mm: 96 / 25.4, em: 16 };
+  return amount * factor[(match[2] ?? "px").toLowerCase()];
+}
+
+export function filterPastedStyle(style: string, tagName: string): string | null {
+  const kept: string[] = [];
+  const isBlock = /^(p|div|li|blockquote)$/i.test(tagName);
+
+  for (const declaration of style.split(";")) {
+    const index = declaration.indexOf(":");
+    if (index === -1) continue;
+    const name = declaration.slice(0, index).trim().toLowerCase();
+    const value = declaration.slice(index + 1).replace(/!important/i, "").trim();
+    if (!value || /url\(|expression|javascript:|[<>\\]/i.test(value)) continue;
+
+    switch (name) {
+      case "color": {
+        const color = normalizeColor(value, DEFAULT_TEXT_COLORS);
+        if (color) kept.push(`color: ${color}`);
+        break;
+      }
+      case "background":
+      case "background-color": {
+        const color = normalizeColor(value, DEFAULT_BACKGROUNDS);
+        if (color) kept.push(`background-color: ${color}`);
+        break;
+      }
+      case "font-family": {
+        const option = findFontFamilyOption(value);
+        if (option && option.value !== EMAIL_DEFAULT_FONT_FAMILY) kept.push(`font-family: ${option.value}`);
+        break;
+      }
+      case "font-size": {
+        const points = fontSizeToPoints(value);
+        const numeric = points ? Number(points) : NaN;
+        if (
+          points &&
+          numeric >= MIN_PASTED_FONT_PT &&
+          numeric <= MAX_PASTED_FONT_PT &&
+          `${points}pt` !== EMAIL_DEFAULT_FONT_SIZE
+        ) {
+          kept.push(`font-size: ${points}pt`);
+        }
+        break;
+      }
+      case "font-weight":
+        if (/^(bold|bolder|[6-9]00)$/i.test(value)) kept.push("font-weight: bold");
+        break;
+      case "font-style":
+        if (/^italic$/i.test(value)) kept.push("font-style: italic");
+        break;
+      case "text-decoration":
+      case "text-decoration-line":
+        if (/underline|line-through/i.test(value)) {
+          kept.push(`text-decoration: ${value.toLowerCase().match(/underline|line-through/g)!.join(" ")}`);
+        }
+        break;
+      case "text-align":
+        if (isBlock && /^(center|right|justify)$/i.test(value)) kept.push(`text-align: ${value.toLowerCase()}`);
+        break;
+      case "margin-left": {
+        const px = lengthToPx(value);
+        if (isBlock && px && px >= INDENT_STEP_PX / 2) kept.push(`margin-left: ${Math.round(px)}px`);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  return kept.length > 0 ? kept.join("; ") : null;
+}
+
+// ---------------------------------------------------------------
+// Office (Outlook/Word) clipboard HTML normalization
+// ---------------------------------------------------------------
+
+const ZERO_LENGTH = /^-?0*\.?0+(in|pt|px|cm|mm|em)?$/i;
+const OFFICE_HTML_SIGNATURE = /urn:schemas-microsoft-com|class=["']?Mso|mso-/i;
+
+function isEmptyBlock(element: Element): boolean {
+  if (element.querySelector("img, table")) return false;
+  return (element.textContent ?? "").replace(/ /g, " ").trim().length === 0;
+}
+
+function styleDeclaration(style: string | null, property: string): string | null {
+  if (!style) return null;
+  const match = style.match(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`, "i"));
+  return match ? match[1].trim() : null;
+}
+
+function marginBottomOf(style: string | null): string | null {
+  const longhand = styleDeclaration(style, "margin-bottom");
+  if (longhand) return longhand;
+  const shorthand = styleDeclaration(style, "margin");
+  if (!shorthand) return null;
+  const parts = shorthand.split(/\s+/);
+  return parts.length >= 3 ? parts[2] : parts[0];
+}
+
+// Outlook writes every Enter as its own zero-margin <p class=MsoNormal>
+// and a blank line as an empty one (Word's own Normal style instead has
+// ~8pt "space after", making each <p> a real paragraph). Reads the
+// clipboard's own <style> block to tell the two apart.
+function msoNormalHasZeroGap(doc: Document): boolean {
+  const css = Array.from(doc.querySelectorAll("style"))
+    .map((style) => style.textContent ?? "")
+    .join("\n");
+  const rule = css.match(/p\.MsoNormal[^{]*\{([^}]*)\}/i);
+  if (!rule) return false;
+  const gap = marginBottomOf(rule[1].replace(/\s+/g, " "));
+  return gap !== null && ZERO_LENGTH.test(gap);
+}
+
+// Zero-gap Office paragraphs are LINES, not paragraphs, in this
+// editor's model: a run of consecutive non-empty ones becomes one <p>
+// joined by <br> (Shift+Enter), and the empty spacer paragraphs between
+// runs become plain paragraph boundaries — so a pasted Outlook email
+// keeps its exact line/paragraph structure instead of gaining a
+// paragraph gap after every line.
+function mergeOfficeLineParagraphs(doc: Document, classGapIsZero: boolean) {
+  const paragraphs = Array.from(doc.body.querySelectorAll("p")).filter(
+    (p) => !/mso-list/i.test(p.getAttribute("style") ?? "") && !p.closest("li, td, th")
+  );
+  const isLine = (p: Element) => {
+    const inlineGap = marginBottomOf(p.getAttribute("style"));
+    if (inlineGap !== null) return ZERO_LENGTH.test(inlineGap);
+    return classGapIsZero && /MsoNormal/i.test(p.className);
+  };
+
+  let runHead: Element | null = null;
+  for (const paragraph of paragraphs) {
+    if (!isLine(paragraph)) {
+      runHead = null;
+      continue;
+    }
+    if (isEmptyBlock(paragraph)) {
+      paragraph.remove();
+      runHead = null;
+      continue;
+    }
+    // Only merge true siblings (whitespace-only text between them) —
+    // a paragraph in another container/section starts a new run.
+    let previous = paragraph.previousSibling;
+    while (previous && previous.nodeType === 3 && !(previous.textContent ?? "").trim()) {
+      previous = previous.previousSibling;
+    }
+    if (runHead && previous === runHead) {
+      runHead.appendChild(doc.createElement("br"));
+      while (paragraph.firstChild) runHead.appendChild(paragraph.firstChild);
+      paragraph.remove();
+    } else {
+      runHead = paragraph;
+    }
+  }
+}
+
+const WORD_BULLET_GLYPH = /^[·•o§▪■◦•·-]$/;
+
+// Word/Outlook don't put real <ul>/<ol> on the clipboard — each item is
+// a <p style="mso-list:l0 level2 lfo1"> whose bullet/number is literal
+// text inside a `mso-list:Ignore` span. Rebuild real (nested) lists so
+// the editor gets proper list items instead of glyph-prefixed text.
+function convertWordLists(doc: Document) {
+  const listParagraphs = Array.from(doc.body.querySelectorAll("p")).filter((p) =>
+    /mso-list:\s*l\d+\s+level\d+/i.test(p.getAttribute("style") ?? "")
+  );
+  if (listParagraphs.length === 0) return;
+
+  let stack: { level: number; list: HTMLElement }[] = [];
+  let lastParagraph: ChildNode | null = null;
+
+  for (const paragraph of listParagraphs) {
+    const level = Number((paragraph.getAttribute("style") ?? "").match(/level(\d+)/i)?.[1] ?? 1);
+
+    let marker = "";
+    paragraph.querySelectorAll("span").forEach((span) => {
+      if (/mso-list:\s*ignore/i.test(span.getAttribute("style") ?? "")) {
+        marker = marker || (span.textContent ?? "").replace(/ /g, " ").trim();
+        span.remove();
+      }
+    });
+    const ordered = marker !== "" && !WORD_BULLET_GLYPH.test(marker) && /^\(?[0-9a-z]{1,5}[.)]$/i.test(marker);
+
+    // A new group starts unless this item directly follows the
+    // previous list paragraph (whitespace-only text in between).
+    let previous = paragraph.previousSibling;
+    while (previous && previous.nodeType === 3 && !(previous.textContent ?? "").trim()) {
+      previous = previous.previousSibling;
+    }
+    const continues = lastParagraph !== null && previous === lastParagraph;
+    if (!continues) stack = [];
+
+    while (stack.length > 0 && stack[stack.length - 1].level > level) stack.pop();
+    let top = stack[stack.length - 1];
+    if (!top || top.level < level) {
+      const list = doc.createElement(ordered ? "ol" : "ul");
+      if (top) {
+        const parentItem = top.list.lastElementChild ?? top.list.appendChild(doc.createElement("li"));
+        parentItem.appendChild(list);
+      } else {
+        paragraph.before(list);
+      }
+      top = { level, list };
+      stack.push(top);
+    }
+
+    const item = doc.createElement("li");
+    const content = doc.createElement("p");
+    while (paragraph.firstChild) content.appendChild(paragraph.firstChild);
+    item.appendChild(content);
+    top.list.appendChild(item);
+
+    // Keep a placeholder at the paragraph's spot so the sibling check
+    // above still recognizes the next item as part of this same list.
+    const placeholder = doc.createComment("list-item");
+    paragraph.replaceWith(placeholder);
+    lastParagraph = placeholder;
+  }
+}
+
+// Legacy <font color face size> (old Outlook/Word, some web mail) ->
+// a <span style> the TextStyle mark understands.
+const FONT_TAG_SIZES: Record<string, string> = { "1": "8pt", "2": "10pt", "3": "12pt", "4": "14pt", "5": "18pt", "6": "24pt", "7": "36pt" };
+
+function convertFontTags(doc: Document) {
+  doc.body.querySelectorAll("font").forEach((font) => {
+    const span = doc.createElement("span");
+    const declarations: string[] = [];
+    const color = font.getAttribute("color");
+    const face = font.getAttribute("face");
+    const size = font.getAttribute("size");
+    if (color) declarations.push(`color: ${color}`);
+    if (face) declarations.push(`font-family: ${face}`);
+    if (size && FONT_TAG_SIZES[size]) declarations.push(`font-size: ${FONT_TAG_SIZES[size]}`);
+    if (declarations.length > 0) span.setAttribute("style", declarations.join("; "));
+    while (font.firstChild) span.appendChild(font.firstChild);
+    font.replaceWith(span);
+  });
+}
+
+/**
+ * Structural clean-up applied to raw clipboard HTML before DOMPurify:
+ * Word list paragraphs -> real lists, Outlook line paragraphs -> <br>,
+ * <font> -> <span style>, and empty spacer blocks (an Office/web blank
+ * line — this editor's paragraphs already carry their own gap) removed.
+ * Runs in an inert document, so nothing is fetched or executed.
+ */
+export function normalizePastedHtmlStructure(rawHtml: string): string {
+  if (typeof DOMParser === "undefined") return rawHtml;
+  const doc = new DOMParser().parseFromString(rawHtml, "text/html");
+
+  if (OFFICE_HTML_SIGNATURE.test(rawHtml)) {
+    convertWordLists(doc);
+    mergeOfficeLineParagraphs(doc, msoNormalHasZeroGap(doc));
+  }
+  convertFontTags(doc);
+
+  doc.body.querySelectorAll("p, div").forEach((block) => {
+    if (isEmptyBlock(block) && !block.querySelector("p, div, li")) block.remove();
+  });
+
+  return doc.body.innerHTML;
+}
 
 // DOMPurify's own built-in URI sanitization already strips
 // javascript:/data: (etc.) from href/src regardless of ALLOWED_ATTR —
 // this allow-list only controls which *tags*/*attributes* survive at
 // all, not which URL schemes are safe on the ones that do (that's a
 // separate, always-on protection DOMPurify applies to any attribute
-// it recognizes as URL-bearing).
+// it recognizes as URL-bearing). `style` is the one attribute whose
+// VALUE is rewritten here too (filterPastedStyle) — via a hook that is
+// registered only for the duration of this call, so no other DOMPurify
+// use is affected.
 export function sanitizePastedHtml(rawHtml: string): string {
   if (typeof window === "undefined") return "";
 
-  return DOMPurify.sanitize(rawHtml, {
-    ALLOWED_TAGS,
-    ALLOWED_ATTR,
-    ALLOW_DATA_ATTR: false,
+  DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
+    if (data.attrName !== "style") return;
+    const filtered = filterPastedStyle(data.attrValue, node.nodeName);
+    if (filtered) {
+      data.attrValue = filtered;
+    } else {
+      data.keepAttr = false;
+    }
   });
+  try {
+    return DOMPurify.sanitize(normalizePastedHtmlStructure(rawHtml), {
+      ALLOWED_TAGS,
+      ALLOWED_ATTR,
+      ALLOW_DATA_ATTR: false,
+    });
+  } finally {
+    DOMPurify.removeHook("uponSanitizeAttribute");
+  }
+}
+
+/**
+ * ProseMirror `clipboardTextParser` for plain-text paste (and Ctrl+
+ * Shift+V). ProseMirror's own default makes EVERY newline a separate
+ * paragraph — a hard-wrapped plain-text email pasted in became one
+ * paragraph per visual line, each with its own paragraph gap, and real
+ * blank-line paragraph breaks were lost. Here a blank line separates
+ * paragraphs and a single newline is a line break (Shift+Enter).
+ */
+export function parsePlainTextClipboard(text: string, $context: ResolvedPos, _plain: boolean, view: EditorView): Slice {
+  const { schema } = view.state;
+  const normalized = text.replace(/\r\n?/g, "\n").replace(/^\n+|\n+$/g, "");
+  if (!normalized) return Slice.empty;
+
+  const marks = $context.marks();
+  const paragraphs = normalized.split(/\n[ \t]*\n\s*/).map((block) => {
+    const content: ProseMirrorNode[] = [];
+    block.split("\n").forEach((line, index) => {
+      if (index > 0 && schema.nodes.hardBreak) content.push(schema.nodes.hardBreak.create());
+      if (line) content.push(schema.text(line, marks));
+    });
+    return schema.nodes.paragraph.create(null, content);
+  });
+  return new Slice(Fragment.from(paragraphs), 1, 1);
 }
 
 // The discriminator `createPasteHandler` uses to decide whether pasted
@@ -181,7 +559,13 @@ function insertImagePlaceholder(view: EditorView, file: File, localId: string): 
 // through to another branch instead of silently eating the paste.
 function insertParsedContainer(view: EditorView, container: HTMLElement): boolean {
   const parser = ProseMirrorDOMParser.fromSchema(view.state.schema);
-  const slice = parser.parseSlice(container, { preserveWhitespace: true });
+  // Default (collapsing) whitespace handling — clipboard HTML's own
+  // source formatting (newlines/indentation between and inside tags)
+  // is not content. `preserveWhitespace: true` kept it, turning the
+  // whitespace between pasted blocks into stray near-empty paragraphs
+  // (unexpected blank lines). Real spacing Office encodes as &nbsp;
+  // survives either way.
+  const slice = parser.parseSlice(container);
   if (slice.content.size === 0) return false;
 
   // replaceSelection, never an end-of-document insert — pasting mid-

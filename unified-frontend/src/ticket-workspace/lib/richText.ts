@@ -5,6 +5,10 @@
 // Interactions page all render that field as plain text. Sending raw
 // HTML into it would look broken everywhere except the page being
 // rebuilt here, so every send/save path converts to plain text first.
+// (The real formatted body travels separately as `body_html` — see
+// buildOutgoingBodyHtml below.)
+
+import { toEmailHtml } from "@tw/lib/emailHtml";
 
 export function escapeHtml(value: string): string {
   return value
@@ -59,10 +63,38 @@ export function linkifyPlainText(text: string): string {
 // redundant field. A false positive just means "sent body_html when
 // plain text alone would've done" — harmless, so a simple tag check
 // is deliberately preferred over anything more precise.
-const RICH_CONTENT_TAG_PATTERN = /<(a|img|table|strong|b|em|i|u|ul|ol|blockquote)\b/i;
+// `style=` covers the formatting toolbar's inline formatting (font,
+// size, color, highlight, alignment, indent) and <s>/<span> its
+// strikethrough/TextStyle marks — all of which plain text would lose.
+const RICH_CONTENT_TAG_PATTERN = /<(a|img|table|strong|b|em|i|u|s|span|ul|ol|blockquote)\b|\sstyle=/i;
 
 export function isRichContent(html: string): boolean {
   return RICH_CONTENT_TAG_PATTERN.test(html);
+}
+
+// No text and no image — an empty editor ("<p></p>") or nothing at all.
+function hasNoContent(html: string): boolean {
+  if (/<img\b/i.test(html)) return false;
+  return htmlToPlainText(html).replace(/ /g, " ").trim().length === 0;
+}
+
+/**
+ * The `body_html` every outbound EMAIL send/draft-save path submits
+ * (Compose, Forward, Reply, Reply All, Ticket Reply — and their drafts,
+ * which the server later sends verbatim): pasted-image sources
+ * resolved to `cid:` (resolveInlineImageSources) and the editor's
+ * typography inlined (emailHtml.ts toEmailHtml), so the recipient sees
+ * the paragraph spacing, default font and formatting the author saw.
+ *
+ * Sent for every non-empty message, not just "rich" ones: the
+ * plain-text fallback (`message`) can't carry paragraph spacing or the
+ * default font, so a plain multi-paragraph reply used to arrive as
+ * Graph Text / <br>-joined lines in the client's own default font.
+ * `message` itself is still always sent alongside, unchanged.
+ */
+export function buildOutgoingBodyHtml(html: string): string | undefined {
+  if (hasNoContent(html)) return undefined;
+  return toEmailHtml(resolveInlineImageSources(html));
 }
 
 // Cheap substring check, re-run on every editor update (see

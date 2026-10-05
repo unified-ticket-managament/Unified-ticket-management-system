@@ -22,11 +22,10 @@ import {
 } from "@tw/lib/attachmentMeta";
 import {
   buildInitialBodyHtml,
+  buildOutgoingBodyHtml,
   escapeHtml,
   htmlToPlainText,
-  isRichContent,
   resolveCidImagesForEditing,
-  resolveInlineImageSources,
 } from "@tw/lib/richText";
 import { isValidEmailAddress } from "@tw/lib/validation";
 import type { AttachmentMeta, ClientContact } from "@tw/types";
@@ -234,7 +233,7 @@ export function ReplyComposer({
 
   async function persistDraft() {
     setDraftStatus("saving");
-    const richBodyHtml = isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined;
+    const richBodyHtml = buildOutgoingBodyHtml(bodyHtml);
     const result = await onSaveDraft(
       htmlToPlainText(bodyHtml),
       parseEmails(cc),
@@ -275,7 +274,7 @@ export function ReplyComposer({
         htmlToPlainText(bodyHtml),
         parseEmails(cc),
         parseEmails(bcc),
-        isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined
+        buildOutgoingBodyHtml(bodyHtml)
       );
     };
 
@@ -306,7 +305,7 @@ export function ReplyComposer({
     if (isTicketed) {
       onSend({
         message: htmlToPlainText(bodyHtml),
-        bodyHtml: isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined,
+        bodyHtml: buildOutgoingBodyHtml(bodyHtml),
         cc: parseEmails(cc),
         bcc: parseEmails(bcc),
         files,

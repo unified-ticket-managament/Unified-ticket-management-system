@@ -33,11 +33,10 @@ import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import {
   buildInitialBodyHtml,
+  buildOutgoingBodyHtml,
   escapeHtml,
   filterLiveInlineImageIds,
   htmlToPlainText,
-  isRichContent,
-  resolveInlineImageSources,
   type TrackedInlineImage,
 } from "@tw/lib/richText";
 import { isValidEmailAddress } from "@tw/lib/validation";
@@ -441,7 +440,7 @@ export function ComposeView({
       bcc: parseEmails(bcc),
       subject,
       message: htmlToPlainText(bodyHtml),
-      body_html: isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined,
+      body_html: buildOutgoingBodyHtml(bodyHtml),
     };
     try {
       const result = draftInteractionIdRef.current
@@ -682,7 +681,7 @@ export function ComposeView({
     // onImageUpload wiring below (handleComposeImageUpload).
     if (hasPendingImageUploads) return;
 
-    const richBodyHtml = isRichContent(bodyHtml) ? resolveInlineImageSources(bodyHtml) : undefined;
+    const richBodyHtml = buildOutgoingBodyHtml(bodyHtml);
     // Only submit ids for images still actually present (as a real
     // cid: reference) in the body being sent — a paste-then-delete/
     // replace/undo before Send must not resurrect a stale attachment.
