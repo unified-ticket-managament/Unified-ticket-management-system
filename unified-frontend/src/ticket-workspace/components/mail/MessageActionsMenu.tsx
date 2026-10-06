@@ -3,7 +3,6 @@
 import { Link } from "react-router-dom";
 import {
   Archive,
-  Check,
   FilePlus,
   Flag,
   FolderInput,
@@ -30,7 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
+import { FolderMoveItems } from "@tw/components/mail/FolderMoveItems";
 import { useMailBulk } from "@tw/components/mail/MailBulkContext";
 import { useAuthContext } from "@tw/context/AuthContext";
 import {
@@ -174,20 +173,12 @@ export function MessageActionsMenu({
               ) : (
                 <>
                   <DropdownMenuLabel>Move to folder</DropdownMenuLabel>
-                  {folders.map((folder) => (
-                    <DropdownMenuItem
-                      key={folder.folder_id}
-                      onSelect={() => onAssignFolder(openId, folder.folder_id)}
-                    >
-                      <Check
-                        className={cn(
-                          "mr-2 h-3.5 w-3.5",
-                          item.folder_id === folder.folder_id ? "opacity-100" : "opacity-0"
-                        )}
-                      />
-                      {folder.name.trim()}
-                    </DropdownMenuItem>
-                  ))}
+                  <FolderMoveItems
+                    kind="dropdown"
+                    folders={folders}
+                    currentFolderId={item.folder_id}
+                    onPick={(folderId) => onAssignFolder(openId, folderId)}
+                  />
                   {item.folder_id && (
                     <>
                       <DropdownMenuSeparator />

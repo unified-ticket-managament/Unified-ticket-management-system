@@ -3,7 +3,6 @@
 import { Link } from "react-router-dom";
 import {
   Archive,
-  Check,
   FilePlus,
   Flag,
   FolderInput,
@@ -29,7 +28,7 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
 } from "@/components/ui/context-menu";
-import { cn } from "@/lib/utils";
+import { FolderMoveItems } from "@tw/components/mail/FolderMoveItems";
 import { useMailBulk } from "@tw/components/mail/MailBulkContext";
 import { selectionLabel } from "@tw/lib/mailSelection";
 import {
@@ -156,14 +155,11 @@ export function MessageContextMenuContent({
                 <ContextMenuItem disabled>No folders yet</ContextMenuItem>
               ) : (
                 <>
-                  {folders.map((folder) => (
-                    <ContextMenuItem
-                      key={folder.folder_id}
-                      onSelect={() => runBulk("move", selectedRows, { folderId: folder.folder_id })}
-                    >
-                      {folder.name.trim()}
-                    </ContextMenuItem>
-                  ))}
+                  <FolderMoveItems
+                    kind="context"
+                    folders={folders}
+                    onPick={(folderId) => runBulk("move", selectedRows, { folderId })}
+                  />
                   <ContextMenuSeparator />
                   <ContextMenuItem onSelect={() => runBulk("move", selectedRows, { folderId: null })}>
                     Unfiled
@@ -292,20 +288,12 @@ export function MessageContextMenuContent({
               <ContextMenuItem disabled>No folders yet — create one from the sidebar</ContextMenuItem>
             ) : (
               <>
-                {folders.map((folder) => (
-                  <ContextMenuItem
-                    key={folder.folder_id}
-                    onSelect={() => onAssignFolder(openId, folder.folder_id)}
-                  >
-                    <Check
-                      className={cn(
-                        "mr-2 h-3.5 w-3.5",
-                        item.folder_id === folder.folder_id ? "opacity-100" : "opacity-0"
-                      )}
-                    />
-                    {folder.name.trim()}
-                  </ContextMenuItem>
-                ))}
+                <FolderMoveItems
+                  kind="context"
+                  folders={folders}
+                  currentFolderId={item.folder_id}
+                  onPick={(folderId) => onAssignFolder(openId, folderId)}
+                />
                 {item.folder_id && (
                   <>
                     <ContextMenuSeparator />

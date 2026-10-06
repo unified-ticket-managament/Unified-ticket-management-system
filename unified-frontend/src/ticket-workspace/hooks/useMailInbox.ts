@@ -24,13 +24,20 @@ import {
   type InboxViewCounts,
 } from "@tw/api/inbox";
 import { deleteAttachment } from "@tw/api/interaction";
-import { createMailFolder, deleteMailFolder, listMailFolders } from "@tw/api/mailFolder";
+import {
+  createMailFolder,
+  deleteMailFolder,
+  listMailFolders,
+  moveMailFolder,
+  renameMailFolder,
+} from "@tw/api/mailFolder";
 import { getNotifications, markNotificationRead } from "@tw/api/notifications";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { resolveClientFilterValue } from "@tw/lib/clientFilter";
+import { withAncestors } from "@tw/lib/folderTree";
 import { showUndoSendToast } from "@tw/lib/undoSend";
 import type {
   DraftItem,
@@ -608,7 +615,8 @@ export function useMailInbox() {
   // happens to be active in the list view right now.
   const visibleFolders = useMemo(() => {
     if (!clientIdFilter && !categoryFilterFromClients) return folders;
-    return folders.filter((folder) => (folderCounts[folder.folder_id] ?? 0) > 0);
+    // Keep a nested folder's ancestors so it never appears orphaned.
+    return withAncestors(folders, (folder) => (folderCounts[folder.folder_id] ?? 0) > 0);
   }, [folders, folderCounts, clientIdFilter, categoryFilterFromClients]);
   const [activeFolderId, setActiveFolderId] = useState<string | null>(null);
   const [folderRows, setFolderRows] = useState<InboxItem[]>([]);
@@ -1099,8 +1107,26 @@ export function useMailInbox() {
   // caller (CreateFolderDialog/MailSidebar wrap these in useApiAction,
   // which surfaces a 409/other failure via the standard toast path).
   const createFolder = useCallback(
-    async (name: string) => {
-      const folder = await createMailFolder(name);
+    async (name: string, parentFolderId: string | null = null) => {
+      const folder = await createMailFolder(name, parentFolderId);
+      await refreshFolders();
+      return folder;
+    },
+    [refreshFolders]
+  );
+
+  const renameFolder = useCallback(
+    async (folderId: string, name: string) => {
+      const folder = await renameMailFolder(folderId, name);
+      await refreshFolders();
+      return folder;
+    },
+    [refreshFolders]
+  );
+
+  const moveFolder = useCallback(
+    async (folderId: string, parentFolderId: string | null) => {
+      const folder = await moveMailFolder(folderId, parentFolderId);
       await refreshFolders();
       return folder;
     },
@@ -1311,6 +1337,14 @@ export function useMailInbox() {
         setSelectedEmail({ ...selectedEmail, folder_id: result.folder_id });
       }
       await refreshAfterMutation();
+      // Folder badges and an open folder's rows change when mail is
+      // filed in/out — refresh them too (best effort).
+      try {
+        setFolderCounts(await getFolderCounts(clientIdFilter, categoryFilterFromClients));
+        if (activeFolderId) await fetchFolderRows(activeFolderId, 0);
+      } catch {
+        /* stale badge is harmless; next refresh corrects it */
+      }
     }
     return Boolean(result);
   }
@@ -1718,6 +1752,8 @@ export function useMailInbox() {
     refreshAfterMutation,
     refreshFolders,
     createFolder,
+    renameFolder,
+    moveFolder,
     deleteFolder,
     openThread,
     markRead,

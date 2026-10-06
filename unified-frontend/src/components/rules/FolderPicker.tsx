@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
+import { folderPathLabel } from "@tw/lib/folderTree";
 import { Input } from "@/components/ui/input";
 import { listMailFolders } from "@tw/api/mailFolder";
 import type { MailFolder } from "@tw/types";
@@ -49,7 +50,7 @@ export function FolderPicker({ value, onChange }: FolderPickerProps) {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return folders;
-    return folders.filter((f) => f.name.toLowerCase().includes(q));
+    return folders.filter((f) => folderPathLabel(folders, f.folder_id).toLowerCase().includes(q));
   }, [folders, query]);
 
   function select(folder: MailFolder) {
@@ -103,7 +104,9 @@ export function FolderPicker({ value, onChange }: FolderPickerProps) {
                     folder.name === value ? "bg-muted/50 font-medium" : ""
                   }`}
                 >
-                  {folder.name}
+                  {/* Rules still bind by (globally unique) name; the path
+                      just shows where a nested folder lives. */}
+                  {folderPathLabel(folders, folder.folder_id)}
                 </button>
               ))
             )}

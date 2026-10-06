@@ -13,7 +13,12 @@ from app.ticketing.repositories.distribution_list_repository import (
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
-from app.ticketing.schemas.mail_folder import MailFolderCreate, MailFolderResponse
+from app.ticketing.schemas.mail_folder import (
+    MailFolderCreate,
+    MailFolderMove,
+    MailFolderRename,
+    MailFolderResponse,
+)
 from app.ticketing.services.access_control import has_permission
 from app.ticketing.services.rule_access import (
     RULE_VIEW_ALL_PERMISSION,
@@ -203,10 +208,29 @@ class MailFolderService:
             detail="Folder not found.",
         )
 
+    async def _get_visible_or_404(
+        self,
+        folder_id: UUID,
+        current_user: User,
+        rule_repository: RuleRepository,
+        distribution_list_repository: DistributionListRepository,
+    ) -> MailFolder:
+        folder = await self.mail_folder_repository.get_by_id(folder_id)
+        if folder is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Folder not found."
+            )
+        await self.ensure_visible(
+            folder, current_user, rule_repository, distribution_list_repository
+        )
+        return folder
+
     async def create(
         self,
         request: MailFolderCreate,
         current_user: User,
+        rule_repository: RuleRepository | None = None,
+        distribution_list_repository: DistributionListRepository | None = None,
     ) -> MailFolderResponse:
         existing = await self.mail_folder_repository.get_by_name(request.name)
 
@@ -216,17 +240,134 @@ class MailFolderService:
                 detail="A folder with this name already exists.",
             )
 
+        if request.parent_folder_id is not None:
+            # A parent the caller cannot see is reported as not found,
+            # never "exists but forbidden".
+            await self._get_visible_or_404(
+                request.parent_folder_id,
+                current_user,
+                rule_repository,
+                distribution_list_repository,
+            )
+
         folder = await self.mail_folder_repository.create(
-            request.name, current_user.user_id
+            request.name,
+            current_user.user_id,
+            parent_folder_id=request.parent_folder_id,
         )
 
         await self._log_folder_action(
             current_user=current_user,
             action="mail_folder.create",
             entity_id=folder.folder_id,
-            new_value={"name": folder.name},
+            new_value={
+                "name": folder.name,
+                "parent_folder_id": (
+                    str(folder.parent_folder_id) if folder.parent_folder_id else None
+                ),
+            },
         )
 
+        return MailFolderResponse.model_validate(folder)
+
+    async def rename(
+        self,
+        folder_id: UUID,
+        request: MailFolderRename,
+        current_user: User,
+        rule_repository: RuleRepository,
+        distribution_list_repository: DistributionListRepository,
+    ) -> MailFolderResponse:
+        folder = await self._get_visible_or_404(
+            folder_id, current_user, rule_repository, distribution_list_repository
+        )
+
+        if request.name == folder.name:
+            return MailFolderResponse.model_validate(folder)
+
+        # Rules bind to folders by name, so renaming a folder a rule
+        # still references would silently detach (or re-create) it.
+        if _folder_name_to_rules(await rule_repository.list_all()).get(folder.name):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "This folder is used by a mail rule. Update or delete the "
+                    "rule before renaming the folder."
+                ),
+            )
+
+        if await self.mail_folder_repository.get_by_name(request.name) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A folder with this name already exists.",
+            )
+
+        old_name = folder.name
+        await self.mail_folder_repository.set_name(folder, request.name)
+        await self._log_folder_action(
+            current_user=current_user,
+            action="mail_folder.rename",
+            entity_id=folder.folder_id,
+            old_value={"name": old_name},
+            new_value={"name": folder.name},
+        )
+        return MailFolderResponse.model_validate(folder)
+
+    async def move(
+        self,
+        folder_id: UUID,
+        request: MailFolderMove,
+        current_user: User,
+        rule_repository: RuleRepository,
+        distribution_list_repository: DistributionListRepository,
+    ) -> MailFolderResponse:
+        """Re-parent a folder (and, implicitly, its whole subtree)."""
+        folder = await self._get_visible_or_404(
+            folder_id, current_user, rule_repository, distribution_list_repository
+        )
+        new_parent_id = request.parent_folder_id
+
+        if new_parent_id is not None:
+            if new_parent_id == folder.folder_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="A folder cannot be moved into itself.",
+                )
+            parent = await self._get_visible_or_404(
+                new_parent_id,
+                current_user,
+                rule_repository,
+                distribution_list_repository,
+            )
+            # Walk the new parent's ancestor chain: meeting `folder`
+            # means the new parent is one of its descendants.
+            seen: set[UUID] = set()
+            cursor: MailFolder | None = parent
+            while cursor is not None and cursor.folder_id not in seen:
+                if cursor.folder_id == folder.folder_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="A folder cannot be moved into one of its own subfolders.",
+                    )
+                seen.add(cursor.folder_id)
+                cursor = (
+                    await self.mail_folder_repository.get_by_id(cursor.parent_folder_id)
+                    if cursor.parent_folder_id
+                    else None
+                )
+
+        old_parent_id = folder.parent_folder_id
+        if old_parent_id == new_parent_id:
+            return MailFolderResponse.model_validate(folder)
+
+        await self.mail_folder_repository.set_parent(folder, new_parent_id)
+        await self._log_folder_action(
+            current_user=current_user,
+            action="mail_folder.move",
+            entity_id=folder.folder_id,
+            old_value={"parent_folder_id": str(old_parent_id) if old_parent_id else None},
+            new_value={"parent_folder_id": str(new_parent_id) if new_parent_id else None},
+        )
         return MailFolderResponse.model_validate(folder)
 
     async def delete(
@@ -259,7 +400,20 @@ class MailFolderService:
         if interaction_repository is not None:
             await interaction_repository.clear_folder_for_folder_id(folder_id)
 
-        old_value = {"name": folder.name}
+        # Subfolders are never orphaned or deleted with their parent:
+        # they move up to the deleted folder's own parent (or become
+        # root folders if it was one).
+        for child in await self.mail_folder_repository.list_children(folder_id):
+            await self.mail_folder_repository.set_parent(
+                child, folder.parent_folder_id
+            )
+
+        old_value = {
+            "name": folder.name,
+            "parent_folder_id": (
+                str(folder.parent_folder_id) if folder.parent_folder_id else None
+            ),
+        }
         await self.mail_folder_repository.delete(folder)
 
         await self._log_folder_action(

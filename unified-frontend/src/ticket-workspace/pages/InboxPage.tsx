@@ -21,6 +21,7 @@ import { getComposeDraft } from "@tw/api/inbox";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { RulesPanel } from "@/components/rules/RulesPanel";
+import { folderPathLabel } from "@tw/lib/folderTree";
 import type { PendingMessageAction, MessageActionKey } from "@tw/lib/messageActions";
 import type { AttachmentMeta } from "@tw/types";
 
@@ -365,6 +366,8 @@ export function InboxPage() {
         activeFolderId={mail.activeFolderId}
         onSelectFolder={handleSelectFolder}
         onCreateFolder={mail.createFolder}
+        onRenameFolder={mail.renameFolder}
+        onMoveFolder={mail.moveFolder}
         onDeleteFolder={mail.deleteFolder}
         canManageRules={canManageRules}
         rulesActive={rulesOpen}
@@ -384,7 +387,7 @@ export function InboxPage() {
     <MessageList
       variant="panel"
       selectedId={selectedEmail?.interaction_id ?? null}
-      folderLabel={`${mail.folders.find((f) => f.folder_id === mail.activeFolderId)?.name.trim() ?? "Folder"} (${mail.folderRowsTotal})`}
+      folderLabel={`${folderPathLabel(mail.folders, mail.activeFolderId) || "Folder"} (${mail.folderRowsTotal})`}
       items={mail.folderRows}
       isLoading={mail.isFolderLoading}
       isError={mail.hasFolderError}
@@ -631,7 +634,7 @@ export function InboxPage() {
               />
             ) : mail.activeFolderId ? (
               <MessageList
-                folderLabel={`${mail.folders.find((f) => f.folder_id === mail.activeFolderId)?.name.trim() ?? "Folder"} (${mail.folderRowsTotal})`}
+                folderLabel={`${folderPathLabel(mail.folders, mail.activeFolderId) || "Folder"} (${mail.folderRowsTotal})`}
                 items={mail.folderRows}
                 isLoading={mail.isFolderLoading}
                 isError={mail.hasFolderError}

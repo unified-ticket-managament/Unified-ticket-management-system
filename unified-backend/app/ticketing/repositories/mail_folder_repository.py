@@ -28,10 +28,34 @@ class MailFolderRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_children(self, parent_folder_id: UUID) -> list[MailFolder]:
+        result = await self.db.execute(
+            select(MailFolder).where(MailFolder.parent_folder_id == parent_folder_id)
+        )
+        return list(result.scalars().all())
+
+    async def set_parent(self, folder: MailFolder, parent_folder_id: UUID | None) -> None:
+        folder.parent_folder_id = parent_folder_id
+        await self.db.flush()
+
+    async def set_name(self, folder: MailFolder, name: str) -> None:
+        folder.name = name
+        await self.db.flush()
+
     async def create(
-        self, name: str, created_by: UUID | None, *, is_rule_created: bool = False
+        self,
+        name: str,
+        created_by: UUID | None,
+        *,
+        is_rule_created: bool = False,
+        parent_folder_id: UUID | None = None,
     ) -> MailFolder:
-        folder = MailFolder(name=name, created_by=created_by, is_rule_created=is_rule_created)
+        folder = MailFolder(
+            name=name,
+            created_by=created_by,
+            is_rule_created=is_rule_created,
+            parent_folder_id=parent_folder_id,
+        )
         self.db.add(folder)
         await self.db.flush()
         await self.db.refresh(folder)

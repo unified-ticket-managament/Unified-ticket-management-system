@@ -29,6 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { FolderMoveItems } from "@tw/components/mail/FolderMoveItems";
 import { useMailBulk } from "@tw/components/mail/MailBulkContext";
 import { areAllSelected, selectionLabel } from "@tw/lib/mailSelection";
 import { buildBulkMenu, type BulkActionKey, type MessageActionRow } from "@tw/lib/messageActions";
@@ -174,14 +175,11 @@ export function MailSelectionBar({ visibleIds, selectedRows, folders }: MailSele
             ) : (
               <>
                 <DropdownMenuLabel>Move to folder</DropdownMenuLabel>
-                {folders.map((folder) => (
-                  <DropdownMenuItem
-                    key={folder.folder_id}
-                    onSelect={() => runBulk("move", selectedRows, { folderId: folder.folder_id })}
-                  >
-                    {folder.name.trim()}
-                  </DropdownMenuItem>
-                ))}
+                <FolderMoveItems
+                  kind="dropdown"
+                  folders={folders}
+                  onPick={(folderId) => runBulk("move", selectedRows, { folderId })}
+                />
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onSelect={() => runBulk("move", selectedRows, { folderId: null })}>
                   Unfiled

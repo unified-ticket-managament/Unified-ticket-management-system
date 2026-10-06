@@ -33,6 +33,17 @@ class MailFolder(Base):
         unique=True,
     )
 
+    # Self-referencing parent for nested folders. NULL = root folder
+    # (every pre-existing folder). Folder names stay globally unique
+    # because rules bind to folders by name. No ON DELETE cascade:
+    # MailFolderService.delete re-parents children before deleting.
+    parent_folder_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("mail_folders.folder_id"),
+        nullable=True,
+        index=True,
+    )
+
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("users.user_id"),

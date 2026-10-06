@@ -5,7 +5,6 @@ import { Link } from "react-router-dom";
 import {
   Archive,
   ArrowLeft,
-  Check,
   Cog,
   ExternalLink,
   FilePlus,
@@ -43,6 +42,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import { FolderMoveItems } from "@tw/components/mail/FolderMoveItems";
 import { useApiAction } from "@tw/hooks/useApiAction";
 // Cross-alias imports, deliberately mirroring the same exception
 // @tw/context/AuthContext.tsx already makes for auth specifically —
@@ -1261,20 +1261,12 @@ export function MessageDetailsView({
             ) : (
               <>
                 <DropdownMenuLabel>Move to folder</DropdownMenuLabel>
-                {folders.map((folder) => (
-                  <DropdownMenuItem
-                    key={folder.folder_id}
-                    onClick={() => onAssignFolder(email.interaction_id, folder.folder_id)}
-                  >
-                    <Check
-                      className={cn(
-                        "h-3.5 w-3.5",
-                        email.folder_id === folder.folder_id ? "opacity-100" : "opacity-0"
-                      )}
-                    />
-                    {folder.name.trim()}
-                  </DropdownMenuItem>
-                ))}
+                <FolderMoveItems
+                  kind="dropdown"
+                  folders={folders}
+                  currentFolderId={email.folder_id}
+                  onPick={(folderId) => onAssignFolder(email.interaction_id, folderId)}
+                />
                 {email.folder_id && (
                   <>
                     <DropdownMenuSeparator />

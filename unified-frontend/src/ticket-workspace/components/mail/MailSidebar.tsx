@@ -1,12 +1,15 @@
 "use client";
 
-import { memo, type ReactNode, useState } from "react";
+import { memo, type ReactNode, useCallback, useMemo, useState } from "react";
 import {
   Archive,
   Bell,
   FileEdit,
   Flag,
+  ChevronRight,
   Folder,
+  FolderOutput,
+  FolderPlus,
   Inbox as InboxIcon,
   KeyRound,
   Pencil,
@@ -32,9 +35,18 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { cn } from "@/lib/utils";
 import { CreateFolderDialog } from "@tw/components/mail/CreateFolderDialog";
+import { MoveFolderDialog } from "@tw/components/mail/MoveFolderDialog";
 import { useApiAction } from "@tw/hooks/useApiAction";
+import { ancestorIds, buildFolderTree, flattenVisible } from "@tw/lib/folderTree";
 import type { MailViewKey } from "@tw/hooks/useMailInbox";
 import type { MailFolder } from "@tw/types";
 
@@ -85,7 +97,9 @@ interface MailSidebarProps {
   folderCounts: Record<string, number>;
   activeFolderId: string | null;
   onSelectFolder: (folderId: string) => void;
-  onCreateFolder: (name: string) => Promise<MailFolder>;
+  onCreateFolder: (name: string, parentFolderId?: string | null) => Promise<MailFolder>;
+  onRenameFolder: (folderId: string, name: string) => Promise<MailFolder>;
+  onMoveFolder: (folderId: string, parentFolderId: string | null) => Promise<MailFolder>;
   onDeleteFolder: (folderId: string) => Promise<void>;
   // Rules moved under Mail — visible only to the roles holding
   // rule:manage (Super Admin, Site Lead, Account Manager, Team Lead).
@@ -102,6 +116,8 @@ interface MailSidebarProps {
   // look for the whole three-panel area.
   variant?: "standalone" | "panel";
 }
+
+const EXPANDED_KEY = "mail_folder_expanded";
 
 function CountBadge({ count }: { count: number }): ReactNode {
   if (!count) return null;
@@ -131,6 +147,8 @@ export const MailSidebar = memo(function MailSidebar({
   activeFolderId,
   onSelectFolder,
   onCreateFolder,
+  onRenameFolder,
+  onMoveFolder,
   onDeleteFolder,
   canManageRules,
   rulesActive,
@@ -140,6 +158,48 @@ export const MailSidebar = memo(function MailSidebar({
   const viewItems = hideMyClaims ? VIEW_ITEMS.filter((item) => item.key !== "mine") : VIEW_ITEMS;
   const [createOpen, setCreateOpen] = useState(false);
   const [deletingFolder, setDeletingFolder] = useState<MailFolder | null>(null);
+  const [subfolderParent, setSubfolderParent] = useState<MailFolder | null>(null);
+  const [renamingFolder, setRenamingFolder] = useState<MailFolder | null>(null);
+  const [movingFolder, setMovingFolder] = useState<MailFolder | null>(null);
+
+  // Expand/collapse is pure UI state, persisted per browser.
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(EXPANDED_KEY);
+      return new Set<string>(raw ? JSON.parse(raw) : []);
+    } catch {
+      return new Set<string>();
+    }
+  });
+  const updateExpanded = useCallback((fn: (prev: Set<string>) => Set<string>) => {
+    setExpanded((prev) => {
+      const next = fn(prev);
+      try {
+        localStorage.setItem(EXPANDED_KEY, JSON.stringify([...next]));
+      } catch {
+        /* storage unavailable: state still works for this session */
+      }
+      return next;
+    });
+  }, []);
+  const toggleExpanded = (id: string) =>
+    updateExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  // The path to the active folder is always revealed (derived, not stored).
+  const shownExpanded = useMemo(
+    () => (activeFolderId ? new Set([...expanded, ...ancestorIds(folders, activeFolderId)]) : expanded),
+    [expanded, folders, activeFolderId]
+  );
+
+  const folderRows = useMemo(
+    () => flattenVisible(buildFolderTree(folders), shownExpanded),
+    [folders, shownExpanded]
+  );
   const { run: runDeleteFolder, isLoading: isDeletingFolder } = useApiAction(onDeleteFolder, {
     successMessage: "Folder deleted.",
   });
@@ -238,46 +298,119 @@ export const MailSidebar = memo(function MailSidebar({
             No folders yet — create one to organize mail.
           </p>
         ) : (
-          folders.map((folder) => {
+          folderRows.map(({ folder, depth, children }) => {
             const isActive = !isComposing && activeFolderId === folder.folder_id;
+            const hasChildren = children.length > 0;
+            const isOpen = shownExpanded.has(folder.folder_id);
+            const label = folder.name.trim();
             return (
-              <div
-                key={folder.folder_id}
-                data-active={isActive}
-                className={cn(
-                  "group flex items-center gap-2.5 rounded-lg pl-3 pr-1.5 py-2 text-left text-[13px] font-medium transition-all duration-150",
-                  isActive
-                    ? "bg-primary/10 text-primary"
-                    : "text-foreground/80 hover:bg-muted hover:text-foreground"
-                )}
-              >
-                <button
-                  type="button"
-                  onClick={() => onSelectFolder(folder.folder_id)}
-                  className="flex flex-1 items-center gap-2.5 overflow-hidden text-left"
-                >
-                  <Folder className={cn("h-4 w-4 flex-none", isActive ? "text-primary" : "text-muted-foreground")} />
-                  <span className="truncate">{folder.name.trim()}</span>
-                  <CountBadge count={folderCounts[folder.folder_id] ?? 0} />
-                </button>
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setDeletingFolder(folder);
-                  }}
-                  aria-label={`Delete ${folder.name.trim()}`}
-                  className="flex-none rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
+              <ContextMenu key={folder.folder_id} modal={false}>
+                <ContextMenuTrigger asChild>
+                  <div
+                    data-active={isActive}
+                    role="treeitem"
+                    aria-level={depth + 1}
+                    aria-expanded={hasChildren ? isOpen : undefined}
+                    aria-selected={isActive}
+                    style={{ paddingLeft: 6 + depth * 14 }}
+                    className={cn(
+                      "group flex items-center gap-1 rounded-lg pr-1.5 py-2 text-left text-[13px] font-medium transition-all duration-150",
+                      isActive
+                        ? "bg-primary/10 text-primary"
+                        : "text-foreground/80 hover:bg-muted hover:text-foreground"
+                    )}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(folder.folder_id)}
+                      aria-label={isOpen ? `Collapse ${label}` : `Expand ${label}`}
+                      tabIndex={hasChildren ? 0 : -1}
+                      className={cn(
+                        "flex h-5 w-5 flex-none items-center justify-center rounded text-muted-foreground hover:text-foreground",
+                        !hasChildren && "invisible"
+                      )}
+                    >
+                      <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isOpen && "rotate-90")} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onSelectFolder(folder.folder_id)}
+                      title={label}
+                      className="flex flex-1 items-center gap-2.5 overflow-hidden text-left"
+                    >
+                      <Folder className={cn("h-4 w-4 flex-none", isActive ? "text-primary" : "text-muted-foreground")} />
+                      <span className="truncate">{label}</span>
+                      <CountBadge count={folderCounts[folder.folder_id] ?? 0} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeletingFolder(folder);
+                      }}
+                      aria-label={`Delete ${label}`}
+                      className="flex-none rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </ContextMenuTrigger>
+                <ContextMenuContent className="w-48" onCloseAutoFocus={(e) => e.preventDefault()}>
+                  <ContextMenuItem onSelect={() => onSelectFolder(folder.folder_id)}>
+                    <Folder className="mr-2 h-4 w-4" />
+                    Open
+                  </ContextMenuItem>
+                  <ContextMenuItem onSelect={() => setSubfolderParent(folder)}>
+                    <FolderPlus className="mr-2 h-4 w-4" />
+                    Create subfolder
+                  </ContextMenuItem>
+                  <ContextMenuItem onSelect={() => setRenamingFolder(folder)}>
+                    <Pencil className="mr-2 h-4 w-4" />
+                    Rename
+                  </ContextMenuItem>
+                  <ContextMenuItem onSelect={() => setMovingFolder(folder)}>
+                    <FolderOutput className="mr-2 h-4 w-4" />
+                    Move
+                  </ContextMenuItem>
+                  <ContextMenuSeparator />
+                  <ContextMenuItem
+                    onSelect={() => setDeletingFolder(folder)}
+                    className="text-destructive focus:text-destructive"
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Delete
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
             );
           })
         )}
       </div>
 
-      <CreateFolderDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={onCreateFolder} />
+      <CreateFolderDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={(name) => onCreateFolder(name, null)} />
+      <CreateFolderDialog
+        open={!!subfolderParent}
+        onOpenChange={(open) => !open && setSubfolderParent(null)}
+        onCreate={(name) => onCreateFolder(name, subfolderParent?.folder_id ?? null)}
+        title="Create Subfolder"
+        parentName={subfolderParent?.name.trim() ?? null}
+        successMessage="Subfolder created."
+      />
+      <CreateFolderDialog
+        open={!!renamingFolder}
+        onOpenChange={(open) => !open && setRenamingFolder(null)}
+        onCreate={(name) => onRenameFolder(renamingFolder!.folder_id, name)}
+        title="Rename Folder"
+        submitLabel="Rename"
+        initialName={renamingFolder?.name.trim() ?? ""}
+        successMessage="Folder renamed."
+      />
+      <MoveFolderDialog
+        folder={movingFolder}
+        folders={folders}
+        onOpenChange={(open) => !open && setMovingFolder(null)}
+        onMove={onMoveFolder}
+      />
 
       <AlertDialog
         open={!!deletingFolder}
@@ -288,7 +421,7 @@ export const MailSidebar = memo(function MailSidebar({
             <AlertDialogTitle>Delete folder</AlertDialogTitle>
             <AlertDialogDescription>
               Delete folder &quot;{deletingFolder?.name.trim()}&quot;? Any emails filed here will
-              become unfiled.
+              become unfiled. Subfolders are kept and move up one level.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -12,7 +12,12 @@ from app.ticketing.repositories.distribution_list_repository import (
 from app.ticketing.repositories.interaction_repository import InteractionRepository
 from app.ticketing.repositories.mail_folder_repository import MailFolderRepository
 from app.ticketing.repositories.rule_repository import RuleRepository
-from app.ticketing.schemas.mail_folder import MailFolderCreate, MailFolderResponse
+from app.ticketing.schemas.mail_folder import (
+    MailFolderCreate,
+    MailFolderMove,
+    MailFolderRename,
+    MailFolderResponse,
+)
 from app.ticketing.services.mail_folder_service import MailFolderService
 
 router = APIRouter(
@@ -52,7 +57,47 @@ async def create_folder(
     db: AsyncSession = Depends(get_db),
 ):
     service = MailFolderService(MailFolderRepository(db))
-    return await service.create(request, current_user=current_user)
+    return await service.create(
+        request,
+        current_user=current_user,
+        rule_repository=RuleRepository(db),
+        distribution_list_repository=DistributionListRepository(db),
+    )
+
+
+@router.patch("/{folder_id}", response_model=MailFolderResponse)
+async def rename_folder(
+    folder_id: UUID,
+    request: MailFolderRename,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    service = MailFolderService(MailFolderRepository(db))
+    return await service.rename(
+        folder_id,
+        request,
+        current_user,
+        RuleRepository(db),
+        DistributionListRepository(db),
+    )
+
+
+@router.patch("/{folder_id}/parent", response_model=MailFolderResponse)
+async def move_folder(
+    folder_id: UUID,
+    request: MailFolderMove,
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """Move a folder (with its subfolders) under another folder, or to root."""
+    service = MailFolderService(MailFolderRepository(db))
+    return await service.move(
+        folder_id,
+        request,
+        current_user,
+        RuleRepository(db),
+        DistributionListRepository(db),
+    )
 
 
 @router.delete(

@@ -401,6 +401,8 @@ export interface InteractionFolderResponse {
 export interface MailFolder {
   folder_id: string;
   name: string;
+  // null/absent = root folder.
+  parent_folder_id?: string | null;
   created_by: string | null;
   created_at: string;
 }
