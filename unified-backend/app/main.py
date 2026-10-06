@@ -35,6 +35,7 @@ from app.ticketing.api.category import router as ticketing_category_router
 from app.ticketing.api.client import router as ticketing_client_router
 from app.ticketing.api.email import router as ticketing_email_router
 from app.ticketing.api.inbox import router as ticketing_inbox_router
+from app.ticketing.api.app_settings import router as ticketing_app_settings_router
 from app.ticketing.api.interaction import router as ticketing_interaction_router
 from app.ticketing.api.mail_folder import router as ticketing_mail_folder_router
 from app.ticketing.api.mail_integration import router as ticketing_mail_integration_router
@@ -185,6 +186,7 @@ app.include_router(ticketing_agent_router)
 app.include_router(ticketing_client_router)
 app.include_router(ticketing_category_router)
 app.include_router(ticketing_inbox_router)
+app.include_router(ticketing_app_settings_router)
 app.include_router(ticketing_mail_folder_router)
 app.include_router(ticketing_mail_integration_router)
 app.include_router(ticketing_rule_router)

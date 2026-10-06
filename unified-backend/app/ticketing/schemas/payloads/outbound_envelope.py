@@ -132,3 +132,14 @@ class OutboundEnvelope(BaseModel):
     # Graph's replyAll action instead of reply. Ignored (treated as
     # plain sendMail) when reply_to_provider_message_id is None.
     reply_all: bool = False
+
+    # Outlook-style read receipt (RFC 8098 MDN) requested for this
+    # send. Defaults False — every send before this field existed, and
+    # every send that doesn't tick "Request read receipt", is exactly
+    # as before. When True, graph_client.py sets Graph's own
+    # `isReadReceiptRequested` (never a hand-built
+    # Disposition-Notification-To header, which Graph rejects) and
+    # always sends via a draft / createReply so the real
+    # internetMessageId is returned before sending. Persisted with the
+    # envelope, so Retry Send and Undo Send carry it automatically.
+    read_receipt_requested: bool = False

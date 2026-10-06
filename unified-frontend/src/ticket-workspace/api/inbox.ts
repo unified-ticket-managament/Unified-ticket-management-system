@@ -18,6 +18,7 @@ import type {
   InteractionReplyRequest,
   InteractionReplyResponse,
   InteractionTagsResponse,
+  MailFeatures,
   OpenEmailResponse,
   SentResponse,
 } from "@tw/types";
@@ -129,11 +130,21 @@ export async function saveDraft(
   message: string,
   cc: string[] = [],
   bcc: string[] = [],
-  bodyHtml?: string | null
+  bodyHtml?: string | null,
+  // Persisted with the draft so it survives reopen and the later
+  // draft-send (whose endpoint takes no per-send options). Omitted from
+  // the body when off, so an unticked draft's request is unchanged.
+  readReceiptRequested?: boolean
 ): Promise<DraftSaveResponse> {
   const { data } = await apiClient.put<DraftSaveResponse>(
     `/inbox/${interactionId}/draft`,
-    { message, cc, bcc, body_html: bodyHtml ?? undefined }
+    {
+      message,
+      cc,
+      bcc,
+      body_html: bodyHtml ?? undefined,
+      ...(readReceiptRequested ? { read_receipt_requested: true } : {}),
+    }
   );
   return data;
 }
@@ -318,6 +329,14 @@ export async function updateInteractionFolder(
   return data;
 }
 
+// GET /inbox/features — which optional Mail features the backend has
+// switched on (currently just read receipts). Mirrors a backend
+// setting; there is no frontend-side flag to keep in sync.
+export async function getMailFeatures(): Promise<MailFeatures> {
+  const { data } = await apiClient.get<MailFeatures>("/inbox/features");
+  return data;
+}
+
 export interface ComposeEmailPayload {
   // Exactly one of clientId/categoryId — the "From" mailbox this
   // message sends as. See ComposeEmailRequest's identical backend
@@ -357,6 +376,9 @@ export interface ComposeEmailPayload {
   // second email. Generate a fresh one per Send attempt (e.g.
   // crypto.randomUUID()); omit to opt out entirely.
   idempotencyKey?: string;
+  // "Request read receipt" — see ComposeEmailRequest.read_receipt_requested
+  // (backend). Optional; omitted/false sends exactly as before.
+  readReceiptRequested?: boolean;
 }
 
 // POST /inbox/compose/attachments/inline-image — stages a single
@@ -405,6 +427,8 @@ export async function composeEmail(
     );
   }
   if (payload.idempotencyKey) formData.append("idempotency_key", payload.idempotencyKey);
+  // Only sent when ticked — an ordinary send's form is unchanged.
+  if (payload.readReceiptRequested) formData.append("read_receipt_requested", "true");
 
   const { data } = await apiClient.post<ComposeEmailResponse>(
     "/inbox/compose",

@@ -42,6 +42,14 @@ class MailProviderSendResult(BaseModel):
     # tries to use it as one.
     provider_message_id: str | None
     status: str
+    # The REAL RFC Message-ID (Graph's `internetMessageId`) of the
+    # message actually sent, when the provider knows it — read from the
+    # draft/createReply create response, before sending, never
+    # inferred from Sent Items/timestamps/conversation. None for the
+    # direct reply/replyAll path (202, no body) and whenever Graph did
+    # not return one. Distinct from OutboundEnvelope.message_id (a
+    # locally generated placeholder that never reaches the wire).
+    internet_message_id: str | None = None
 
 
 class MailProviderClient(ABC):
@@ -79,6 +87,18 @@ class MailProviderClient(ABC):
     ) -> list[GraphAttachmentPayload]:
         raise NotImplementedError
 
+    async def fetch_message_mime(self, message_id: str) -> bytes | None:
+        """
+        The raw RFC 5322/MIME bytes of one message (Graph: `GET
+        /messages/{id}/$value`). Only ever called for a message already
+        identified as a read-receipt candidate (see mdn_detection.py) —
+        never for ordinary inbound mail. Deliberately non-abstract with
+        a "not supported" default of None so a provider/test double
+        that predates this method keeps working unchanged.
+        """
+
+        return None
+
 
 class MockMailProviderClient(MailProviderClient):
     """
@@ -104,7 +124,16 @@ class MockMailProviderClient(MailProviderClient):
         return MailProviderSendResult(
             provider_message_id=provider_message_id,
             status="SENT",
+            # Same contract as the Graph provider: a real-looking
+            # RFC Message-ID known at send time.
+            internet_message_id=f"<mock-{uuid4().hex}@mock.invalid>",
         )
+
+    async def fetch_message_mime(self, message_id: str) -> bytes | None:
+        logger.debug("mock provider fetch_message_mime: message_id=%s (returning none)", message_id)
+
+        # Same "never fabricate data" convention as list_new_messages.
+        return None
 
     async def fetch_message(self, message_id: str) -> IncomingMailPayload:
         logger.info("mock provider fetch_message: message_id=%s", message_id)

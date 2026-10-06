@@ -44,6 +44,9 @@ import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import { FolderMoveItems } from "@tw/components/mail/FolderMoveItems";
 import { useApiAction } from "@tw/hooks/useApiAction";
+import { useMailFeatures } from "@tw/hooks/useMailFeatures";
+import { ReadReceiptStatus } from "@tw/components/mail/ReadReceiptStatus";
+import type { ReadReceiptStatus as ReadReceiptStatusData } from "@tw/types";
 // Cross-alias imports, deliberately mirroring the same exception
 // @tw/context/AuthContext.tsx already makes for auth specifically —
 // there is no @tw/-side equivalent for a live /auth/me refetch, and
@@ -170,6 +173,11 @@ interface BubbleData {
   dispatchStatus?: string | null;
   dispatchError?: string | null;
   performedBy?: string | null;
+  // Per-recipient read-receipt state (outbound messages only), and
+  // whether the message asked for one (stored on its persisted
+  // envelope) — shown by <ReadReceiptStatus/> under the "To:" line.
+  readReceipts?: ReadReceiptStatusData[];
+  readReceiptRequested?: boolean;
 }
 
 function rootBubble(email: OpenEmailResponse): BubbleData {
@@ -185,6 +193,8 @@ function rootBubble(email: OpenEmailResponse): BubbleData {
     // Each message renders its own attachments inline, right where it
     // was sent — not deduplicated into one bucket for the whole thread.
     attachments: email.attachments,
+    // Only ever non-empty for an outbound (Compose) root.
+    readReceipts: email.read_receipts,
   };
 }
 
@@ -212,7 +222,12 @@ function replyBubble(reply: InteractionResponse): BubbleData {
   const payload = reply.payload as {
     message?: string;
     body_html?: string | null;
-    envelope?: { from_name?: string; from_email?: string; to_email?: string };
+    envelope?: {
+      from_name?: string;
+      from_email?: string;
+      to_email?: string;
+      read_receipt_requested?: boolean;
+    };
   };
   return {
     key: reply.interaction_id,
@@ -237,6 +252,8 @@ function replyBubble(reply: InteractionResponse): BubbleData {
     dispatchStatus: reply.dispatch_status,
     dispatchError: reply.dispatch_error,
     performedBy: reply.performed_by,
+    readReceipts: reply.read_receipts,
+    readReceiptRequested: payload.envelope?.read_receipt_requested === true,
   };
 }
 
@@ -389,6 +406,7 @@ function Bubble({
           <p className="text-[11px] text-muted-foreground">{formatDateTime(data.timestamp)}</p>
         </div>
         {data.toLabel && <p className="mt-0.5 text-[11px] text-muted-foreground">To: {data.toLabel}</p>}
+        <ReadReceiptStatus receipts={data.readReceipts} requested={data.readReceiptRequested} />
         {data.dispatchStatus === "FAILED" && (
           <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-1.5 text-[11.5px] text-destructive">
             <span className="font-medium">
@@ -518,7 +536,8 @@ interface MessageDetailsViewProps {
     message: string,
     cc: string[],
     bcc: string[],
-    bodyHtml?: string
+    bodyHtml?: string,
+    readReceiptRequested?: boolean
   ) => Promise<DraftSaveResponse | null>;
   onSendDraft: (
     interactionId: string,
@@ -807,6 +826,9 @@ export function MessageDetailsView({
       .catch(() => setContacts([]));
   }, [email.client_id]);
 
+  // Whether the backend has read receipts switched on (hidden when off).
+  const { read_receipts_enabled: readReceiptsEnabled } = useMailFeatures();
+
   const { run: runReply, isLoading: isReplying } = useApiAction(replyToInteraction);
   const { run: runTicketReply, isLoading: isReplyingTicket } = useApiAction(replyToClient);
   const { run: runUploadAttachment, isLoading: isUploadingAttachment } = useApiAction(uploadAttachment);
@@ -864,6 +886,7 @@ export function MessageDetailsView({
     files: File[];
     to: string[];
     distributionListIds: string[];
+    readReceiptRequested?: boolean;
   }) {
     if (isTicketed && email.ticket_id) {
       // Files are uploaded *before* the reply is sent (not after) so
@@ -898,6 +921,8 @@ export function MessageDetailsView({
         reply_all: replyMode === "replyAll",
         inline_image_interaction_ids: liveInlineImageInteractionIds,
         idempotency_key: idempotencyKeyRef.current,
+        // Only when ticked, so an ordinary reply's request is unchanged.
+        ...(payload.readReceiptRequested ? { read_receipt_requested: true } : {}),
       });
       if (result) {
         idempotencyKeyRef.current = generateIdempotencyKey();
@@ -950,6 +975,7 @@ export function MessageDetailsView({
       distribution_list_ids: payload.distributionListIds,
       reply_all: replyMode === "replyAll",
       idempotency_key: idempotencyKeyRef.current,
+      ...(payload.readReceiptRequested ? { read_receipt_requested: true } : {}),
     });
     if (result) {
       idempotencyKeyRef.current = generateIdempotencyKey();
@@ -981,11 +1007,23 @@ export function MessageDetailsView({
     }
   }
 
-  async function handleSaveDraft(message: string, cc: string[], bcc: string[], bodyHtml?: string) {
+  async function handleSaveDraft(
+    message: string,
+    cc: string[],
+    bcc: string[],
+    bodyHtml?: string,
+    readReceiptRequested?: boolean
+  ) {
     if (isTicketed && email.ticket_id) {
-      return saveTicketReplyDraft(email.ticket_id, { message, cc, bcc, body_html: bodyHtml });
+      return saveTicketReplyDraft(email.ticket_id, {
+        message,
+        cc,
+        bcc,
+        body_html: bodyHtml,
+        ...(readReceiptRequested ? { read_receipt_requested: true } : {}),
+      });
     }
-    return onSaveDraft(email.interaction_id, message, cc, bcc, bodyHtml);
+    return onSaveDraft(email.interaction_id, message, cc, bcc, bodyHtml, readReceiptRequested);
   }
 
   async function handleUploadInlineImage(file: File) {
@@ -1435,6 +1473,14 @@ export function MessageDetailsView({
           initialMessage={ticketReplyDraft ? ticketReplyDraft.message : hasDraft ? email.draft_message ?? "" : ""}
           initialBodyHtml={ticketReplyDraft ? ticketReplyDraft.body_html : hasDraft ? email.draft_body_html : null}
           hasExistingDraft={Boolean(ticketReplyDraft) || hasDraft}
+          readReceiptsEnabled={readReceiptsEnabled}
+          initialReadReceiptRequested={
+            ticketReplyDraft
+              ? Boolean(ticketReplyDraft.read_receipt_requested)
+              : hasDraft
+                ? Boolean(email.draft_read_receipt_requested)
+                : false
+          }
           isTicketed={isTicketed}
           draftAttachments={email.draft_attachments}
           isSending={isReplying || isReplyingTicket || isUploadingAttachment}

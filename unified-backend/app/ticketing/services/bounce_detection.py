@@ -51,6 +51,10 @@ def _content_type_is_bounce_shaped(content_type_header: str | None) -> bool:
     if not content_type_header:
         return False
     normalized = content_type_header.lower()
+    # A standards read receipt (RFC 8098) is ALSO a multipart/report,
+    # but it is not a delivery failure: never classify it as a bounce.
+    if "report-type=disposition-notification" in "".join(normalized.split()):
+        return False
     return any(marker in normalized for marker in _BOUNCE_CONTENT_TYPE_MARKERS)
 
 

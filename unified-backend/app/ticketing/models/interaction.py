@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import Boolean
 from sqlalchemy import Enum as SQLEnum
 from datetime import datetime, timezone
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 #interaction.py
@@ -26,6 +26,17 @@ class Interaction(Base):
     """
 
     __tablename__ = "interactions"
+
+    __table_args__ = (
+        # Partial index backing the read-receipt match lookup
+        # (internet_message_id == receipt's Original-Message-ID); most
+        # rows (every inbound one) are NULL and stay out of the index.
+        Index(
+            "ix_interactions_internet_message_id",
+            "internet_message_id",
+            postgresql_where=text("internet_message_id IS NOT NULL"),
+        ),
+    )
 
     interaction_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -321,6 +332,20 @@ class Interaction(Base):
         String(998),
         nullable=True,
         index=True,
+    )
+
+    # The REAL RFC Message-ID Microsoft Graph/Exchange stamped on this
+    # outbound message (Graph's `internetMessageId`), captured from the
+    # draft/createReply create response and stored only after the send
+    # succeeded. Distinct from `message_id` above, which for outbound
+    # rows is a locally generated placeholder that never reaches the
+    # wire. Its only job is matching an inbound read receipt's
+    # `Original-Message-ID` back to this row (see read_receipt_service).
+    # NULL for every inbound row and for any send that never captured
+    # one (e.g. the direct /reply path, which returns no id).
+    internet_message_id: Mapped[str | None] = mapped_column(
+        String(998),
+        nullable=True,
     )
 
     # Client-generated key for Send/Retry-Send idempotency — never

@@ -5,7 +5,10 @@ from pydantic import BaseModel, Field
 
 from app.ticketing.enums import InteractionDirection, InteractionStatus
 from app.ticketing.schemas.attachment import AttachmentMetadata
-from app.ticketing.schemas.interaction import InteractionResponse
+from app.ticketing.schemas.interaction import (
+    InteractionResponse,
+    ReadReceiptStatusResponse,
+)
 from app.ticketing.schemas.sla import FirstResponseSLAState
 
 
@@ -135,6 +138,13 @@ class OpenEmailResponse(BaseModel):
     draft_cc: list[str] = Field(default_factory=list)
 
     draft_bcc: list[str] = Field(default_factory=list)
+
+    # Whether "Request read receipt" was ticked on the saved draft.
+    draft_read_receipt_requested: bool = False
+
+    # Per-recipient read-receipt state of THIS root message, when it is
+    # an outbound (Compose) message that requested one. Empty otherwise.
+    read_receipts: list[ReadReceiptStatusResponse] = Field(default_factory=list)
 
     # Already-uploaded attachments on the draft itself (a separate
     # interaction row from this root) — distinct from `attachments`

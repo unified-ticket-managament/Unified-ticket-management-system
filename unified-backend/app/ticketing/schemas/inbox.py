@@ -181,3 +181,16 @@ class DraftListResponse(BaseModel):
     total: int
 
     items: list[DraftItemResponse]
+
+
+class MailFeaturesResponse(BaseModel):
+    """
+    Runtime feature switches the Mail workspace needs to know about.
+    Read-only mirror of backend settings — the backend setting is the
+    single source of truth (no parallel frontend flag to keep in sync).
+    """
+
+    # Mirrors the administrator-controlled Read Receipts setting (Settings >
+    # Email & Communication, table app_settings): whether the "Request read
+    # receipt" checkbox is shown and requests are honoured. Default OFF.
+    read_receipts_enabled: bool = False

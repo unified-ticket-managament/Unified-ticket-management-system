@@ -76,6 +76,24 @@ class InteractionUpdate(BaseModel):
     dispatch_error: str | None = None
     send_after: datetime | None = None
     provider_message_id: str | None = None
+    # The real Graph internetMessageId, set once after a successful
+    # send (see InteractionService._dispatch_and_record). Never touched
+    # unless explicitly provided (exclude_unset on update()).
+    internet_message_id: str | None = None
+
+
+class ReadReceiptStatusResponse(BaseModel):
+    """
+    One tracked To/Cc recipient's read-receipt state for an outbound
+    message. `status` is REQUESTED (no receipt received — which never
+    means "unread": a receipt is optional and recipient-controlled) or
+    CONFIRMED (a receipt arrived). `read_at` is the receipt's own time,
+    not proof of the moment a person opened the message.
+    """
+
+    recipient_email: str
+    status: str
+    read_at: datetime | None = None
 
 
 class InteractionResponse(ORMBase):
@@ -118,6 +136,10 @@ class InteractionResponse(ORMBase):
     dispatch_status: str | None = None
     dispatch_error: str | None = None
     provider_message_id: str | None = None
+
+    # Per-recipient read-receipt state; empty for every message that
+    # never requested a receipt (and for every inbound message).
+    read_receipts: list[ReadReceiptStatusResponse] = Field(default_factory=list)
 
 
 class TicketInteractionResponse(InteractionResponse):
@@ -233,6 +255,10 @@ class DraftSaveRequest(BaseModel):
     # (schemas/ticket_action.py) for the same additive contract —
     # None (the default) autosaves exactly like before this existed.
     body_html: str | None = None
+    # Whether "Request read receipt" was ticked when this draft was
+    # saved — persisted with the draft so it survives close/reopen and
+    # the later draft-send (whose endpoints take no per-send options).
+    read_receipt_requested: bool = False
 
 
 class DraftSendRequest(BaseModel):
@@ -272,6 +298,7 @@ class DraftResponse(ORMBase):
     bcc: list[str] = Field(default_factory=list)
     attachments: list[AttachmentMetadata] = Field(default_factory=list)
     created_at: datetime
+    read_receipt_requested: bool = False
 
 
 class DraftDeleteResponse(BaseModel):

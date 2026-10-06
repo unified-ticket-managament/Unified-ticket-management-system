@@ -48,6 +48,7 @@ from app.ticketing.schemas.interaction import (
     InteractionResponse,
     InteractionTagsResponse,
     InteractionUpdate,
+    ReadReceiptStatusResponse,
     TagsUpdateRequest,
     ThreadResponse,
 )
@@ -188,6 +189,12 @@ from app.ticketing.services.attachment_service import (
     is_previewable_image,
     load_envelope_attachments,
 )
+from app.ticketing.services.app_settings_service import is_read_receipts_enabled
+from app.ticketing.services.read_receipt_service import (
+    load_receipt_statuses,
+    receipt_was_requested,
+    tracked_receipt_recipients,
+)
 from app.ticketing.services.undo_send import compute_send_after, schedule_delayed_send
 from app.ticketing.utils.constants import MAX_ATTACHMENT_FILES
 from app.ticketing.storage.base import StorageService
@@ -224,11 +231,28 @@ def _dispatch_columns_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _effective_read_receipt_requested(db, requested: bool) -> bool:
+    """
+    A read receipt is only ever requested when the agent asked for one
+    AND the global Read Receipts setting (Settings > Email &
+    Communication, table `app_settings`) is on. With the setting off (the
+    default) a stray client-supplied flag is silently ignored, so every
+    send is exactly as before the feature existed. The setting is only
+    read when a receipt was actually asked for, so an ordinary send incurs
+    no extra query.
+    """
+
+    if not requested:
+        return False
+    return await is_read_receipts_enabled(db)
+
+
 def _to_response(
     interaction: Interaction,
     attachments: list[AttachmentMetadata] | None = None,
     performed_by_name: str | None = None,
     trim: bool = False,
+    read_receipts: list[ReadReceiptStatusResponse] | None = None,
 ) -> InteractionResponse:
     """
     Builds an InteractionResponse without touching
@@ -267,6 +291,7 @@ def _to_response(
         conversation_id=interaction.conversation_id,
         in_reply_to_message_id=interaction.in_reply_to_message_id,
         references=interaction.references or [],
+        read_receipts=read_receipts or [],
     )
 
 
@@ -775,13 +800,24 @@ class InteractionService:
             "dispatch_status": "SENT",
             "provider_message_id": result.provider_message_id,
         }
+        extra_columns: dict[str, Any] = {}
+        real_message_id = getattr(result, "internet_message_id", None)
+        if real_message_id:
+            # Stored only now — after the send succeeded — and only when
+            # the provider actually returned one (read from the create
+            # response; never inferred). Absent for the direct /reply
+            # path, which returns no id.
+            extra_columns["internet_message_id"] = real_message_id
         await self.interaction_repository.update(
             interaction,
             InteractionUpdate(
                 payload=sent_payload,
                 **_dispatch_columns_from_payload(sent_payload),
+                **extra_columns,
             ),
         )
+
+        await self._record_read_receipt_requests(interaction, envelope, real_message_id)
 
         try:
             await self.interaction_repository.db.commit()
@@ -811,6 +847,53 @@ class InteractionService:
                 result.provider_message_id,
             )
             raise
+
+    async def _record_read_receipt_requests(
+        self,
+        interaction: Interaction,
+        envelope: OutboundEnvelope,
+        internet_message_id: str | None,
+    ) -> None:
+        """
+        After a SUCCESSFUL send of a receipt-requested message, create
+        one REQUESTED tracking row per To/Cc recipient (never Bcc) in
+        the same transaction as the SENT status. A failed or canceled
+        send never reaches here, so it never gets rows. Fully isolated:
+        any failure is logged and swallowed — the send itself already
+        succeeded at the provider, so bookkeeping must never turn it
+        into a failure (which could prompt a duplicate-sending retry).
+        """
+
+        if not getattr(envelope, "read_receipt_requested", False):
+            return
+
+        if not internet_message_id:
+            logger.warning(
+                "Read receipt requested but no internetMessageId was captured "
+                "for interaction %s — any receipt for it cannot be matched.",
+                interaction.interaction_id,
+            )
+
+        try:
+            from app.ticketing.repositories.email_read_receipt_repository import (
+                EmailReadReceiptRepository,
+            )
+            from app.ticketing.services.read_receipt_service import (
+                tracked_receipt_recipients,
+            )
+
+            db = self.interaction_repository.db
+            async with db.begin_nested():
+                await EmailReadReceiptRepository(db).create_requested(
+                    interaction.interaction_id,
+                    tracked_receipt_recipients(envelope),
+                )
+        except Exception:
+            logger.exception(
+                "Failed to record read-receipt tracking rows for interaction %s "
+                "(the send itself succeeded and is unaffected).",
+                interaction.interaction_id,
+            )
 
     async def _schedule_delayed_send(
         self, interaction: Interaction, envelope: OutboundEnvelope
@@ -1964,6 +2047,9 @@ class InteractionService:
                     reply_all=request.reply_all,
                     body_html=request.body_html,
                     default_to_email=default_to_email,
+                    read_receipt_requested=await _effective_read_receipt_requested(
+                self.interaction_repository.db, request.read_receipt_requested
+            ),
                 )
 
         payload: dict[str, Any] = {"message": request.message}
@@ -2235,6 +2321,9 @@ class InteractionService:
                 reply_all=request.reply_all,
                 body_html=request.body_html,
                 default_to_email=default_to_email,
+                read_receipt_requested=await _effective_read_receipt_requested(
+                self.interaction_repository.db, request.read_receipt_requested
+            ),
             )
 
         payload: dict[str, Any] = {"message": request.message}
@@ -2586,6 +2675,9 @@ class InteractionService:
             agent_name=current_user.name,
             account_manager_email=am_email,
             body_html=request.body_html,
+            read_receipt_requested=await _effective_read_receipt_requested(
+                self.interaction_repository.db, request.read_receipt_requested
+            ),
         )
         if len(effective_to) > 1:
             envelope = envelope.model_copy(update={"to_emails": effective_to})
@@ -4732,6 +4824,28 @@ class InteractionService:
         raw = await self.attachment_repository.list_by_interaction_id(interaction_id)
         return await attachments_to_metadata(raw, self.storage_service)
 
+    async def _persist_draft_receipt_flag(
+        self, draft: Interaction, requested: bool
+    ) -> None:
+        """
+        Stores "Request read receipt" on a pre-ticket Reply draft's
+        payload so it survives close/reopen and the later draft-send
+        (whose endpoint takes no per-send options). Stored only when
+        True and removed when False, so an unticked draft's payload is
+        byte-identical to every draft before this feature existed.
+        """
+
+        current = dict(draft.payload) if isinstance(draft.payload, dict) else {}
+        updated = dict(current)
+        if requested:
+            updated["read_receipt_requested"] = True
+        else:
+            updated.pop("read_receipt_requested", None)
+
+        if updated != current:
+            draft.payload = updated
+            await self.interaction_repository.db.flush()
+
     async def save_draft(
         self,
         interaction_id: UUID,
@@ -4784,6 +4898,8 @@ class InteractionService:
                 body_html=request.body_html,
             )
 
+        await self._persist_draft_receipt_flag(draft, request.read_receipt_requested)
+
         attachments = await self._fetch_draft_attachments(draft.interaction_id)
 
         return DraftResponse(
@@ -4795,6 +4911,7 @@ class InteractionService:
             bcc=request.bcc,
             attachments=attachments,
             created_at=draft.created_at,
+            read_receipt_requested=bool(request.read_receipt_requested),
         )
 
     async def upload_draft_attachment(
@@ -5009,6 +5126,7 @@ class InteractionService:
                 distribution_list_ids=distribution_list_ids or [],
                 body_html=body_html,
                 idempotency_key=idempotency_key,
+                read_receipt_requested=bool(payload.get("read_receipt_requested", False)),
             ),
             current_user=current_user,
             existing_attachment_source_interaction_id=draft_interaction_id,
@@ -5151,6 +5269,7 @@ class InteractionService:
             body_html=payload.get("body_html"),
             attachments=attachments,
             created_at=draft.created_at,
+            read_receipt_requested=bool(payload.get("read_receipt_requested", False)),
         )
 
     @staticmethod
@@ -5165,6 +5284,9 @@ class InteractionService:
             "subject": request.subject,
             "message": request.message,
             "body_html": request.body_html,
+            # Stored only when ticked, so an unticked draft's payload is
+            # byte-identical to every draft before read receipts existed.
+            **({"read_receipt_requested": True} if request.read_receipt_requested else {}),
             "dispatch_status": "DRAFT",
         }
 
@@ -5351,6 +5473,7 @@ class InteractionService:
                 subject=payload.get("subject") or "(no subject)",
                 message=payload.get("message") or "",
                 body_html=payload.get("body_html"),
+                read_receipt_requested=bool(payload.get("read_receipt_requested", False)),
                 idempotency_key=idempotency_key,
             )
         except PydanticValidationError as exc:
@@ -5407,6 +5530,9 @@ class InteractionService:
             "bcc": list(request.bcc),
             "message": request.message,
             "body_html": request.body_html,
+            # Stored only when ticked, so an unticked draft's payload is
+            # byte-identical to every draft before read receipts existed.
+            **({"read_receipt_requested": True} if request.read_receipt_requested else {}),
             "dispatch_status": "DRAFT",
         }
 
@@ -5423,6 +5549,7 @@ class InteractionService:
             message=payload.get("message") or "",
             body_html=payload.get("body_html"),
             created_at=draft.created_at,
+            read_receipt_requested=bool(payload.get("read_receipt_requested", False)),
         )
 
     async def _ensure_can_draft_ticket_reply(self, ticket, current_user: User) -> None:
@@ -5558,6 +5685,7 @@ class InteractionService:
             bcc=payload.get("bcc") or [],
             attachment_source_interaction_id=attachment_source_interaction_id,
             idempotency_key=idempotency_key,
+            read_receipt_requested=bool(payload.get("read_receipt_requested", False)),
         )
 
         response = await self.add_reply(ticket_id, request, current_user)
@@ -5784,9 +5912,18 @@ class InteractionService:
             )
             attachments_by_interaction = dict(zip(interaction_ids_with_files, metadata_lists))
 
+        # Only messages whose stored envelope requested a receipt are
+        # looked up, so a thread with none costs no extra query.
+        receipt_statuses = await load_receipt_statuses(
+            self.interaction_repository.db,
+            [item.interaction_id for item in ordered if receipt_was_requested(item)],
+        )
+
         def _with_attachments(item):
             return _to_response(
-                item, attachments_by_interaction.get(item.interaction_id)
+                item,
+                attachments_by_interaction.get(item.interaction_id),
+                read_receipts=receipt_statuses.get(item.interaction_id),
             )
 
         return ThreadResponse(

@@ -70,6 +70,20 @@ class ComposeEmailRequest(BaseModel):
     # this field existed.
     idempotency_key: str | None = Field(default=None, max_length=255)
 
+    # Outlook-style read receipt requested for this send (see
+    # OutboundEnvelope.read_receipt_requested). Default False — omitting
+    # it sends exactly like every message before this field existed.
+    # Ignored (treated as False) unless the global Read Receipts setting
+    # (Settings > Email & Communication) is on.
+    read_receipt_requested: bool = False
+
+    # Outlook-style read receipt requested for this send (see
+    # OutboundEnvelope.read_receipt_requested). Default False — omitting
+    # it sends exactly like every message before this field existed.
+    # Ignored (treated as False) unless the global Read Receipts setting
+    # (Settings > Email & Communication) is on.
+    read_receipt_requested: bool = False
+
     @model_validator(mode="after")
     def _require_a_recipient_source(self) -> "ComposeEmailRequest":
         if not self.to_email and not self.to_emails and not self.distribution_list_ids:
@@ -109,6 +123,10 @@ class ComposeDraftSaveRequest(BaseModel):
     subject: str = ""
     message: str = ""
     body_html: str | None = None
+    # Whether "Request read receipt" was ticked when this draft was
+    # saved — persisted with the draft so it survives close/reopen and
+    # the later draft-send (whose endpoints take no per-send options).
+    read_receipt_requested: bool = False
 
 
 class ComposeDraftResponse(BaseModel):
@@ -126,6 +144,7 @@ class ComposeDraftResponse(BaseModel):
     body_html: str | None = None
     attachments: list[AttachmentMetadata] = Field(default_factory=list)
     created_at: datetime
+    read_receipt_requested: bool = False
 
 
 class ComposeEmailResponse(BaseModel):
