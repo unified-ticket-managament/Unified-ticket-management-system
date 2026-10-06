@@ -153,6 +153,7 @@ def build_reply_envelope(
     body_html: str | None = None,
     default_to_email: str | None = None,
     read_receipt_requested: bool = False,
+    subject: str | None = None,
 ) -> OutboundEnvelope | None:
     """
     Builds the outbound envelope for a reply: From is always the
@@ -217,6 +218,11 @@ def build_reply_envelope(
     `inbound_payload.from_email` — the correct default only for an
     INBOUND root, which every caller happened to be until Compose
     roots could also be replied to.
+
+    `subject`, when the agent edited it in the composer, is the final
+    word on the outgoing subject. None, blank, or exactly the default
+    "Re: <original>" all leave the subject untouched (and
+    `subject_overridden` False, so Graph keeps deriving its own).
     """
 
     if isinstance(to_email_override, str):
@@ -239,13 +245,18 @@ def build_reply_envelope(
     if inbound_message_id:
         references.append(inbound_message_id)
 
+    default_subject = _reply_subject(inbound_payload.subject)
+    edited_subject = (subject or "").strip()
+    subject_overridden = bool(edited_subject) and edited_subject != default_subject.strip()
+
     envelope = OutboundEnvelope(
         from_email=from_email,
         from_name=agent_name,
         to_email=recipients[0],
         cc=_merge_cc(account_manager_email, cc),
         bcc=list(bcc or []),
-        subject=_reply_subject(inbound_payload.subject),
+        subject=edited_subject if subject_overridden else default_subject,
+        subject_overridden=subject_overridden,
         message_id=_new_message_id(from_email),
         in_reply_to=inbound_message_id,
         references=references,

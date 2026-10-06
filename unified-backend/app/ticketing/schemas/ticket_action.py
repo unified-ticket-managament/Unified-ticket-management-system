@@ -74,6 +74,11 @@ class ReplyCreate(BaseModel):
     # known — see build_reply_envelope's reply_to_provider_message_id.
     reply_all: bool = False
 
+    # The Subject currently in the composer. None/blank/the default
+    # "Re: <original>" send exactly as before; anything else replaces the
+    # outgoing subject — see build_reply_envelope.
+    subject: str | None = Field(default=None, max_length=500)
+
     # Optional sanitized-on-the-backend HTML counterpart to `message`
     # (Outlook-style clipboard paste — pasted rich text/tables/inline
     # images). `message` is still always required as the real
@@ -148,6 +153,9 @@ class InteractionReplyRequest(BaseModel):
 
     # See ReplyCreate.reply_all above — same meaning, same reason.
     reply_all: bool = False
+
+    # See ReplyCreate.subject above — same meaning, same reason.
+    subject: str | None = Field(default=None, max_length=500)
 
     # See ReplyCreate.body_html above — same meaning, same reason.
     body_html: str | None = None

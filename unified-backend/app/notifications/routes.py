@@ -17,6 +17,7 @@ from app.notifications.schemas import (
     NotificationResponse,
 )
 from app.notifications.sse_manager import get_notification_stream_manager
+from app.ticketing.services.access_control import GLOBAL_INBOX_ROLE_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,13 @@ async def stream_notifications(
 
     manager = get_notification_stream_manager()
     user_id_str = str(current_user.user_id)
-    queue = await manager.subscribe(user_id_str)
+    # Site Lead / Super Admin can see every inbound mail, so their
+    # connections receive every mail event; everyone else only the events
+    # whose audience names them (see ticketing/services/mail_events.py).
+    queue = await manager.subscribe(
+        user_id_str,
+        receives_all_mail=current_user.role.name in GLOBAL_INBOX_ROLE_NAMES,
+    )
 
     async def event_generator():
         try:
@@ -131,7 +138,13 @@ async def stream_notifications(
                     yield ": heartbeat\n\n"
                     continue
 
-                yield f"event: notification\ndata: {json.dumps(payload)}\n\n"
+                # Notifications keep their original event name and
+                # body; a mail event (see sse_manager.publish_mail_event)
+                # names itself via `_sse_event` and is sent WITHOUT that
+                # internal marker.
+                event_name = payload.get("_sse_event", "notification")
+                body = {k: v for k, v in payload.items() if k != "_sse_event"}
+                yield f"event: {event_name}\ndata: {json.dumps(body)}\n\n"
         except asyncio.CancelledError:
             # The client disconnected (tab closed, navigated away,
             # network drop) — not an error, just the normal way this

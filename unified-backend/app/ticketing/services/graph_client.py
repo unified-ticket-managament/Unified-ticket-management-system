@@ -263,6 +263,10 @@ def _build_reply_action_body(envelope: OutboundEnvelope) -> dict:
     message: dict = {
         "toRecipients": _build_recipients(envelope.to_emails or [envelope.to_email]),
     }
+    if envelope.subject_overridden:
+        # Graph derives its own "RE: ..." subject for reply/replyAll and
+        # only changes it if told to — set only for an agent-edited one.
+        message["subject"] = envelope.subject
     if envelope.cc:
         message["ccRecipients"] = _build_recipients(envelope.cc)
     if envelope.bcc:
@@ -709,6 +713,8 @@ class GraphMailProviderClient(MailProviderClient):
             "ccRecipients": _build_recipients(envelope.cc),
             "bccRecipients": _build_recipients(envelope.bcc),
         }
+        if envelope.subject_overridden:
+            patch_body["subject"] = envelope.subject
         if envelope.read_receipt_requested:
             # Verified live: Graph honours this on the reply draft's
             # PATCH (the createReply body itself is left untouched).

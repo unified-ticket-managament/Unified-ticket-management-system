@@ -32,6 +32,13 @@ logger = logging.getLogger(__name__)
 # hitting this bound means the connection is already dead in practice.
 _QUEUE_MAX_SIZE = 100
 
+# Mail events are only invalidation SIGNALS (the browser refetches the
+# real data itself), so they are the first thing shed under pressure:
+# once a connection's queue is this full they are skipped, which keeps a
+# burst of incoming mail (a poll can ingest dozens at once) from ever
+# crowding out a real notification on the same connection.
+_MAIL_EVENT_MAX_QUEUE_FILL = _QUEUE_MAX_SIZE // 2
+
 
 class NotificationStreamManager:
     """Thread-unsafe by design — every caller runs on the single asyncio
@@ -41,12 +48,20 @@ class NotificationStreamManager:
 
     def __init__(self):
         self._queues: dict[str, set[asyncio.Queue]] = defaultdict(set)
+        # Connections whose user may see EVERY inbound mail (Site Lead /
+        # Super Admin) — they receive mail events without being named in
+        # an event's audience, so ingestion never has to look them up.
+        self._all_mail_queues: set[asyncio.Queue] = set()
         self._lock = asyncio.Lock()
 
-    async def subscribe(self, user_id: str) -> asyncio.Queue:
+    async def subscribe(
+        self, user_id: str, *, receives_all_mail: bool = False
+    ) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAX_SIZE)
         async with self._lock:
             self._queues[user_id].add(queue)
+            if receives_all_mail:
+                self._all_mail_queues.add(queue)
             count = len(self._queues[user_id])
         logger.info("SSE_SUBSCRIBE user_id=%s connections=%d", user_id, count)
         return queue
@@ -57,6 +72,7 @@ class NotificationStreamManager:
             if queues is None:
                 return
             queues.discard(queue)
+            self._all_mail_queues.discard(queue)
             if not queues:
                 self._queues.pop(user_id, None)
         logger.info("SSE_UNSUBSCRIBE user_id=%s", user_id)
@@ -82,6 +98,38 @@ class NotificationStreamManager:
                     "SSE_QUEUE_FULL user_id=%s — dropping event for a stalled connection",
                     user_id,
                 )
+
+
+    def publish_mail_event(
+        self, audience_user_ids: set[str], payload: dict[str, Any]
+    ) -> int:
+        """
+        Delivers one lightweight mail event (an invalidation signal — ids
+        and a timestamp only, never message content) to every open
+        connection whose user is in `audience_user_ids`, plus every
+        "receives all mail" connection. Synchronous (put_nowait only), so
+        it is safe to call from a SQLAlchemy after_commit hook. Returns
+        how many connections it was queued for.
+
+        Mail events share a connection's queue with notifications but are
+        shed first (see _MAIL_EVENT_MAX_QUEUE_FILL).
+        """
+
+        event = {**payload, "_sse_event": "mail"}
+        delivered = 0
+        for user_id, queues in list(self._queues.items()):
+            for queue in list(queues):
+                if user_id not in audience_user_ids and queue not in self._all_mail_queues:
+                    continue
+                if queue.qsize() >= _MAIL_EVENT_MAX_QUEUE_FILL:
+                    logger.debug("SSE_MAIL_EVENT_SHED user_id=%s", user_id)
+                    continue
+                try:
+                    queue.put_nowait(event)
+                    delivered += 1
+                except asyncio.QueueFull:
+                    logger.debug("SSE_MAIL_EVENT_SHED user_id=%s", user_id)
+        return delivered
 
 
 _manager: NotificationStreamManager | None = None

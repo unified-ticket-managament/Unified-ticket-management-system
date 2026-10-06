@@ -133,6 +133,14 @@ class OutboundEnvelope(BaseModel):
     # plain sendMail) when reply_to_provider_message_id is None.
     reply_all: bool = False
 
+    # True only when the agent edited a Reply/Reply All subject away from
+    # the default "Re: <original>". Graph's reply/replyAll/createReply
+    # actions derive their own subject and ignore envelope.subject, so
+    # graph_client.py only forces `subject` onto the message when this is
+    # set — an untouched reply (and every envelope stored before this
+    # field existed) keeps Graph's native behavior exactly.
+    subject_overridden: bool = False
+
     # Outlook-style read receipt (RFC 8098 MDN) requested for this
     # send. Defaults False — every send before this field existed, and
     # every send that doesn't tick "Request read receipt", is exactly

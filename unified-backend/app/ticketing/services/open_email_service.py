@@ -336,6 +336,7 @@ class OpenEmailService:
             draft_body_html=draft["body_html"],
             draft_cc=draft["cc"],
             draft_bcc=draft["bcc"],
+            draft_subject=draft["subject"],
             draft_read_receipt_requested=draft["read_receipt_requested"],
             draft_attachments=draft["attachments"],
             attachments=attachments,
@@ -417,6 +418,7 @@ class OpenEmailService:
             "body_html": None,
             "cc": [],
             "bcc": [],
+            "subject": None,
             "attachments": [],
             "read_receipt_requested": False,
         }
@@ -435,6 +437,7 @@ class OpenEmailService:
             "body_html": draft.payload.get("body_html"),
             "cc": draft.payload.get("cc") or [],
             "bcc": draft.payload.get("bcc") or [],
+            "subject": draft.payload.get("subject"),
             "attachments": await self._fetch_attachments(draft.interaction_id),
             "read_receipt_requested": bool(
                 draft.payload.get("read_receipt_requested", False)

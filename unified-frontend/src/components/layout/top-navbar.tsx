@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { emitMailEventFromSse, emitMailResync } from "@/lib/mail-events";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
@@ -159,6 +160,7 @@ export function TopNavbar() {
     let source: EventSource | null = null;
     let reconnectTimer: number | null = null;
     let attempt = 0;
+    const hasConnectedBeforeRef = { current: false };
 
     function scheduleReconnect() {
       if (cancelled) return;
@@ -253,9 +255,18 @@ export function TopNavbar() {
 
       es.onopen = () => {
         attempt = 0;
+        // A RE-connect (not the first open): mail that arrived while the
+        // stream was down produced no event, so tell the Mail view to
+        // resync once.
+        if (hasConnectedBeforeRef.current) emitMailResync();
+        hasConnectedBeforeRef.current = true;
       };
 
       es.addEventListener("notification", handleNotificationEvent as EventListener);
+      // Live "new mail" signal — re-broadcast to the Mail workspace over
+      // the SAME connection (see lib/mail-events.ts); ids only, no content.
+      es.addEventListener("mail", ((event: MessageEvent) =>
+        emitMailEventFromSse(event.data)) as EventListener);
 
       es.onerror = () => {
         es.close();

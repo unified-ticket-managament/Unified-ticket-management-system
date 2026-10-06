@@ -1486,8 +1486,9 @@ class InteractionRepository:
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
         body_html: str | None = None,
+        subject: str | None = None,
     ) -> Interaction:
-        """Overwrites a draft's saved text (and Cc/Bcc/body_html) in place — upsert's "update" half."""
+        """Overwrites a draft's saved text (and Cc/Bcc/body_html/subject) in place — upsert's "update" half."""
 
         interaction.payload = {
             **interaction.payload,
@@ -1500,6 +1501,8 @@ class InteractionRepository:
             # overwritten wholesale on every save (this is the same
             # upsert-the-whole-draft semantics, not a partial patch).
             "body_html": body_html,
+            # Same wholesale-overwrite semantics as body_html above.
+            "subject": subject,
         }
 
         await self.db.flush()

@@ -537,7 +537,8 @@ interface MessageDetailsViewProps {
     cc: string[],
     bcc: string[],
     bodyHtml?: string,
-    readReceiptRequested?: boolean
+    readReceiptRequested?: boolean,
+    subject?: string
   ) => Promise<DraftSaveResponse | null>;
   onSendDraft: (
     interactionId: string,
@@ -887,6 +888,7 @@ export function MessageDetailsView({
     to: string[];
     distributionListIds: string[];
     readReceiptRequested?: boolean;
+    subject: string;
   }) {
     if (isTicketed && email.ticket_id) {
       // Files are uploaded *before* the reply is sent (not after) so
@@ -919,6 +921,7 @@ export function MessageDetailsView({
         distribution_list_ids: payload.distributionListIds,
         attachment_source_interaction_id: attachmentSourceInteractionId,
         reply_all: replyMode === "replyAll",
+        subject: payload.subject,
         inline_image_interaction_ids: liveInlineImageInteractionIds,
         idempotency_key: idempotencyKeyRef.current,
         // Only when ticked, so an ordinary reply's request is unchanged.
@@ -974,6 +977,7 @@ export function MessageDetailsView({
       to_emails: payload.to,
       distribution_list_ids: payload.distributionListIds,
       reply_all: replyMode === "replyAll",
+      subject: payload.subject,
       idempotency_key: idempotencyKeyRef.current,
       ...(payload.readReceiptRequested ? { read_receipt_requested: true } : {}),
     });
@@ -1012,7 +1016,8 @@ export function MessageDetailsView({
     cc: string[],
     bcc: string[],
     bodyHtml?: string,
-    readReceiptRequested?: boolean
+    readReceiptRequested?: boolean,
+    subject?: string
   ) {
     if (isTicketed && email.ticket_id) {
       return saveTicketReplyDraft(email.ticket_id, {
@@ -1020,10 +1025,15 @@ export function MessageDetailsView({
         cc,
         bcc,
         body_html: bodyHtml,
+        subject,
         ...(readReceiptRequested ? { read_receipt_requested: true } : {}),
       });
     }
-    return onSaveDraft(email.interaction_id, message, cc, bcc, bodyHtml, readReceiptRequested);
+    // `subject` is appended only when the composer supplied one, so the
+    // call keeps its historical shape otherwise.
+    return subject === undefined
+      ? onSaveDraft(email.interaction_id, message, cc, bcc, bodyHtml, readReceiptRequested)
+      : onSaveDraft(email.interaction_id, message, cc, bcc, bodyHtml, readReceiptRequested, subject);
   }
 
   async function handleUploadInlineImage(file: File) {
@@ -1460,6 +1470,7 @@ export function MessageDetailsView({
           toEmail={ticketReplyDraft?.to_email ?? email.from_email}
           contacts={contacts}
           subject={email.subject}
+          initialSubject={ticketReplyDraft ? ticketReplyDraft.subject : hasDraft ? email.draft_subject : null}
           initialCc={
             ticketReplyDraft
               ? ticketReplyDraft.cc

@@ -32,6 +32,8 @@ class TicketReplyDraftSaveRequest(BaseModel):
     bcc: list[EmailStr] = Field(default_factory=list)
     message: str = ""
     body_html: str | None = None
+    # The Reply/Reply All Subject as currently edited — see ReplyCreate.subject.
+    subject: str | None = Field(default=None, max_length=500)
     # Whether "Request read receipt" was ticked when this draft was
     # saved — persisted with the draft so it survives close/reopen and
     # the later draft-send (whose endpoints take no per-send options).
@@ -49,6 +51,7 @@ class TicketReplyDraftResponse(BaseModel):
     body_html: str | None = None
     created_at: datetime
     read_receipt_requested: bool = False
+    subject: str | None = None
 
 
 class TicketNoteDraftSaveRequest(BaseModel):

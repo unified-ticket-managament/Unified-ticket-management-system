@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLiveMailRefresh } from "@tw/hooks/useLiveMailRefresh";
 import axios from "axios";
 import { useDebouncedValue } from "@tw/hooks/useDebouncedValue";
 import {
@@ -1169,6 +1170,22 @@ export function useMailInbox() {
     [clientIdFilter, activeViewRaw, fetchKey]
   );
 
+  // Live "new mail" update: when the backend publishes a mail event (after
+  // the message is committed), silently refetch the ACTIVE view's lists and
+  // the counts — the same targeted path used after the user's own actions —
+  // with the current filters/search intact. No spinner, no toast, no change
+  // to the open thread/composer (selectedEmail is untouched). The server
+  // applies the user's visibility and folder rules, so a message that
+  // doesn't belong in the current view simply doesn't appear in it.
+  // useLiveMailRefresh coalesces bursts, defers while the tab is hidden and
+  // swallows failures; the Refresh button remains the manual fallback.
+  const refreshOnNewMail = useCallback(async () => {
+    await refreshAfterMutation();
+    setFolderCounts(await getFolderCounts(clientIdFilter, categoryFilterFromClients));
+  }, [refreshAfterMutation, clientIdFilter, categoryFilterFromClients]);
+
+  useLiveMailRefresh(refreshOnNewMail);
+
   useEffect(() => {
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1355,7 +1372,8 @@ export function useMailInbox() {
     cc: string[] = [],
     bcc: string[] = [],
     bodyHtml?: string,
-    readReceiptRequested?: boolean
+    readReceiptRequested?: boolean,
+    subject?: string
   ) {
     const result = await runSaveDraft(
       interactionId,
@@ -1363,7 +1381,8 @@ export function useMailInbox() {
       cc,
       bcc,
       bodyHtml,
-      readReceiptRequested
+      readReceiptRequested,
+      subject
     );
     if (result && selectedEmail?.interaction_id === interactionId) {
       setSelectedEmail({
@@ -1371,6 +1390,7 @@ export function useMailInbox() {
         draft_message: result.message,
         draft_cc: result.cc,
         draft_bcc: result.bcc,
+        draft_subject: result.subject ?? null,
         draft_read_receipt_requested: Boolean(result.read_receipt_requested),
         draft_attachments: result.attachments,
       });

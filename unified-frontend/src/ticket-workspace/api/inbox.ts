@@ -134,7 +134,10 @@ export async function saveDraft(
   // Persisted with the draft so it survives reopen and the later
   // draft-send (whose endpoint takes no per-send options). Omitted from
   // the body when off, so an unticked draft's request is unchanged.
-  readReceiptRequested?: boolean
+  readReceiptRequested?: boolean,
+  // The Reply/Reply All Subject as currently edited — saved with the
+  // draft so it survives reopen and is what the later draft-send uses.
+  subject?: string
 ): Promise<DraftSaveResponse> {
   const { data } = await apiClient.put<DraftSaveResponse>(
     `/inbox/${interactionId}/draft`,
@@ -143,6 +146,7 @@ export async function saveDraft(
       cc,
       bcc,
       body_html: bodyHtml ?? undefined,
+      subject: subject ?? undefined,
       ...(readReceiptRequested ? { read_receipt_requested: true } : {}),
     }
   );

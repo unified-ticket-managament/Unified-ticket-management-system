@@ -2062,6 +2062,7 @@ class InteractionService:
                     to_email_override=override_to_emails,
                     reply_to_provider_message_id=inbound_payload.provider_message_id,
                     reply_all=request.reply_all,
+                    subject=request.subject,
                     body_html=request.body_html,
                     default_to_email=default_to_email,
                     read_receipt_requested=await _effective_read_receipt_requested(
@@ -2336,6 +2337,7 @@ class InteractionService:
                 to_email_override=override_to_emails,
                 reply_to_provider_message_id=inbound_payload.provider_message_id,
                 reply_all=request.reply_all,
+                subject=request.subject,
                 body_html=request.body_html,
                 default_to_email=default_to_email,
                 read_receipt_requested=await _effective_read_receipt_requested(
@@ -4849,6 +4851,7 @@ class InteractionService:
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
         body_html: str | None = None,
+        subject: str | None = None,
     ) -> Interaction:
         """
         Fetches current_user's existing draft on this thread, or
@@ -4881,6 +4884,7 @@ class InteractionService:
                     "cc": cc or [],
                     "bcc": bcc or [],
                     "body_html": body_html,
+                    "subject": subject,
                     "dispatch_status": "DRAFT",
                 }
                 return await self.interaction_repository.create(
@@ -4978,6 +4982,7 @@ class InteractionService:
                 cc=request.cc,
                 bcc=request.bcc,
                 body_html=request.body_html,
+                subject=request.subject,
             )
         else:
             draft = await self._get_or_create_draft(
@@ -4987,6 +4992,7 @@ class InteractionService:
                 cc=request.cc,
                 bcc=request.bcc,
                 body_html=request.body_html,
+                subject=request.subject,
             )
 
         await self._persist_draft_receipt_flag(draft, request.read_receipt_requested)
@@ -5003,6 +5009,7 @@ class InteractionService:
             attachments=attachments,
             created_at=draft.created_at,
             read_receipt_requested=bool(request.read_receipt_requested),
+            subject=request.subject,
         )
 
     async def upload_draft_attachment(
@@ -5216,6 +5223,7 @@ class InteractionService:
                 to_emails=to_emails,
                 distribution_list_ids=distribution_list_ids or [],
                 body_html=body_html,
+                subject=payload.get("subject"),
                 idempotency_key=idempotency_key,
                 read_receipt_requested=bool(payload.get("read_receipt_requested", False)),
             ),
@@ -5621,6 +5629,7 @@ class InteractionService:
             "bcc": list(request.bcc),
             "message": request.message,
             "body_html": request.body_html,
+            "subject": request.subject,
             # Stored only when ticked, so an unticked draft's payload is
             # byte-identical to every draft before read receipts existed.
             **({"read_receipt_requested": True} if request.read_receipt_requested else {}),
@@ -5641,6 +5650,7 @@ class InteractionService:
             body_html=payload.get("body_html"),
             created_at=draft.created_at,
             read_receipt_requested=bool(payload.get("read_receipt_requested", False)),
+            subject=payload.get("subject"),
         )
 
     async def _ensure_can_draft_ticket_reply(self, ticket, current_user: User) -> None:
@@ -5770,6 +5780,7 @@ class InteractionService:
         request = ReplyCreate(
             message=payload.get("message") or "",
             body_html=payload.get("body_html"),
+            subject=payload.get("subject"),
             to_email=payload.get("to_email"),
             to_emails=payload.get("to_emails") or None,
             cc=payload.get("cc") or [],

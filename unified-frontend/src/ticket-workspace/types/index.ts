@@ -376,6 +376,8 @@ export interface OpenEmailResponse {
   draft_body_html?: string | null;
   draft_cc: string[];
   draft_bcc: string[];
+  // The Subject saved with the reply draft, when the agent edited it.
+  draft_subject?: string | null;
   // Whether "Request read receipt" was ticked on the saved reply draft.
   draft_read_receipt_requested?: boolean;
   // Per-recipient read-receipt state of THIS root message (set only
@@ -453,6 +455,7 @@ export interface DraftSaveResponse {
   attachments: AttachmentMeta[];
   created_at: string;
   read_receipt_requested?: boolean;
+  subject?: string | null;
 }
 
 export interface DraftDeleteResponse {
@@ -511,6 +514,8 @@ export interface TicketReplyDraftSaveRequest {
   bcc?: string[];
   message?: string;
   body_html?: string | null;
+  // The Reply/Reply All Subject as currently edited.
+  subject?: string | null;
   // Whether "Request read receipt" was ticked (see the backend's
   // read_receipt_requested). Optional/undefined means off.
   read_receipt_requested?: boolean;
@@ -527,6 +532,7 @@ export interface TicketReplyDraftResponse {
   body_html: string | null;
   created_at: string;
   read_receipt_requested?: boolean;
+  subject?: string | null;
 }
 
 export interface TicketNoteDraftSaveRequest {
@@ -570,6 +576,9 @@ export interface InteractionReplyRequest {
   // plain sendMail-based send when the backend has no Graph id to
   // reply against.
   reply_all?: boolean;
+  // The Subject currently in the composer. Omit/blank/the default
+  // "Re: <original>" send as before; anything else replaces the subject.
+  subject?: string | null;
   // Optional sanitized-on-the-backend HTML counterpart to `message`
   // (Outlook-style clipboard paste — pasted rich text/tables/inline
   // images). Omit to send exactly like before this field existed.
@@ -963,6 +972,8 @@ export interface ReplyRequest {
   // See InteractionReplyRequest.reply_all above — same meaning, same
   // reason.
   reply_all?: boolean;
+  // See InteractionReplyRequest.subject above — same meaning.
+  subject?: string | null;
   // See InteractionReplyRequest.body_html above — same meaning, same
   // reason.
   body_html?: string | null;

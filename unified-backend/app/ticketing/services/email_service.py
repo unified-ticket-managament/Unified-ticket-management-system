@@ -44,6 +44,7 @@ from app.ticketing.services.rule_conditions import build_rule_email_context
 from app.ticketing.services.rule_engine_service import RuleEngineService
 from app.ticketing.services.sla_service import SLAService
 from app.ticketing.services.sla_escalation_rules import RecipientContext, resolve_team_lead
+from app.ticketing.services.mail_events import build_mail_event, queue_mail_event
 from app.ticketing.services.sla_breach_notifier import resolve_global_inbox_user_ids
 from app.notifications.service import NotificationService, NotificationType
 from app.ticketing.services.ticket_assignment_service import build_ticket_assignment_service
@@ -572,6 +573,12 @@ class EmailService:
         # agent), not the AM.
         # ---------------------------------------
 
+        # Who may be told, live, that this mail arrived (see
+        # mail_events.py): the same people the notifications below go to,
+        # plus the client's Account Manager. Site Lead / Super Admin
+        # connections receive every mail event without being listed.
+        mail_event_audience: set = set()
+
         if self.notification_service is not None:
             if ticket_id is None:
                 if client is not None:
@@ -599,6 +606,8 @@ class EmailService:
                             role_name
                         )
                         recipient_ids.update(u.user_id for u in global_inbox_users)
+
+                mail_event_audience |= set(recipient_ids)
 
                 await self.notification_service.notify(
                     recipient_ids,
@@ -641,6 +650,8 @@ class EmailService:
                     # for who the ticket belongs to.
                     reply_source_label = client.name if client is not None else "the client"
 
+                    mail_event_audience |= set(reply_recipient_ids)
+
                     await self.notification_service.notify(
                         reply_recipient_ids,
                         NotificationType.CLIENT_REPLY,
@@ -650,6 +661,9 @@ class EmailService:
                         related_entity_type="ticket",
                         related_entity_id=ticket_id,
                     )
+
+        if client is not None and getattr(client, "account_manager_id", None):
+            mail_event_audience.add(client.account_manager_id)
 
         # ---------------------------------------
         # Attachments (optional)
@@ -752,6 +766,20 @@ class EmailService:
         # ---------------------------------------
         # Response
         # ---------------------------------------
+
+        # Live "new mail" signal for the Mail UI — queued now, PUBLISHED
+        # only when the caller's transaction commits (and dropped if it
+        # rolls back), so a browser is never told about mail the database
+        # doesn't have yet. Ids only, no message content. Never raises.
+        queue_mail_event(
+            self.interaction_repository.db,
+            build_mail_event(
+                interaction_id=created.interaction_id,
+                parent_interaction_id=parent_interaction_id,
+                ticket_id=ticket_id,
+            ),
+            mail_event_audience,
+        )
 
         return EmailResponse(
 

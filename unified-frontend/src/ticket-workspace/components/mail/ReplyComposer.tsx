@@ -51,6 +51,9 @@ interface ReplyComposerProps {
   // sender of this particular thread.
   contacts: ClientContact[];
   subject: string;
+  // The Subject saved with a resumed draft, when the agent had edited
+  // it. Absent/blank means "start from the default Re: <subject>".
+  initialSubject?: string | null;
   initialCc?: string[];
   initialBcc?: string[];
   initialMessage?: string;
@@ -91,6 +94,7 @@ interface ReplyComposerProps {
     to: string[];
     distributionListIds: string[];
     readReceiptRequested?: boolean;
+    subject: string;
   }) => void;
   // Pre-ticket path: every field is continuously auto-saved as a
   // real server-side Draft (interaction-scoped, so it works with no
@@ -103,7 +107,8 @@ interface ReplyComposerProps {
     cc: string[],
     bcc: string[],
     bodyHtml?: string,
-    readReceiptRequested?: boolean
+    readReceiptRequested?: boolean,
+    subject?: string
   ) => Promise<unknown>;
   // `toEmails` overrides the default recipient(s) for this send only —
   // deliberately not part of the auto-saved draft (see ReplyComposer's
@@ -141,6 +146,7 @@ export function ReplyComposer({
   toEmail,
   contacts,
   subject,
+  initialSubject,
   initialCc = [],
   initialBcc = [],
   initialMessage = "",
@@ -208,6 +214,13 @@ export function ReplyComposer({
   // Only ever effective while the backend has the feature switched on.
   const [readReceiptRequested, setReadReceiptRequested] = useState(initialReadReceiptRequested);
   const requestReceipt = readReceiptsEnabled && readReceiptRequested;
+  // Editable Subject. Starts from the saved draft's subject when there is
+  // one, otherwise the same "Re: <subject>" this composer always showed.
+  const resolveInitialSubject = () => {
+    const saved = initialSubject?.trim() ? initialSubject : null;
+    return saved ?? (/^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`);
+  };
+  const [subjectText, setSubjectText] = useState(resolveInitialSubject);
 
   const [draftStatus, setDraftStatus] = useState<DraftSaveStatus>("idle");
   const [isUploadingFile, setIsUploadingFile] = useState(false);
@@ -230,7 +243,7 @@ export function ReplyComposer({
 
   const isEmpty =
     bodyHtml === initialBodyHtmlRef.current || isRichTextEmpty(bodyHtml);
-  const displaySubject = /^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`;
+  const defaultSubject = /^re:/i.test(subject.trim()) ? subject : `Re: ${subject}`;
 
   // A non-empty Cc/Bcc entry must still be a real address — this had
   // no frontend validation at all before (an invalid entry only ever
@@ -272,6 +285,17 @@ export function ReplyComposer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [toEmail]);
 
+  // Same reasoning for the Subject: a different thread (the `subject`
+  // prop changing under a still-mounted composer) starts over from its
+  // own default, never carrying the previous thread's edited subject.
+  const lastThreadSubject = useRef(subject);
+  useEffect(() => {
+    if (lastThreadSubject.current === subject) return;
+    lastThreadSubject.current = subject;
+    setSubjectText(resolveInitialSubject());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subject]);
+
   async function persistDraft() {
     setDraftStatus("saving");
     const richBodyHtml = buildOutgoingBodyHtml(bodyHtml);
@@ -280,7 +304,8 @@ export function ReplyComposer({
       parseEmails(cc),
       parseEmails(bcc),
       richBodyHtml,
-      requestReceipt
+      requestReceipt,
+      subjectText
     );
     setDraftStatus(result ? "saved" : "idle");
     if (result) {
@@ -317,13 +342,14 @@ export function ReplyComposer({
         parseEmails(cc),
         parseEmails(bcc),
         buildOutgoingBodyHtml(bodyHtml),
-        requestReceipt
+        requestReceipt,
+        subjectText
       );
     };
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bodyHtml, cc, bcc, isTicketed, requestReceipt]);
+  }, [bodyHtml, cc, bcc, isTicketed, requestReceipt, subjectText]);
 
   useEffect(() => {
     return () => {
@@ -355,6 +381,7 @@ export function ReplyComposer({
         to: selectedTo.map((chip) => chip.email),
         distributionListIds,
         readReceiptRequested: requestReceipt,
+        subject: subjectText,
       });
       return;
     }
@@ -515,7 +542,14 @@ export function ReplyComposer({
         </div>
         <div className="flex items-center gap-2 text-xs">
           <span className="w-10 flex-none text-muted-foreground">Subject</span>
-          <span className="truncate text-foreground/80">{displaySubject}</span>
+          <Input
+            value={subjectText}
+            onChange={(e) => setSubjectText(e.target.value)}
+            placeholder={defaultSubject}
+            aria-label="Subject"
+            maxLength={500}
+            className="h-8 flex-1 text-xs"
+          />
         </div>
       </div>
 

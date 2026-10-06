@@ -139,6 +139,9 @@ class OpenEmailResponse(BaseModel):
 
     draft_bcc: list[str] = Field(default_factory=list)
 
+    # The Subject saved with the draft, when the agent edited it.
+    draft_subject: str | None = None
+
     # Whether "Request read receipt" was ticked on the saved draft.
     draft_read_receipt_requested: bool = False
 

@@ -255,6 +255,9 @@ class DraftSaveRequest(BaseModel):
     # (schemas/ticket_action.py) for the same additive contract —
     # None (the default) autosaves exactly like before this existed.
     body_html: str | None = None
+    # The Reply/Reply All Subject as currently edited, saved with the
+    # draft so it survives reopen and is what the later draft-send uses.
+    subject: str | None = Field(default=None, max_length=500)
     # Whether "Request read receipt" was ticked when this draft was
     # saved — persisted with the draft so it survives close/reopen and
     # the later draft-send (whose endpoints take no per-send options).
@@ -299,6 +302,7 @@ class DraftResponse(ORMBase):
     attachments: list[AttachmentMetadata] = Field(default_factory=list)
     created_at: datetime
     read_receipt_requested: bool = False
+    subject: str | None = None
 
 
 class DraftDeleteResponse(BaseModel):
