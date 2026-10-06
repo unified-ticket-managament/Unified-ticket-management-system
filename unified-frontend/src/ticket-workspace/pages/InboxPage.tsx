@@ -16,6 +16,7 @@ import { MailBulkProvider } from "@tw/components/mail/MailBulkContext";
 import { SystemMailDetailsView } from "@tw/components/mail/SystemMailDetailsView";
 import { SystemMailList } from "@tw/components/mail/SystemMailList";
 import { useIsDesktopViewport } from "@tw/hooks/useIsDesktopViewport";
+import { useMailFeatures } from "@tw/hooks/useMailFeatures";
 import { useMailInbox, type MailViewKey } from "@tw/hooks/useMailInbox";
 import { getComposeDraft } from "@tw/api/inbox";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
@@ -57,6 +58,8 @@ const VIEW_LABELS: Record<MailViewKey, string> = {
 // presentational consumer of it.
 export function InboxPage() {
   const mail = useMailInbox();
+  // Whether the backend has read receipts switched on (hidden when off).
+  const { read_receipts_enabled: readReceiptsEnabled } = useMailFeatures();
   // Unfiltered category list — deliberately NOT mail.categories, which
   // is scoped down to [] for Team Lead/Staff for the Mail list-filter
   // dropdown's own purposes (redundant there, since those roles are
@@ -200,6 +203,7 @@ export function InboxPage() {
         bodyHtml: draft.body_html ?? undefined,
         message: draft.message,
         draftInteractionId: draft.interaction_id,
+        readReceiptRequested: Boolean(draft.read_receipt_requested),
       });
       return true;
     }
@@ -343,6 +347,7 @@ export function InboxPage() {
     inlineImageInteractionIds?: string[];
     distributionListIds?: string[];
     idempotencyKey?: string;
+    readReceiptRequested?: boolean;
   }) {
     const result = await mail.composeEmail(payload);
     if (result) closeCompose();
@@ -756,6 +761,7 @@ export function InboxPage() {
             clientsError={mail.clientsError}
             initialValues={composeInitialValues}
             isSending={mail.isComposing || mail.isForwarding}
+            readReceiptsEnabled={readReceiptsEnabled}
             onSend={handleComposeSend}
             onForwardSend={handleForwardSend}
             onDiscard={closeCompose}

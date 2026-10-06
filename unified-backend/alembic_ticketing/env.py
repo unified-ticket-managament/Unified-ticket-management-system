@@ -66,6 +66,9 @@ OWNED_TABLES = {
     "escalation_handling_slas",
     "rules",
     "ticket_number_counters",
+    # Outlook-style per-recipient read-receipt state.
+    "email_read_receipts",
+    "app_settings",
 }
 
 

@@ -32,6 +32,10 @@ class TicketReplyDraftSaveRequest(BaseModel):
     bcc: list[EmailStr] = Field(default_factory=list)
     message: str = ""
     body_html: str | None = None
+    # Whether "Request read receipt" was ticked when this draft was
+    # saved — persisted with the draft so it survives close/reopen and
+    # the later draft-send (whose endpoints take no per-send options).
+    read_receipt_requested: bool = False
 
 
 class TicketReplyDraftResponse(BaseModel):
@@ -44,6 +48,7 @@ class TicketReplyDraftResponse(BaseModel):
     message: str = ""
     body_html: str | None = None
     created_at: datetime
+    read_receipt_requested: bool = False
 
 
 class TicketNoteDraftSaveRequest(BaseModel):

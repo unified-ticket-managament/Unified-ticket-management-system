@@ -1354,15 +1354,24 @@ export function useMailInbox() {
     message: string,
     cc: string[] = [],
     bcc: string[] = [],
-    bodyHtml?: string
+    bodyHtml?: string,
+    readReceiptRequested?: boolean
   ) {
-    const result = await runSaveDraft(interactionId, message, cc, bcc, bodyHtml);
+    const result = await runSaveDraft(
+      interactionId,
+      message,
+      cc,
+      bcc,
+      bodyHtml,
+      readReceiptRequested
+    );
     if (result && selectedEmail?.interaction_id === interactionId) {
       setSelectedEmail({
         ...selectedEmail,
         draft_message: result.message,
         draft_cc: result.cc,
         draft_bcc: result.bcc,
+        draft_read_receipt_requested: Boolean(result.read_receipt_requested),
         draft_attachments: result.attachments,
       });
     }

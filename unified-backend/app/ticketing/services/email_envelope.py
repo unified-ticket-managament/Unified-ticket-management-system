@@ -152,6 +152,7 @@ def build_reply_envelope(
     reply_all: bool = False,
     body_html: str | None = None,
     default_to_email: str | None = None,
+    read_receipt_requested: bool = False,
 ) -> OutboundEnvelope | None:
     """
     Builds the outbound envelope for a reply: From is always the
@@ -252,6 +253,7 @@ def build_reply_envelope(
         body_html=sanitize_outbound_html(body_html) if body_html else None,
         reply_to_provider_message_id=reply_to_provider_message_id,
         reply_all=reply_all,
+        read_receipt_requested=read_receipt_requested,
     )
     if len(recipients) > 1:
         envelope = envelope.model_copy(update={"to_emails": recipients})
@@ -268,6 +270,7 @@ def build_compose_envelope(
     agent_name: str | None = None,
     account_manager_email: str | None = None,
     body_html: str | None = None,
+    read_receipt_requested: bool = False,
 ) -> OutboundEnvelope:
     """
     Builds the outbound envelope for a brand-new Compose message —
@@ -296,4 +299,5 @@ def build_compose_envelope(
         references=[],
         body=body,
         body_html=sanitize_outbound_html(body_html) if body_html else None,
+        read_receipt_requested=read_receipt_requested,
     )

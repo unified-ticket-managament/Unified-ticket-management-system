@@ -27,7 +27,11 @@ import httpx
 from pydantic import ValidationError
 
 from app.core.config import Settings
-from app.ticketing.schemas.mail_integration import GraphAttachmentPayload, IncomingMailPayload
+from app.ticketing.schemas.mail_integration import (
+    ITEM_CLASS_PROPERTY_ID,
+    GraphAttachmentPayload,
+    IncomingMailPayload,
+)
 from app.ticketing.schemas.payloads import EnvelopeAttachment, OutboundEnvelope
 from app.ticketing.services.graph_auth import GraphAuthClient
 from app.ticketing.services.graph_retry import call_with_graph_retry
@@ -51,6 +55,16 @@ UPLOAD_SESSION_CHUNK_SIZE = 4 * 1024 * 1024
 MESSAGE_SELECT_FIELDS = (
     "id,internetMessageId,subject,from,toRecipients,ccRecipients,body,"
     "conversationId,receivedDateTime,internetMessageHeaders,hasAttachments"
+)
+
+# Asks Graph to also return the message's MAPI item class
+# (PidTagMessageClass), the language-independent signal that an inbound
+# message is a read receipt (Outlook: REPORT.IPM.Note.IPNRN) — see
+# mdn_detection.py. Appended (as a separate $expand, never inside
+# $select) at every inbound fetch site so a single definition covers
+# the webhook fetch and the poll list alike.
+MESSAGE_ITEM_CLASS_EXPAND = (
+    f"singleValueExtendedProperties($filter=id eq '{ITEM_CLASS_PROPERTY_ID}')"
 )
 
 # Bound on how many 50-message pages list_new_messages will follow via
@@ -133,6 +147,31 @@ def _build_graph_attachments(attachments: list) -> list[dict]:
     return result
 
 
+class _DraftRef(tuple):
+    """
+    What _create_new_draft/_create_reply_draft return: the historical
+    `(draft_id, conversation_id)` 2-tuple — so every existing unpacking
+    (and every test double returning a plain 2-tuple) keeps working
+    unchanged — additionally carrying Graph's real `internetMessageId`
+    as an attribute. It is read from the SAME create response, before
+    the message is sent (verified live: identical before and after
+    sending), so no Sent-Items/timestamp/conversation lookup is ever
+    needed to learn it.
+    """
+
+    internet_message_id: str | None
+
+    def __new__(
+        cls,
+        draft_id: str,
+        conversation_id: str | None,
+        internet_message_id: str | None = None,
+    ):
+        ref = super().__new__(cls, (draft_id, conversation_id))
+        ref.internet_message_id = internet_message_id
+        return ref
+
+
 def _build_send_mail_message(envelope: OutboundEnvelope) -> dict:
     """
     Builds the Graph sendMail `message` object from an envelope.
@@ -172,6 +211,11 @@ def _build_send_mail_message(envelope: OutboundEnvelope) -> dict:
         message["bccRecipients"] = _build_recipients(envelope.bcc)
     if envelope.attachments:
         message["attachments"] = _build_graph_attachments(envelope.attachments)
+    if envelope.read_receipt_requested:
+        # Graph's own flag — Graph itself emits the real
+        # Disposition-Notification-To header (verified live). Never set
+        # by hand via internetMessageHeaders, which Graph rejects.
+        message["isReadReceiptRequested"] = True
 
     return message
 
@@ -279,6 +323,16 @@ class GraphMailProviderClient(MailProviderClient):
             # shipped bug this fixes — see MailProviderSendResult's own
             # docstring for why sendMail's lack of an id must never be
             # worked around by substituting a locally-generated one).
+            return await self._send_via_draft(envelope, small_attachments, large_attachments)
+
+        if envelope.read_receipt_requested:
+            # A receipt-requested reply must never use the direct
+            # reply/replyAll action: it returns 202 with no body, so
+            # the real internetMessageId — the only reliable key for
+            # matching the returned receipt — could never be learned
+            # (and "newest Sent Item" lookups are unsafe: rapid sends
+            # share a second-resolution timestamp). createReply/
+            # createReplyAll returns it before sending.
             return await self._send_via_draft(envelope, small_attachments, large_attachments)
 
         if large_attachments:
@@ -390,9 +444,13 @@ class GraphMailProviderClient(MailProviderClient):
         large_attachments: list[EnvelopeAttachment],
     ) -> MailProviderSendResult:
         if envelope.reply_to_provider_message_id:
-            draft_id, conversation_id = await self._create_reply_draft(envelope)
+            draft_ref = await self._create_reply_draft(envelope)
         else:
-            draft_id, conversation_id = await self._create_new_draft(envelope)
+            draft_ref = await self._create_new_draft(envelope)
+        draft_id, conversation_id = draft_ref
+        # Only a _DraftRef carries it (a plain 2-tuple from a test
+        # double does not). Read from the create response, before send.
+        internet_message_id = getattr(draft_ref, "internet_message_id", None)
 
         try:
             for attachment in small_attachments:
@@ -443,6 +501,7 @@ class GraphMailProviderClient(MailProviderClient):
         return MailProviderSendResult(
             provider_message_id=provider_message_id,
             status="SENT",
+            internet_message_id=internet_message_id,
         )
 
     async def _resolve_sent_message_id(self, conversation_id: str | None) -> str | None:
@@ -533,7 +592,7 @@ class GraphMailProviderClient(MailProviderClient):
         )
         return None
 
-    async def _create_new_draft(self, envelope: OutboundEnvelope) -> tuple[str, str | None]:
+    async def _create_new_draft(self, envelope: OutboundEnvelope) -> _DraftRef:
         """
         Creates a plain (non-reply) draft message — same shape as
         _build_send_mail_message, minus attachments (added afterward,
@@ -574,9 +633,11 @@ class GraphMailProviderClient(MailProviderClient):
             raise GraphAPIError(response.status_code, response.text, operation="createDraft")
 
         body = response.json()
-        return body["id"], body.get("conversationId")
+        return _DraftRef(
+            body["id"], body.get("conversationId"), body.get("internetMessageId")
+        )
 
-    async def _create_reply_draft(self, envelope: OutboundEnvelope) -> tuple[str, str | None]:
+    async def _create_reply_draft(self, envelope: OutboundEnvelope) -> _DraftRef:
         """
         Creates a real reply/replyAll draft via Graph's createReply/
         createReplyAll action (as opposed to the direct reply/replyAll
@@ -639,6 +700,8 @@ class GraphMailProviderClient(MailProviderClient):
         created = response.json()
         draft_id = created["id"]
         conversation_id = created.get("conversationId")
+        # Real RFC Message-ID, known now — identical after sending.
+        internet_message_id = created.get("internetMessageId")
 
         patch_url = f"{self._api_base_url}/users/{self._mailbox_address}/messages/{draft_id}"
         patch_body = {
@@ -646,6 +709,10 @@ class GraphMailProviderClient(MailProviderClient):
             "ccRecipients": _build_recipients(envelope.cc),
             "bccRecipients": _build_recipients(envelope.bcc),
         }
+        if envelope.read_receipt_requested:
+            # Verified live: Graph honours this on the reply draft's
+            # PATCH (the createReply body itself is left untouched).
+            patch_body["isReadReceiptRequested"] = True
 
         async def _attempt_patch() -> httpx.Response:
             async with httpx.AsyncClient(timeout=30.0) as client:
@@ -674,7 +741,7 @@ class GraphMailProviderClient(MailProviderClient):
                 operation="draftRecipientPatch",
             )
 
-        return draft_id, conversation_id
+        return _DraftRef(draft_id, conversation_id, internet_message_id)
 
     async def _add_small_attachment(
         self, draft_id: str, attachment: EnvelopeAttachment
@@ -868,6 +935,7 @@ class GraphMailProviderClient(MailProviderClient):
         url = (
             f"{self._api_base_url}/users/{self._mailbox_address}/messages/{message_id}"
             f"?$select={MESSAGE_SELECT_FIELDS}"
+            f"&$expand={MESSAGE_ITEM_CLASS_EXPAND}"
         )
 
         async def _attempt() -> httpx.Response:
@@ -890,6 +958,44 @@ class GraphMailProviderClient(MailProviderClient):
             raise GraphAPIError(response.status_code, response.text)
 
         return IncomingMailPayload.model_validate(response.json())
+
+    async def fetch_message_mime(self, message_id: str) -> bytes | None:
+        """
+        Fetches one message's raw RFC 5322/MIME bytes (`GET
+        /messages/{id}/$value`). Only called for a message already
+        identified as a read-receipt candidate by its item class — the
+        Graph JSON `internetMessageHeaders` Content-Type is misleading
+        for these (observed live: `application/ms-tnef`, while the real
+        MIME is `multipart/report; report-type=disposition-notification`),
+        so the receipt fields are only reliably readable from the MIME.
+        Raises GraphAPIError on a non-200 so the caller's isolation
+        boundary can log it.
+        """
+
+        url = (
+            f"{self._api_base_url}/users/{self._mailbox_address}/messages/"
+            f"{message_id}/$value"
+        )
+
+        async def _attempt() -> httpx.Response:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                return await client.get(url, headers=await self._authorized_headers())
+
+        response = await call_with_graph_retry(
+            _attempt,
+            operation="fetchMessageMime",
+            force_refresh_token=self._force_refresh_token,
+        )
+
+        if response.status_code != 200:
+            logger.error(
+                "Graph message MIME fetch failed: status=%s message_id=%s",
+                response.status_code,
+                message_id,
+            )
+            raise GraphAPIError(response.status_code, response.text)
+
+        return response.content
 
     async def list_new_messages(self, since: datetime) -> list[IncomingMailPayload]:
         """
@@ -916,6 +1022,7 @@ class GraphMailProviderClient(MailProviderClient):
             f"?$filter=receivedDateTime gt {since_literal}"
             f"&$orderby=receivedDateTime asc"
             f"&$select={MESSAGE_SELECT_FIELDS}"
+            f"&$expand={MESSAGE_ITEM_CLASS_EXPAND}"
             f"&$top=50"
         )
 

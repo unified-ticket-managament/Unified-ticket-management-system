@@ -156,6 +156,15 @@ class EmailRequest(BaseModel):
     # creating path (see its own _receive_bounce).
     is_bounce: bool = False
 
+    # True only when mdn_detection.is_read_receipt_candidate classified
+    # this message (Graph item class REPORT.IPM.Note.IPN*) as an
+    # Outlook-style read receipt rather than real mail. Always False
+    # for the legacy N8N/dummy transport. EmailService.receive_email
+    # routes a True here to a consume-only path (see its own
+    # _receive_read_receipt) BEFORE the duplicate check, the bounce
+    # check and any Interaction creation.
+    is_read_receipt: bool = False
+
 
 class EmailResponse(BaseModel):
     """

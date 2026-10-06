@@ -11,6 +11,7 @@ import { DistributionListMultiSelect } from "@tw/components/common/DistributionL
 import { MultiRecipientCombobox, type RecipientChip } from "@tw/components/common/MultiRecipientCombobox";
 import type { RecipientOption } from "@tw/components/common/RecipientCombobox";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
+import { ReadReceiptCheckbox } from "@tw/components/mail/ReadReceiptCheckbox";
 import { SignatureSelector } from "@tw/components/mail/SignatureSelector";
 import { useEmailSignatures } from "@/hooks/use-email-signatures";
 import { initialSignatureBlockHtml, useComposerSignature } from "@tw/hooks/useComposerSignature";
@@ -68,6 +69,14 @@ interface ReplyComposerProps {
   // removed, must not be silently overwritten), only on a brand-new
   // composer.
   hasExistingDraft?: boolean;
+  // Whether the backend has read receipts switched on (see
+  // useMailFeatures). Off by default: the "Request read receipt"
+  // checkbox is hidden and no receipt is ever requested.
+  readReceiptsEnabled?: boolean;
+  // Whether "Request read receipt" was ticked on the draft being
+  // resumed (OpenEmailResponse.draft_read_receipt_requested /
+  // TicketReplyDraftResponse.read_receipt_requested).
+  initialReadReceiptRequested?: boolean;
   isSending: boolean;
   onCancel: () => void;
   // Ticketed-thread send — files are local (`File[]`) and only
@@ -81,6 +90,7 @@ interface ReplyComposerProps {
     files: File[];
     to: string[];
     distributionListIds: string[];
+    readReceiptRequested?: boolean;
   }) => void;
   // Pre-ticket path: every field is continuously auto-saved as a
   // real server-side Draft (interaction-scoped, so it works with no
@@ -88,7 +98,13 @@ interface ReplyComposerProps {
   // also what makes attachments actually work before a ticket exists.
   isTicketed: boolean;
   draftAttachments: AttachmentMeta[];
-  onSaveDraft: (message: string, cc: string[], bcc: string[], bodyHtml?: string) => Promise<unknown>;
+  onSaveDraft: (
+    message: string,
+    cc: string[],
+    bcc: string[],
+    bodyHtml?: string,
+    readReceiptRequested?: boolean
+  ) => Promise<unknown>;
   // `toEmails` overrides the default recipient(s) for this send only —
   // deliberately not part of the auto-saved draft (see ReplyComposer's
   // own "To" combobox, chosen at send time, and InteractionService.
@@ -130,6 +146,8 @@ export function ReplyComposer({
   initialMessage = "",
   initialBodyHtml,
   hasExistingDraft = false,
+  readReceiptsEnabled = false,
+  initialReadReceiptRequested = false,
   isSending,
   onCancel,
   onSend,
@@ -186,6 +204,10 @@ export function ReplyComposer({
   const [distributionListIds, setDistributionListIds] = useState<string[]>([]);
   const [files, setFiles] = useState<File[]>([]);
   const [showAttachments, setShowAttachments] = useState(false);
+  // "Request read receipt" — saved with the draft, sent with the reply.
+  // Only ever effective while the backend has the feature switched on.
+  const [readReceiptRequested, setReadReceiptRequested] = useState(initialReadReceiptRequested);
+  const requestReceipt = readReceiptsEnabled && readReceiptRequested;
 
   const [draftStatus, setDraftStatus] = useState<DraftSaveStatus>("idle");
   const [isUploadingFile, setIsUploadingFile] = useState(false);
@@ -257,7 +279,8 @@ export function ReplyComposer({
       htmlToPlainText(bodyHtml),
       parseEmails(cc),
       parseEmails(bcc),
-      richBodyHtml
+      richBodyHtml,
+      requestReceipt
     );
     setDraftStatus(result ? "saved" : "idle");
     if (result) {
@@ -293,13 +316,14 @@ export function ReplyComposer({
         htmlToPlainText(bodyHtml),
         parseEmails(cc),
         parseEmails(bcc),
-        buildOutgoingBodyHtml(bodyHtml)
+        buildOutgoingBodyHtml(bodyHtml),
+        requestReceipt
       );
     };
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bodyHtml, cc, bcc, isTicketed]);
+  }, [bodyHtml, cc, bcc, isTicketed, requestReceipt]);
 
   useEffect(() => {
     return () => {
@@ -330,6 +354,7 @@ export function ReplyComposer({
         files,
         to: selectedTo.map((chip) => chip.email),
         distributionListIds,
+        readReceiptRequested: requestReceipt,
       });
       return;
     }
@@ -512,6 +537,14 @@ export function ReplyComposer({
           onImageUpload={onUploadInlineImage}
           onPendingImageUploadsChange={setHasPendingImageUploads}
         />
+        {readReceiptsEnabled && (
+          <ReadReceiptCheckbox
+            className="mt-2"
+            checked={readReceiptRequested}
+            onCheckedChange={setReadReceiptRequested}
+            disabled={isSending || isSendingDraft}
+          />
+        )}
       </div>
 
       {isTicketed ? (

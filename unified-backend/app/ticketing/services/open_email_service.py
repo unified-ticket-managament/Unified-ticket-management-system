@@ -32,12 +32,16 @@ from app.ticketing.services.access_control import (
 )
 from app.ticketing.services.attachment_service import attachments_to_metadata
 from app.ticketing.services.delegated_access import resolve_delegated_thread_access
+from app.ticketing.services.read_receipt_service import (
+    load_receipt_statuses,
+    receipt_was_requested,
+)
 from app.ticketing.services.sla_service import SLAService
 from app.ticketing.storage.base import StorageService
 
 
 def _reply_to_response(
-    interaction, attachments: list | None = None
+    interaction, attachments: list | None = None, read_receipts: list | None = None
 ) -> InteractionResponse:
     """
     Builds an InteractionResponse for a thread reply without
@@ -68,6 +72,7 @@ def _reply_to_response(
         conversation_id=interaction.conversation_id,
         in_reply_to_message_id=interaction.in_reply_to_message_id,
         references=interaction.references or [],
+        read_receipts=read_receipts or [],
     )
 
 
@@ -285,6 +290,18 @@ class OpenEmailService:
             await self._recommend_ticket(interaction, replies)
         )
 
+        # Per-recipient read-receipt state, only for messages whose
+        # stored envelope actually requested one (so a thread with none
+        # costs no extra query). Never raises (see load_receipt_statuses).
+        receipt_statuses = await load_receipt_statuses(
+            self.interaction_repository.db,
+            [
+                item.interaction_id
+                for item in (interaction, *replies)
+                if receipt_was_requested(item)
+            ],
+        )
+
         return OpenEmailResponse(
             interaction_id=interaction.interaction_id,
             ticket_id=interaction.ticket_id,
@@ -319,14 +336,18 @@ class OpenEmailService:
             draft_body_html=draft["body_html"],
             draft_cc=draft["cc"],
             draft_bcc=draft["bcc"],
+            draft_read_receipt_requested=draft["read_receipt_requested"],
             draft_attachments=draft["attachments"],
             attachments=attachments,
             replies=[
                 _reply_to_response(
-                    reply, attachments_by_interaction.get(reply.interaction_id, [])
+                    reply,
+                    attachments_by_interaction.get(reply.interaction_id, []),
+                    receipt_statuses.get(reply.interaction_id),
                 )
                 for reply in replies
             ],
+            read_receipts=receipt_statuses.get(interaction.interaction_id, []),
             recommended_ticket_id=recommended_ticket_id,
             recommended_ticket_reason=recommended_ticket_reason,
             first_response_sla=first_response_sla,
@@ -391,7 +412,14 @@ class OpenEmailService:
         a null-check branch for "no draft" vs. "has a draft".
         """
 
-        empty = {"message": None, "body_html": None, "cc": [], "bcc": [], "attachments": []}
+        empty = {
+            "message": None,
+            "body_html": None,
+            "cc": [],
+            "bcc": [],
+            "attachments": [],
+            "read_receipt_requested": False,
+        }
 
         if current_user is None or interaction.ticket_id is not None:
             return empty
@@ -408,6 +436,9 @@ class OpenEmailService:
             "cc": draft.payload.get("cc") or [],
             "bcc": draft.payload.get("bcc") or [],
             "attachments": await self._fetch_attachments(draft.interaction_id),
+            "read_receipt_requested": bool(
+                draft.payload.get("read_receipt_requested", False)
+            ),
         }
 
     async def _fetch_first_response_sla(

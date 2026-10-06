@@ -21,6 +21,29 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 from app.ticketing.schemas.payloads import OutboundEnvelope
 
 
+# PidTagMessageClass — the single-value extended property id Graph
+# uses for a message's MAPI item class (verified live against the
+# poller's mailbox during read-receipt Phase 0).
+ITEM_CLASS_PROPERTY_ID = "String 0x001A"
+
+
+def _normalize_property_id(property_id: str) -> str:
+    """
+    Graph accepts a MAPI property id in many spellings but ECHOES it
+    normalized: asked for `String 0x001A` it returns `String 0x1a`
+    (lower-case hex, no leading zeros) — observed live. Compare ids by
+    type + numeric value so either spelling matches.
+    """
+
+    parts = property_id.strip().split()
+    if len(parts) == 2 and parts[1].lower().startswith("0x"):
+        try:
+            return f"{parts[0].lower()} 0x{int(parts[1], 16):x}"
+        except ValueError:
+            pass
+    return property_id.strip().lower()
+
+
 # ---------------------------------------------------------
 # Realistic Microsoft Graph `message` resource (JSON), for the
 # future incoming-webhook variant.
@@ -58,6 +81,19 @@ class GraphInternetMessageHeader(BaseModel):
 
     name: str
     value: str
+
+
+class GraphExtendedProperty(BaseModel):
+    """
+    Mirrors one entry of Graph's `singleValueExtendedProperties` (only
+    present when the message is fetched with a matching `$expand`).
+    Used solely to read the message's MAPI item class (PidTagMessageClass,
+    `String 0x001A`) — the language-independent signal that a message
+    is a read-receipt report rather than ordinary mail.
+    """
+
+    id: str
+    value: str | None = None
 
 
 class IncomingMailPayload(BaseModel):
@@ -122,6 +158,29 @@ class IncomingMailPayload(BaseModel):
             "the common no-attachment case."
         ),
     )
+
+    singleValueExtendedProperties: list[GraphExtendedProperty] | None = Field(
+        default=None,
+        description=(
+            "Only present when fetched with the item-class $expand "
+            "(graph_client.MESSAGE_ITEM_CLASS_EXPAND). Read via "
+            "`item_class`; never required."
+        ),
+    )
+
+    @property
+    def item_class(self) -> str | None:
+        """
+        The MAPI message class (e.g. `IPM.Note` for ordinary mail,
+        `REPORT.IPM.Note.IPNRN` for an Outlook read receipt), or None
+        when Graph did not return it.
+        """
+
+        wanted = _normalize_property_id(ITEM_CLASS_PROPERTY_ID)
+        for prop in self.singleValueExtendedProperties or []:
+            if _normalize_property_id(prop.id) == wanted:
+                return prop.value
+        return None
 
 
 class GraphAttachmentPayload(BaseModel):
