@@ -582,6 +582,75 @@ export interface RelatedTicketSummary {
   current_status: TicketStatus;
 }
 
+// Multi-user / multi-category assignment. agent_id/agent_name stay the
+// PRIMARY assignee and ticket_type the primary category, so every
+// existing reader keeps working; these lists are additive. Each
+// assignee carries their OWN status — only CLOSED is ticket-wide.
+export interface TicketAssigneeSummary {
+  assignment_id: string;
+  user_id: string;
+  user_name: string | null;
+  is_primary: boolean;
+  status: TicketStatus;
+}
+
+export interface TicketCategorySummary {
+  category_id: string;
+  category_name: string;
+  is_primary: boolean;
+}
+
+// One Resolution SLA run of one assignee (categories never own SLA).
+export interface AssignmentSLARunState {
+  assignment_sla_id: string;
+  run_number: number;
+  priority: TicketPriority;
+  status: "PENDING" | "RUNNING" | "PAUSED" | "COMPLETED";
+  started_at: string;
+  due_at: string;
+  active_target_minutes: number;
+  paused_at: string | null;
+  total_paused_seconds: number;
+  completed_at: string | null;
+  completion_reason: string | null;
+  breached: boolean;
+  breached_at: string | null;
+  remaining_seconds: number | null;
+  elapsed_fraction: number | null;
+}
+
+export interface TicketAssignmentItem {
+  assignment_id: string;
+  user_id: string;
+  user_name: string | null;
+  is_primary: boolean;
+  status: TicketStatus;
+  assigned_by: string | null;
+  assigned_by_name: string | null;
+  assigned_at: string;
+  status_changed_at: string | null;
+  closed_at: string | null;
+  resolution_sla: AssignmentSLARunState | null;
+  sla_history: AssignmentSLARunState[];
+}
+
+export interface TicketCategoryItem {
+  category_id: string;
+  category_name: string;
+  is_primary: boolean;
+  assigned_at: string;
+}
+
+export interface TicketAssignmentsResponse {
+  ticket_id: string;
+  ticket_status: TicketStatus;
+  is_closed: boolean;
+  closed_at: string | null;
+  closed_by: string | null;
+  assignments: TicketAssignmentItem[];
+  categories: TicketCategoryItem[];
+}
+
 export interface TicketResponse {
   ticket_id: string;
   // Permanent, human-readable reference — display as `TKT-${ticket_number}`.
@@ -618,6 +687,10 @@ export interface TicketResponse {
   assigned_by?: string | null;
   assigned_by_name?: string | null;
   related_tickets: RelatedTicketSummary[];
+
+  // Multi-assignment (optional: absent from older backends/mocks).
+  assignees?: TicketAssigneeSummary[];
+  categories?: TicketCategorySummary[];
 
   // Escalation display fields — LEFT JOIN-sourced on the backend
   // (TicketRepository.list_visible_page), never a second per-row

@@ -103,7 +103,7 @@ async def db_session():
 async def _get_team_lead(session) -> User:
     result = await session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(Role.name == "Team Lead", User.is_active.is_(True))
     )
@@ -205,7 +205,7 @@ async def _reload_resolution_sla(session, resolution_sla_id) -> ResolutionSLA:
 async def _get_account_manager(session) -> User:
     result = await session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(Role.name == "Account Manager", User.is_active.is_(True))
     )
@@ -218,7 +218,7 @@ async def _get_account_manager(session) -> User:
 async def _get_site_lead(session) -> User:
     result = await session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(Role.name == "Site Lead", User.is_active.is_(True))
     )
@@ -245,7 +245,7 @@ async def _get_staff_owner(session, team_lead: User) -> User:
 
     result = await session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(Role.name == "Staff", User.is_active.is_(True))
     )
@@ -878,7 +878,7 @@ async def _get_owner_user(session, escalation) -> User:
     owner_id = uuid.UUID(escalation.owner_ids[0])
     result = await session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .where(User.user_id == owner_id)
     )
     return result.unique().scalar_one()
@@ -1375,7 +1375,7 @@ async def test_ack_timeout_ladder_advance_then_first_accept_starts_at_stage_1_no
     new_owner = (
         await db_session.execute(
             select(User)
-            .options(joinedload(User.role), joinedload(User.category))
+            .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
             .where(User.user_id == new_owner_id)
         )
     ).unique().scalar_one()

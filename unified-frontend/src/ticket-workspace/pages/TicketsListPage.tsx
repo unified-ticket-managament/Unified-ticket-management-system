@@ -738,6 +738,20 @@ export function TicketsListPage() {
                         ) : (
                           <span className="text-muted">Unclaimed</span>
                         )}
+                        {/* Multi-assignment: the cell above is the
+                            PRIMARY; secondaries are summarized here
+                            (full list on the ticket's Assignments card). */}
+                        {(ticket.assignees?.length ?? 0) > (ticket.agent_id ? 1 : 0) && (
+                          <span
+                            className="ml-1 text-xs text-muted"
+                            title={(ticket.assignees ?? [])
+                              .filter((a) => !a.is_primary)
+                              .map((a) => a.user_name ?? a.user_id)
+                              .join(", ")}
+                          >
+                            +{(ticket.assignees?.length ?? 0) - (ticket.agent_id ? 1 : 0)}
+                          </span>
+                        )}
                       </td>
                       {/* "Assigned By" — who performed the claim/
                           transfer that produced the assignee in the

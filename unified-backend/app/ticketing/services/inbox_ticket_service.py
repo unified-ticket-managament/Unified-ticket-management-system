@@ -43,6 +43,7 @@ from app.ticketing.services.audit_log_service import AuditLogService
 from app.ticketing.services.delegated_access import resolve_delegated_thread_access
 from app.ticketing.services.sla_service import SLAService
 from app.notifications.service import NotificationService, NotificationType
+from app.ticketing.services.ticket_assignment_service import build_ticket_assignment_service
 
 
 class InboxTicketService:
@@ -307,6 +308,12 @@ class InboxTicketService:
                 ticket,
                 TicketUpdate(current_status=new_status),
             )
+
+        # Multi-assignment projection: primary category from ticket_type,
+        # primary assignment (+ its SLA run) from agent_id.
+        await build_ticket_assignment_service(self.ticket_repository.db).on_ticket_created(
+            ticket, actor_id=current_user.user_id
+        )
 
         # A ticket born already assigned (the "Assigned To" picker
         # above resolved to someone) notifies that agent the same way

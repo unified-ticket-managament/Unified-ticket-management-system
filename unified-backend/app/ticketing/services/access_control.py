@@ -164,6 +164,34 @@ def resolve_communication_visibility_tier(current_user: User) -> str:
     return "none"
 
 
+def ticket_category_names(ticket: Ticket) -> set[str]:
+    """
+    Every category a ticket belongs to (multi-category tickets).
+    TicketAssignmentRepository.hydrate_access_context attaches
+    `category_names` onto a loaded ticket; a ticket that was never
+    hydrated (e.g. built directly in a test, or loaded by a path that
+    doesn't hydrate) falls back to its legacy single `ticket_type` —
+    exactly the pre-multi-category behavior.
+    """
+
+    names = getattr(ticket, "category_names", None)
+    if names:
+        return set(names)
+    return {ticket.ticket_type} if ticket.ticket_type else set()
+
+
+def is_active_assignee(ticket: Ticket, user_id) -> bool:
+    """
+    Primary OR secondary — deliberately no distinction (secondary is
+    never read-only). Falls back to the legacy single agent_id when
+    the ticket wasn't hydrated with `active_assignee_ids`.
+    """
+
+    if ticket.agent_id == user_id:
+        return True
+    return user_id in (getattr(ticket, "active_assignee_ids", None) or ())
+
+
 def ensure_agent_can_view_ticket(
     ticket: Ticket,
     current_user: User,
@@ -260,7 +288,7 @@ def ensure_agent_can_view_ticket(
             c.category_name for c in getattr(current_user, "categories", None) or []
         }
 
-        if ticket.ticket_type not in user_category_names:
+        if not ticket_category_names(ticket) & user_category_names:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You do not have access to this communication.",
@@ -298,7 +326,7 @@ def ensure_agent_can_view_ticket(
         c.category_name for c in getattr(current_user, "categories", None) or []
     }
 
-    if ticket.ticket_type not in user_category_names:
+    if not ticket_category_names(ticket) & user_category_names:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have access to this ticket.",
@@ -482,7 +510,11 @@ async def ensure_agent_can_act_on_ticket(
     if current_user.role.name in SUPERVISOR_ROLE_NAMES:
         return
 
-    if ticket.agent_id == current_user.user_id:
+    # Any active assignee — primary or secondary alike — works the
+    # ticket under the same ticket:editown_ticket permission; assignment
+    # never grants more than RBAC does (a revoked editown_ticket still
+    # denies), and secondary is never read-only.
+    if is_active_assignee(ticket, current_user.user_id):
         if has_permission(current_user, "ticket:editown_ticket"):
             return
     elif has_permission_for_ticket(

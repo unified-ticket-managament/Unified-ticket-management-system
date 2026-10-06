@@ -40,7 +40,7 @@ from tests.test_escalation_service import (
 async def _get_super_admin(session) -> User:
     result = await session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(Role.name == "Super Admin", User.is_active.is_(True))
     )

@@ -12,6 +12,12 @@ from app.ticketing.enums import ActorRole, AuditEntityType, AuditEventType
 from app.ticketing.models.audit_log import AuditLog
 from app.ticketing.models.client import Client
 from app.ticketing.models.ticket import Ticket
+from app.ticketing.repositories.ticket_scope import (
+    ticket_assigned_to,
+    ticket_assigned_to_any,
+    ticket_has_category,
+    ticket_in_categories,
+)
 
 
 class AuditLogVisiblePage:
@@ -152,6 +158,14 @@ class AuditLogRepository:
         the caller's own dead-end check (`assigner == holder`) is what
         recognizes that case and stops climbing, so this method stays
         a plain, unopinionated lookup.
+
+        PRIMARY_CHANGED (multi-assignment: promoting an existing
+        assignee to primary, or setting a first primary through the
+        assignments API) is included because it also moves
+        Ticket.agent_id and records the new primary under the same
+        `new_values["agent_id"]` key. USER_ASSIGNED (a SECONDARY
+        assignee) is deliberately excluded — secondaries never become
+        part of the escalation chain.
         """
 
         result = await self.db.execute(
@@ -159,7 +173,11 @@ class AuditLogRepository:
             .where(
                 AuditLog.ticket_id == ticket_id,
                 AuditLog.event_type.in_(
-                    [AuditEventType.AGENT_TRANSFERRED, AuditEventType.TICKET_CLAIMED]
+                    [
+                        AuditEventType.AGENT_TRANSFERRED,
+                        AuditEventType.TICKET_CLAIMED,
+                        AuditEventType.PRIMARY_CHANGED,
+                    ]
                 ),
                 AuditLog.new_values["agent_id"].astext == str(agent_user_id),
             )
@@ -301,7 +319,7 @@ class AuditLogRepository:
             conditions.append(Ticket.client_company_id.in_(owned_client_ids))
 
         if ticket_types is not None:
-            conditions.append(Ticket.ticket_type.in_(ticket_types))
+            conditions.append(ticket_in_categories(ticket_types))
 
         if agent_ids is not None:
             # Team Lead/Staff audit-log scoping — see
@@ -309,7 +327,7 @@ class AuditLogRepository:
             # list is a deliberate "sees nothing" rather than
             # "unrestricted", same convention as the two conditions
             # above.
-            conditions.append(Ticket.agent_id.in_(agent_ids))
+            conditions.append(ticket_assigned_to_any(agent_ids))
 
         # `assigned_to` is an independent, user-chosen filter (narrow
         # down to one specific agent's rows) layered on top of — not a
@@ -317,13 +335,13 @@ class AuditLogRepository:
         # scoping above; a Team Lead filtering by one of their own
         # reports still can't reach a row `agent_ids` already excludes.
         if assigned_to is not None:
-            conditions.append(Ticket.agent_id == assigned_to)
+            conditions.append(ticket_assigned_to(assigned_to))
 
         if client_company_id_filter is not None:
             conditions.append(Ticket.client_company_id == client_company_id_filter)
 
         if ticket_type_filter is not None:
-            conditions.append(Ticket.ticket_type == ticket_type_filter)
+            conditions.append(ticket_has_category(ticket_type_filter))
 
         if entity_type is not None:
             conditions.append(AuditLog.entity_type == entity_type)

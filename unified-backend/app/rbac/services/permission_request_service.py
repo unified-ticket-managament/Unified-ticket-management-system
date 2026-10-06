@@ -304,7 +304,17 @@ class PermissionRequestService:
             # reason for an owner to request this permission against
             # their own ticket, and no one else it could sensibly
             # route to.
-            if ticket.agent_id == current_user.user_id:
+            # Any active assignee (primary or secondary) already works the
+            # ticket under editown_ticket — same reasoning as the owner.
+            # Imported here, not at module level, to keep this rbac-domain
+            # module free of an import-time ticketing dependency (see
+            # __init__'s ticket_repository note).
+            from app.ticketing.services.access_control import (
+                is_active_assignee,
+                ticket_category_names,
+            )
+
+            if is_active_assignee(ticket, current_user.user_id):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="You already have full access to your own ticket; no request is needed.",
@@ -325,7 +335,7 @@ class PermissionRequestService:
                 if requester is not None
                 else set()
             )
-            if ticket.ticket_type not in requester_category_names:
+            if not ticket_category_names(ticket) & requester_category_names:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="You can only request access to a ticket in your own category.",

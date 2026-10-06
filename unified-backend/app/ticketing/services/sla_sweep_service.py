@@ -45,6 +45,7 @@ from app.ticketing.services.sla_escalation_rules import (
     thresholds_reached,
 )
 from app.ticketing.services.sla_service import compute_elapsed_fraction
+from app.ticketing.services.ticket_assignment_service import sweep_assignment_sla_breaches
 
 logger = logging.getLogger(__name__)
 
@@ -725,6 +726,19 @@ class SLASweepService:
             )
             errors += 1
 
+        # Per-assignee Resolution SLA runs (multi-assignment) — isolated
+        # in its own savepoint so a failure here can never affect the
+        # ticket-level work above.
+        assignment_sla_breaches = 0
+        try:
+            async with db.begin_nested():
+                assignment_sla_breaches = await sweep_assignment_sla_breaches(
+                    db, now=now, notification_service=self.notification_service
+                )
+        except Exception:
+            logger.warning("SLA sweep: failed evaluating assignment SLA breaches", exc_info=True)
+            errors += 1
+
         duration_seconds = (datetime.now(timezone.utc) - started_at).total_seconds()
         if late_threshold_detections:
             logger.warning(
@@ -759,6 +773,7 @@ class SLASweepService:
             errors=errors,
             recipients_empty=recipients_empty,
             late_threshold_detections=late_threshold_detections,
+            assignment_sla_breaches=assignment_sla_breaches,
         )
 
     # ---------------------------------------------------------

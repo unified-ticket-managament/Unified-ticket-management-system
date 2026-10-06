@@ -170,6 +170,16 @@ class StatusChangeRequest(BaseModel):
 
     new_status: TicketStatus
 
+    assignment_id: UUID | None = Field(
+        default=None,
+        description=(
+            "Multi-assignment: which assignee's individual status to "
+            "change. Omitted -> the caller's own assignment if they are a "
+            "(non-primary) assignee, otherwise the primary / ticket-level "
+            "status — the pre-existing behavior for every existing caller."
+        ),
+    )
+
 
 class PriorityChangeRequest(BaseModel):
     """

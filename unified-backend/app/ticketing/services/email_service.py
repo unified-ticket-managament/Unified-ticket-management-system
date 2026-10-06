@@ -46,6 +46,7 @@ from app.ticketing.services.sla_service import SLAService
 from app.ticketing.services.sla_escalation_rules import RecipientContext, resolve_team_lead
 from app.ticketing.services.sla_breach_notifier import resolve_global_inbox_user_ids
 from app.notifications.service import NotificationService, NotificationType
+from app.ticketing.services.ticket_assignment_service import build_ticket_assignment_service
 
 logger = logging.getLogger(__name__)
 
@@ -514,6 +515,10 @@ class EmailService:
                     ticket_id=ticket_id,
                     triggering_interaction_id=created.interaction_id,
                 )
+                # Same customer-reply resume for every assignee's own run.
+                await build_ticket_assignment_service(
+                    self.interaction_repository.db
+                ).on_customer_reply(ticket_id)
 
         # ---------------------------------------
         # Audit Trail — the client is the actor here,
@@ -596,7 +601,13 @@ class EmailService:
                 ticket = await self.ticket_repository.get_by_id(ticket_id)
 
                 if ticket is not None and ticket.agent_id is not None:
-                    reply_recipient_ids = {ticket.agent_id}
+                    # Every active assignee (primary + secondaries; see
+                    # TicketAssignmentRepository.hydrate_access_context)
+                    # works this ticket, so every one of them hears about
+                    # the client's reply. Team Lead fan-out stays primary-only.
+                    reply_recipient_ids = {ticket.agent_id} | set(
+                        getattr(ticket, "active_assignee_ids", None) or ()
+                    )
 
                     # Also notify the agent's own Team Lead — matches
                     # Team Lead's "Replies" notification bullet.

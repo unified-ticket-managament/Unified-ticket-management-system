@@ -238,6 +238,9 @@ class SLASweepResponse(BaseModel):
     # notification was gone for good. Does not affect who gets
     # notified — purely a visibility counter alongside errors above.
     recipients_empty: int = 0
+    # Per-assignee Resolution SLA runs newly breached this tick
+    # (multi-assignment) — see sweep_assignment_sla_breaches.
+    assignment_sla_breaches: int = 0
     # A threshold whose true crossing instant (derived from due_at, the
     # same math compute_elapsed_fraction uses) was well before this
     # tick's `now` — beyond ordinary polling jitter, meaning the

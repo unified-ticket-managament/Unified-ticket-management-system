@@ -19,6 +19,10 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // sourced directly from the existing ticket response, nothing
 // hardcoded.
 export function TicketPropertiesCard({ ticket }: { ticket: TicketResponse }) {
+  // Multi-assignment: agent_id/ticket_type stay the PRIMARY assignee/
+  // category; the full lists live in the Assignments card below.
+  const otherAssignees = Math.max(0, (ticket.assignees?.length ?? 0) - (ticket.agent_id ? 1 : 0));
+  const otherCategories = Math.max(0, (ticket.categories?.length ?? 0) - 1);
   return (
     <Card title="Properties">
       <div className="grid grid-cols-2 gap-x-5 gap-y-4 sm:grid-cols-3 lg:grid-cols-6">
@@ -38,8 +42,11 @@ export function TicketPropertiesCard({ ticket }: { ticket: TicketResponse }) {
         <Field label="Created By">
           {ticket.created_by ? ticket.created_by_name ?? shortId(ticket.created_by) : "System"}
         </Field>
-        <Field label="Assigned To">
+        <Field label={otherAssignees > 0 ? "Primary Assignee" : "Assigned To"}>
           {ticket.agent_id ? ticket.agent_name ?? shortId(ticket.agent_id) : "Unassigned"}
+          {otherAssignees > 0 && (
+            <span className="ml-1 text-xs text-muted">+{otherAssignees} more</span>
+          )}
         </Field>
         <Field label="Assigned By">
           {ticket.assigned_by
@@ -49,7 +56,12 @@ export function TicketPropertiesCard({ ticket }: { ticket: TicketResponse }) {
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-x-5 gap-y-4 border-t border-border pt-4 sm:grid-cols-4">
-        <Field label="Category">{ticket.ticket_type}</Field>
+        <Field label={otherCategories > 0 ? "Categories" : "Category"}>
+          {ticket.ticket_type}
+          {otherCategories > 0 && (
+            <span className="ml-1 text-xs text-muted">+{otherCategories} more</span>
+          )}
+        </Field>
         <Field label="Created On">{formatDateTime(ticket.created_at)}</Field>
         <Field label="Latest Updated">{formatDateTime(ticket.updated_at)}</Field>
         <Field label="Version">{ticket.version}</Field>

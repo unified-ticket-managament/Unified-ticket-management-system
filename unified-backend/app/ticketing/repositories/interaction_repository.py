@@ -14,6 +14,12 @@ from app.ticketing.models.interaction import Interaction
 from app.ticketing.models.message_mark import MessageMark
 from app.ticketing.models.message_read_receipt import MessageReadReceipt
 from app.ticketing.models.ticket import Ticket
+from app.ticketing.repositories.ticket_scope import (
+    ticket_assigned_to,
+    ticket_assigned_to_any,
+    ticket_has_category,
+    ticket_in_categories,
+)
 from app.ticketing.models.ticket_escalation import TicketEscalation
 from app.ticketing.schemas.interaction import (
     InteractionCreate,
@@ -345,7 +351,7 @@ class InteractionRepository:
             conditions.append(Ticket.client_company_id.in_(owned_client_ids))
 
         if ticket_types is not None:
-            conditions.append(Ticket.ticket_type.in_(ticket_types))
+            conditions.append(ticket_in_categories(ticket_types))
 
         if ticket_id is not None:
             conditions.append(Ticket.ticket_id == ticket_id)
@@ -354,7 +360,7 @@ class InteractionRepository:
             conditions.append(Ticket.client_company_id == client_company_id_filter)
 
         if ticket_type_filter is not None:
-            conditions.append(Ticket.ticket_type == ticket_type_filter)
+            conditions.append(ticket_has_category(ticket_type_filter))
 
         if interaction_types is not None:
             conditions.append(Interaction.interaction_type.in_(interaction_types))
@@ -630,7 +636,7 @@ class InteractionRepository:
             query = query.outerjoin(Ticket, Ticket.ticket_id == Interaction.ticket_id)
 
         if ticket_types is not None:
-            query = query.where(Ticket.ticket_type.in_(ticket_types))
+            query = query.where(ticket_in_categories(ticket_types))
 
         if assigned_agent_id is not None:
             # A ticket escalated to this user (Team Lead/Account
@@ -642,7 +648,7 @@ class InteractionRepository:
             # Escalated tab. Safe to include unconditionally: it's a
             # no-op for a Staff caller's own baseline scope.
             ownership_conditions = [
-                Ticket.agent_id == assigned_agent_id,
+                ticket_assigned_to(assigned_agent_id),
                 self._escalated_owner_condition(assigned_agent_id),
             ]
             if extra_ticket_ids:
@@ -653,7 +659,7 @@ class InteractionRepository:
             query = query.outerjoin(Category, Category.category_id == Interaction.category_id)
             query = query.where(
                 or_(
-                    Ticket.ticket_type == category_filter,
+                    ticket_has_category(category_filter),
                     Category.category_name == category_filter,
                 )
             )
@@ -905,24 +911,24 @@ class InteractionRepository:
             query = query.outerjoin(Ticket, Ticket.ticket_id == Interaction.ticket_id)
 
         if ticket_types is not None:
-            query = query.where(Ticket.ticket_type.in_(ticket_types))
+            query = query.where(ticket_in_categories(ticket_types))
 
         if assigned_agent_id is not None:
             if extra_ticket_ids:
                 query = query.where(
                     or_(
-                        Ticket.agent_id == assigned_agent_id,
+                        ticket_assigned_to(assigned_agent_id),
                         Ticket.ticket_id.in_(extra_ticket_ids),
                     )
                 )
             else:
-                query = query.where(Ticket.agent_id == assigned_agent_id)
+                query = query.where(ticket_assigned_to(assigned_agent_id))
 
         if category_filter is not None:
             query = query.outerjoin(Category, Category.category_id == Interaction.category_id)
             query = query.where(
                 or_(
-                    Ticket.ticket_type == category_filter,
+                    ticket_has_category(category_filter),
                     Category.category_name == category_filter,
                 )
             )
@@ -976,7 +982,7 @@ class InteractionRepository:
             query = query.outerjoin(Category, Category.category_id == Interaction.category_id)
             query = query.where(
                 or_(
-                    Ticket.ticket_type == category_filter,
+                    ticket_has_category(category_filter),
                     Category.category_name == category_filter,
                 )
             )
@@ -1109,18 +1115,18 @@ class InteractionRepository:
             query = query.join(Ticket, Ticket.ticket_id == Interaction.ticket_id)
 
         if ticket_types is not None:
-            query = query.where(Ticket.ticket_type.in_(ticket_types))
+            query = query.where(ticket_in_categories(ticket_types))
 
         if assigned_agent_id is not None:
             if extra_ticket_ids:
                 query = query.where(
                     or_(
-                        Ticket.agent_id == assigned_agent_id,
+                        ticket_assigned_to(assigned_agent_id),
                         Ticket.ticket_id.in_(extra_ticket_ids),
                     )
                 )
             else:
-                query = query.where(Ticket.agent_id == assigned_agent_id)
+                query = query.where(ticket_assigned_to(assigned_agent_id))
 
         query = query.where(
             Interaction.interaction_type == "EMAIL",

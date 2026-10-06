@@ -77,7 +77,7 @@ async def db_session():
 async def _get_user_by_name(session, name: str) -> User:
     result = await session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .where(User.name == name)
     )
     user = result.unique().scalar_one_or_none()

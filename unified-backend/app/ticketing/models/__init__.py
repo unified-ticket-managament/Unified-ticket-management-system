@@ -10,6 +10,9 @@ from .attachment import Attachment
 from .audit_log import AuditLog
 from .mail_folder import MailFolder
 from .ticket_relation import TicketRelation
+from .ticket_assignment import TicketAssignment
+from .ticket_category import TicketCategory
+from .ticket_assignment_sla import TicketAssignmentSLA
 from .sla_policy import SLAPolicy
 from .first_response_sla import FirstResponseSLA
 from .resolution_sla import ResolutionSLA
@@ -36,6 +39,9 @@ __all__ = [
     "AuditLog",
     "MailFolder",
     "TicketRelation",
+    "TicketAssignment",
+    "TicketCategory",
+    "TicketAssignmentSLA",
     "SLAPolicy",
     "FirstResponseSLA",
     "ResolutionSLA",

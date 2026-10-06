@@ -6,6 +6,7 @@ import { EmptyState } from "@tw/components/common/EmptyState";
 import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { TicketHeader } from "@tw/components/ticket/TicketHeader";
 import { TicketPropertiesCard } from "@tw/components/ticket/TicketPropertiesCard";
+import { TicketAssignmentsCard } from "@tw/components/ticket/TicketAssignmentsCard";
 import { TicketActivityPanel, type ActivityTab } from "@tw/components/ticket/TicketActivityPanel";
 import { SlaCard } from "@tw/components/sla/SlaCard";
 import { useApiAction } from "@tw/hooks/useApiAction";
@@ -23,6 +24,10 @@ export function TicketDetailPage() {
   // Timeline showing doesn't force an Audit Log fetch nobody's
   // looking at yet (it'll fetch fresh on its own next mount).
   const [auditRefreshToken, setAuditRefreshToken] = useState(0);
+  // Bumped on every refreshAll so the Assignments card re-reads per-
+  // assignee status/SLA after any ticket-level action (close/reopen/
+  // transfer/status change) taken elsewhere on this page.
+  const [assignmentsRefreshToken, setAssignmentsRefreshToken] = useState(0);
   const activityTabRef = useRef(activityTab);
   activityTabRef.current = activityTab;
   // Guards against a fast ticketId change (or two overlapping manual
@@ -59,6 +64,7 @@ export function TicketDetailPage() {
     // updates its own state whenever it finishes, without holding up
     // first paint of everything else.
     refreshTimeline();
+    setAssignmentsRefreshToken((token) => token + 1);
     const ticket = await runGetTicket(ticketId);
     if (requestId !== ticketRequestIdRef.current) return;
     // Explicitly clear on failure (e.g. transferred away from the
@@ -112,6 +118,11 @@ export function TicketDetailPage() {
               </div>
             )}
             <TicketPropertiesCard ticket={activeTicket} />
+            <TicketAssignmentsCard
+              ticketId={activeTicket.ticket_id}
+              refreshToken={assignmentsRefreshToken}
+              onChanged={refreshAll}
+            />
 
             <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_320px]">
               <div className="flex flex-col gap-5">

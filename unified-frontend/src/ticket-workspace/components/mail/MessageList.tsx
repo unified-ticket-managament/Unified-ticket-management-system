@@ -831,14 +831,20 @@ export function MessageList({
                       // onOpen would just re-run "open thread" (and
                       // its mark-read side effect) for no reason; use
                       // the dedicated Refresh action for that instead.
-                      if (isSelected) return;
+                      // Same for a row whose open is still in flight.
+                      if (isSelected || isOpening) return;
                       onOpen(openId);
                     }}
                     onDoubleClick={(event) => {
                       if (selectable && bulk && resolveRowClick(event, bulk.platform) === "toggle") return;
                       onOpenFullScreen?.(openId);
                     }}
-                    disabled={isOpening}
+                    // Deliberately NOT `disabled` while opening: the
+                    // first click of a double-click starts the open,
+                    // and a disabled button swallows the second click,
+                    // so dblclick would never fire (it then took a
+                    // third click to get the window).
+                    aria-busy={isOpening || undefined}
                     className={cn(
                       "group flex w-full items-start gap-3 px-4 py-3 text-left transition-all duration-150 hover:z-[1] hover:-translate-y-0.5 hover:bg-muted/60 hover:shadow-sm",
                       isUnread && "bg-primary/[0.03]",

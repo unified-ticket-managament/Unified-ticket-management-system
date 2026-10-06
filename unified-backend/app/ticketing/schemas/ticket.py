@@ -6,6 +6,10 @@ from pydantic import BaseModel, Field
 
 from app.ticketing.enums import EscalationLevel, EscalationStatus, TicketPriority, TicketStatus
 from app.ticketing.schemas.common import ORMBase
+from app.ticketing.schemas.ticket_assignment import (
+    TicketAssigneeSummary,
+    TicketCategorySummary,
+)
 
 #ticket.py
 class TicketCreate(BaseModel):
@@ -155,6 +159,12 @@ class TicketResponse(ORMBase):
     # avoid an N+1 lookup per row) — see TicketService._attach_related_tickets.
     related_tickets: list[RelatedTicketSummary] = Field(default_factory=list)
 
+    # Multi-assignment (additive — agent_id/agent_name above stay the
+    # PRIMARY assignee, ticket_type the primary category). Each assignee
+    # carries their own individual status.
+    assignees: list[TicketAssigneeSummary] = Field(default_factory=list)
+    categories: list[TicketCategorySummary] = Field(default_factory=list)
+
     # Escalation display fields — sourced from a LEFT JOIN against
     # ticket_escalations (see TicketRepository.list_visible_page), not
     # a second per-ticket lookup. `is_escalated` is the frontend's one
@@ -246,6 +256,11 @@ class TicketListItemResponse(ORMBase):
     # (see TicketRepository.list_visible_page).
     assigned_by: UUID | None = None
     assigned_by_name: str | None = None
+
+    # See TicketResponse's matching fields — batch-loaded per page (two
+    # extra queries per page, never per row).
+    assignees: list[TicketAssigneeSummary] = Field(default_factory=list)
+    categories: list[TicketCategorySummary] = Field(default_factory=list)
 
     # See TicketResponse's own matching fields for the full rationale
     # — same LEFT JOIN-sourced, display-only escalation signal.

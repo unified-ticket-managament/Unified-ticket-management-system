@@ -69,6 +69,7 @@ from app.ticketing.services.rule_access import (
     RULE_VIEW_ALL_PERMISSION,
     folder_name_to_rules,
 )
+from app.ticketing.repositories.ticket_scope import ticket_in_categories
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +246,7 @@ async def _user_prefilter_clause(db, user: User, root, root_client, root_ticket,
             c.category_name for c in (getattr(user, "categories", None) or [])
         ]
         if category_names:
-            clauses.append(root_ticket.ticket_type.in_(category_names))
+            clauses.append(ticket_in_categories(category_names, root_ticket))
         scoped_ticket_ids = [
             UUID(tid)
             for tid in (getattr(user, "scoped_permissions", None) or {}).get(

@@ -103,6 +103,10 @@ from app.ticketing.services.access_control import (
     resolve_status_after_assignment,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.ticket_assignment_service import (
+    TicketAssignmentService,
+    build_ticket_assignment_service,
+)
 from app.ticketing.services.audit_to_interaction import (
     SYNTHESIZABLE_EVENT_TYPES,
     synthesize_interaction_from_audit,
@@ -683,6 +687,19 @@ class InteractionService:
             )
 
         return ticket
+
+    def _assignment_service(self) -> TicketAssignmentService:
+        """
+        Multi-assignment side of every single-assignee flow below
+        (claim/transfer/status/close/reopen/priority) — built on the
+        same session so it shares this request's transaction.
+        """
+
+        return build_ticket_assignment_service(
+            self.ticket_repository.db,
+            notification_service=self.notification_service,
+            escalation_service=self.escalation_service,
+        )
 
     async def _resolve_account_manager_email(self, client) -> str | None:
         """
@@ -3131,6 +3148,38 @@ class InteractionService:
         )
         ensure_has_permission(current_user, "ticket:update_status")
 
+        # Multi-assignment: every status except CLOSED is individual. A
+        # non-primary assignment's status change touches only that
+        # assignment (and its own SLA run) — never the ticket, the
+        # primary, or any other assignee. The primary's status keeps
+        # driving the ticket-level status/SLA exactly as before.
+        assignment_service = self._assignment_service()
+        target_assignment = None
+        if request.assignment_id is not None:
+            target_assignment = await assignment_service.get_assignment_on_ticket(
+                ticket_id, request.assignment_id
+            )
+        else:
+            own = await assignment_service.get_active_for_user(ticket_id, current_user.user_id)
+            if own is not None and not own.is_primary:
+                target_assignment = own
+        if target_assignment is not None and not target_assignment.is_primary:
+            await assignment_service.change_secondary_status(
+                ticket, target_assignment, request.new_status, current_user
+            )
+            return TicketActionResponse(
+                interaction_id=None,
+                ticket_id=ticket_id,
+                message="Assignment status updated successfully.",
+                created_at=datetime.now(timezone.utc),
+            )
+        if target_assignment is not None:
+            # Explicitly targeting the primary's assignment — same
+            # "someone else's assignment" rule as for a secondary.
+            assignment_service.ensure_can_change_assignment_status(
+                ticket, target_assignment, current_user
+            )
+
         old_status = ticket.current_status
         old_closed_at = ticket.closed_at
         new_status = request.new_status
@@ -3166,6 +3215,9 @@ class InteractionService:
         await self.ticket_repository.update(
             ticket,
             TicketUpdate(**update_fields),
+        )
+        await assignment_service.on_primary_status_changed(
+            ticket, old_status=old_status, new_status=new_status
         )
 
         # No longer written as an Interaction row — STATUS_CHANGE is
@@ -3351,7 +3403,11 @@ class InteractionService:
         value.
         """
 
-        ticket = await self._get_ticket_or_404(ticket_id)
+        # Universal close: row-lock the ticket first so concurrent closes
+        # serialize — the loser re-reads CLOSED under the lock and gets
+        # ensure_ticket_not_closed's 400 instead of double-closing.
+        assignment_service = self._assignment_service()
+        ticket = await assignment_service.lock_for_close(ticket_id)
         ensure_ticket_not_closed(ticket)
         await ensure_agent_can_act_on_ticket(
             ticket,
@@ -3365,6 +3421,7 @@ class InteractionService:
             ticket, current_user, self.client_repository
         )
         ensure_can_close_ticket(current_user)
+        assignments_before = await assignment_service.snapshot_active(ticket_id)
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
@@ -3396,13 +3453,21 @@ class InteractionService:
                 "current_status": old_status,
                 "closed_at": old_closed_at,
                 "closed_by": old_closed_by,
+                "assignments": [a.as_audit() for a in assignments_before],
             },
             new_values={
                 "current_status": TicketStatus.CLOSED,
                 "closed_at": now,
                 "closed_by": current_user.user_id,
                 "closed_by_name": current_user.name,
+                "assignments_closed": len(assignments_before),
             },
+        )
+
+        # Every active assignment -> CLOSED and every live assignment SLA
+        # run -> COMPLETED, in this same transaction under the lock above.
+        await assignment_service.close_all_for_ticket(
+            ticket, closed_at=now, closed_by=current_user.user_id
         )
 
         # Same Resolution SLA chokepoint change_status used to drive
@@ -3443,7 +3508,8 @@ class InteractionService:
         starts working again for this ticket the instant this completes.
         """
 
-        ticket = await self._get_ticket_or_404(ticket_id)
+        assignment_service = self._assignment_service()
+        ticket = await assignment_service.lock_for_close(ticket_id)
 
         if ticket.current_status != TicketStatus.CLOSED:
             raise HTTPException(
@@ -3523,6 +3589,10 @@ class InteractionService:
                 client_id=ticket.client_company_id,
                 priority=ticket.current_priority,
             )
+
+        # Active assignments back to OPEN, each with a NEW SLA run (prior
+        # runs stay COMPLETED as history); primary unchanged.
+        await assignment_service.reopen_all_for_ticket(ticket)
 
         return TicketActionResponse(
             interaction_id=None,
@@ -3606,6 +3676,11 @@ class InteractionService:
             await self.sla_service.reshift_resolution_clock_for_priority_change(
                 ticket_id=ticket_id,
                 new_priority=request.new_priority,
+            )
+            # Every assignee's own live run reshifts by the same
+            # proportional rule as the ticket-level clock.
+            await self._assignment_service().on_priority_changed(
+                ticket, new_priority=request.new_priority
             )
 
         if self.notification_service is not None:
@@ -3865,6 +3940,18 @@ class InteractionService:
             ticket,
             TicketUpdate(**update_fields),
         )
+        # Assignment-table side of the transfer (unchanged semantics: the
+        # new agent replaces the old primary; an existing secondary is
+        # promoted in place, keeping their own SLA run). A cross-category
+        # transfer moves the primary category with it.
+        assignment_service = self._assignment_service()
+        await assignment_service.on_primary_set(
+            ticket, new_user_id=new_agent.user_id, actor_id=actor_id
+        )
+        if category_will_change:
+            await assignment_service.sync_primary_category(
+                ticket, request.category_name, actor_id=actor_id
+            )
 
         # No longer written as an Interaction row — AGENT_TRANSFER is
         # one of the retired timeline-only types (see
@@ -4021,6 +4108,10 @@ class InteractionService:
 
         actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(
             current_user
+        )
+
+        await self._assignment_service().on_primary_set(
+            ticket, new_user_id=current_user.user_id, actor_id=current_user.user_id
         )
 
         # No longer written as an Interaction row — CLAIM is one of

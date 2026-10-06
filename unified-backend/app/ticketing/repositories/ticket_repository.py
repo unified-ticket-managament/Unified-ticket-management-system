@@ -3,7 +3,7 @@ import re
 from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import and_, case, exists, func, literal, not_, or_, select, update
+from sqlalchemy import and_, case, delete, exists, func, literal, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from shared_models.models import User
@@ -13,8 +13,19 @@ from app.ticketing.models.client import Client
 from app.ticketing.models.resolution_sla import ResolutionSLA
 from app.ticketing.models.sla_policy import SLAPolicy
 from app.ticketing.models.ticket import TICKET_NUMBER_SERIES_CURRENT, Ticket
+from app.ticketing.models.ticket_assignment import TicketAssignment
+from app.ticketing.models.ticket_assignment_sla import TicketAssignmentSLA
+from app.ticketing.models.ticket_category import TicketCategory
 from app.ticketing.models.ticket_escalation import TicketEscalation
 from app.ticketing.models.ticket_number_counter import TicketNumberCounter
+from app.ticketing.repositories.ticket_assignment_repository import TicketAssignmentRepository
+from app.ticketing.repositories.ticket_scope import (
+    ticket_assigned_to,
+    ticket_assigned_to_any,
+    ticket_has_assignment_status,
+    ticket_has_category,
+    ticket_in_categories,
+)
 from app.ticketing.schemas.ticket import TicketCreate, TicketUpdate
 
 # Matches "TKT-27"/"tkt27"/"Tkt 27" etc. — the human-readable ticket
@@ -159,7 +170,14 @@ class TicketRepository:
         if populate_existing:
             stmt = stmt.execution_options(populate_existing=True)
         result = await self.db.execute(stmt)
-        return result.scalar_one_or_none()
+        ticket = result.scalar_one_or_none()
+        if ticket is not None:
+            # Multi-assignment: attach the active assignee ids and every
+            # category name (transient attributes) that access_control's
+            # synchronous checks read — one extra UNION query, never a
+            # lazy load. See TicketAssignmentRepository.hydrate_access_context.
+            await TicketAssignmentRepository(self.db).hydrate_access_context([ticket])
+        return ticket
 
     async def list_by_ids(
         self, ticket_ids: list[UUID], *, populate_existing: bool = False
@@ -281,10 +299,10 @@ class TicketRepository:
             # filed under their own work-specialization category. An
             # empty list is a deliberate "no category, sees nothing"
             # rather than "unrestricted", same convention as above.
-            conditions.append(Ticket.ticket_type.in_(ticket_types))
+            conditions.append(ticket_in_categories(ticket_types))
         if agent_ids is not None:
             # Same "empty list means sees nothing" convention as above.
-            conditions.append(Ticket.agent_id.in_(agent_ids))
+            conditions.append(ticket_assigned_to_any(agent_ids))
 
         override_conditions = [
             c
@@ -413,7 +431,7 @@ class TicketRepository:
             # Unassigned tickets stay visible to everyone so they
             # don't become permanently invisible to any agent.
             conditions.append(
-                or_(Ticket.agent_id == agent_id, Ticket.agent_id.is_(None))
+                or_(ticket_assigned_to(agent_id), Ticket.agent_id.is_(None))
             )
 
         if view == "pool":
@@ -426,7 +444,7 @@ class TicketRepository:
             # with that one's.
             conditions.append(not_(self._escalated_exists_condition()))
         elif view == "mine" and assigned_to is not None:
-            mine_condition = Ticket.agent_id == assigned_to
+            mine_condition = ticket_assigned_to(assigned_to)
             if scoped_ticket_ids:
                 # A ticket-scoped editother_ticket grant makes this
                 # ticket "mine" for the grantee too, even though
@@ -449,7 +467,7 @@ class TicketRepository:
             )
 
         if ticket_type_filter is not None:
-            conditions.append(Ticket.ticket_type == ticket_type_filter)
+            conditions.append(ticket_has_category(ticket_type_filter))
         if status_filter is not None:
             conditions.append(Ticket.current_status == status_filter)
         if priority_filter is not None:
@@ -547,9 +565,9 @@ class TicketRepository:
             else self._escalated_exists_condition()
         )
         mine_condition = (
-            or_(Ticket.agent_id == assigned_to, Ticket.ticket_id.in_(scoped_ticket_ids))
+            or_(ticket_assigned_to(assigned_to), Ticket.ticket_id.in_(scoped_ticket_ids))
             if scoped_ticket_ids
-            else Ticket.agent_id == assigned_to
+            else ticket_assigned_to(assigned_to)
         )
 
         query = select(
@@ -596,7 +614,7 @@ class TicketRepository:
         if client_company_id_filter is not None:
             conditions.append(Ticket.client_company_id == client_company_id_filter)
         if ticket_type_filter is not None:
-            conditions.append(Ticket.ticket_type == ticket_type_filter)
+            conditions.append(ticket_has_category(ticket_type_filter))
 
         query = select(
             func.count().filter(Ticket.agent_id.isnot(None)),
@@ -748,6 +766,9 @@ class TicketRepository:
         include_escalated_override: bool = False,
         scoped_ticket_ids: list[UUID] | None = None,
         client_company_id_filter: UUID | None = None,
+        assignee_id_filter: UUID | None = None,
+        primary_only: bool = False,
+        assignment_status_filter: TicketStatus | None = None,
     ) -> TicketVisiblePage:
         """
         The ticket-list page's real query — same visibility/filter/
@@ -826,7 +847,7 @@ class TicketRepository:
             # tab's own Acknowledge & Assign flow.
             conditions.append(TicketEscalation.escalation_id.is_(None))
         elif view == "mine" and assigned_to is not None:
-            mine_condition = Ticket.agent_id == assigned_to
+            mine_condition = ticket_assigned_to(assigned_to)
             if scoped_ticket_ids:
                 # See list_all's matching branch for why this is OR'd
                 # directly onto the tab filter rather than left to the
@@ -851,13 +872,23 @@ class TicketRepository:
             )
 
         if ticket_type_filter is not None:
-            conditions.append(Ticket.ticket_type == ticket_type_filter)
+            conditions.append(ticket_has_category(ticket_type_filter))
         if status_filter is not None:
             conditions.append(Ticket.current_status == status_filter)
         if priority_filter is not None:
             conditions.append(Ticket.current_priority == priority_filter)
         if client_company_id_filter is not None:
             conditions.append(Ticket.client_company_id == client_company_id_filter)
+        # Multi-assignment filters — they only ever NARROW the caller's
+        # existing visibility (the conditions above), never widen it.
+        if assignee_id_filter is not None:
+            conditions.append(ticket_assigned_to(assignee_id_filter, primary_only=primary_only))
+        if assignment_status_filter is not None:
+            conditions.append(
+                ticket_has_assignment_status(
+                    assignment_status_filter, user_id=assignee_id_filter
+                )
+            )
         if search:
             ticket_number_query = parse_ticket_number_query(search)
             if ticket_number_query is not None:
@@ -1013,6 +1044,11 @@ class TicketRepository:
         return ticket
 
     async def delete(self, ticket: Ticket) -> None:
+        # Multi-assignment child rows have no ON DELETE CASCADE (same as
+        # every other ticket child table) — clear them first so deleting
+        # a ticket behaves exactly as it did before they existed.
+        for model in (TicketAssignmentSLA, TicketAssignment, TicketCategory):
+            await self.db.execute(delete(model).where(model.ticket_id == ticket.ticket_id))
         await self.db.delete(ticket)
         await self.db.flush()
 

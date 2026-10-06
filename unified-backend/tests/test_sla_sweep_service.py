@@ -133,7 +133,7 @@ async def db_session():
 async def _get_team_lead(session) -> User:
     result = await session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(Role.name == "Team Lead", User.is_active.is_(True))
     )
@@ -146,7 +146,7 @@ async def _get_team_lead(session) -> User:
 async def _get_staff_members(session, *, count: int) -> list[User]:
     result = await session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(Role.name == "Staff", User.is_active.is_(True))
     )

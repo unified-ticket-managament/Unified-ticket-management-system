@@ -87,7 +87,7 @@ async def db_session():
 async def _find_team_lead_with_staff(session, staff_count: int) -> tuple[User, list[User]]:
     team_lead_result = await session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(Role.name == "Team Lead", User.is_active.is_(True))
     )
@@ -99,7 +99,7 @@ async def _find_team_lead_with_staff(session, staff_count: int) -> tuple[User, l
 
     staff_result = await session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(Role.name == "Staff", User.is_active.is_(True))
     )

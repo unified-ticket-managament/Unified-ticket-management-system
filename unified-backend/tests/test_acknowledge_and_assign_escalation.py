@@ -125,7 +125,7 @@ async def test_acknowledge_and_assign_atomic_success_reassigns_and_starts_sla(db
 
     result = await db_session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(Role.name == "Staff", User.is_active.is_(True))
     )
@@ -268,7 +268,7 @@ async def test_acknowledge_and_assign_invalid_candidate_leaves_escalation_active
 
     result = await db_session.execute(
         select(User)
-        .options(joinedload(User.role), joinedload(User.category))
+        .options(joinedload(User.role), joinedload(User.category), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(Role.name == "Staff", User.is_active.is_(True))
     )
@@ -336,7 +336,7 @@ async def test_manual_escalate_by_higher_role_non_owner_is_forbidden(db_session)
 
     result = await db_session.execute(
         select(User)
-        .options(joinedload(User.role))
+        .options(joinedload(User.role), joinedload(User.categories))
         .join(Role, Role.role_id == User.role_id)
         .where(Role.name == "Account Manager", User.is_active.is_(True))
     )

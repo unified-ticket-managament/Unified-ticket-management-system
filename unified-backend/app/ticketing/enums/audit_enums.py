@@ -40,6 +40,18 @@ class AuditEventType(str, Enum):
     # distinct from an ordinary status change.
     TICKET_CLOSED = "TICKET_CLOSED"
     TICKET_REOPENED = "TICKET_REOPENED"
+    # Multi-user / multi-category assignment (TicketAssignmentService).
+    # Deliberately NOT AGENT_TRANSFERRED/TICKET_CLAIMED for secondary
+    # assignees: AuditLogRepository.find_prior_assigner walks those two
+    # to build the escalation assignment chain, which must keep
+    # following the PRIMARY only. PRIMARY_CHANGED is included in that
+    # walk (the primary is what Ticket.agent_id projects).
+    USER_ASSIGNED = "USER_ASSIGNED"
+    USER_UNASSIGNED = "USER_UNASSIGNED"
+    PRIMARY_CHANGED = "PRIMARY_CHANGED"
+    ASSIGNMENT_STATUS_CHANGED = "ASSIGNMENT_STATUS_CHANGED"
+    CATEGORY_ADDED = "CATEGORY_ADDED"
+    CATEGORY_REMOVED = "CATEGORY_REMOVED"
     INTERACTION_HIDDEN = "INTERACTION_HIDDEN"
     # Mail Trash -> Restore (InteractionService.restore_interaction).
     INTERACTION_RESTORED = "INTERACTION_RESTORED"

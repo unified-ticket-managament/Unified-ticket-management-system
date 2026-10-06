@@ -59,6 +59,9 @@ from app.ticketing.services.access_control import (
     has_permission,
 )
 from app.ticketing.services.audit_log_service import AuditLogService
+from app.ticketing.services.ticket_assignment_service import build_ticket_assignment_service
+from app.ticketing.repositories.ticket_assignment_repository import TicketAssignmentRepository
+from app.ticketing.schemas.ticket_assignment import TicketAssigneeSummary, TicketCategorySummary
 
 # Mirrors the frontend's InteractionsPage.tsx VISIBLE_INTERACTION_TYPES
 # whitelist — client communication only, everything else (status/
@@ -398,6 +401,7 @@ class TicketService:
         await self._attach_related_tickets(ticket)
 
         response = TicketResponse.model_validate(ticket)
+        await self._attach_assignment_summaries([response])
 
         if escalation is not None:
             response.is_escalated = True
@@ -557,6 +561,9 @@ class TicketService:
         sort_by: str = "created_at",
         sort_dir: str = "desc",
         client_company_id_filter: UUID | None = None,
+        assignee_id_filter: UUID | None = None,
+        primary_only: bool = False,
+        assignment_status_filter: TicketStatus | None = None,
     ) -> tuple[list[TicketListItemResponse], int]:
         """
         `limit=None` (the default) preserves the original unbounded
@@ -670,6 +677,9 @@ class TicketService:
                 include_escalated_override=can_view_escalated,
                 scoped_ticket_ids=scoped_ticket_ids,
                 client_company_id_filter=client_company_id_filter,
+                assignee_id_filter=assignee_id_filter,
+                primary_only=primary_only,
+                assignment_status_filter=assignment_status_filter,
             )
 
             rows = [
@@ -719,6 +729,7 @@ class TicketService:
                     *_,
                 ) in page.items
             ]
+            await self._attach_assignment_summaries(rows)
             return rows, page.total
 
         owned_client_ids = await self._resolve_owned_client_ids(current_user)
@@ -735,10 +746,45 @@ class TicketService:
         # `custom_fields`/`related_tickets`, neither of which any list
         # view reads (the latter isn't even populated here — see
         # TicketListItemResponse's own docstring).
-        return [
+        rows = [
             TicketListItemResponse.model_validate(ticket)
             for ticket in tickets
-        ], total
+        ]
+        await self._attach_assignment_summaries(rows)
+        return rows, total
+
+    async def _attach_assignment_summaries(self, rows) -> None:
+        """
+        Multi-assignment: fills `assignees`/`categories` on ticket
+        response rows — two batched queries for the whole page, never
+        one per row (no N+1, no lazy loads).
+        """
+
+        if not rows:
+            return
+        repository = TicketAssignmentRepository(self.ticket_repository.db)
+        ticket_ids = [row.ticket_id for row in rows]
+        assignments = await repository.list_active_for_tickets(ticket_ids)
+        categories = await repository.list_categories_for_tickets(ticket_ids)
+        for row in rows:
+            row.assignees = [
+                TicketAssigneeSummary(
+                    assignment_id=assignment.assignment_id,
+                    user_id=assignment.user_id,
+                    user_name=name,
+                    is_primary=assignment.is_primary,
+                    status=assignment.status,
+                )
+                for assignment, name in assignments.get(row.ticket_id, [])
+            ]
+            row.categories = [
+                TicketCategorySummary(
+                    category_id=ticket_category.category_id,
+                    category_name=name,
+                    is_primary=ticket_category.is_primary,
+                )
+                for ticket_category, name in categories.get(row.ticket_id, [])
+            ]
 
     async def count_by_view(self, current_user: User) -> dict[str, int]:
         """
@@ -1518,6 +1564,15 @@ class TicketService:
             ticket,
             request,
         )
+
+        if "ticket_type" in changed_fields:
+            # Keep the primary ticket category in sync with the legacy
+            # single-category column (multi-category tickets).
+            await build_ticket_assignment_service(
+                self.ticket_repository.db
+            ).sync_primary_category(
+                ticket, changed_fields["ticket_type"], actor_id=current_user.user_id
+            )
 
         if changed_fields:
             actor_id, actor_name, actor_role = AuditLogService.resolve_agent_actor(

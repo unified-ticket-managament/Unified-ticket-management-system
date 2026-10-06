@@ -1202,6 +1202,18 @@ async def list_tickets(
         None,
         description="Narrow to one client's tickets, within whatever the caller's own role scope already allows.",
     ),
+    assignee_id: UUID | None = Query(
+        None,
+        description="Only tickets assigned (primary or secondary) to this user — narrows, never widens, visibility.",
+    ),
+    primary_only: bool = Query(
+        False,
+        description="With assignee_id: only tickets where that user is the PRIMARY assignee.",
+    ),
+    assignment_status: TicketStatus | None = Query(
+        None,
+        description="Only tickets with an active assignment in this individual status (that user's, if assignee_id is given).",
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1251,6 +1263,9 @@ async def list_tickets(
         sort_by=sort_by,
         sort_dir=sort_dir,
         client_company_id_filter=client_company_id,
+        assignee_id_filter=assignee_id,
+        primary_only=primary_only,
+        assignment_status_filter=assignment_status,
     )
 
     if limit is not None:
