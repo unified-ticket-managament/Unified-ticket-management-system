@@ -17,6 +17,7 @@ from bs4 import BeautifulSoup
 from app.ticketing.schemas.email import EmailRequest, LinkedAttachmentCandidate
 from app.ticketing.schemas.mail_integration import GraphAttachmentPayload, IncomingMailPayload
 from app.ticketing.services.bounce_detection import is_bounce_notification
+from app.ticketing.services.mdn_detection import is_read_receipt_candidate
 from app.ticketing.utils.constants import (
     IMAGE_EXTENSIONS,
     MAX_ATTACHMENT_FILES,
@@ -300,6 +301,14 @@ def map_external_email_to_interaction(
             from_email=payload.from_.emailAddress.address,
             subject=payload.subject,
             content_type_header=_extract_header(payload, "Content-Type"),
+        ),
+        # Primary signal: the Graph item class (the JSON Content-Type
+        # header is misleading for an Outlook receipt — see
+        # mdn_detection.py). Takes precedence over is_bounce in
+        # EmailService.receive_email.
+        is_read_receipt=is_read_receipt_candidate(
+            payload.item_class,
+            _extract_header(payload, "Content-Type"),
         ),
     )
 

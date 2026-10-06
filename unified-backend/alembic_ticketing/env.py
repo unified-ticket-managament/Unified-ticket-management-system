@@ -69,6 +69,9 @@ OWNED_TABLES = {
     "ticket_assignments",
     "ticket_categories",
     "ticket_assignment_slas",
+    # Outlook-style per-recipient read-receipt state.
+    "email_read_receipts",
+    "app_settings",
 }
 
 

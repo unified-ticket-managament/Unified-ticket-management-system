@@ -376,6 +376,11 @@ export interface OpenEmailResponse {
   draft_body_html?: string | null;
   draft_cc: string[];
   draft_bcc: string[];
+  // Whether "Request read receipt" was ticked on the saved reply draft.
+  draft_read_receipt_requested?: boolean;
+  // Per-recipient read-receipt state of THIS root message (set only
+  // for an outbound Compose root that requested one).
+  read_receipts?: ReadReceiptStatus[];
   draft_attachments: AttachmentMeta[];
   attachments?: AttachmentMeta[];
   replies: InteractionResponse[];
@@ -447,6 +452,7 @@ export interface DraftSaveResponse {
   bcc: string[];
   attachments: AttachmentMeta[];
   created_at: string;
+  read_receipt_requested?: boolean;
 }
 
 export interface DraftDeleteResponse {
@@ -473,6 +479,7 @@ export interface ComposeDraftResponse {
   body_html?: string | null;
   attachments: AttachmentMeta[];
   created_at: string;
+  read_receipt_requested?: boolean;
 }
 
 export interface ComposeDraftSaveRequest {
@@ -485,6 +492,9 @@ export interface ComposeDraftSaveRequest {
   subject?: string;
   message?: string;
   body_html?: string | null;
+  // Whether "Request read receipt" was ticked (see the backend's
+  // read_receipt_requested). Optional/undefined means off.
+  read_receipt_requested?: boolean;
 }
 
 // Ticket-scoped drafts — Save Draft for Ticket Reply and Internal
@@ -501,6 +511,9 @@ export interface TicketReplyDraftSaveRequest {
   bcc?: string[];
   message?: string;
   body_html?: string | null;
+  // Whether "Request read receipt" was ticked (see the backend's
+  // read_receipt_requested). Optional/undefined means off.
+  read_receipt_requested?: boolean;
 }
 
 export interface TicketReplyDraftResponse {
@@ -513,6 +526,7 @@ export interface TicketReplyDraftResponse {
   message: string;
   body_html: string | null;
   created_at: string;
+  read_receipt_requested?: boolean;
 }
 
 export interface TicketNoteDraftSaveRequest {
@@ -563,6 +577,9 @@ export interface InteractionReplyRequest {
   // Client-generated Send idempotency key — see ComposeEmailPayload.
   // idempotencyKey (api/inbox.ts) for the same contract.
   idempotency_key?: string | null;
+  // Whether "Request read receipt" was ticked (see the backend's
+  // read_receipt_requested). Optional/undefined means off.
+  read_receipt_requested?: boolean;
 }
 
 export interface InteractionReplyResponse {
@@ -805,6 +822,22 @@ export interface AttachInteractionResponse {
 // Interaction / Timeline
 // ==========================================================
 
+// One tracked To/Cc recipient's read-receipt state for an OUTBOUND
+// message. "REQUESTED" means no receipt has arrived — which never means
+// the message is unread: a receipt is optional and recipient-controlled.
+// "CONFIRMED" means a receipt arrived. `read_at` is the receipt's own
+// time, not proof of the moment a person opened the message.
+export interface ReadReceiptStatus {
+  recipient_email: string;
+  status: "REQUESTED" | "CONFIRMED" | string;
+  read_at?: string | null;
+}
+
+// GET /inbox/features — mirrors backend feature settings.
+export interface MailFeatures {
+  read_receipts_enabled: boolean;
+}
+
 export interface InteractionResponse {
   interaction_id: string;
   ticket_id: string | null;
@@ -840,6 +873,9 @@ export interface InteractionResponse {
   // interaction that was never an outbound dispatch attempt.
   dispatch_status?: string | null;
   dispatch_error?: string | null;
+  // Per-recipient read-receipt state; absent/empty for every message
+  // that never requested one and for every inbound message.
+  read_receipts?: ReadReceiptStatus[];
 }
 
 // GET /interactions/{id}/thread
@@ -939,6 +975,9 @@ export interface ReplyRequest {
   inline_image_interaction_ids?: string[];
   // See InteractionReplyRequest.idempotency_key above — same contract.
   idempotency_key?: string | null;
+  // Whether "Request read receipt" was ticked (see the backend's
+  // read_receipt_requested). Optional/undefined means off.
+  read_receipt_requested?: boolean;
 }
 
 // ==========================================================

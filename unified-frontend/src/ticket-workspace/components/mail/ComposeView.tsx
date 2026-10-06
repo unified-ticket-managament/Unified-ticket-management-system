@@ -17,6 +17,7 @@ import { WorkflowLoader } from "@/components/common/WorkflowLoader";
 import { AttachmentDropArea } from "@tw/components/common/AttachmentDropArea";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { useAttachmentListIntake } from "@tw/hooks/useAttachmentListIntake";
+import { ReadReceiptCheckbox } from "@tw/components/mail/ReadReceiptCheckbox";
 import { RichTextEditor, isRichTextEmpty } from "@tw/components/mail/RichTextEditor";
 import { listInternalNoteRecipients } from "@tw/api/interaction";
 import {
@@ -98,6 +99,8 @@ export interface ComposeInitialValues {
   // InboxPage.tsx's handleOpen) — lets this session update that same
   // draft row on every subsequent save instead of creating a new one.
   draftInteractionId?: string;
+  // Whether "Request read receipt" was ticked on the reopened draft.
+  readReceiptRequested?: boolean;
   // Set only when this view was opened via Forward (see
   // InboxPage.tsx's handleForward) — swaps the "To" field from the
   // client picker (Compose's own recipient concept) to an internal-
@@ -136,6 +139,10 @@ interface ComposeViewProps {
   clientsError: boolean;
   initialValues?: ComposeInitialValues;
   isSending: boolean;
+  // Whether the backend has read receipts switched on (see
+  // useMailFeatures). Off by default: no checkbox, no receipt request.
+  // Never applies to Forward.
+  readReceiptsEnabled?: boolean;
   onSend: (payload: {
     clientId?: string;
     categoryId?: string;
@@ -152,6 +159,7 @@ interface ComposeViewProps {
     inlineImageInteractionIds?: string[];
     distributionListIds?: string[];
     idempotencyKey?: string;
+    readReceiptRequested?: boolean;
   }) => Promise<unknown>;
   // Forward mode's own Send path — distinct from onSend since
   // forwarding can address a mix of internal organization users (by
@@ -218,6 +226,7 @@ export function ComposeView({
   onDiscard,
   onBack,
   variant = "standalone",
+  readReceiptsEnabled = false,
 }: ComposeViewProps) {
   const { currentUser } = useAuthContext();
   const { pushToast } = useToast();
@@ -316,6 +325,13 @@ export function ComposeView({
   // to N members at send time, not one value.
   const [distributionListIds, setDistributionListIds] = useState<string[]>([]);
   const [subject, setSubject] = useState(initialValues?.subject ?? "");
+  // "Request read receipt" — saved with the Compose draft and sent with
+  // the message. Only effective while the backend has the feature on,
+  // and never for Forward.
+  const [readReceiptRequested, setReadReceiptRequested] = useState(
+    Boolean(initialValues?.readReceiptRequested)
+  );
+  const requestReceipt = readReceiptsEnabled && !isForward && readReceiptRequested;
   // The user's saved signatures — one cached query shared by every
   // composer (see useEmailSignatures).
   const { data: signatures } = useEmailSignatures();
@@ -469,6 +485,10 @@ export function ComposeView({
       subject,
       message: htmlToPlainText(bodyHtml),
       body_html: buildOutgoingBodyHtml(bodyHtml),
+      // Only when ticked: an unticked draft's request is unchanged
+      // (the backend treats a missing flag as off, which also clears a
+      // previously saved one).
+      ...(requestReceipt ? { read_receipt_requested: true } : {}),
     };
     try {
       const result = draftInteractionIdRef.current
@@ -515,7 +535,7 @@ export function ComposeView({
 
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientId, categoryId, toEmail, cc, bcc, subject, bodyHtml, isForward]);
+  }, [clientId, categoryId, toEmail, cc, bcc, subject, bodyHtml, isForward, requestReceipt]);
 
   useEffect(() => {
     return () => {
@@ -781,6 +801,7 @@ export function ComposeView({
       inlineImageInteractionIds: liveInlineImageInteractionIds,
       distributionListIds,
       idempotencyKey: idempotencyKeyRef.current,
+      readReceiptRequested: requestReceipt,
     });
     if (result) {
       pastedImageInteractionIdsRef.current = [];
@@ -1061,6 +1082,14 @@ export function ComposeView({
                 onImageUpload={handleComposeImageUpload}
                 onPendingImageUploadsChange={setHasPendingImageUploads}
               />
+              {readReceiptsEnabled && !isForward && (
+                <ReadReceiptCheckbox
+                  className="mt-2"
+                  checked={readReceiptRequested}
+                  onCheckedChange={setReadReceiptRequested}
+                  disabled={isSending}
+                />
+              )}
             </div>
 
             <div>

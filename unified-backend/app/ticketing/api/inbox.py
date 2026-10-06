@@ -46,6 +46,7 @@ from app.ticketing.schemas.forward import (
 from app.ticketing.schemas.inbox import (
     DraftListResponse,
     InboxResponse,
+    MailFeaturesResponse,
     ReadStatusResponse,
     SentResponse,
 )
@@ -66,6 +67,7 @@ from app.ticketing.schemas.ticket_action import (
     InteractionReplyRequest,
     InteractionReplyResponse,
 )
+from app.ticketing.services.app_settings_service import is_read_receipts_enabled
 from app.ticketing.services.attachment_service import AttachmentService, attachments_to_metadata
 from app.ticketing.utils.recipient_validation import ensure_recipients_are_valid
 from app.ticketing.services.inbox_service import InboxService
@@ -254,6 +256,27 @@ async def get_inbox(
         assigned_to_me=assigned_to_me,
         bypass_ownership_scope=bypass_ownership_scope,
         flagged_only=flagged,
+    )
+
+
+@router.get(
+    "/features",
+    response_model=MailFeaturesResponse,
+)
+async def get_mail_features(
+    current_user: User = Depends(get_current_agent),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Which optional Mail features are switched on, so the composer can
+    show/hide them. Registered before any `/{interaction_id}` route so
+    "features" is never parsed as an id. Reveals nothing sensitive: just
+    mirrors the administrator-controlled setting (Settings > Email &
+    Communication, table `app_settings`) for any authenticated agent.
+    """
+
+    return MailFeaturesResponse(
+        read_receipts_enabled=await is_read_receipts_enabled(db)
     )
 
 
@@ -457,6 +480,7 @@ async def compose_email(
     files: list[UploadFile] = File(default=[]),
     inline_image_interaction_ids: str = Form(default=""),
     idempotency_key: str | None = Form(default=None),
+    read_receipt_requested: bool = Form(default=False),
     current_user: User = Depends(get_current_agent),
     db: AsyncSession = Depends(get_db),
 ):
@@ -529,6 +553,7 @@ async def compose_email(
             bcc=parsed_bcc,
             body_html=body_html,
             idempotency_key=idempotency_key,
+            read_receipt_requested=read_receipt_requested,
         ),
         current_user=current_user,
         files=files,

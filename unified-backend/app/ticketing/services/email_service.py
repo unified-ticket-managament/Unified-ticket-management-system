@@ -168,6 +168,18 @@ class EmailService:
     ) -> EmailResponse:
 
         # ---------------------------------------
+        # Read receipt (MDN) — must run BEFORE the duplicate check, the
+        # bounce check and any Interaction creation: a receipt is
+        # consumed here and never becomes an inbox item, ticket, SLA
+        # event, rule run, notification or bounce. See
+        # _receive_read_receipt / read_receipt_service for the
+        # isolation guarantees (never raises).
+        # ---------------------------------------
+
+        if email.is_read_receipt:
+            return await self._receive_read_receipt(email)
+
+        # ---------------------------------------
         # Duplicate Message-ID Check
         # ---------------------------------------
 
@@ -766,6 +778,30 @@ class EmailService:
             status=created.status.value,
 
             attachments=attachment_metas,
+        )
+
+    async def _receive_read_receipt(self, email: EmailRequest) -> EmailResponse:
+        """
+        Consume-only handling of an inbound read receipt. Deliberately
+        does NOT create an Interaction, run thread-matching, start any
+        SLA clock, call the rule engine, create a notification, or store
+        the receipt body — it only matches the receipt to the exact
+        outbound message + recipient and records that. All failures are
+        absorbed inside ReadReceiptService.process_receipt (it never
+        raises), so this can never break normal ingestion or trigger the
+        poller's retry/dead-letter logic.
+        """
+
+        from app.ticketing.services.read_receipt_service import ReadReceiptService
+
+        outcome = await ReadReceiptService(
+            self.interaction_repository.db
+        ).process_receipt(email)
+
+        return EmailResponse(
+            message=f"Read receipt consumed ({outcome.value}); no interaction created.",
+            interaction_id="",
+            status="READ_RECEIPT",
         )
 
     async def _receive_bounce(self, email: EmailRequest) -> EmailResponse:

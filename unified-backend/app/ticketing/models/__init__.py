@@ -26,6 +26,9 @@ from .rule import Rule
 from .rule_run import RuleRun, RuleRunItem
 from .distribution_list import DistributionList, DistributionListMember
 from .inbound_mail_failure import InboundMailFailure
+from .email_read_receipt import EmailReadReceipt
+from .app_setting import AppSetting
+from .app_setting import AppSetting
 
 __all__ = [
     "Base",
@@ -56,4 +59,6 @@ __all__ = [
     "DistributionList",
     "DistributionListMember",
     "InboundMailFailure",
+    "EmailReadReceipt",
+    "AppSetting",
 ]

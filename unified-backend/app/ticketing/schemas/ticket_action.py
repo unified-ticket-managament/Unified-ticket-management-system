@@ -103,6 +103,20 @@ class ReplyCreate(BaseModel):
     # field existed. See Interaction.dispatch_idempotency_key.
     idempotency_key: str | None = Field(default=None, max_length=255)
 
+    # Outlook-style read receipt requested for this send (see
+    # OutboundEnvelope.read_receipt_requested). Default False — omitting
+    # it sends exactly like every message before this field existed.
+    # Ignored (treated as False) unless the global Read Receipts setting
+    # (Settings > Email & Communication) is on.
+    read_receipt_requested: bool = False
+
+    # Outlook-style read receipt requested for this send (see
+    # OutboundEnvelope.read_receipt_requested). Default False — omitting
+    # it sends exactly like every message before this field existed.
+    # Ignored (treated as False) unless the global Read Receipts setting
+    # (Settings > Email & Communication) is on.
+    read_receipt_requested: bool = False
+
 
 class InteractionReplyRequest(BaseModel):
     """
@@ -140,6 +154,12 @@ class InteractionReplyRequest(BaseModel):
 
     # See ReplyCreate.idempotency_key above — same meaning, same reason.
     idempotency_key: str | None = Field(default=None, max_length=255)
+
+    # See ReplyCreate.read_receipt_requested above — same meaning.
+    read_receipt_requested: bool = False
+
+    # See ReplyCreate.read_receipt_requested above — same meaning.
+    read_receipt_requested: bool = False
 
     # Deliberately no inline_image_interaction_ids field here, unlike
     # ReplyCreate — this request type has exactly one caller that can

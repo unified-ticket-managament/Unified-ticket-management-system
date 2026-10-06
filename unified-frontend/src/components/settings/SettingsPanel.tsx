@@ -10,6 +10,7 @@ import { z } from "zod";
 
 import { ChangePasswordDialog } from "@/components/settings/change-password-dialog";
 import { EmailSignaturesCard } from "@/components/settings/EmailSignaturesCard";
+import { ReadReceiptsSettingCard } from "@/components/settings/ReadReceiptsSettingCard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -228,6 +229,9 @@ export function SettingsPanel({ open, record }: SettingsPanelProps) {
 
       {/* Email Signatures — many named signatures, one default. */}
       <EmailSignaturesCard />
+
+      {/* Email & Communication — system-wide email options (Read Receipts). */}
+      <ReadReceiptsSettingCard />
 
       {/* Security */}
       <Card>
