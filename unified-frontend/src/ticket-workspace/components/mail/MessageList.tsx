@@ -40,6 +40,7 @@ import type { CategoryResponse, ClientResponse, InboxItem, MailFolder, SLAPolicy
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { MessageActionsMenu } from "@tw/components/mail/MessageActionsMenu";
+import { ReminderRowIcon } from "@tw/components/mail/MailReminderIndicators";
 import { MessageContextMenuContent } from "@tw/components/mail/MessageContextMenu";
 import { MailSelectionBar } from "@tw/components/mail/MailSelectionBar";
 import { useMailBulk } from "@tw/components/mail/MailBulkContext";
@@ -990,6 +991,7 @@ export function MessageList({
                         {item.is_pinned && (
                           <Pin className="h-3 w-3 flex-none fill-primary text-primary" aria-label="Pinned" />
                         )}
+                        <ReminderRowIcon interactionId={openId} />
                       </div>
                       <div className="mt-0.5 flex items-center justify-between gap-2">
                         <p className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground">

@@ -72,6 +72,8 @@ OWNED_TABLES = {
     # Outlook-style per-recipient read-receipt state.
     "email_read_receipts",
     "app_settings",
+    # Per-user "Remind me" on a mail thread.
+    "mail_reminders",
 }
 
 

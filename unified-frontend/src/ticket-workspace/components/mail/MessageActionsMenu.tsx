@@ -3,6 +3,7 @@
 import { Link } from "react-router-dom";
 import {
   Archive,
+  Bell,
   FilePlus,
   Flag,
   FolderInput,
@@ -31,6 +32,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { FolderMoveItems } from "@tw/components/mail/FolderMoveItems";
 import { useMailBulk } from "@tw/components/mail/MailBulkContext";
+import { useMailReminder } from "@tw/components/mail/MailReminderContext";
 import { useAuthContext } from "@tw/context/AuthContext";
 import {
   buildMessageMenu,
@@ -68,6 +70,7 @@ export function MessageActionsMenu({
 }: MessageActionsMenuProps) {
   const { currentUser } = useAuthContext();
   const bulk = useMailBulk();
+  const reminders = useMailReminder();
 
   if (!hasMessageMenu({ ...item, isUnread })) return null;
 
@@ -154,6 +157,18 @@ export function MessageActionsMenu({
               {menu.togglePin === "pin" ? "Pin" : "Unpin"}
             </DropdownMenuItem>
           </>
+        )}
+        {reminders && (
+          <DropdownMenuItem
+            onSelect={() => {
+              const existing = reminders.reminderFor(openId);
+              if (existing?.status === "ACTIVE") reminders.edit(existing);
+              else reminders.remind(openId);
+            }}
+          >
+            <Bell className="mr-2 h-4 w-4" />
+            {reminders.reminderFor(openId)?.status === "ACTIVE" ? "Edit reminder" : "Remind me"}
+          </DropdownMenuItem>
         )}
         {menu.archive && (
           <DropdownMenuItem onSelect={() => onMessageAction(openId, "archive")}>

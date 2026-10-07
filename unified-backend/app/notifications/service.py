@@ -99,6 +99,12 @@ class NotificationType:
     # tick.
     MAILBOX_POLL_STALLED = "MAILBOX_POLL_STALLED"
 
+    # A user's personal "Remind me" on a mail thread has come due
+    # (app/core/mail_reminder_scheduler.py). Sent only to the reminder's
+    # owner; `link` opens the thread and related_entity_id is the
+    # thread-root interaction id.
+    MAIL_REMINDER_DUE = "MAIL_REMINDER_DUE"
+
 
 class NotificationService:
     """

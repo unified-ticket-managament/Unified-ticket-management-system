@@ -3,6 +3,7 @@
 import { Link } from "react-router-dom";
 import {
   Archive,
+  Bell,
   FilePlus,
   Flag,
   FolderInput,
@@ -30,6 +31,7 @@ import {
 } from "@/components/ui/context-menu";
 import { FolderMoveItems } from "@tw/components/mail/FolderMoveItems";
 import { useMailBulk } from "@tw/components/mail/MailBulkContext";
+import { useMailReminder } from "@tw/components/mail/MailReminderContext";
 import { selectionLabel } from "@tw/lib/mailSelection";
 import {
   buildBulkMenu,
@@ -64,6 +66,7 @@ export function MessageContextMenuContent({
   onAssignFolder,
 }: MessageContextMenuContentProps) {
   const bulk = useMailBulk();
+  const reminders = useMailReminder();
   if (!bulk) return null;
   const { perms, runBulk, clear } = bulk;
 
@@ -271,6 +274,18 @@ export function MessageContextMenuContent({
         )}
         {menu.togglePin === "pin" ? "Pin" : "Unpin"}
       </ContextMenuItem>
+      {reminders && (
+        <ContextMenuItem
+          onSelect={() => {
+            const existing = reminders.reminderFor(openId);
+            if (existing?.status === "ACTIVE") reminders.edit(existing);
+            else reminders.remind(openId);
+          }}
+        >
+          <Bell className="mr-2 h-4 w-4" />
+          {reminders.reminderFor(openId)?.status === "ACTIVE" ? "Edit reminder" : "Remind me"}
+        </ContextMenuItem>
+      )}
       {menu.archive && (
         <ContextMenuItem onSelect={() => onMessageAction(openId, "archive")}>
           <Archive className="mr-2 h-4 w-4" />

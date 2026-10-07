@@ -100,6 +100,20 @@ class Settings(BaseSettings):
     # default.
     draft_retention_sweep_interval_seconds: int = 86400
 
+    # Mail "Remind me" sweep (app/core/mail_reminder_scheduler.py): how
+    # often due reminders are looked for. Correctness across several
+    # processes comes from the DB claim (FOR UPDATE SKIP LOCKED), not
+    # from this interval.
+    mail_reminder_sweep_interval_seconds: int = 30
+
+    # Whether THIS process runs the reminder sweep. None (unset) means
+    # "only when APP_ENV=production" so a developer's local server that
+    # shares a database with real users doesn't fire their reminders;
+    # set MAIL_REMINDER_SCHEDULER_ENABLED=true/false to override either
+    # way (e.g. to test locally, or for a production host that doesn't
+    # set APP_ENV).
+    mail_reminder_scheduler_enabled: bool | None = None
+
     # Confidence threshold (0.0-1.0) the semantic OTP classifier
     # (app/ticketing/services/otp_classifier.py) must clear before an
     # inbound email's Response SLA is marked COMPLETED as a recognized

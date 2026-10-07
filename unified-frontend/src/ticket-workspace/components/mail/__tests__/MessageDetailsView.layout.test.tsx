@@ -197,6 +197,9 @@ beforeEach(() => {
   );
 });
 
+// The thread reads newest to oldest: r2 (Message 3) on top, then r1 (Message 2),
+// the original i1 (Message 1) last. Each composer still sits directly under the
+// message it replies to.
 describe("MessageDetailsView — Reply / Reply All composer placement", () => {
   it("no composer is mounted until a message's Reply/Reply All is activated", async () => {
     renderView("panel", makeThreadedEmail());
@@ -204,7 +207,7 @@ describe("MessageDetailsView — Reply / Reply All composer placement", () => {
   });
 
   it.each(["Reply", "Reply All"] as const)(
-    "activating %s on Message 1 renders the composer directly after Message 1, before Message 2",
+    "activating %s on Message 1 (the original) renders the composer directly after it, at the end of the thread",
     async (label) => {
       const user = userEvent.setup();
       renderView("panel", makeThreadedEmail());
@@ -213,14 +216,14 @@ describe("MessageDetailsView — Reply / Reply All composer placement", () => {
       const composer = await screen.findByTestId("reply-composer");
       expect(composer).toHaveAttribute("data-mode", label === "Reply" ? "reply" : "replyAll");
 
+      expect(precedes(messageWrapper("r2"), messageWrapper("r1"))).toBe(true);
+      expect(precedes(messageWrapper("r1"), messageWrapper("i1"))).toBe(true);
       expect(precedes(messageWrapper("i1"), composer)).toBe(true);
-      expect(precedes(composer, messageWrapper("r1"))).toBe(true);
-      expect(precedes(composer, messageWrapper("r2"))).toBe(true);
     }
   );
 
   it.each(["Reply", "Reply All"] as const)(
-    "activating %s on Message 2 renders the composer between Message 2 and Message 3",
+    "activating %s on Message 2 renders the composer between Message 2 and the original",
     async (label) => {
       const user = userEvent.setup();
       renderView("panel", makeThreadedEmail());
@@ -229,14 +232,14 @@ describe("MessageDetailsView — Reply / Reply All composer placement", () => {
       const composer = await screen.findByTestId("reply-composer");
       expect(composer).toHaveAttribute("data-mode", label === "Reply" ? "reply" : "replyAll");
 
-      expect(precedes(messageWrapper("i1"), messageWrapper("r1"))).toBe(true);
+      expect(precedes(messageWrapper("r2"), messageWrapper("r1"))).toBe(true);
       expect(precedes(messageWrapper("r1"), composer)).toBe(true);
-      expect(precedes(composer, messageWrapper("r2"))).toBe(true);
+      expect(precedes(composer, messageWrapper("i1"))).toBe(true);
     }
   );
 
   it.each(["Reply", "Reply All"] as const)(
-    "activating %s on Message 3 renders the composer after Message 3, at the end of the thread",
+    "activating %s on Message 3 (the newest) renders the composer directly after it, at the top of the thread",
     async (label) => {
       const user = userEvent.setup();
       renderView("panel", makeThreadedEmail());
@@ -245,8 +248,8 @@ describe("MessageDetailsView — Reply / Reply All composer placement", () => {
       const composer = await screen.findByTestId("reply-composer");
       expect(composer).toHaveAttribute("data-mode", label === "Reply" ? "reply" : "replyAll");
 
-      expect(precedes(messageWrapper("r1"), messageWrapper("r2"))).toBe(true);
       expect(precedes(messageWrapper("r2"), composer)).toBe(true);
+      expect(precedes(composer, messageWrapper("r1"))).toBe(true);
     }
   );
 
@@ -273,13 +276,14 @@ describe("MessageDetailsView — Reply / Reply All composer placement", () => {
 
     await user.click(replyButtonIn("i1", "Reply"));
     await screen.findByTestId("reply-composer");
+    expect(precedes(messageWrapper("r1"), messageWrapper("i1"))).toBe(true);
     expect(precedes(messageWrapper("i1"), screen.getByTestId("reply-composer"))).toBe(true);
-    expect(precedes(screen.getByTestId("reply-composer"), messageWrapper("r1"))).toBe(true);
 
     await user.click(replyButtonIn("r2", "Reply"));
     await waitFor(() => {
       expect(precedes(messageWrapper("r2"), screen.getByTestId("reply-composer"))).toBe(true);
     });
+    expect(precedes(screen.getByTestId("reply-composer"), messageWrapper("r1"))).toBe(true);
     expect(screen.getAllByTestId("reply-composer")).toHaveLength(1);
   });
 
@@ -289,8 +293,8 @@ describe("MessageDetailsView — Reply / Reply All composer placement", () => {
 
     const threadHeading = screen.getByRole("heading", { name: "Message" });
     expect(precedes(threadHeading, composer)).toBe(true);
+    expect(precedes(messageWrapper("r1"), messageWrapper("i1"))).toBe(true);
     expect(precedes(messageWrapper("i1"), composer)).toBe(true);
-    expect(precedes(composer, messageWrapper("r1"))).toBe(true);
   });
 
   it("Reply then Reply All on the same message scroll the mounted composer into view without remounting", async () => {
@@ -315,8 +319,9 @@ describe("MessageDetailsView — Reply / Reply All composer placement", () => {
     expect(composerMounts.mock.calls.length).toBeGreaterThan(0);
     expect(screen.getAllByTestId("reply-composer")).toHaveLength(1);
     expect(screen.getByTestId("reply-composer")).toHaveAttribute("data-mode", "replyAll");
+    expect(precedes(messageWrapper("r2"), messageWrapper("r1"))).toBe(true);
     expect(precedes(messageWrapper("r1"), screen.getByTestId("reply-composer"))).toBe(true);
-    expect(precedes(screen.getByTestId("reply-composer"), messageWrapper("r2"))).toBe(true);
+    expect(precedes(screen.getByTestId("reply-composer"), messageWrapper("i1"))).toBe(true);
   });
 
   it("clicking Reply again on the same message while its composer is already open still scrolls to it", async () => {
@@ -391,9 +396,10 @@ describe("MessageDetailsView — attachments sit between a message's header and 
     expect(precedes(report, body1)).toBe(true);
     expect(precedes(invoice, body1)).toBe(true);
     expect(report.parentElement).toBe(invoice.parentElement);
-    // Message 2's attachment stays with message 2, not hoisted to message 1.
-    expect(precedes(body1, replyAtt)).toBe(true);
+    // The thread reads newest first, so the reply (message 2) sits above the
+    // original. Its attachment stays with it, not hoisted to message 1.
     expect(precedes(replyAtt, body2)).toBe(true);
+    expect(precedes(body2, report)).toBe(true);
     // Inline (signature/CID) images are not listed as attachments.
     expect(screen.queryByRole("button", { name: /logo\.png/ })).not.toBeInTheDocument();
   });

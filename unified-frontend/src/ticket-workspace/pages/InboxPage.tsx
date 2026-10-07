@@ -13,6 +13,7 @@ import { MailWorkspaceLayout } from "@tw/components/mail/MailWorkspaceLayout";
 import { MessageDetailsView } from "@tw/components/mail/MessageDetailsView";
 import { MessageList } from "@tw/components/mail/MessageList";
 import { MailBulkProvider } from "@tw/components/mail/MailBulkContext";
+import { MailReminderProvider } from "@tw/components/mail/MailReminderContext";
 import { SystemMailDetailsView } from "@tw/components/mail/SystemMailDetailsView";
 import { SystemMailList } from "@tw/components/mail/SystemMailList";
 import { useIsDesktopViewport } from "@tw/hooks/useIsDesktopViewport";
@@ -596,6 +597,7 @@ export function InboxPage() {
       onMessageAction={handleMessageAction}
       refreshAfterMutation={mail.refreshAfterMutation}
     >
+    <MailReminderProvider>
     <AppLayout>
       {/* No title passed above (per Mail spec: no page header) — the
           top navbar (h-16) + main's own p-6 padding are the only other
@@ -796,6 +798,7 @@ export function InboxPage() {
         </div>
       </DialogContent>
     </Dialog>
+    </MailReminderProvider>
     </MailBulkProvider>
   );
 }

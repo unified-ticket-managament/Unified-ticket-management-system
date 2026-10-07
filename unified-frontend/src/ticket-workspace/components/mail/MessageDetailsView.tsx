@@ -89,6 +89,7 @@ import {
   resolveCidImagesForDisplay,
   type TrackedInlineImage,
 } from "@tw/lib/richText";
+import { newestFirst } from "@tw/lib/threadOrder";
 import { showUndoSendToast } from "@tw/lib/undoSend";
 import type { PendingMessageAction } from "@tw/lib/messageActions";
 import type {
@@ -106,6 +107,10 @@ import type {
 } from "@tw/types";
 import { AttachmentUploader } from "@tw/components/mail/AttachmentUploader";
 import { ReplyComposer } from "@tw/components/mail/ReplyComposer";
+import {
+  RemindMeToolbarButton,
+  ReminderStatusBar,
+} from "@tw/components/mail/MailReminderIndicators";
 import { SlaFirstResponseBadge } from "@tw/components/sla/SlaFirstResponseBadge";
 import { ShowMoreToggle } from "@tw/components/common/ShowMoreToggle";
 import { useCollapsibleMessage } from "@tw/hooks/useCollapsibleMessage";
@@ -1602,6 +1607,8 @@ export function MessageDetailsView({
         {email.is_read ? <MailOpen className="h-3.5 w-3.5" /> : <Mail className="h-3.5 w-3.5" />}
         {email.is_read ? "Mark as Unread" : "Mark as Read"}
       </Button>
+
+      <RemindMeToolbarButton interactionId={email.interaction_id} />
     </>
   );
 
@@ -1714,6 +1721,7 @@ export function MessageDetailsView({
           />
         </div>
         <p className="mt-1.5 text-[12px] text-muted-foreground">{formatDateTime(email.received_at)}</p>
+        <ReminderStatusBar interactionId={email.interaction_id} />
       </div>
 
       {/* Fullscreen only — Sender Information pinned right below the
@@ -1758,24 +1766,8 @@ export function MessageDetailsView({
           <section>
             <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Message</h3>
             <div className="flex flex-col gap-3">
-              <div
-                id={`mail-message-${email.interaction_id}`}
-                className={cn(
-                  "rounded-lg transition-colors",
-                  selectedMessageId === email.interaction_id && "-mx-1.5 p-1.5 bg-primary/5 ring-2 ring-primary/50"
-                )}
-              >
-                <Bubble
-                  data={rootBubbleData}
-                  canReplyExternal={canReplyExternal}
-                  replyDisabled={isClosed || replyAccessCheck.isLoading}
-                  onReply={() => handleReplyClick(rootBubbleData, "reply")}
-                  onReplyAll={() => handleReplyClick(rootBubbleData, "replyAll")}
-                  onForward={() => handleForwardClick(rootBubbleData)}
-                />
-              </div>
-              {renderReplyComposerFor(email.interaction_id)}
-              {email.replies.map((reply) => {
+              {/* Newest reply first; the original message (and its composer slot) last. */}
+              {newestFirst(email.replies).map((reply) => {
                 const isMessageSelected = selectedMessageId === reply.interaction_id;
                 const wrapperClassName = cn(
                   "rounded-lg transition-colors",
@@ -1811,6 +1803,24 @@ export function MessageDetailsView({
                   </Fragment>
                 );
               })}
+              {/* Original message last — the thread reads newest to oldest. */}
+              <div
+                id={`mail-message-${email.interaction_id}`}
+                className={cn(
+                  "rounded-lg transition-colors",
+                  selectedMessageId === email.interaction_id && "-mx-1.5 p-1.5 bg-primary/5 ring-2 ring-primary/50"
+                )}
+              >
+                <Bubble
+                  data={rootBubbleData}
+                  canReplyExternal={canReplyExternal}
+                  replyDisabled={isClosed || replyAccessCheck.isLoading}
+                  onReply={() => handleReplyClick(rootBubbleData, "reply")}
+                  onReplyAll={() => handleReplyClick(rootBubbleData, "replyAll")}
+                  onForward={() => handleForwardClick(rootBubbleData)}
+                />
+              </div>
+              {renderReplyComposerFor(email.interaction_id)}
             </div>
           </section>
         </div>

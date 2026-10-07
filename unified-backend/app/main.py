@@ -21,6 +21,10 @@ from app.core.graph_subscription_scheduler import (
     start_scheduler as start_graph_subscription_scheduler,
 )
 from app.core.request_timing import get_stage_times, reset_stage_times
+from app.core.mail_reminder_scheduler import (
+    shutdown_scheduler as shutdown_mail_reminder_scheduler,
+    start_scheduler as start_mail_reminder_scheduler,
+)
 from app.core.rule_run_scheduler import (
     shutdown_scheduler as shutdown_rule_run_scheduler,
     start_scheduler as start_rule_run_scheduler,
@@ -39,6 +43,7 @@ from app.ticketing.api.app_settings import router as ticketing_app_settings_rout
 from app.ticketing.api.interaction import router as ticketing_interaction_router
 from app.ticketing.api.mail_folder import router as ticketing_mail_folder_router
 from app.ticketing.api.mail_integration import router as ticketing_mail_integration_router
+from app.ticketing.api.mail_reminder import router as ticketing_mail_reminder_router
 from app.ticketing.api.rule import router as ticketing_rule_router
 from app.ticketing.api.distribution_list import router as ticketing_distribution_list_router
 from app.ticketing.api.sla import ticket_sla_router as ticketing_sla_ticket_router
@@ -72,7 +77,9 @@ async def lifespan(app: FastAPI):
     start_graph_mail_poll_scheduler()
     start_draft_retention_scheduler()
     start_rule_run_scheduler()
+    start_mail_reminder_scheduler()
     yield
+    shutdown_mail_reminder_scheduler()
     shutdown_rule_run_scheduler()
     shutdown_draft_retention_scheduler()
     shutdown_graph_mail_poll_scheduler()
@@ -190,6 +197,7 @@ app.include_router(ticketing_inbox_router)
 app.include_router(ticketing_app_settings_router)
 app.include_router(ticketing_mail_folder_router)
 app.include_router(ticketing_mail_integration_router)
+app.include_router(ticketing_mail_reminder_router)
 app.include_router(ticketing_rule_router)
 app.include_router(ticketing_distribution_list_router)
 app.include_router(ticketing_ticket_router)

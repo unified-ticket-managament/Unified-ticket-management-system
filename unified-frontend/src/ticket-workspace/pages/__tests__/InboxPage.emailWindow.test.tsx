@@ -42,6 +42,8 @@ vi.mock("@tw/context/WorkflowContext", () => ({
 vi.mock("@tw/context/AuthContext", () => ({ useAuthContext: () => ({ currentUser: null }) }));
 vi.mock("@tw/context/ToastContext", () => ({ useToast: () => ({ pushToast: vi.fn() }) }));
 vi.mock("@tw/api/inbox", () => ({ getComposeDraft: vi.fn() }));
+// InboxPage mounts the reminder provider, which loads reminders on mount.
+vi.mock("@tw/api/mailReminders", () => ({ getReminders: vi.fn().mockResolvedValue([]) }));
 vi.mock("@/components/shared/stats", () => ({ AccessDenied: () => null }));
 vi.mock("@/components/rules/RulesPanel", () => ({ RulesPanel: () => null }));
 vi.mock("@tw/components/layout/AppLayout", () => ({ AppLayout: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
