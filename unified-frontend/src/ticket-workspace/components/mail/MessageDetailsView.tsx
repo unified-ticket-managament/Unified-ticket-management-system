@@ -965,11 +965,20 @@ export function MessageDetailsView({
     };
   }, [isTicketed, email.ticket_id]);
 
+  // Only the most recent request may write state: a slow response for a
+  // previously selected category must never overwrite the list for the
+  // category now selected.
+  const assignableRequestId = useRef(0);
+
   function loadAssignableAgents(category: string) {
+    const requestId = ++assignableRequestId.current;
     setAssignableAgentsError(false);
     listAssignableAgents(category || undefined)
-      .then(setAssignableAgents)
+      .then((response) => {
+        if (requestId === assignableRequestId.current) setAssignableAgents(response);
+      })
       .catch(() => {
+        if (requestId !== assignableRequestId.current) return;
         setAssignableAgents(null);
         setAssignableAgentsError(true);
       });

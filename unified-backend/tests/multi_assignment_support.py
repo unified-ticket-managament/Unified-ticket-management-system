@@ -122,6 +122,13 @@ async def build_world(session) -> World:
     outsider = _make_user(session, name="Outsider", role=staff_role, tag=tag, categories=[denials], permissions=STAFF_PERMISSIONS)
     await session.flush()
 
+    # The Team Lead's own team (the real teamlead_id link). Adding Staff
+    # to a ticket as a Team Lead is scoped to this team + the ticket's
+    # category; Outsider is deliberately NOT on it.
+    for member in (koushik, ravi, suresh):
+        member.teamlead_id = team_lead.user_id
+    await session.flush()
+
     client = Client(
         client_id=uuid.uuid4(),
         name=f"Multi-assign Client {tag}",

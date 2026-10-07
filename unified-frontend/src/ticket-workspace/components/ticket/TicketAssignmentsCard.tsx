@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Crown, Lock, Plus, Tag, UserMinus, Users, X } from "lucide-react";
 import { Card } from "@tw/components/common/Card";
 import { Badge } from "@tw/components/common/Badge";
@@ -10,6 +10,7 @@ import { statusTone } from "@tw/lib/ticketTone";
 import { useApiAction } from "@tw/hooks/useApiAction";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
+import { listAssignableAgents } from "@tw/api/agent";
 import { getTransferCandidates } from "@tw/api/ticket";
 import {
   addTicketCategory,
@@ -170,12 +171,45 @@ export function TicketAssignmentsCard({ ticketId, refreshToken, onChanged }: Tic
     return map;
   }, [candidateGroups]);
 
+  // Only the most recent open of the Add Users modal may write candidates.
+  const candidatesRequestId = useRef(0);
+
   const openAdd = async () => {
+    const requestId = ++candidatesRequestId.current;
     setSelectedIds([]);
     setPrimaryChoice("");
     setModal({ kind: "add" });
     const result = await candidatesAction.run(ticketId);
-    if (result) setCandidates(result);
+    if (!result || requestId !== candidatesRequestId.current) return;
+
+    // A Team Lead may only add Staff from their own team in one of this
+    // ticket's categories. The backend enforces it (add_users); this
+    // keeps the picker consistent with it by intersecting the Staff
+    // group with the same scoped lookup Create Ticket uses. Fails
+    // closed: if the scoped lookup errors, no Staff are offered.
+    if (currentUser?.role === "Team Lead") {
+      let scopedStaffIds = new Set<string>();
+      try {
+        const names = (state?.categories ?? []).map((c) => c.category_name);
+        const scoped = await Promise.all(names.map((name) => listAssignableAgents(name)));
+        scopedStaffIds = new Set(
+          scoped.flatMap((r) =>
+            r.groups.filter((g) => g.role === "Staff").flatMap((g) => g.users.map((u) => u.user_id))
+          )
+        );
+      } catch {
+        scopedStaffIds = new Set<string>();
+      }
+      if (requestId !== candidatesRequestId.current) return;
+      setCandidates({
+        ...result,
+        groups: result.groups.map((g) =>
+          g.role === "Staff" ? { ...g, users: g.users.filter((u) => scopedStaffIds.has(u.user_id)) } : g
+        ),
+      });
+      return;
+    }
+    setCandidates(result);
   };
 
   const submitAdd = async () => {

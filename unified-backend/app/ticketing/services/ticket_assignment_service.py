@@ -75,6 +75,7 @@ from app.ticketing.services.access_control import (
     has_permission_for_ticket,
     resolve_status_after_assignment,
 )
+from app.ticketing.services.assignment_service import AssignmentService
 from app.ticketing.services.audit_log_service import AuditLogService
 
 logger = logging.getLogger(__name__)
@@ -428,7 +429,9 @@ class TicketAssignmentService:
             names = ticket.category_names
         return set(names)
 
-    async def _ensure_user_eligible(self, ticket: Ticket, user: User | None) -> User:
+    async def _ensure_user_eligible(
+        self, ticket: Ticket, user: User | None, actor: User | None = None
+    ) -> User:
         """
         Target validation — never trusts the frontend. A user may be
         assigned only if they are an active agent-role user AND existing
@@ -461,6 +464,12 @@ class TicketAssignmentService:
             owned = await self.client_repository.list_client_ids_by_account_manager(user.user_id)
             if ticket.client_company_id not in set(owned):
                 raise _bad_request(f"{user.name} is not the Account Manager for this ticket's client.")
+        # A Team Lead actor may only add Staff from their own team (in
+        # one of the ticket's categories); no-op for every other actor.
+        if actor is not None:
+            await AssignmentService(self.user_repository).ensure_team_lead_can_assign(
+                actor, user, await self._ticket_category_names(ticket)
+            )
         return user
 
     async def _ensure_can_manage(self, ticket: Ticket, actor: User) -> None:
@@ -777,7 +786,7 @@ class TicketAssignmentService:
 
         users = []
         for uid in unique_ids:
-            users.append(await self._ensure_user_eligible(ticket, await self.user_repository.get_by_id(uid)))
+            users.append(await self._ensure_user_eligible(ticket, await self.user_repository.get_by_id(uid), actor))
 
         created: list[TicketAssignment] = []
         actor_id = actor.user_id

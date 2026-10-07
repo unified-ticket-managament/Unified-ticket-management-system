@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 from shared_models.models import Category, Role, User
@@ -273,6 +273,82 @@ class UserRepository:
             )
             .order_by(User.name)
         )
+        return list(result.scalars().all())
+
+    async def list_active_staff_under_teamlead(
+        self, teamlead_id: UUID, category_name: str | None = None
+    ) -> list[User]:
+        """
+        Active Staff in one Team Lead's own team, optionally narrowed to
+        one category — backs the Team Lead's Create Ticket "Assigned To"
+        Staff picker and its server-side re-validation.
+
+        "In the team" is the union of two real reporting edges:
+        `teamlead_id` (the validated assignment edge) and
+        `reporting_manager_id` (the org-chart edge). The second is
+        needed because `teamlead_id` can only be set when the Staff
+        member's categories are a subset of the Team Lead's (see
+        UserService._validate_manager_and_teamlead), so a multi-category
+        Team Lead's other-category reports exist only on
+        `reporting_manager_id`. Direct reports only — never transitive.
+
+        `category_name` (a ticket's `ticket_type`) is matched against
+        the many-to-many `user_categories` membership, same as
+        list_active_staff_by_category. A name matching no category
+        simply yields no rows. `None` keeps the unscoped team list.
+        """
+
+        query = (
+            select(User)
+            .join(Role, Role.role_id == User.role_id)
+            .where(
+                func.lower(Role.name) == STAFF_ROLE_NAME.lower(),
+                User.is_active.is_(True),
+                or_(
+                    User.teamlead_id == teamlead_id,
+                    User.reporting_manager_id == teamlead_id,
+                ),
+            )
+        )
+        if category_name is not None:
+            query = (
+                query.join(user_categories, user_categories.c.user_id == User.user_id)
+                .join(Category, Category.category_id == user_categories.c.category_id)
+                .where(Category.category_name == category_name)
+            )
+
+        result = await self.db.execute(query.order_by(User.name).distinct())
+        return list(result.scalars().all())
+
+    async def list_active_staff_in_team_lead_categories(
+        self, teamlead_id: UUID, category_name: str | None = None
+    ) -> list[User]:
+        """
+        Active Staff who belong to a category the Team Lead ALSO belongs
+        to (optionally narrowed to one `category_name`, which must itself
+        be one of the Team Lead's categories). Backs the fallback for a
+        Team Lead with no linked Staff at all — see
+        AssignmentService.team_lead_eligible_staff.
+        """
+
+        tl_categories = select(user_categories.c.category_id).where(
+            user_categories.c.user_id == teamlead_id
+        )
+        query = (
+            select(User)
+            .join(Role, Role.role_id == User.role_id)
+            .join(user_categories, user_categories.c.user_id == User.user_id)
+            .join(Category, Category.category_id == user_categories.c.category_id)
+            .where(
+                func.lower(Role.name) == STAFF_ROLE_NAME.lower(),
+                User.is_active.is_(True),
+                user_categories.c.category_id.in_(tl_categories),
+            )
+        )
+        if category_name is not None:
+            query = query.where(Category.category_name == category_name)
+
+        result = await self.db.execute(query.order_by(User.name).distinct())
         return list(result.scalars().all())
 
     async def list_active_staff_by_teamlead_ids(

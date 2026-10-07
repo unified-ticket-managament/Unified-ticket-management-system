@@ -1,3 +1,4 @@
+from collections.abc import Iterable
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -57,9 +58,12 @@ class AssignmentService:
       it does NOT narrow `InteractionService.transfer_agent`'s own,
       separately-gated ability to hand an *existing* ticket to any
       Team Lead company-wide; that rule is untouched.
-    - Team Lead: their own reporting Staff (`teamlead_id` match, always
-      already within their own category by construction), plus
-      themselves.
+    - Team Lead: their own team's Staff (`teamlead_id` or org-chart
+      `reporting_manager_id` match — a multi-category Team Lead's
+      other-category reports only have the latter), narrowed to
+      `category_name` when one is known, plus themselves. A Team Lead
+      with no linked Staff at all falls back to the active Staff in
+      their own categories (see team_lead_eligible_staff).
     - Site Lead: every active Account Manager / Team Lead / Staff,
       narrowed to `category_name` for the Team Lead/Staff groups the
       same way Account Manager's are, when one is known — Site Lead
@@ -127,9 +131,11 @@ class AssignmentService:
             ]
 
         elif role_name == TEAM_LEAD_ROLE_NAME:
-            staff = await self.user_repository.list_active_staff_by_teamlead(
-                current_user.user_id
-            )
+            # Their own team (teamlead_id OR org-chart reports), narrowed
+            # to the chosen category when known — never company-wide, so
+            # a manually submitted out-of-scope id still fails
+            # resolve_target's allowed_ids check.
+            staff = await self.team_lead_eligible_staff(current_user, category_name)
             groups = [
                 AssignableGroup(role=STAFF_ROLE_NAME, users=[_summary(u) for u in staff]),
             ]
@@ -239,3 +245,87 @@ class AssignmentService:
             )
 
         return agent_id
+
+    # ------------------------------------------------------------------
+    # Team Lead staff scope — shared by every ticket write path that
+    # hands a ticket to someone (transfer, reopen/reassign, add
+    # assignees, escalation acknowledge-and-assign) and by the candidate
+    # pickers behind them. This is an ASSIGNMENT-TARGET rule only; it
+    # is never consulted when resolving who is notified about an
+    # escalation (that stays in escalation_rules / EscalationService).
+    # ------------------------------------------------------------------
+
+    async def team_lead_eligible_staff(
+        self, team_lead: User, category_name: str | None = None
+    ) -> list[User]:
+        """
+        The Staff a Team Lead may assign (optionally for one category):
+        their own team (teamlead_id / org-chart reporting_manager_id)
+        in that category. A Team Lead with NO linked Staff at all (no
+        team configured yet) falls back to the active Staff in the
+        categories they themselves belong to, so they are not left
+        with an empty picker. A Team Lead who does have a team stays
+        strictly scoped to it, even for a category where it has nobody.
+        """
+
+        staff = await self.user_repository.list_active_staff_under_teamlead(
+            team_lead.user_id, category_name
+        )
+        if staff:
+            return staff
+        if await self.user_repository.list_active_staff_under_teamlead(team_lead.user_id, None):
+            return []
+        return await self.user_repository.list_active_staff_in_team_lead_categories(
+            team_lead.user_id, category_name
+        )
+
+    async def team_lead_staff_ids(
+        self, team_lead: User, category_names: Iterable[str]
+    ) -> set[UUID]:
+        """
+        Ids of the Staff `team_lead` may assign (see team_lead_eligible_staff)
+        in ANY of `category_names`. An empty `category_names` means no
+        category is known, so no category narrowing is applied.
+        """
+
+        names = [n for n in dict.fromkeys(category_names) if n]
+        if not names:
+            return {u.user_id for u in await self.team_lead_eligible_staff(team_lead, None)}
+
+        ids: set[UUID] = set()
+        for name in names:
+            ids.update(u.user_id for u in await self.team_lead_eligible_staff(team_lead, name))
+        return ids
+
+    async def ensure_team_lead_can_assign(
+        self,
+        current_user: User,
+        target: User,
+        category_names: Iterable[str],
+    ) -> None:
+        """
+        Server-side guard behind every Staff picker: when the actor is a
+        Team Lead and the target is a Staff member, the target must be
+        in the Team Lead's own team AND in one of `category_names`.
+        A no-op for every other actor role (their existing rules are
+        untouched), for self-assignment, and for non-Staff targets
+        (hand-offs to a Team Lead/Account Manager keep their existing
+        rules) — so this can never narrow anyone but a Team Lead picking
+        Staff.
+        """
+
+        if current_user.role is None or current_user.role.name != TEAM_LEAD_ROLE_NAME:
+            return
+        if target.user_id == current_user.user_id:
+            return
+        if target.role is None or target.role.name != STAFF_ROLE_NAME:
+            return
+
+        if target.user_id not in await self.team_lead_staff_ids(current_user, category_names):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "You can only assign Staff in your own team who belong "
+                    "to this ticket's category."
+                ),
+            )
