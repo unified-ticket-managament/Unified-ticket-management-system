@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronsLeft,
@@ -47,6 +48,7 @@ import { rowClientLabel, rowSender, rowSubject, readToggleLabel } from "@tw/lib/
 import { buildMessageMenu, hasMessageMenu, type MessageActionKey, type MessageActionRow } from "@tw/lib/messageActions";
 import { MailEmptyState } from "@tw/components/mail/MailEmptyState";
 import { listSlaPolicies } from "@tw/api/sla";
+import { getInteractionThread } from "@tw/api/interaction";
 import {
   classifyTier,
   computeElapsedFraction,
@@ -54,10 +56,22 @@ import {
   SLA_TIER_LABEL,
   type SlaTier,
 } from "@tw/lib/slaMath";
+import { messageSender, summarize } from "@tw/lib/interactionMeta";
 import { SlaBadge } from "@tw/components/sla/SlaBadge";
 import { mergedClientFilterOptions } from "@tw/lib/clientFilter";
+import type { InteractionResponse } from "@tw/types";
 
 type SortKey = "newest" | "oldest" | "sender";
+// Collapsed (▶) shows the sender/subject/preview row as before, plus a
+// "N messages" toggle beneath it (from InboxItem.reply_count, already
+// returned by GET /inbox and previously unused here — no extra fetch).
+// Expanded (▼) lazy-fetches that one thread's full message list via the
+// existing GET /interactions/{id}/thread endpoint, once per thread, on
+// first expand only — never eagerly for every visible row. Rendered as
+// additional <li> rows beneath the message's own row (not an overlay on
+// top of it), so none of this row's existing checkbox/⋮-menu absolute-
+// overlay positioning needs to change.
+type ThreadCacheEntry = InteractionResponse[] | "loading" | "error";
 type SlaRiskFilter = "ALL" | SlaTier;
 
 // The only valid "Messages per page" choices — kept in sync with
@@ -149,6 +163,13 @@ interface MessageListProps {
   // identifiable in the list, Outlook-style. Omitted/null renders no
   // highlight, unchanged from before this prop existed.
   selectedId?: string | null;
+  // The one message within the currently-open thread that's individually
+  // highlighted/scrolled-to in the reading pane (see MessageDetailsView) —
+  // null means no child message is singled out (the parent row's own
+  // `selectedId` highlight above is the only one active). Matched against
+  // each thread message's own interaction_id, same id space `onOpenMessage`
+  // below is called with.
+  selectedMessageId?: string | null;
   // True only after a genuine (non-cancel) fetch failure for whatever
   // is currently backing `items` — lets the empty-state branch below
   // distinguish "the request failed" from "it genuinely returned zero
@@ -186,6 +207,14 @@ interface MessageListProps {
   clientFilterCategories?: CategoryResponse[];
   clients: ClientResponse[];
   onOpen: (interactionId: string) => void;
+  // Clicking an individual thread-child message (once a conversation is
+  // expanded) — opens its root thread if not already open, then
+  // highlights/scrolls to this one specific message in the reading pane.
+  // Optional so this stays additive for any caller not yet passing it.
+  onOpenMessage?: (rootInteractionId: string, messageId: string) => void;
+  // Re-clicking an already-open parent row while a child message is
+  // highlighted switches back to "whole conversation" (no refetch).
+  onDeselectMessage?: () => void;
   // Double-clicking a row opens the same message in a full-screen
   // view (Outlook-style), on top of the existing single-click
   // behavior above — optional so this stays additive for any caller
@@ -218,6 +247,7 @@ export function MessageList({
   isError = false,
   variant = "standalone",
   selectedId = null,
+  selectedMessageId = null,
   openingId,
   openedIds,
   search,
@@ -234,6 +264,8 @@ export function MessageList({
   clientFilterCategories,
   clients,
   onOpen,
+  onOpenMessage,
+  onDeselectMessage,
   onOpenFullScreen,
   onCompose,
   onRefresh,
@@ -273,6 +305,30 @@ export function MessageList({
   // Row whose ⋮ menu is open — keeps its hover overlay visible even
   // though the pointer has moved onto the menu.
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  // Outlook-style per-conversation expand/collapse — keyed by the same
+  // openId every other per-row action here uses. threadCache persists
+  // for this component's lifetime (not cleared on refresh/filter
+  // change) purely as a display-preview cache; it's never read by
+  // anything that needs to be authoritative.
+  const [expandedThreadIds, setExpandedThreadIds] = useState<Set<string>>(new Set());
+  const [threadCache, setThreadCache] = useState<Record<string, ThreadCacheEntry>>({});
+
+  async function toggleThreadExpanded(openId: string) {
+    setExpandedThreadIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(openId)) next.delete(openId);
+      else next.add(openId);
+      return next;
+    });
+    if (threadCache[openId]) return;
+    setThreadCache((prev) => ({ ...prev, [openId]: "loading" }));
+    try {
+      const thread = await getInteractionThread(openId);
+      setThreadCache((prev) => ({ ...prev, [openId]: thread.ordered_thread }));
+    } catch {
+      setThreadCache((prev) => ({ ...prev, [openId]: "error" }));
+    }
+  }
   // True while "Last Page" is fetching additional batches to find the
   // real final page — see goToLast below.
   const [isJumpingToLast, setIsJumpingToLast] = useState(false);
@@ -813,46 +869,93 @@ export function MessageList({
               const canContextMenu =
                 selectable && !!(folders && onMessageAction && onMarkRead && onMarkUnread && onAssignFolder);
 
+              // Outlook-style conversation state for this root — computed
+              // here (rather than after rowContent, as before) since the
+              // parent row itself now carries both the ▶/▼ toggle and the
+              // "N messages" label inline, instead of a separate toggle
+              // row beneath it.
+              const isThreadExpanded = expandedThreadIds.has(openId);
+              const threadEntry = threadCache[openId];
+              const totalMessageCount = item.reply_count + 1;
+              const hasThread = item.reply_count > 0;
+
               const rowContent = (
                 <>
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      // Ctrl (Win/Linux) / Cmd (macOS) + Click toggles
-                      // this row in the selection and does NOT open it,
-                      // so it can't change the reading pane, mark the
-                      // thread read, or disturb the rest of the selection.
-                      if (selectable && bulk && resolveRowClick(event, bulk.platform) === "toggle") {
-                        event.preventDefault();
-                        bulk.toggle(openId);
-                        return;
-                      }
-                      // Already open in the reading pane — re-firing
-                      // onOpen would just re-run "open thread" (and
-                      // its mark-read side effect) for no reason; use
-                      // the dedicated Refresh action for that instead.
-                      // Same for a row whose open is still in flight.
-                      if (isSelected || isOpening) return;
-                      onOpen(openId);
-                    }}
-                    onDoubleClick={(event) => {
-                      if (selectable && bulk && resolveRowClick(event, bulk.platform) === "toggle") return;
-                      onOpenFullScreen?.(openId);
-                    }}
-                    // Deliberately NOT `disabled` while opening: the
-                    // first click of a double-click starts the open,
-                    // and a disabled button swallows the second click,
-                    // so dblclick would never fire (it then took a
-                    // third click to get the window).
-                    aria-busy={isOpening || undefined}
+                  <div
                     className={cn(
-                      "group flex w-full items-start gap-3 px-4 py-3 text-left transition-all duration-150 hover:z-[1] hover:-translate-y-0.5 hover:bg-muted/60 hover:shadow-sm",
+                      "flex w-full items-start gap-1 px-4 py-3 text-left transition-all duration-150 hover:z-[1] hover:-translate-y-0.5 hover:bg-muted/60 hover:shadow-sm",
                       isUnread && "bg-primary/[0.03]",
                       isSelected && "bg-primary/10 hover:bg-primary/10",
                       isChecked && "bg-primary/[0.08]",
                       isOpening && "opacity-60"
                     )}
                   >
+                    {/* ▶/▼ — expand/collapse ONLY, independent of the
+                        parent-row click below (opens the whole
+                        conversation) and the checkbox overlay (selection
+                        only). A row with no replies gets an equal-width
+                        spacer so every avatar still lines up in the same
+                        column. */}
+                    {hasThread ? (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleThreadExpanded(openId);
+                        }}
+                        aria-expanded={isThreadExpanded}
+                        aria-label={isThreadExpanded ? "Collapse conversation" : "Expand conversation"}
+                        className="flex h-9 w-6 flex-none items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                      >
+                        {isThreadExpanded ? (
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                    ) : (
+                      <span className="h-9 w-6 flex-none" aria-hidden="true" />
+                    )}
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        // Ctrl (Win/Linux) / Cmd (macOS) + Click toggles
+                        // this row in the selection and does NOT open it,
+                        // so it can't change the reading pane, mark the
+                        // thread read, or disturb the rest of the selection.
+                        if (selectable && bulk && resolveRowClick(event, bulk.platform) === "toggle") {
+                          event.preventDefault();
+                          bulk.toggle(openId);
+                          return;
+                        }
+                        // Already open in the reading pane — re-firing
+                        // onOpen would just re-run "open thread" (and
+                        // its mark-read side effect) for no reason; use
+                        // the dedicated Refresh action for that instead.
+                        // Same for a row whose open is still in flight.
+                        if (isOpening) return;
+                        // If a child message is currently highlighted
+                        // though, re-clicking the parent still means
+                        // something: switch back to the whole-conversation
+                        // view without a refetch.
+                        if (isSelected) {
+                          if (selectedMessageId) onDeselectMessage?.();
+                          return;
+                        }
+                        onOpen(openId);
+                      }}
+                      onDoubleClick={(event) => {
+                        if (selectable && bulk && resolveRowClick(event, bulk.platform) === "toggle") return;
+                        onOpenFullScreen?.(openId);
+                      }}
+                      // Deliberately NOT `disabled` while opening: the
+                      // first click of a double-click starts the open,
+                      // and a disabled button swallows the second click,
+                      // so dblclick would never fire (it then took a
+                      // third click to get the window).
+                      aria-busy={isOpening || undefined}
+                      className="flex flex-1 items-start gap-3 text-left"
+                    >
                     <div className="flex h-9 w-9 flex-none items-center justify-center rounded-full bg-primary/10 text-[12px] font-semibold text-primary">
                       {initialsOf(displayName)}
                     </div>
@@ -888,15 +991,22 @@ export function MessageList({
                           <Pin className="h-3 w-3 flex-none fill-primary text-primary" aria-label="Pinned" />
                         )}
                       </div>
-                      <p className="mt-0.5 truncate text-[12px] text-muted-foreground">
-                        {clientLabel && (
-                          <span className="font-medium text-foreground/70">
-                            {isCategoryInbox ? `Category · ${clientLabel}` : clientLabel}
-                            {preview ? " · " : ""}
+                      <div className="mt-0.5 flex items-center justify-between gap-2">
+                        <p className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground">
+                          {clientLabel && (
+                            <span className="font-medium text-foreground/70">
+                              {isCategoryInbox ? `Category · ${clientLabel}` : clientLabel}
+                              {preview ? " · " : ""}
+                            </span>
+                          )}
+                          {preview}
+                        </p>
+                        {hasThread && (
+                          <span className="flex-none whitespace-nowrap text-[11px] text-muted-foreground">
+                            {totalMessageCount} message{totalMessageCount === 1 ? "" : "s"}
                           </span>
                         )}
-                        {preview}
-                      </p>
+                      </div>
                     </div>
 
                     <div className="flex min-w-[100px] flex-none flex-col items-end gap-1.5 pl-1">
@@ -927,7 +1037,8 @@ export function MessageList({
                         {status.label}
                       </Badge>
                     </div>
-                  </button>
+                    </button>
+                  </div>
                   {folders && onMessageAction && onMarkRead && onMarkUnread && onAssignFolder && hasMessageMenu({ ...item, isUnread }) && (
                     <div
                       className={cn(
@@ -1016,7 +1127,10 @@ export function MessageList({
                   {selectable && (
                     <div
                       className={cn(
-                        "absolute left-4 top-3 z-[2] flex h-9 w-9 items-center justify-center rounded-full bg-background transition-opacity focus-within:opacity-100",
+                        // left-11 (44px) lines up with the avatar, which
+                        // now sits to the right of the ▶/▼ toggle column
+                        // (px-4 row padding + the toggle's w-6 + gap-1).
+                        "absolute left-11 top-3 z-[2] flex h-9 w-9 items-center justify-center rounded-full bg-background transition-opacity focus-within:opacity-100",
                         isChecked || selectionActive ? "opacity-100" : "opacity-0 group-hover/row:opacity-100"
                       )}
                     >
@@ -1030,16 +1144,10 @@ export function MessageList({
                 </>
               );
 
-              if (!canContextMenu) {
-                return (
-                  <li key={item.interaction_id} className="group/row relative">
-                    {rowContent}
-                  </li>
-                );
-              }
-
-              return (
-                <ContextMenu key={item.interaction_id}>
+              const messageRow = !canContextMenu ? (
+                <li className="group/row relative">{rowContent}</li>
+              ) : (
+                <ContextMenu>
                   <ContextMenuTrigger asChild>
                     <li
                       className="group/row relative"
@@ -1065,6 +1173,59 @@ export function MessageList({
                     onAssignFolder={onAssignFolder!}
                   />
                 </ContextMenu>
+              );
+
+              return (
+                <Fragment key={item.interaction_id}>
+                  {messageRow}
+                  {hasThread && isThreadExpanded && (
+                    <li className="bg-muted/10 py-1">
+                      {threadEntry === "loading" && (
+                        <div className="px-10 py-2">
+                          <WorkflowLoader loading size={18} />
+                        </div>
+                      )}
+                      {threadEntry === "error" && (
+                        <p className="px-10 py-2 text-[11.5px] text-destructive">
+                          Couldn&apos;t load messages.
+                        </p>
+                      )}
+                      {Array.isArray(threadEntry) &&
+                        threadEntry.map((message) => {
+                          const isMessageSelected = selectedMessageId === message.interaction_id;
+                          return (
+                            <button
+                              type="button"
+                              key={message.interaction_id}
+                              onClick={() => onOpenMessage?.(openId, message.interaction_id)}
+                              className={cn(
+                                "block w-full border-l-2 py-1.5 pl-3 ml-10 mr-4 text-left transition-colors hover:bg-muted/40",
+                                isMessageSelected ? "border-primary bg-primary/5" : "border-border"
+                              )}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="truncate text-[12px] font-medium text-foreground/80">
+                                  {messageSender(message) ?? "System"}
+                                </span>
+                                <span className="flex flex-none items-center gap-1 text-[11px] text-muted-foreground">
+                                  {message.attachments && message.attachments.length > 0 && (
+                                    <Paperclip className="h-3 w-3" aria-label="Has attachment" />
+                                  )}
+                                  {formatRelativeTime(message.created_at)}
+                                </span>
+                              </div>
+                              <p className="mt-0.5 truncate text-[11.5px] text-foreground/70">
+                                {message.subject || subject}
+                              </p>
+                              <p className="truncate text-[12px] text-muted-foreground">
+                                {summarize(message)}
+                              </p>
+                            </button>
+                          );
+                        })}
+                    </li>
+                  )}
+                </Fragment>
               );
             })}
           </ul>

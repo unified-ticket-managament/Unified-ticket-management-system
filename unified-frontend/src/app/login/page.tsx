@@ -168,6 +168,7 @@ export default function LoginPage() {
                         placeholder="Enter your email"
                         disabled={isLoading}
                         className={cn(loginError && "border-destructive focus-visible:ring-destructive/20")}
+                        suppressHydrationWarning
                         {...register("email", {
                           onChange: () => setLoginError(null),
                         })}
@@ -189,6 +190,7 @@ export default function LoginPage() {
                             "pr-10",
                             loginError && "border-destructive focus-visible:ring-destructive/20"
                           )}
+                          suppressHydrationWarning
                           {...register("password", {
                             onChange: () => setLoginError(null),
                           })}
@@ -199,6 +201,7 @@ export default function LoginPage() {
                           className="absolute right-3 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-primary"
                           aria-label={showPassword ? "Hide password" : "Show password"}
                           tabIndex={-1}
+                          suppressHydrationWarning
                         >
                           {showPassword ? (
                             <EyeOff className="h-4 w-4" />
@@ -221,13 +224,14 @@ export default function LoginPage() {
                         checked={rememberMe}
                         onCheckedChange={(checked) => setRememberMe(checked === true)}
                         disabled={isLoading}
+                        suppressHydrationWarning
                       />
                       <Label htmlFor="remember-me" className="cursor-pointer text-sm font-normal">
                         Remember me
                       </Label>
                     </div>
 
-                    <Button type="submit" className="w-full" disabled={isLoading}>
+                    <Button type="submit" className="w-full" disabled={isLoading} suppressHydrationWarning>
                       {status === "loading" ? (
                         <>
                           <Loader2 className="h-4 w-4 animate-spin" />
@@ -254,6 +258,7 @@ export default function LoginPage() {
                       type="button"
                       onClick={handleForgotPassword}
                       className="block w-full text-center text-sm font-medium text-primary hover:underline"
+                      suppressHydrationWarning
                     >
                       Forgot Password?
                     </button>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Archive,
@@ -41,6 +41,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { FolderMoveItems } from "@tw/components/mail/FolderMoveItems";
 import { useApiAction } from "@tw/hooks/useApiAction";
@@ -112,18 +113,39 @@ const PRIORITY_VARIANT: Record<TicketPriority, "success" | "warning" | "destruct
   CRITICAL: "destructive",
 };
 
-// Reply-All's Cc prefill: the original message's own Cc list, plus
-// every other address the sender put directly in To (index 0 of
-// to_recipients is always the shared mailbox itself, already becoming
-// the reply's From) — minus the shared mailbox address and whoever's
-// about to be the reply's own To (the sender, already covered there).
-// Both source lists are empty for anything that didn't arrive via the
-// Graph transport (see OpenEmailResponse.cc/to_recipients), so this
-// degrades to "no Cc" exactly like the old email.cc-only behavior did
-// for those threads.
-function computeReplyAllCc(email: OpenEmailResponse): string[] {
+// A reply targets whichever specific message (bubble) was actually
+// clicked, never the thread root — see handleReplyClick below. For a
+// client-authored bubble (isClient), the natural reply target is that
+// message's own sender; for an agent-authored REPLY bubble, the
+// sender is always the shared mailbox itself (every outbound reply
+// goes From there), so the natural target is instead whoever THAT
+// reply was sent To — mirrors the backend's own direction-aware
+// resolve_reply_addresses (email_envelope.py).
+function defaultReplyToAddress(bubble: BubbleData): string | null {
+  return bubble.isClient ? bubble.senderEmail : bubble.toLabel;
+}
+
+// The shared mailbox's own address for this specific bubble — the
+// arrival address for a client-authored message, or (since every
+// outbound reply's From is the shared inbox) this bubble's own
+// senderEmail for an agent-authored one. Used only to exclude our own
+// address from the Reply-All Cc prefill below.
+function sharedMailboxAddress(bubble: BubbleData): string | null {
+  return bubble.isClient ? bubble.toLabel : bubble.senderEmail;
+}
+
+// Reply-All's Cc prefill, computed from the SPECIFIC message (bubble)
+// clicked — never the thread root. bubble.cc is that message's own Cc
+// list; bubble.toEmails is that message's own full To-recipient list
+// (to_recipients for an inbound client email, to_emails for an
+// outbound agent reply) — both minus the shared mailbox address and
+// whoever's about to become the reply's own To (already covered
+// there). Both source lists are empty for anything that didn't carry
+// multi-recipient data, so this degrades to "no Cc" exactly like the
+// old root-only, cc-only behavior did for those threads.
+function computeReplyAllCc(bubble: BubbleData): string[] {
   const exclude = new Set(
-    [email.to_email, email.from_email]
+    [sharedMailboxAddress(bubble), defaultReplyToAddress(bubble)]
       .filter((address): address is string => Boolean(address))
       .map((address) => address.toLowerCase())
   );
@@ -131,7 +153,7 @@ function computeReplyAllCc(email: OpenEmailResponse): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
 
-  for (const address of [...(email.cc ?? []), ...(email.to_recipients ?? [])]) {
+  for (const address of [...bubble.cc, ...bubble.toEmails]) {
     const key = address.toLowerCase();
     if (exclude.has(key) || seen.has(key)) continue;
     seen.add(key);
@@ -151,9 +173,21 @@ const PRIORITIES: TicketPriority[] = ["LOW", "MEDIUM", "HIGH"];
 
 interface BubbleData {
   key: string;
+  // This message's own interaction_id — always set (not just for a
+  // reply) so every bubble is independently addressable as a Reply/
+  // Reply All/Forward *source*, never only "the thread root" or "the
+  // newest message". See handleReplyClick/handleForwardClick below.
+  interactionId: string;
   senderName: string;
   senderEmail: string | null;
   toLabel: string | null;
+  // This message's own full To/Cc/Bcc/Subject — not just the display
+  // string above — so Reply/Reply All's prefill is computed from
+  // whichever specific message was clicked, never the thread root's.
+  toEmails: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string;
   timestamp: string;
   body: string;
   // The rich, sanitized-on-the-backend HTML counterpart to `body` —
@@ -166,10 +200,11 @@ interface BubbleData {
   bodyHtml?: string | null;
   isClient: boolean;
   attachments?: OpenEmailResponse["attachments"];
-  // Retry Send affordance — only ever set on an agent-authored bubble
-  // (isClient: false) whose own dispatch_status is "FAILED". See
-  // replyBubble below and MessageDetailsView's handleRetrySend.
-  interactionId?: string;
+  // Retry Send affordance — only ever shown on an agent-authored
+  // bubble (isClient: false) whose own dispatch_status is "FAILED".
+  // See replyBubble below and MessageDetailsView's handleRetrySend —
+  // reuses the same `interactionId` field above, now populated for
+  // every bubble rather than just reply ones.
   dispatchStatus?: string | null;
   dispatchError?: string | null;
   performedBy?: string | null;
@@ -183,9 +218,14 @@ interface BubbleData {
 function rootBubble(email: OpenEmailResponse): BubbleData {
   return {
     key: email.interaction_id,
+    interactionId: email.interaction_id,
     senderName: email.from_name || email.client_name,
     senderEmail: email.from_email,
     toLabel: email.to_email,
+    toEmails: email.to_emails.length > 0 ? email.to_emails : [email.to_email].filter((a): a is string => Boolean(a)),
+    cc: email.cc,
+    bcc: email.bcc,
+    subject: email.subject,
     timestamp: email.received_at,
     body: email.body,
     bodyHtml: email.body_html ?? null,
@@ -206,12 +246,21 @@ function replyBubble(reply: InteractionResponse): BubbleData {
       from_name?: string;
       from_email?: string;
       to_email?: string;
+      to_emails?: string[];
+      cc?: string[];
+      bcc?: string[];
+      subject?: string;
     };
     return {
       key: reply.interaction_id,
+      interactionId: reply.interaction_id,
       senderName: payload.from_name || payload.from_email || "Client",
       senderEmail: payload.from_email ?? null,
       toLabel: payload.to_email ?? null,
+      toEmails: payload.to_emails?.length ? payload.to_emails : [payload.to_email].filter((a): a is string => Boolean(a)),
+      cc: payload.cc ?? [],
+      bcc: payload.bcc ?? [],
+      subject: payload.subject ?? reply.subject ?? "",
       timestamp: reply.created_at,
       body: payload.body ?? "",
       bodyHtml: payload.html_body ?? null,
@@ -226,11 +275,16 @@ function replyBubble(reply: InteractionResponse): BubbleData {
       from_name?: string;
       from_email?: string;
       to_email?: string;
+      to_emails?: string[];
+      cc?: string[];
+      bcc?: string[];
+      subject?: string;
       read_receipt_requested?: boolean;
     };
   };
   return {
     key: reply.interaction_id,
+    interactionId: reply.interaction_id,
     // Only reachable for REPLY today — FORWARD rows are intercepted
     // above the caller of this function and rendered via
     // ForwardActionRow instead (see the "Conversation/Thread Event
@@ -243,12 +297,17 @@ function replyBubble(reply: InteractionResponse): BubbleData {
     senderName: payload.envelope?.from_name || "System",
     senderEmail: payload.envelope?.from_email ?? null,
     toLabel: payload.envelope?.to_email ?? null,
+    toEmails: payload.envelope?.to_emails?.length
+      ? payload.envelope.to_emails
+      : [payload.envelope?.to_email].filter((a): a is string => Boolean(a)),
+    cc: payload.envelope?.cc ?? [],
+    bcc: payload.envelope?.bcc ?? [],
+    subject: payload.envelope?.subject ?? reply.subject ?? "",
     timestamp: reply.created_at,
     body: payload.message ?? "",
     bodyHtml: payload.body_html ?? null,
     isClient: false,
     attachments: reply.attachments,
-    interactionId: reply.interaction_id,
     dispatchStatus: reply.dispatch_status,
     dispatchError: reply.dispatch_error,
     performedBy: reply.performed_by,
@@ -361,11 +420,27 @@ function Bubble({
   canRetry,
   isRetrying,
   onRetrySend,
+  canReplyExternal,
+  replyDisabled,
+  onReply,
+  onReplyAll,
+  onForward,
 }: {
   data: BubbleData;
   canRetry?: boolean;
   isRetrying?: boolean;
   onRetrySend?: (interactionId: string) => void;
+  // Outlook-style per-message actions — always targets THIS bubble's
+  // own data (never the thread root or the newest message), see
+  // handleReplyClick/handleForwardClick below. canReplyExternal/
+  // replyDisabled mirror the bottom toolbar's own gating exactly —
+  // there is no per-message permission/ACL in this system, only
+  // *which message* is targeted varies per bubble.
+  canReplyExternal?: boolean;
+  replyDisabled?: boolean;
+  onReply?: () => void;
+  onReplyAll?: () => void;
+  onForward?: () => void;
 }) {
   // Render once and reuse for both the overflow measurement and the
   // render itself, so "Show More" reflects the rendered length rather
@@ -388,7 +463,7 @@ function Bubble({
   }
 
   return (
-    <div className="flex gap-3">
+    <div className="group/bubble flex gap-3">
       <div
         className={cn(
           "flex h-8 w-8 flex-none items-center justify-center rounded-full text-[11px] font-semibold",
@@ -403,7 +478,60 @@ function Bubble({
             {data.senderName}
             {data.senderEmail && <span className="ml-1.5 font-normal text-muted-foreground">{data.senderEmail}</span>}
           </p>
-          <p className="text-[11px] text-muted-foreground">{formatDateTime(data.timestamp)}</p>
+          <div className="flex flex-none items-center gap-1">
+            {(onReply || onReplyAll || onForward) && (
+              <div className="flex items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover/bubble:opacity-100">
+                {canReplyExternal && onReply && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Reply"
+                        disabled={replyDisabled}
+                        onClick={onReply}
+                        className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
+                      >
+                        <ReplyIcon className="h-3.5 w-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Reply</TooltipContent>
+                  </Tooltip>
+                )}
+                {canReplyExternal && onReplyAll && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Reply All"
+                        disabled={replyDisabled}
+                        onClick={onReplyAll}
+                        className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40"
+                      >
+                        <ReplyAll className="h-3.5 w-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Reply All</TooltipContent>
+                  </Tooltip>
+                )}
+                {onForward && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        aria-label="Forward"
+                        onClick={onForward}
+                        className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <ForwardIcon className="h-3.5 w-3.5" />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>Forward</TooltipContent>
+                  </Tooltip>
+                )}
+              </div>
+            )}
+            <p className="text-[11px] text-muted-foreground">{formatDateTime(data.timestamp)}</p>
+          </div>
         </div>
         {data.toLabel && <p className="mt-0.5 text-[11px] text-muted-foreground">To: {data.toLabel}</p>}
         <ReadReceiptStatus receipts={data.readReceipts} requested={data.readReceiptRequested} />
@@ -553,6 +681,10 @@ interface MessageDetailsViewProps {
   onAssignFolder: (interactionId: string, folderId: string | null) => Promise<boolean>;
   onMarkRead: (interactionId: string) => void;
   onMarkUnread: (interactionId: string) => void;
+  // The one message within this thread to highlight/scroll-to (set by
+  // clicking a specific thread-child row in MessageList) — null shows
+  // the conversation with nothing individually singled out.
+  selectedMessageId?: string | null;
   // An action picked from a message row's "More actions" menu
   // (MessageActionsMenu.tsx) for this message — run through this
   // view's own toolbar handlers below, then cleared.
@@ -580,6 +712,7 @@ export function MessageDetailsView({
   onAssignFolder,
   pendingAction = null,
   onPendingActionHandled,
+  selectedMessageId = null,
 }: MessageDetailsViewProps) {
   // `categories` used to be fetched independently here on every
   // single mount (i.e. every time a message was opened) — it's now
@@ -619,7 +752,13 @@ export function MessageDetailsView({
   // protect independent capabilities.
   const canAssignTicket = !!currentUser?.permissions.includes("ticket:assign");
   const isFullscreen = variant === "fullscreen";
-  const [replyMode, setReplyMode] = useState<"reply" | "replyAll" | null>(null);
+  // Which message is being replied to, and in which mode — Outlook-
+  // style, this is always the SPECIFIC bubble the user clicked Reply/
+  // Reply All on (see handleReplyClick), never implicitly "the thread
+  // root" or "the newest message". The composer itself is still
+  // rendered once, directly under whichever bubble this names (see
+  // the thread render below).
+  const [activeReply, setActiveReply] = useState<{ bubble: BubbleData; mode: "reply" | "replyAll" } | null>(null);
   // See handleUploadInlineImage/handleSend below — only ever
   // populated for a ticketed reply's pasted images. Tracked as
   // {interactionId, contentId} pairs so a deleted/replaced image can
@@ -637,6 +776,15 @@ export function MessageDetailsView({
   useEffect(() => {
     idempotencyKeyRef.current = generateIdempotencyKey();
   }, [email.interaction_id]);
+
+  // Scrolls to and (via the wrapper className above) highlights whichever
+  // single message was just selected from a thread-child click.
+  useEffect(() => {
+    if (!selectedMessageId) return;
+    document
+      .getElementById(`mail-message-${selectedMessageId}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [selectedMessageId, email.interaction_id]);
 
   // Retry Send (P1) — reuses the persisted envelope server-side, see
   // InteractionService.retry_failed_send. Refreshes just this one
@@ -688,8 +836,9 @@ export function MessageDetailsView({
   });
 
   // Reply / Reply All scroll-into-view. The composer is mounted
-  // conditionally (replyMode) above the thread, so a user scrolled to the
-  // bottom of a long email would otherwise have it open off-screen. The
+  // conditionally (activeReply), inline under whichever bubble it
+  // targets, so a user scrolled elsewhere in a long thread would
+  // otherwise have it open off-screen. The
   // tick is bumped only by an explicit Reply / Reply All click — never by
   // the auto-open of a saved draft when a thread is opened — and the
   // effect runs after the commit that mounted the composer, so the ref is
@@ -702,10 +851,10 @@ export function MessageDetailsView({
     replyComposerRef.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
   }, [replyScrollTick]);
 
-  async function handleReplyClick(mode: "reply" | "replyAll") {
+  async function handleReplyClick(bubble: BubbleData, mode: "reply" | "replyAll") {
     const result = await replyAccessCheck.run(mode);
     if (result) {
-      setReplyMode(result);
+      setActiveReply({ bubble, mode: result });
       setReplyScrollTick((tick) => tick + 1);
     }
   }
@@ -754,8 +903,18 @@ export function MessageDetailsView({
   useEffect(() => {
     // Opening a thread that already has a saved draft goes straight
     // into edit mode — the user shouldn't have to click Reply first
-    // to see (and resume) work they already started.
-    setReplyMode(hasDraft ? (email.draft_cc.length > 0 || email.draft_bcc.length > 0 ? "replyAll" : "reply") : null);
+    // to see (and resume) work they already started. A draft has no
+    // per-message concept of its own (it's inherently "the next reply
+    // on this thread"), so it always targets the root bubble — a
+    // deliberate, stated limitation, not an oversight.
+    setActiveReply(
+      hasDraft
+        ? {
+            bubble: rootBubble(email),
+            mode: email.draft_cc.length > 0 || email.draft_bcc.length > 0 ? "replyAll" : "reply",
+          }
+        : null
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email.interaction_id, email.ticket_id]);
 
@@ -779,7 +938,11 @@ export function MessageDetailsView({
       .then((draft) => {
         if (cancelled) return;
         setTicketReplyDraft(draft);
-        setReplyMode(draft.cc.length > 0 || draft.bcc.length > 0 ? "replyAll" : "reply");
+        // Same root-only limitation as the pre-ticket draft effect above.
+        setActiveReply({
+          bubble: rootBubble(email),
+          mode: draft.cc.length > 0 || draft.bcc.length > 0 ? "replyAll" : "reply",
+        });
       })
       .catch(() => {
         if (!cancelled) setTicketReplyDraft(null);
@@ -920,8 +1083,9 @@ export function MessageDetailsView({
         to_emails: payload.to,
         distribution_list_ids: payload.distributionListIds,
         attachment_source_interaction_id: attachmentSourceInteractionId,
-        reply_all: replyMode === "replyAll",
+        reply_all: activeReply?.mode === "replyAll",
         subject: payload.subject,
+        source_interaction_id: activeReply?.bubble.interactionId,
         inline_image_interaction_ids: liveInlineImageInteractionIds,
         idempotency_key: idempotencyKeyRef.current,
         // Only when ticked, so an ordinary reply's request is unchanged.
@@ -936,7 +1100,7 @@ export function MessageDetailsView({
         // is expected, not an error.
         discardTicketReplyDraft(email.ticket_id).catch(() => {});
         showUndoSendToast(pushToast, result.interaction_id, "Reply sent.");
-        setReplyMode(null);
+        setActiveReply(null);
         onRefreshList();
         setSelectedEmail({
           ...email,
@@ -960,7 +1124,7 @@ export function MessageDetailsView({
               removed_by: null,
               removed_at: null,
               message_id: null,
-              parent_interaction_id: email.interaction_id,
+              parent_interaction_id: activeReply?.bubble.interactionId ?? email.interaction_id,
               created_at: result.created_at,
             },
           ],
@@ -976,14 +1140,15 @@ export function MessageDetailsView({
       bcc: payload.bcc,
       to_emails: payload.to,
       distribution_list_ids: payload.distributionListIds,
-      reply_all: replyMode === "replyAll",
+      reply_all: activeReply?.mode === "replyAll",
       subject: payload.subject,
+      source_interaction_id: activeReply?.bubble.interactionId,
       idempotency_key: idempotencyKeyRef.current,
       ...(payload.readReceiptRequested ? { read_receipt_requested: true } : {}),
     });
     if (result) {
       idempotencyKeyRef.current = generateIdempotencyKey();
-      setReplyMode(null);
+      setActiveReply(null);
       onRefreshList();
       setSelectedEmail({
         ...email,
@@ -1064,7 +1229,7 @@ export function MessageDetailsView({
     );
     if (result) {
       idempotencyKeyRef.current = generateIdempotencyKey();
-      setReplyMode(null);
+      setActiveReply(null);
       onRefreshList();
     }
     return result;
@@ -1089,22 +1254,26 @@ export function MessageDetailsView({
     return onRemoveDraftAttachment(email.interaction_id, attachmentId);
   }
 
-  function handleForwardClick() {
+  // Forward always operates on the SPECIFIC bubble clicked — never
+  // implicitly the thread root — so forwarding an older message in a
+  // long thread forwards that message's own body/attachments, not the
+  // original email's.
+  function handleForwardClick(bubble: BubbleData) {
     const bodyHtml = buildForwardHtml({
-      fromLabel: email.from_name || email.from_email || email.client_name,
-      dateLabel: formatDateTime(email.received_at),
-      subject: email.subject,
-      body: email.body,
-      bodyHtml: email.body_html ?? undefined,
+      fromLabel: bubble.senderName,
+      dateLabel: formatDateTime(bubble.timestamp),
+      subject: bubble.subject,
+      body: bubble.body,
+      bodyHtml: bubble.bodyHtml ?? undefined,
     });
     onForward({
       clientId: email.client_id,
       toEmail: "",
-      subject: email.subject.toLowerCase().startsWith("fwd:") ? email.subject : `Fwd: ${email.subject}`,
+      subject: bubble.subject.toLowerCase().startsWith("fwd:") ? bubble.subject : `Fwd: ${bubble.subject}`,
       bodyHtml,
-      interactionId: email.interaction_id,
-      originalAttachmentCount: email.attachments?.length ?? 0,
-      originalAttachments: email.attachments ?? [],
+      interactionId: bubble.interactionId,
+      originalAttachmentCount: bubble.attachments?.length ?? 0,
+      originalAttachments: bubble.attachments ?? [],
     });
   }
 
@@ -1185,6 +1354,11 @@ export function MessageDetailsView({
   }
 
   const archiveDisabled = isTicketed || email.status !== "PENDING" || isArchiving;
+  // The thread root as a BubbleData — computed once per render and
+  // reused for its own Bubble, its own per-message action handlers,
+  // and the root-only draft-resume effects above, rather than calling
+  // rootBubble(email) repeatedly.
+  const rootBubbleData = rootBubble(email);
 
   // Row-menu hand-off: same guards as the toolbar buttons below, so a
   // menu pick can never do what the matching button would refuse to.
@@ -1200,10 +1374,10 @@ export function MessageDetailsView({
           pushToast("This ticket is closed — replies are disabled.", "info");
           break;
         }
-        handleReplyClick(pendingAction.action);
+        handleReplyClick(rootBubbleData, pendingAction.action);
         break;
       case "forward":
-        handleForwardClick();
+        handleForwardClick(rootBubbleData);
         break;
       case "createTicket":
         if (canConvertToTicket && !isTicketed) setCreateOpen(true);
@@ -1218,6 +1392,75 @@ export function MessageDetailsView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingAction, email.interaction_id]);
 
+  // Renders the Reply/Reply All composer immediately under whichever
+  // bubble it's currently targeting (bubbleKey) — Outlook opens its
+  // reply editor inline under the message you clicked Reply on, not
+  // pinned at the top of the thread. Returns null everywhere else, so
+  // exactly one instance of ReplyComposer is ever mounted at a time.
+  // Save/Send/Discard Draft remain thread-scoped regardless of which
+  // bubble is targeted (there is no per-message draft concept in this
+  // system) — a saved draft always resumes against the root bubble
+  // (see the two auto-open effects above), which is why its prefill
+  // values below are only applied when targeting the root.
+  function renderReplyComposerFor(bubbleKey: string) {
+    if (isClosed || !activeReply || activeReply.bubble.key !== bubbleKey) return null;
+    const { bubble, mode } = activeReply;
+    const isRoot = bubble.key === email.interaction_id;
+    return (
+      <div ref={replyComposerRef} className="scroll-mt-3 mt-2">
+        <ReplyComposer
+          mode={mode}
+          toEmail={isRoot && ticketReplyDraft ? ticketReplyDraft.to_email : defaultReplyToAddress(bubble)}
+          contacts={contacts}
+          subject={bubble.subject}
+          initialSubject={
+            isRoot && ticketReplyDraft
+              ? ticketReplyDraft.subject
+              : isRoot && hasDraft
+                ? email.draft_subject
+                : null
+          }
+          initialCc={
+            isRoot && ticketReplyDraft
+              ? ticketReplyDraft.cc
+              : isRoot && hasDraft
+                ? email.draft_cc
+                : mode === "replyAll"
+                  ? computeReplyAllCc(bubble)
+                  : []
+          }
+          initialBcc={isRoot && ticketReplyDraft ? ticketReplyDraft.bcc : isRoot && hasDraft ? email.draft_bcc : []}
+          initialMessage={
+            isRoot && ticketReplyDraft ? ticketReplyDraft.message : isRoot && hasDraft ? email.draft_message ?? "" : ""
+          }
+          initialBodyHtml={
+            isRoot && ticketReplyDraft ? ticketReplyDraft.body_html : isRoot && hasDraft ? email.draft_body_html : null
+          }
+          hasExistingDraft={isRoot && (Boolean(ticketReplyDraft) || hasDraft)}
+          readReceiptsEnabled={readReceiptsEnabled}
+          initialReadReceiptRequested={
+            isRoot && ticketReplyDraft
+              ? Boolean(ticketReplyDraft.read_receipt_requested)
+              : isRoot && hasDraft
+                ? Boolean(email.draft_read_receipt_requested)
+                : false
+          }
+          isTicketed={isTicketed}
+          draftAttachments={email.draft_attachments}
+          isSending={isReplying || isReplyingTicket || isUploadingAttachment}
+          onCancel={() => setActiveReply(null)}
+          onSend={handleSend}
+          onSaveDraft={handleSaveDraft}
+          onSendDraft={handleSendDraft}
+          onDiscardDraft={handleDiscardDraft}
+          onUploadDraftAttachment={handleUploadDraftAttachment}
+          onRemoveDraftAttachment={handleRemoveDraftAttachment}
+          onUploadInlineImage={handleUploadInlineImage}
+        />
+      </div>
+    );
+  }
+
   // Shared between the bottom-pinned toolbar (panel/standalone) and
   // the top toolbar (fullscreen, see the "isFullscreen" branch below)
   // — same buttons/handlers either way, just rendered in a different
@@ -1230,7 +1473,7 @@ export function MessageDetailsView({
             size="sm"
             className="gap-1.5"
             disabled={isClosed || replyAccessCheck.isLoading}
-            onClick={() => handleReplyClick("reply")}
+            onClick={() => handleReplyClick(rootBubbleData, "reply")}
           >
             {replyAccessCheck.isLoading ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1244,7 +1487,7 @@ export function MessageDetailsView({
             variant="outline"
             className="gap-1.5"
             disabled={isClosed || replyAccessCheck.isLoading}
-            onClick={() => handleReplyClick("replyAll")}
+            onClick={() => handleReplyClick(rootBubbleData, "replyAll")}
           >
             {replyAccessCheck.isLoading ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1255,7 +1498,7 @@ export function MessageDetailsView({
           </Button>
         </>
       )}
-      <Button size="sm" variant="outline" className="gap-1.5" onClick={handleForwardClick}>
+      <Button size="sm" variant="outline" className="gap-1.5" onClick={() => handleForwardClick(rootBubbleData)}>
         <ForwardIcon className="h-3.5 w-3.5" />
         Forward
       </Button>
@@ -1383,6 +1626,7 @@ export function MessageDetailsView({
   );
 
   return (
+    <TooltipProvider delayDuration={300}>
     <div
       className={cn(
         "flex flex-col overflow-hidden",
@@ -1457,56 +1701,6 @@ export function MessageDetailsView({
           header, alongside Subject/Date, instead of buried mid-scroll. */}
       {isFullscreen && <div className="border-b border-border px-5 py-4">{senderInfoSection}</div>}
 
-      {/* Reply / Reply All composer — directly under the message header
-          (and, in the fullscreen window, the sender info), above the
-          thread, so opening it never means scrolling to the bottom of a
-          long conversation. Same single ReplyComposer for the panel and
-          the double-click window; only its position in this column
-          changed. */}
-      {!isClosed && replyMode && (
-        <div ref={replyComposerRef} className="scroll-mt-3">
-        <ReplyComposer
-          mode={replyMode}
-          toEmail={ticketReplyDraft?.to_email ?? email.from_email}
-          contacts={contacts}
-          subject={email.subject}
-          initialSubject={ticketReplyDraft ? ticketReplyDraft.subject : hasDraft ? email.draft_subject : null}
-          initialCc={
-            ticketReplyDraft
-              ? ticketReplyDraft.cc
-              : hasDraft
-                ? email.draft_cc
-                : replyMode === "replyAll"
-                  ? computeReplyAllCc(email)
-                  : []
-          }
-          initialBcc={ticketReplyDraft ? ticketReplyDraft.bcc : hasDraft ? email.draft_bcc : []}
-          initialMessage={ticketReplyDraft ? ticketReplyDraft.message : hasDraft ? email.draft_message ?? "" : ""}
-          initialBodyHtml={ticketReplyDraft ? ticketReplyDraft.body_html : hasDraft ? email.draft_body_html : null}
-          hasExistingDraft={Boolean(ticketReplyDraft) || hasDraft}
-          readReceiptsEnabled={readReceiptsEnabled}
-          initialReadReceiptRequested={
-            ticketReplyDraft
-              ? Boolean(ticketReplyDraft.read_receipt_requested)
-              : hasDraft
-                ? Boolean(email.draft_read_receipt_requested)
-                : false
-          }
-          isTicketed={isTicketed}
-          draftAttachments={email.draft_attachments}
-          isSending={isReplying || isReplyingTicket || isUploadingAttachment}
-          onCancel={() => setReplyMode(null)}
-          onSend={handleSend}
-          onSaveDraft={handleSaveDraft}
-          onSendDraft={handleSendDraft}
-          onDiscardDraft={handleDiscardDraft}
-          onUploadDraftAttachment={handleUploadDraftAttachment}
-          onRemoveDraftAttachment={handleRemoveDraftAttachment}
-          onUploadInlineImage={handleUploadInlineImage}
-        />
-        </div>
-      )}
-
       {/* Attachments / Tags / Message Body — the only scrolling region */}
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <div className="flex flex-col gap-5">
@@ -1545,26 +1739,57 @@ export function MessageDetailsView({
           <section>
             <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Message</h3>
             <div className="flex flex-col gap-3">
-              <Bubble data={rootBubble(email)} />
+              <div
+                id={`mail-message-${email.interaction_id}`}
+                className={cn(
+                  "rounded-lg transition-colors",
+                  selectedMessageId === email.interaction_id && "-mx-1.5 p-1.5 bg-primary/5 ring-2 ring-primary/50"
+                )}
+              >
+                <Bubble
+                  data={rootBubbleData}
+                  canReplyExternal={canReplyExternal}
+                  replyDisabled={isClosed || replyAccessCheck.isLoading}
+                  onReply={() => handleReplyClick(rootBubbleData, "reply")}
+                  onReplyAll={() => handleReplyClick(rootBubbleData, "replyAll")}
+                  onForward={() => handleForwardClick(rootBubbleData)}
+                />
+              </div>
+              {renderReplyComposerFor(email.interaction_id)}
               {email.replies.map((reply) => {
+                const isMessageSelected = selectedMessageId === reply.interaction_id;
+                const wrapperClassName = cn(
+                  "rounded-lg transition-colors",
+                  isMessageSelected && "-mx-1.5 p-1.5 bg-primary/5 ring-2 ring-primary/50"
+                );
                 if (reply.interaction_type === "FORWARD") {
                   return (
-                    <ForwardActionRow
-                      key={reply.interaction_id}
-                      data={forwardAction(reply)}
-                      currentUserId={currentUser?.user_id}
-                    />
+                    <div key={reply.interaction_id} id={`mail-message-${reply.interaction_id}`} className={wrapperClassName}>
+                      <ForwardActionRow
+                        data={forwardAction(reply)}
+                        currentUserId={currentUser?.user_id}
+                      />
+                    </div>
                   );
                 }
                 const bubbleData = replyBubble(reply);
                 return (
-                  <Bubble
-                    key={reply.interaction_id}
-                    data={bubbleData}
-                    canRetry={bubbleData.performedBy === currentUser?.user_id}
-                    isRetrying={retryAction.isLoading}
-                    onRetrySend={handleRetrySend}
-                  />
+                  <Fragment key={reply.interaction_id}>
+                    <div id={`mail-message-${reply.interaction_id}`} className={wrapperClassName}>
+                      <Bubble
+                        data={bubbleData}
+                        canRetry={bubbleData.performedBy === currentUser?.user_id}
+                        isRetrying={retryAction.isLoading}
+                        onRetrySend={handleRetrySend}
+                        canReplyExternal={canReplyExternal}
+                        replyDisabled={isClosed || replyAccessCheck.isLoading}
+                        onReply={() => handleReplyClick(bubbleData, "reply")}
+                        onReplyAll={() => handleReplyClick(bubbleData, "replyAll")}
+                        onForward={() => handleForwardClick(bubbleData)}
+                      />
+                    </div>
+                    {renderReplyComposerFor(reply.interaction_id)}
+                  </Fragment>
                 );
               })}
             </div>
@@ -1902,5 +2127,6 @@ export function MessageDetailsView({
         </DialogContent>
       </Dialog>
     </div>
+    </TooltipProvider>
   );
 }

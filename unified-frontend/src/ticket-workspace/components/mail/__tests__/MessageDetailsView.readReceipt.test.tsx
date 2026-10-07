@@ -175,6 +175,18 @@ const receipt = (
   read_at: string | null = null
 ): ReadReceiptStatus => ({ recipient_email, status, read_at });
 
+// The bottom toolbar's Reply/Reply All buttons and the root bubble's
+// hover-reveal per-message Reply/Reply All buttons share the same
+// accessible name — only the toolbar ones render visible text (the
+// hover ones are icon-only, labeled via aria-label), so filtering on
+// rendered text picks out the toolbar button specifically.
+function toolbarButton(name: string): HTMLElement {
+  const candidates = screen.getAllByRole("button", { name });
+  const match = candidates.find((button) => button.textContent?.trim() === name);
+  if (!match) throw new Error(`No toolbar button found with visible text "${name}"`);
+  return match;
+}
+
 beforeEach(() => {
   composerProps.mockClear();
   // Call history must not leak between tests (assertions read calls[0]).
@@ -341,7 +353,11 @@ describe("feeding the composer", () => {
   it("a brand-new reply starts unchecked", async () => {
     const user = userEvent.setup();
     renderView(makeEmail());
-    await user.click(screen.getByRole("button", { name: /^reply$/i }));
+    // Both the bottom toolbar's Reply button and the root bubble's
+    // hover-reveal per-message Reply button share this accessible
+    // name — only the toolbar one renders visible text, so filter on
+    // that to land on a single element.
+    await user.click(toolbarButton("Reply"));
     await screen.findByTestId("reply-composer");
 
     expect(composerProps.mock.calls.at(-1)![0].initialReadReceiptRequested).toBe(false);
@@ -388,7 +404,7 @@ describe("pre-ticket send (replyToInteraction)", () => {
   it("Reply All carries it too", async () => {
     const user = userEvent.setup();
     renderView(makeEmail());
-    await user.click(screen.getByRole("button", { name: /reply all/i }));
+    await user.click(toolbarButton("Reply All"));
     await screen.findByTestId("reply-composer");
     await composerProps.mock.calls.at(-1)![0].onSend({ ...SEND, readReceiptRequested: true });
 

@@ -214,6 +214,21 @@ export function InboxPage() {
     return false;
   }
 
+  // Clicking one specific message inside an expanded conversation thread
+  // (MessageList's thread-child rows) — opens the thread's root if it
+  // isn't already the one in the reading pane, then highlights/scrolls to
+  // just that message (see MessageDetailsView's selectedMessageId). Closes
+  // Compose/Rules first, same as handleOpen, so Panel 3 actually shows the
+  // reading pane rather than staying on whichever of those was open.
+  async function handleOpenMessage(rootInteractionId: string, messageId: string) {
+    setComposeOpen(false);
+    setRulesOpen(false);
+    if (selectedEmailRef.current?.interaction_id !== rootInteractionId) {
+      await mail.openThread(rootInteractionId);
+    }
+    mail.setSelectedMessageId(messageId);
+  }
+
   // Double-click → floating reading window (Outlook-style, centered
   // over the Inbox rather than replacing it). Reuses handleOpen (so
   // the same "open thread" data-loading path backs both the
@@ -392,6 +407,7 @@ export function InboxPage() {
     <MessageList
       variant="panel"
       selectedId={selectedEmail?.interaction_id ?? null}
+      selectedMessageId={mail.selectedMessageId}
       folderLabel={`${folderPathLabel(mail.folders, mail.activeFolderId) || "Folder"} (${mail.folderRowsTotal})`}
       items={mail.folderRows}
       isLoading={mail.isFolderLoading}
@@ -412,6 +428,8 @@ export function InboxPage() {
       clientFilterCategories={allCategories}
       clients={mail.clients}
       onOpen={handleOpen}
+      onOpenMessage={handleOpenMessage}
+      onDeselectMessage={() => mail.setSelectedMessageId(null)}
       onOpenFullScreen={handleOpenFullScreen}
       onCompose={handleComposeClick}
       onRefresh={mail.refresh}
@@ -437,6 +455,7 @@ export function InboxPage() {
     <MessageList
       variant="panel"
       selectedId={selectedEmail?.interaction_id ?? null}
+      selectedMessageId={mail.selectedMessageId}
       folderLabel={folderLabel}
       items={mail.filteredItems}
       isLoading={mail.isLoading}
@@ -457,6 +476,8 @@ export function InboxPage() {
       clientFilterCategories={allCategories}
       clients={mail.clients}
       onOpen={handleOpen}
+      onOpenMessage={handleOpenMessage}
+      onDeselectMessage={() => mail.setSelectedMessageId(null)}
       onOpenFullScreen={handleOpenFullScreen}
       onCompose={handleComposeClick}
       onRefresh={mail.refresh}
@@ -506,6 +527,7 @@ export function InboxPage() {
     <MessageDetailsView
       variant="panel"
       email={selectedEmail}
+      selectedMessageId={mail.selectedMessageId}
       folders={mail.folders}
       onBack={() => setSelectedEmail(null)}
       onRefreshList={mail.refresh}
@@ -548,6 +570,7 @@ export function InboxPage() {
     <MessageDetailsView
       variant="fullscreen"
       email={selectedEmail}
+      selectedMessageId={mail.selectedMessageId}
       folders={mail.folders}
       onBack={() => setIsFullScreenOpen(false)}
       onRefreshList={mail.refresh}
@@ -619,6 +642,7 @@ export function InboxPage() {
               // would keep rendering in front of it.
               <MessageDetailsView
                 email={selectedEmail}
+                selectedMessageId={mail.selectedMessageId}
                 folders={mail.folders}
                 onBack={() => setSelectedEmail(null)}
                 onRefreshList={mail.refresh}
@@ -659,6 +683,7 @@ export function InboxPage() {
                 clientFilterCategories={allCategories}
                 clients={mail.clients}
                 onOpen={handleOpen}
+                onOpenMessage={handleOpenMessage}
                 onOpenFullScreen={handleOpenFullScreen}
                 onCompose={handleComposeClick}
                 onRefresh={mail.refresh}
@@ -713,6 +738,7 @@ export function InboxPage() {
                 clientFilterCategories={allCategories}
                 clients={mail.clients}
                 onOpen={handleOpen}
+                onOpenMessage={handleOpenMessage}
                 onOpenFullScreen={handleOpenFullScreen}
                 onCompose={handleComposeClick}
                 onRefresh={mail.refresh}

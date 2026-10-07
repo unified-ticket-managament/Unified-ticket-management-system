@@ -1194,6 +1194,60 @@ class InteractionService:
 
         return envelope
 
+    async def _resolve_envelope_source(
+        self, source: Interaction
+    ) -> tuple[EmailPayload, str | None, InteractionDirection]:
+        """
+        Normalizes an arbitrary interaction within a thread — either
+        the original inbound/Compose-authored EMAIL row, or a prior
+        outbound REPLY — into the (EmailPayload-shaped addressing
+        data, that row's own message_id, that row's own direction)
+        triple resolve_reply_addresses/build_reply_envelope already
+        expect, regardless of which specific message in the thread is
+        actually being replied to. See ReplyCreate.source_interaction_id
+        / InteractionReplyRequest.source_interaction_id — this is what
+        lets add_reply/add_interaction_reply build a reply from a
+        caller-selected message instead of always the ticket's latest
+        inbound email / the thread root.
+
+        A REPLY row has no EmailPayload-shaped payload of its own (its
+        payload is {message, envelope, dispatch_status, ...}) — its
+        already-stored OutboundEnvelope (payload["envelope"]) is
+        adapted into an EmailPayload instead, carrying over that row's
+        own provider_message_id so a reply-to-a-reply still gets a
+        genuine Graph-threaded reply/replyAll (see
+        Interaction.provider_message_id's own docstring).
+        """
+
+        if source.interaction_type == "EMAIL":
+            return (
+                EmailPayload.model_validate(source.payload),
+                source.message_id,
+                source.direction,
+            )
+
+        envelope_dict = source.payload.get("envelope") if source.payload else None
+        if not envelope_dict:
+            raise HTTPException(
+                status_code=http_status.HTTP_400_BAD_REQUEST,
+                detail="This message has no recipient information to reply to.",
+            )
+
+        adapted = EmailPayload(
+            from_email=envelope_dict.get("from_email"),
+            from_name=envelope_dict.get("from_name"),
+            to_email=envelope_dict.get("to_email"),
+            to_emails=envelope_dict.get("to_emails") or [],
+            cc=envelope_dict.get("cc") or [],
+            bcc=envelope_dict.get("bcc") or [],
+            subject=envelope_dict.get("subject") or source.subject or "(no subject)",
+            body=source.payload.get("message") or "",
+            html_body=envelope_dict.get("body_html"),
+            references=envelope_dict.get("references") or [],
+            provider_message_id=source.provider_message_id,
+        )
+        return adapted, source.message_id, source.direction
+
     async def _merge_existing_attachments_into_envelope(
         self,
         interaction: Interaction,
@@ -1990,29 +2044,52 @@ class InteractionService:
             current_user
         )
 
-        # The latest inbound email on this ticket is both the envelope
-        # source (recipient address, In-Reply-To) and the thread this
-        # reply belongs to — resolved once, used for both, regardless
-        # of whether envelope-building succeeds. Resolved to the true
-        # root via a recursive walk-up (InteractionRepository
-        # .find_thread_root), not a single hop, for the same reason
-        # as get_thread/add_interaction_reply — see that method's
-        # docstring.
-        latest_email = await self.interaction_repository.get_latest_inbound_email_for_ticket(
-            ticket_id
-        )
-        thread_root_id = None
-        if latest_email is not None:
-            root = await self.interaction_repository.find_thread_root(
-                latest_email.interaction_id
+        # request.source_interaction_id, when given, is the specific
+        # message within this ticket's thread the agent actually
+        # clicked Reply/Reply All on (e.g. the Mail module's per-bubble
+        # actions) — the envelope is then built from THAT message, and
+        # the new reply chains directly off it (a true parent, not
+        # flattened to the thread root), so "what was this actually
+        # replying to" stays a real, queryable fact. Omitted (the
+        # default) preserves the pre-existing behavior byte-for-byte:
+        # the ticket's latest inbound email is both the envelope source
+        # and the reply's parent, resolved to the true thread root via
+        # a recursive walk-up (InteractionRepository.find_thread_root),
+        # not a single hop, for the same reason as get_thread/
+        # add_interaction_reply — see that method's docstring.
+        if request.source_interaction_id is not None:
+            # Client-supplied — never trust it without checking it
+            # actually belongs to this same ticket, mirroring the
+            # existing attachment_source_interaction_id ownership check
+            # below (otherwise an agent could reference an arbitrary
+            # interaction_id from a *different* ticket's thread).
+            latest_email = await self.interaction_repository.get_by_id(
+                request.source_interaction_id
             )
-            thread_root_id = (
-                root.interaction_id if root is not None else latest_email.interaction_id
+            if latest_email is None or latest_email.ticket_id != ticket_id:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="source_interaction_id does not belong to this ticket.",
+                )
+            thread_root_id = latest_email.interaction_id
+        else:
+            latest_email = await self.interaction_repository.get_latest_inbound_email_for_ticket(
+                ticket_id
             )
+            thread_root_id = None
+            if latest_email is not None:
+                root = await self.interaction_repository.find_thread_root(
+                    latest_email.interaction_id
+                )
+                thread_root_id = (
+                    root.interaction_id if root is not None else latest_email.interaction_id
+                )
 
         envelope = None
         if latest_email is not None:
-            inbound_payload = EmailPayload.model_validate(latest_email.payload)
+            inbound_payload, inbound_message_id, inbound_direction = (
+                await self._resolve_envelope_source(latest_email)
+            )
 
             client = None
             if self.client_repository is not None and ticket.client_company_id is not None:
@@ -2037,7 +2114,7 @@ class InteractionService:
             # since inbound_payload.to_email is populated either way.
             am_email = await self._resolve_account_manager_email(client) if client is not None else None
             reply_from_email, default_to_email = resolve_reply_addresses(
-                inbound_payload, latest_email.direction
+                inbound_payload, inbound_direction
             )
 
             if not inbound_payload.provider_message_id:
@@ -2053,7 +2130,7 @@ class InteractionService:
                 envelope = build_reply_envelope(
                     from_email=reply_from_email,
                     inbound_payload=inbound_payload,
-                    inbound_message_id=latest_email.message_id,
+                    inbound_message_id=inbound_message_id,
                     body=request.message,
                     agent_name=current_user.name,
                     account_manager_email=am_email,
@@ -2238,6 +2315,37 @@ class InteractionService:
         )
         ensure_has_permission(current_user, "communication:reply_external")
 
+        # request.source_interaction_id, when given, is the specific
+        # message within this thread the agent actually clicked Reply/
+        # Reply All on (e.g. the Mail module's per-bubble actions) —
+        # the envelope and the new reply's own parent/subject/client
+        # are built from THAT message rather than the thread root, so
+        # the new reply chains directly off it (a true parent, not
+        # flattened to the root). Authorization/visibility/first-
+        # response-clock bookkeeping above and below stay keyed to
+        # `root` regardless — those are thread-scoped facts, not
+        # per-message ones. Omitted (the default) preserves the
+        # pre-existing behavior byte-for-byte: `source` is just `root`.
+        if request.source_interaction_id is not None:
+            source = await self.interaction_repository.get_by_id(
+                request.source_interaction_id
+            )
+            if source is None:
+                raise HTTPException(
+                    status_code=http_status.HTTP_404_NOT_FOUND,
+                    detail="Interaction not found.",
+                )
+            source_root = await self.interaction_repository.find_thread_root(
+                request.source_interaction_id
+            )
+            if source_root is None or source_root.interaction_id != root.interaction_id:
+                raise HTTPException(
+                    status_code=http_status.HTTP_400_BAD_REQUEST,
+                    detail="source_interaction_id is not part of this thread.",
+                )
+        else:
+            source = root
+
         if request.idempotency_key:
             existing = await self.interaction_repository.get_by_idempotency_key(
                 request.idempotency_key, current_user.user_id
@@ -2282,11 +2390,13 @@ class InteractionService:
             current_user
         )
 
-        inbound_payload = EmailPayload.model_validate(root.payload)
+        inbound_payload, inbound_message_id, inbound_direction = (
+            await self._resolve_envelope_source(source)
+        )
 
         client = None
-        if self.client_repository is not None and root.client_id is not None:
-            client = await self.client_repository.get_by_id(root.client_id)
+        if self.client_repository is not None and source.client_id is not None:
+            client = await self.client_repository.get_by_id(source.client_id)
 
         # A reply always goes From the shared support mailbox and
         # defaults To the thread's other real participant — never
@@ -2311,7 +2421,7 @@ class InteractionService:
         # either way.
         am_email = await self._resolve_account_manager_email(client) if client is not None else None
         reply_from_email, default_to_email = resolve_reply_addresses(
-            inbound_payload, root.direction
+            inbound_payload, inbound_direction
         )
 
         if not inbound_payload.provider_message_id:
@@ -2320,7 +2430,7 @@ class InteractionService:
                 "falling back to a plain, unthreaded sendMail (the original "
                 "inbound message never captured a Graph message id, e.g. the "
                 "legacy transport or a malformed payload).",
-                root.interaction_id,
+                source.interaction_id,
             )
 
         envelope = None
@@ -2328,7 +2438,7 @@ class InteractionService:
             envelope = build_reply_envelope(
                 from_email=reply_from_email,
                 inbound_payload=inbound_payload,
-                inbound_message_id=root.message_id,
+                inbound_message_id=inbound_message_id,
                 body=request.message,
                 agent_name=current_user.name,
                 account_manager_email=am_email,
@@ -2365,9 +2475,9 @@ class InteractionService:
                     payload=payload,
                     is_visible=True,
                     message_id=envelope.message_id if envelope is not None else None,
-                    client_id=root.client_id,
-                    parent_interaction_id=root.interaction_id,
-                    subject=root.subject,
+                    client_id=source.client_id,
+                    parent_interaction_id=source.interaction_id,
+                    subject=source.subject,
                     dispatch_idempotency_key=request.idempotency_key,
                     **_dispatch_columns_from_payload(payload),
                 )
@@ -2399,7 +2509,7 @@ class InteractionService:
             actor_id=actor_id,
             actor_name=actor_name,
             actor_role=actor_role,
-            new_values={"parent_interaction_id": root.interaction_id},
+            new_values={"parent_interaction_id": source.interaction_id},
         )
 
         if envelope is not None and existing_attachment_source_interaction_id is not None:
@@ -2434,7 +2544,7 @@ class InteractionService:
 
         return InteractionReplyResponse(
             interaction_id=interaction.interaction_id,
-            parent_interaction_id=root.interaction_id,
+            parent_interaction_id=source.interaction_id,
             message=request.message,
             created_at=interaction.created_at,
         )

@@ -583,6 +583,13 @@ export interface InteractionReplyRequest {
   // (Outlook-style clipboard paste — pasted rich text/tables/inline
   // images). Omit to send exactly like before this field existed.
   body_html?: string | null;
+  // Which message in this thread this reply is actually replying to
+  // (the Mail module's per-bubble Reply/Reply All actions send the
+  // clicked bubble's own interaction_id here) — see the backend's
+  // InteractionReplyRequest.source_interaction_id for the full
+  // rationale. Omitted/null preserves the pre-existing behavior
+  // exactly: the thread root.
+  source_interaction_id?: string | null;
   // Client-generated Send idempotency key — see ComposeEmailPayload.
   // idempotencyKey (api/inbox.ts) for the same contract.
   idempotency_key?: string | null;
@@ -977,6 +984,12 @@ export interface ReplyRequest {
   // See InteractionReplyRequest.body_html above — same meaning, same
   // reason.
   body_html?: string | null;
+  // Which message on this ticket this reply is actually replying to
+  // — see InteractionReplyRequest.source_interaction_id above for the
+  // full rationale; same meaning here, just validated against this
+  // ticket instead of a bare thread. Omitted/null preserves the
+  // pre-existing behavior exactly: the ticket's latest inbound email.
+  source_interaction_id?: string | null;
   // Every interaction_id an inline-image-paste upload
   // (POST /tickets/{id}/attachments/inline-image) returned during
   // this compose session — each gets reassigned onto this reply's own

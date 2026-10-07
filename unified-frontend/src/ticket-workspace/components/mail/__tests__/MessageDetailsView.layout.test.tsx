@@ -1,10 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MessageDetailsView } from "@tw/components/mail/MessageDetailsView";
-import type { OpenEmailResponse } from "@tw/types";
+import type { InteractionResponse, OpenEmailResponse } from "@tw/types";
 
 // MessageDetailsView drags in most of the app (API modules, auth store,
 // workflow context). Everything below is stubbed except the component
@@ -134,6 +134,56 @@ function precedes(a: Element, b: Element) {
   return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
 }
 
+// A minimal REPLY-type interaction with distinguishable body text, for
+// building multi-message threads. See MessageDetailsView.tsx's
+// replyBubble() — payload.envelope is optional, so this bare shape is
+// enough to render as its own bubble.
+function makeReply(id: string, message: string, overrides: Partial<InteractionResponse> = {}): InteractionResponse {
+  return {
+    interaction_id: id,
+    ticket_id: null,
+    interaction_type: "REPLY",
+    status: "ASSIGNED",
+    direction: "OUTBOUND",
+    performed_by: "u1",
+    payload: { message },
+    is_visible: true,
+    removed_by: null,
+    removed_at: null,
+    message_id: null,
+    created_at: "2026-01-01T11:00:00Z",
+    ...overrides,
+  } as InteractionResponse;
+}
+
+// A 3-message thread — the root plus two replies — used to verify the
+// composer always mounts next to whichever bubble it targets.
+function makeThreadedEmail(overrides: Partial<OpenEmailResponse> = {}): OpenEmailResponse {
+  return makeEmail({
+    body: "Message 1 body",
+    replies: [makeReply("r1", "Message 2 body"), makeReply("r2", "Message 3 body")],
+    ...overrides,
+  });
+}
+
+// Each message (root or reply) renders inside a wrapper div keyed
+// `mail-message-<interaction_id>` (see MessageDetailsView.tsx's
+// selectedMessageId highlighting) — a stable handle for asserting
+// where the composer landed relative to a specific message.
+function messageWrapper(interactionId: string): HTMLElement {
+  const element = document.getElementById(`mail-message-${interactionId}`);
+  if (!element) throw new Error(`No message wrapper found for "${interactionId}"`);
+  return element;
+}
+
+// The target bubble's own hover-reveal Reply/Reply All button, scoped
+// to that one message so it's never ambiguous with the bottom
+// toolbar's Reply/Reply All (which always targets the root bubble) or
+// another message's own hover buttons.
+function replyButtonIn(interactionId: string, label: "Reply" | "Reply All"): HTMLElement {
+  return within(messageWrapper(interactionId)).getByRole("button", { name: label });
+}
+
 beforeEach(() => {
   composerMounts.mockClear();
   // jsdom doesn't implement these; the thread body uses them for measuring.
@@ -148,79 +198,135 @@ beforeEach(() => {
 });
 
 describe("MessageDetailsView — Reply / Reply All composer placement", () => {
-  it.each(["panel", "fullscreen"] as const)(
-    "%s: Reply opens the composer under the header and above the thread",
-    async (variant) => {
-      const user = userEvent.setup();
-      renderView(variant);
-      expect(screen.queryByTestId("reply-composer")).not.toBeInTheDocument();
+  it("no composer is mounted until a message's Reply/Reply All is activated", async () => {
+    renderView("panel", makeThreadedEmail());
+    expect(screen.queryByTestId("reply-composer")).not.toBeInTheDocument();
+  });
 
-      await user.click(screen.getByRole("button", { name: /^reply$/i }));
+  it.each(["Reply", "Reply All"] as const)(
+    "activating %s on Message 1 renders the composer directly after Message 1, before Message 2",
+    async (label) => {
+      const user = userEvent.setup();
+      renderView("panel", makeThreadedEmail());
+
+      await user.click(replyButtonIn("i1", label));
       const composer = await screen.findByTestId("reply-composer");
-      expect(composer).toHaveAttribute("data-mode", "reply");
+      expect(composer).toHaveAttribute("data-mode", label === "Reply" ? "reply" : "replyAll");
 
-      const subject = screen.getByRole("heading", { name: "Printer is down" });
-      const threadHeading = screen.getByRole("heading", { name: "Message" });
-      expect(precedes(subject, composer)).toBe(true);
-      expect(precedes(composer, threadHeading)).toBe(true);
+      expect(precedes(messageWrapper("i1"), composer)).toBe(true);
+      expect(precedes(composer, messageWrapper("r1"))).toBe(true);
+      expect(precedes(composer, messageWrapper("r2"))).toBe(true);
     }
   );
 
-  it.each(["panel", "fullscreen"] as const)("%s: Reply All opens the composer in the same top slot", async (variant) => {
-    const user = userEvent.setup();
-    renderView(variant);
-    await user.click(screen.getByRole("button", { name: /reply all/i }));
-    const composer = await screen.findByTestId("reply-composer");
-    expect(composer).toHaveAttribute("data-mode", "replyAll");
-    expect(precedes(composer, screen.getByRole("heading", { name: "Message" }))).toBe(true);
-  });
-
-  it("a saved draft still auto-opens the composer, now at the top", async () => {
-    renderView("panel", makeEmail({ draft_message: "work in progress" }));
-    const composer = await screen.findByTestId("reply-composer");
-    expect(precedes(composer, screen.getByRole("heading", { name: "Message" }))).toBe(true);
-  });
-
-  it("renders exactly one composer", async () => {
-    Element.prototype.scrollIntoView = vi.fn();
-    const user = userEvent.setup();
-    renderView("fullscreen");
-    await user.click(screen.getByRole("button", { name: /^reply$/i }));
-    await waitFor(() => expect(screen.getAllByTestId("reply-composer")).toHaveLength(1));
-  });
-
-  it.each(["panel", "fullscreen"] as const)(
-    "%s: Reply and Reply All scroll the mounted composer into view",
-    async (variant) => {
-      const scrollIntoView = vi.fn(function (this: Element) {
-        // The target must already be in the DOM when we scroll to it.
-        expect(this.querySelector('[data-testid="reply-composer"]')).not.toBeNull();
-      });
-      Element.prototype.scrollIntoView = scrollIntoView;
+  it.each(["Reply", "Reply All"] as const)(
+    "activating %s on Message 2 renders the composer between Message 2 and Message 3",
+    async (label) => {
       const user = userEvent.setup();
-      renderView(variant);
+      renderView("panel", makeThreadedEmail());
 
-      await user.click(screen.getByRole("button", { name: /^reply$/i }));
-      await screen.findByTestId("reply-composer");
-      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
-      expect(scrollIntoView).toHaveBeenLastCalledWith(expect.objectContaining({ block: "nearest" }));
+      await user.click(replyButtonIn("r1", label));
+      const composer = await screen.findByTestId("reply-composer");
+      expect(composer).toHaveAttribute("data-mode", label === "Reply" ? "reply" : "replyAll");
 
-      // Switching to Reply All re-scrolls without remounting the composer.
-      await user.click(screen.getByRole("button", { name: /reply all/i }));
-      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2));
-      expect(composerMounts.mock.calls.length).toBeGreaterThan(0);
-      expect(screen.getAllByTestId("reply-composer")).toHaveLength(1);
+      expect(precedes(messageWrapper("i1"), messageWrapper("r1"))).toBe(true);
+      expect(precedes(messageWrapper("r1"), composer)).toBe(true);
+      expect(precedes(composer, messageWrapper("r2"))).toBe(true);
     }
   );
 
-  it("clicking Reply again while the composer is already open still scrolls to it", async () => {
+  it.each(["Reply", "Reply All"] as const)(
+    "activating %s on Message 3 renders the composer after Message 3, at the end of the thread",
+    async (label) => {
+      const user = userEvent.setup();
+      renderView("panel", makeThreadedEmail());
+
+      await user.click(replyButtonIn("r2", label));
+      const composer = await screen.findByTestId("reply-composer");
+      expect(composer).toHaveAttribute("data-mode", label === "Reply" ? "reply" : "replyAll");
+
+      expect(precedes(messageWrapper("r1"), messageWrapper("r2"))).toBe(true);
+      expect(precedes(messageWrapper("r2"), composer)).toBe(true);
+    }
+  );
+
+  it("the composer never renders in the old fixed slot above the whole thread", async () => {
+    const user = userEvent.setup();
+    renderView("panel", makeThreadedEmail());
+
+    await user.click(replyButtonIn("r1", "Reply"));
+    const composer = await screen.findByTestId("reply-composer");
+
+    const subject = screen.getByRole("heading", { name: "Printer is down" });
+    const threadHeading = screen.getByRole("heading", { name: "Message" });
+    // Sanity: the thread heading really does sit between the subject
+    // and every message — if the composer were still pinned in the
+    // old top slot, it would precede threadHeading instead.
+    expect(precedes(subject, threadHeading)).toBe(true);
+    expect(precedes(threadHeading, composer)).toBe(true);
+    expect(precedes(composer, threadHeading)).toBe(false);
+  });
+
+  it("switching the targeted message moves the single composer instance rather than mounting a second one", async () => {
+    const user = userEvent.setup();
+    renderView("panel", makeThreadedEmail());
+
+    await user.click(replyButtonIn("i1", "Reply"));
+    await screen.findByTestId("reply-composer");
+    expect(precedes(messageWrapper("i1"), screen.getByTestId("reply-composer"))).toBe(true);
+    expect(precedes(screen.getByTestId("reply-composer"), messageWrapper("r1"))).toBe(true);
+
+    await user.click(replyButtonIn("r2", "Reply"));
+    await waitFor(() => {
+      expect(precedes(messageWrapper("r2"), screen.getByTestId("reply-composer"))).toBe(true);
+    });
+    expect(screen.getAllByTestId("reply-composer")).toHaveLength(1);
+  });
+
+  it("a saved draft on the root message auto-opens the composer directly after the root message, not above the thread", async () => {
+    renderView("panel", makeThreadedEmail({ draft_message: "work in progress" }));
+    const composer = await screen.findByTestId("reply-composer");
+
+    const threadHeading = screen.getByRole("heading", { name: "Message" });
+    expect(precedes(threadHeading, composer)).toBe(true);
+    expect(precedes(messageWrapper("i1"), composer)).toBe(true);
+    expect(precedes(composer, messageWrapper("r1"))).toBe(true);
+  });
+
+  it("Reply then Reply All on the same message scroll the mounted composer into view without remounting", async () => {
+    const scrollIntoView = vi.fn(function (this: Element) {
+      // The target must already be in the DOM when we scroll to it.
+      expect(this.querySelector('[data-testid="reply-composer"]')).not.toBeNull();
+    });
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const user = userEvent.setup();
+    renderView("panel", makeThreadedEmail());
+
+    await user.click(replyButtonIn("r1", "Reply"));
+    await screen.findByTestId("reply-composer");
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+    expect(scrollIntoView).toHaveBeenLastCalledWith(expect.objectContaining({ block: "nearest" }));
+    expect(screen.getByTestId("reply-composer")).toHaveAttribute("data-mode", "reply");
+
+    // Switching to Reply All on the SAME message re-scrolls without
+    // remounting or relocating the composer.
+    await user.click(replyButtonIn("r1", "Reply All"));
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2));
+    expect(composerMounts.mock.calls.length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId("reply-composer")).toHaveLength(1);
+    expect(screen.getByTestId("reply-composer")).toHaveAttribute("data-mode", "replyAll");
+    expect(precedes(messageWrapper("r1"), screen.getByTestId("reply-composer"))).toBe(true);
+    expect(precedes(screen.getByTestId("reply-composer"), messageWrapper("r2"))).toBe(true);
+  });
+
+  it("clicking Reply again on the same message while its composer is already open still scrolls to it", async () => {
     const scrollIntoView = vi.fn();
     Element.prototype.scrollIntoView = scrollIntoView;
     const user = userEvent.setup();
-    renderView("panel");
-    await user.click(screen.getByRole("button", { name: /^reply$/i }));
+    renderView("panel", makeThreadedEmail());
+    await user.click(replyButtonIn("i1", "Reply"));
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
-    await user.click(screen.getByRole("button", { name: /^reply$/i }));
+    await user.click(replyButtonIn("i1", "Reply"));
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(2));
   });
 

@@ -66,6 +66,17 @@ class ReplyCreate(BaseModel):
     # exactly as before this field existed.
     attachment_source_interaction_id: UUID | None = None
 
+    # Which message in this ticket's thread this reply is actually
+    # replying to — e.g. the client's original email, or a prior
+    # agent REPLY further down the thread (the Mail module's per-
+    # message Reply/Reply All actions send this). Must belong to this
+    # same ticket; validated server-side the same way as
+    # attachment_source_interaction_id above (see InteractionService.
+    # add_reply/_resolve_envelope_source). None (the default) preserves
+    # the pre-existing behavior exactly: the ticket's latest inbound
+    # email.
+    source_interaction_id: UUID | None = None
+
     # When the message being replied to arrived via Microsoft Graph,
     # selects Graph's native replyAll action (Cc'ing everyone on the
     # original thread) instead of reply — mirrors the Mail page's own
@@ -159,6 +170,14 @@ class InteractionReplyRequest(BaseModel):
 
     # See ReplyCreate.body_html above — same meaning, same reason.
     body_html: str | None = None
+
+    # Which message in this (not-yet-ticketed) thread this reply is
+    # actually replying to — see ReplyCreate.source_interaction_id
+    # above for the full rationale; same meaning here, just validated
+    # against this thread (via find_thread_root) instead of a ticket.
+    # None (the default) preserves the pre-existing behavior exactly:
+    # the thread root.
+    source_interaction_id: UUID | None = None
 
     # See ReplyCreate.idempotency_key above — same meaning, same reason.
     idempotency_key: str | None = Field(default=None, max_length=255)

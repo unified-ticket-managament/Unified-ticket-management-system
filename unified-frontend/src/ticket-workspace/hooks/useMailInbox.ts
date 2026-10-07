@@ -429,6 +429,12 @@ export function useMailInbox() {
   // with the wrong conversation.
   const openThreadRequestIdRef = useRef(0);
 
+  // Which single message within the currently-open thread (selectedEmail)
+  // is individually highlighted/scrolled-to in the reading pane — null
+  // means "whole conversation, nothing specific selected" (the default,
+  // and what every fresh/refreshed openThread resets back to below).
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+
   const [rowsByTab, setRowsByTab] = useState<Record<BaseTabKey, InboxItem[]>>({
     pending: [],
     replied: [],
@@ -1297,6 +1303,10 @@ export function useMailInbox() {
 
     if (result) {
       setSelectedEmail(result);
+      // A fresh open (or a refresh of the currently-open thread) always
+      // shows the whole conversation — any previously-highlighted child
+      // message from before doesn't carry over.
+      setSelectedMessageId(null);
       setOpenedIds((prev) => {
         const next = new Set(prev);
         next.add(interactionId);
@@ -1785,6 +1795,8 @@ export function useMailInbox() {
     moveFolder,
     deleteFolder,
     openThread,
+    selectedMessageId,
+    setSelectedMessageId,
     markRead,
     markUnread,
     selectedEmail,
