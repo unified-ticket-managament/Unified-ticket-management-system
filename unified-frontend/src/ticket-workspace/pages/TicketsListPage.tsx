@@ -738,19 +738,22 @@ export function TicketsListPage() {
                         ) : (
                           <span className="text-muted">Unclaimed</span>
                         )}
-                        {/* Multi-assignment: the cell above is the
-                            PRIMARY; secondaries are summarized here
-                            (full list on the ticket's Assignments card). */}
-                        {(ticket.assignees?.length ?? 0) > (ticket.agent_id ? 1 : 0) && (
-                          <span
-                            className="ml-1 text-xs text-muted"
-                            title={(ticket.assignees ?? [])
+                        {/* Multi-assignment: the line above is the
+                            PRIMARY; every secondary assignee is listed
+                            by name underneath. */}
+                        {(ticket.assignees ?? []).some((a) => !a.is_primary) && (
+                          <div className="mt-0.5 flex flex-col text-xs text-muted">
+                            {ticket.agent_id && (
+                              <span className="text-[10px] uppercase tracking-wide">Primary</span>
+                            )}
+                            {(ticket.assignees ?? [])
                               .filter((a) => !a.is_primary)
-                              .map((a) => a.user_name ?? a.user_id)
-                              .join(", ")}
-                          >
-                            +{(ticket.assignees?.length ?? 0) - (ticket.agent_id ? 1 : 0)}
-                          </span>
+                              .map((a) => (
+                                <span key={a.assignment_id}>
+                                  + {a.user_id === currentUser?.user_id ? "You" : a.user_name ?? shortId(a.user_id)}
+                                </span>
+                              ))}
+                          </div>
                         )}
                       </td>
                       {/* "Assigned By" — who performed the claim/

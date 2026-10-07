@@ -273,7 +273,11 @@ export function TicketActions({ onActionComplete }: TicketActionsProps) {
   // Upload Attachment disable-in-place (not hide) when none of these
   // hold, so a user without access sees why rather than discovering it
   // via a rejected request.
-  const isOwnTicket = activeTicket.agent_id === currentUser?.user_id;
+  // Multi-assignment: primary OR secondary assignee — mirrors the
+  // backend's is_active_assignee (a secondary is never read-only).
+  const isOwnTicket =
+    activeTicket.agent_id === currentUser?.user_id ||
+    (activeTicket.assignees ?? []).some((a) => a.user_id === currentUser?.user_id);
   // RBAC Enforcement Audit, Phase 27: mirrors the backend's own
   // ensure_agent_can_act_on_ticket own-ticket branch (access_control.py),
   // which requires ticket:editown_ticket on top of ownership — this file

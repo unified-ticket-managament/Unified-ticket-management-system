@@ -998,6 +998,45 @@ class TicketAssignmentService:
             )
         ticket.category_names = None
 
+    async def attach_categories_on_create(
+        self, ticket: Ticket, category_names: list[str], actor: User
+    ) -> None:
+        """
+        Secondary categories picked while CREATING a ticket. Choosing a
+        new ticket's categories is part of creating it (ticket:create,
+        already enforced by the caller, which also validated every name
+        exists) — the same reason the primary category needs no
+        ticket:change_category at creation. Audited like add_category.
+        """
+
+        existing = {name for _, name in await self.repository.list_categories(ticket.ticket_id)}
+        for name in category_names:
+            if name in existing:
+                continue
+            category = await self.repository.get_category_by_name(name)
+            if category is None:
+                raise _bad_request(f"Category {name!r} does not exist.")
+            await self.repository.add_category(
+                TicketCategory(
+                    ticket_id=ticket.ticket_id,
+                    category_id=category.category_id,
+                    is_primary=False,
+                    assigned_by=actor.user_id,
+                )
+            )
+            existing.add(name)
+            await self._audit(
+                ticket.ticket_id,
+                AuditEventType.CATEGORY_ADDED,
+                actor,
+                new_values={
+                    "category_id": category.category_id,
+                    "category_name": name,
+                    "is_primary": False,
+                },
+            )
+        ticket.category_names = None
+
     async def add_category(self, ticket_id: UUID, category_id: UUID, actor: User) -> TicketCategory:
         ticket = await self._lock_ticket(ticket_id)
         await self._ensure_can_manage(ticket, actor)

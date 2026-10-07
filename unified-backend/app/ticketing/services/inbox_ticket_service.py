@@ -44,6 +44,7 @@ from app.ticketing.services.delegated_access import resolve_delegated_thread_acc
 from app.ticketing.services.sla_service import SLAService
 from app.notifications.service import NotificationService, NotificationType
 from app.ticketing.services.ticket_assignment_service import build_ticket_assignment_service
+from app.ticketing.repositories.category_repository import CategoryRepository
 
 
 class InboxTicketService:
@@ -257,6 +258,39 @@ class InboxTicketService:
             else None
         )
 
+        # Multi-assignment: extra secondary assignees, each paired with
+        # the category they were picked for (additional_agent_ids = the
+        # ticket's main category). All validated BEFORE anything is
+        # written — same hierarchy rule as the primary pick, scoped to
+        # each person's own category.
+        extra_pairs: list[tuple[str, UUID]] = [
+            (request.ticket_type, user_id) for user_id in request.additional_agent_ids
+        ] + [(row.category_name, row.user_id) for row in request.additional_assignments]
+        additional_agent_ids = [user_id for _, user_id in extra_pairs]
+        extra_category_names: list[str] = []
+        if extra_pairs:
+            if resolved_agent_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Choose a primary assignee before adding additional assignees.",
+                )
+            if len(set(additional_agent_ids)) != len(additional_agent_ids) or resolved_agent_id in additional_agent_ids:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Each user can only be assigned once.",
+                )
+            category_repository = CategoryRepository(self.ticket_repository.db)
+            for category_name, extra_id in extra_pairs:
+                if category_name != request.ticket_type and not await category_repository.exists(category_name):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Category {category_name!r} does not exist.",
+                    )
+                if self.assignment_service is not None:
+                    await self.assignment_service.resolve_target(current_user, extra_id, category_name)
+                if category_name != request.ticket_type and category_name not in extra_category_names:
+                    extra_category_names.append(category_name)
+
         ticket = await self.ticket_repository.create(
 
             TicketCreate(
@@ -311,9 +345,21 @@ class InboxTicketService:
 
         # Multi-assignment projection: primary category from ticket_type,
         # primary assignment (+ its SLA run) from agent_id.
-        await build_ticket_assignment_service(self.ticket_repository.db).on_ticket_created(
-            ticket, actor_id=current_user.user_id
+        ticket_assignment_service = build_ticket_assignment_service(
+            self.ticket_repository.db, notification_service=self.notification_service
         )
+        await ticket_assignment_service.on_ticket_created(ticket, actor_id=current_user.user_id)
+        if extra_category_names:
+            # Secondary categories chosen in the same dialog (no SLA).
+            await ticket_assignment_service.attach_categories_on_create(
+                ticket, extra_category_names, current_user
+            )
+        if additional_agent_ids:
+            # Secondary assignees (each with their own status + SLA run);
+            # any failure here rolls back the whole ticket creation.
+            await ticket_assignment_service.add_users(
+                ticket.ticket_id, additional_agent_ids, current_user
+            )
 
         # A ticket born already assigned (the "Assigned To" picker
         # above resolved to someone) notifies that agent the same way

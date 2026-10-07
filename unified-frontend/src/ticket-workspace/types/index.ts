@@ -808,6 +808,12 @@ export interface TicketFromInteractionRequest {
   // Who to assign the new ticket to — omitted/undefined keeps the
   // original behavior (ticket born unclaimed, in the shared pool).
   agent_id?: string | null;
+  // Multi-assignment: extra SECONDARY assignees (requires agent_id).
+  // Re-validated server-side; the ticket is created with all or none.
+  additional_agent_ids?: string[];
+  // Extra SECONDARY assignees, each picked for a specific category; the
+  // ticket also joins every category listed here.
+  additional_assignments?: { category_name: string; user_id: string }[];
 }
 
 export interface TicketFromInteractionResponse {

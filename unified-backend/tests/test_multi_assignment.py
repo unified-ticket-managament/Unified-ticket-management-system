@@ -642,7 +642,7 @@ async def test_cross_category_transfer_moves_the_primary_category(world):
 
 
 async def test_secondaries_never_enter_the_escalation_chain(world):
-    ticket = await make_ticket(world)
+    ticket = await make_ticket(world, categories=[world.billing, world.claims])
     await interaction_service(world.session).transfer_agent(
         ticket.ticket_id, TransferAgentRequest(new_agent_id=world.koushik.user_id, reason="assign"), world.team_lead
     )
@@ -784,3 +784,161 @@ async def test_list_assignment_enrichment_is_constant_query_count(world):
         return len(statements)
 
     assert await count_queries(small) == await count_queries(large) == 2
+
+
+# ---------------------------------------------------------------
+# Multi-assignment at ticket creation (Create Ticket From This Email)
+# ---------------------------------------------------------------
+
+
+async def _pending_email(world):
+    from datetime import datetime, timezone
+
+    from app.ticketing.enums import InteractionDirection, InteractionStatus
+    from app.ticketing.models.interaction import Interaction
+
+    interaction = Interaction(
+        interaction_id=uuid.uuid4(),
+        interaction_type="EMAIL",
+        direction=InteractionDirection.INBOUND,
+        status=InteractionStatus.PENDING,
+        payload={"message": "please help"},
+        client_id=world.client.client_id,
+        is_visible=True,
+        subject="Help needed",
+        received_at=datetime.now(timezone.utc),
+    )
+    world.session.add(interaction)
+    await world.session.flush()
+    return interaction
+
+
+def _inbox_service(world):
+    from app.ticketing.repositories.interaction_repository import InteractionRepository
+    from app.ticketing.services.assignment_service import AssignmentService
+    from app.ticketing.services.inbox_ticket_service import InboxTicketService
+
+    return InboxTicketService(
+        ticket_repository=TicketRepository(world.session),
+        interaction_repository=InteractionRepository(world.session),
+        assignment_service=AssignmentService(UserRepository(world.session)),
+        client_repository=ClientRepository(world.session),
+    )
+
+
+async def test_create_ticket_with_multiple_assignees(world):
+    from app.ticketing.schemas.ticket_from_interaction import TicketFromInteractionCreate
+
+    email = await _pending_email(world)
+    response = await _inbox_service(world).create_ticket_from_interaction(
+        TicketFromInteractionCreate(
+            interaction_id=email.interaction_id,
+            title="Multi-assigned at creation",
+            ticket_type=world.billing.category_name,
+            agent_id=world.koushik.user_id,
+            additional_agent_ids=[world.ravi.user_id],
+        ),
+        current_user=world.account_manager,
+    )
+    assignments = await active(world, response.ticket_id)
+    assert set(assignments) == {world.koushik.user_id, world.ravi.user_id}
+    assert assignments[world.koushik.user_id].is_primary
+    assert not assignments[world.ravi.user_id].is_primary
+    assert len(await runs(world, response.ticket_id)) == 2  # one SLA run per assignee
+    ticket = await TicketRepository(world.session).get_by_id(response.ticket_id)
+    assert ticket.agent_id == world.koushik.user_id
+    assert ticket.current_status == TicketStatus.IN_PROGRESS
+
+
+async def test_create_ticket_additional_assignees_require_a_primary(world):
+    from app.ticketing.schemas.ticket_from_interaction import TicketFromInteractionCreate
+
+    email = await _pending_email(world)
+    with pytest.raises(HTTPException) as exc:
+        await _inbox_service(world).create_ticket_from_interaction(
+            TicketFromInteractionCreate(
+                interaction_id=email.interaction_id,
+                title="x",
+                ticket_type=world.billing.category_name,
+                additional_agent_ids=[world.ravi.user_id],
+            ),
+            current_user=world.account_manager,
+        )
+    assert exc.value.status_code == 400
+
+
+async def test_create_ticket_with_an_out_of_scope_additional_assignee_creates_nothing(world):
+    from app.ticketing.schemas.ticket_from_interaction import TicketFromInteractionCreate
+
+    email = await _pending_email(world)
+    before = (await world.session.execute(select(func.count()).select_from(Ticket))).scalar_one()
+    with pytest.raises(HTTPException) as exc:
+        await _inbox_service(world).create_ticket_from_interaction(
+            TicketFromInteractionCreate(
+                interaction_id=email.interaction_id,
+                title="x",
+                ticket_type=world.billing.category_name,
+                agent_id=world.koushik.user_id,
+                additional_agent_ids=[world.outsider.user_id],
+            ),
+            current_user=world.account_manager,
+        )
+    assert exc.value.status_code == 400
+    after = (await world.session.execute(select(func.count()).select_from(Ticket))).scalar_one()
+    assert after == before  # rejected before anything was written
+
+
+async def test_create_ticket_with_people_picked_per_category(world):
+    from app.ticketing.schemas.ticket_from_interaction import (
+        AdditionalAssignmentIn,
+        TicketFromInteractionCreate,
+    )
+
+    email = await _pending_email(world)
+    response = await _inbox_service(world).create_ticket_from_interaction(
+        TicketFromInteractionCreate(
+            interaction_id=email.interaction_id,
+            title="Billing + Claims work",
+            ticket_type=world.billing.category_name,
+            agent_id=world.koushik.user_id,  # primary, from Billing
+            additional_assignments=[
+                AdditionalAssignmentIn(category_name=world.billing.category_name, user_id=world.ravi.user_id),
+                AdditionalAssignmentIn(category_name=world.claims.category_name, user_id=world.suresh.user_id),
+            ],
+        ),
+        current_user=world.account_manager,
+    )
+    categories = [(n, tc.is_primary) for tc, n in await service(world).repository.list_categories(response.ticket_id)]
+    assert categories == [(world.billing.category_name, True), (world.claims.category_name, False)]
+    assignments = await active(world, response.ticket_id)
+    assert set(assignments) == {world.koushik.user_id, world.ravi.user_id, world.suresh.user_id}
+    assert [u for u, a in assignments.items() if a.is_primary] == [world.koushik.user_id]
+    assert len(await runs(world, response.ticket_id)) == 3  # categories add no SLA
+    assert len(await events(world, response.ticket_id, AuditEventType.CATEGORY_ADDED)) == 1
+
+
+async def test_create_ticket_rejects_a_person_outside_their_rows_category(world):
+    from app.ticketing.schemas.ticket_from_interaction import (
+        AdditionalAssignmentIn,
+        TicketFromInteractionCreate,
+    )
+
+    email = await _pending_email(world)
+    before = (await world.session.execute(select(func.count()).select_from(Ticket))).scalar_one()
+    with pytest.raises(HTTPException) as exc:
+        await _inbox_service(world).create_ticket_from_interaction(
+            TicketFromInteractionCreate(
+                interaction_id=email.interaction_id,
+                title="x",
+                ticket_type=world.billing.category_name,
+                agent_id=world.koushik.user_id,
+                # Suresh works Claims, not Billing — this row's category.
+                additional_assignments=[
+                    AdditionalAssignmentIn(category_name=world.billing.category_name, user_id=world.suresh.user_id)
+                ],
+            ),
+            current_user=world.account_manager,
+        )
+    assert exc.value.status_code == 400
+    after = (await world.session.execute(select(func.count()).select_from(Ticket))).scalar_one()
+    assert after == before

@@ -49,6 +49,7 @@ TEAM_LEAD_PERMISSIONS = STAFF_PERMISSIONS + [
 ]
 ACCOUNT_MANAGER_PERMISSIONS = TEAM_LEAD_PERMISSIONS + [
     "ticket:change_category",
+    "ticket:create",
     "ticket:close_ticket",
     "ticket:reopen",
     "ticket:change_priority",

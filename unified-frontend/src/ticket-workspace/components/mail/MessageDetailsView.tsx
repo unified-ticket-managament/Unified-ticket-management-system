@@ -71,6 +71,10 @@ import {
   uploadTicketInlineImage,
 } from "@tw/api/interaction";
 import { attachInteractionToTicket, createTicketFromInteraction, listTickets } from "@tw/api/ticket";
+import {
+  AdditionalAssignmentRows,
+  type AdditionalAssignmentRow,
+} from "@tw/components/mail/AdditionalAssignmentRows";
 import { useAuthContext } from "@tw/context/AuthContext";
 import { useToast } from "@tw/context/ToastContext";
 import { useWorkflowContext } from "@tw/context/WorkflowContext";
@@ -879,6 +883,10 @@ export function MessageDetailsView({
   const [assignableAgentsError, setAssignableAgentsError] = useState(false);
   const [assignedToChoice, setAssignedToChoice] = useState<string>("unassigned");
   const [selectedAssigneeId, setSelectedAssigneeId] = useState("");
+  // Multi-assignment: extra (secondary) assignees, each picked FOR a
+  // category (the ticket also joins every category used here). The
+  // primary is always the "Assigned To" pick above.
+  const [additionalRows, setAdditionalRows] = useState<AdditionalAssignmentRow[]>([]);
 
   // Attach-to-Ticket's reopen extension: only relevant when the
   // ticket picked in the Attach dialog is CLOSED — mirrors the
@@ -1011,6 +1019,12 @@ export function MessageDetailsView({
       : assignedToChoice === "self" || !assignedToGroup
         ? assignableAgents?.me?.user_id
         : selectedAssigneeId || undefined;
+
+  // Only fully-picked rows are sent; the primary is never repeated.
+  const completeAdditionalRows = additionalRows.filter(
+    (row) => row.category_name && row.user_id && row.user_id !== resolvedAgentId
+  );
+  const additionalRowsNeedPrimary = completeAdditionalRows.length > 0 && !resolvedAgentId;
 
   const selectedExistingTicket = clientTickets.find((t) => t.ticket_id === existingTicketId) ?? null;
   const isReopeningClosedTicket = selectedExistingTicket?.current_status === "CLOSED";
@@ -1284,9 +1298,14 @@ export function MessageDetailsView({
       ticket_type: ticketType,
       current_priority: priority,
       agent_id: resolvedAgentId,
+      additional_assignments: completeAdditionalRows.map((row) => ({
+        category_name: row.category_name,
+        user_id: row.user_id,
+      })),
     });
     if (result) {
       setCreateOpen(false);
+      setAdditionalRows([]);
       onRefreshList();
       // Patch the ticket_id onto the open thread immediately so the
       // toolbar's Create Ticket button flips to View Ticket without
@@ -1933,6 +1952,23 @@ export function MessageDetailsView({
                     </div>
                   )
                 )}
+
+                {canAssignTicket && (
+                  <div className="mt-1">
+                    <AdditionalAssignmentRows
+                      categories={allCategories}
+                      rows={additionalRows}
+                      onChange={setAdditionalRows}
+                      primaryUserId={resolvedAgentId}
+                      defaultCategory={ticketType}
+                    />
+                    {additionalRowsNeedPrimary && (
+                      <p className="mt-1 text-xs text-destructive">
+                        Choose the primary assignee in “Assigned To” first.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1945,6 +1981,7 @@ export function MessageDetailsView({
               disabled={
                 isCreating ||
                 !ticketType ||
+                additionalRowsNeedPrimary ||
                 (needsAssigneePick && (assignedToGroup?.users.length === 0 || !selectedAssigneeId))
               }
             >
